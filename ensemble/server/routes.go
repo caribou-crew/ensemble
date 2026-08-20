@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -44,6 +45,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions/{id}/hops", s.handleSessionHops)
 
 	mux.HandleFunc("GET /api/openapi.json", s.handleOpenAPI)
+
+	mux.HandleFunc("POST /api/shutdown", s.withAnnotation(s.handleShutdown))
 }
 
 // --- JSON helpers ---
@@ -514,4 +517,37 @@ func (s *server) handleSessionHops(w http.ResponseWriter, r *http.Request) {
 	for _, h := range ses.Hops() {
 		_ = enc.Encode(h)
 	}
+}
+
+// --- shutdown ---
+
+// handleShutdown lets a loopback caller (cmd/ensemble's `down`) request a
+// graceful stop of the whole `up` process. Guarded to loopback since it
+// has no other auth and a local dev tool has no business accepting this
+// from the network. Shutdown is invoked asynchronously, after the response
+// is written, so the handler (and withAnnotation's post-hop recording)
+// completes before Serve's graceful drain begins tearing the HTTP server
+// down around it.
+func (s *server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackAddr(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "shutdown is only permitted from loopback")
+		return
+	}
+	if s.Shutdown == nil {
+		writeErr(w, http.StatusNotImplemented, "shutdown not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	go s.Shutdown()
+}
+
+// isLoopbackAddr reports whether remoteAddr (an http.Request.RemoteAddr,
+// "host:port" or occasionally bare host) resolves to a loopback address.
+func isLoopbackAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

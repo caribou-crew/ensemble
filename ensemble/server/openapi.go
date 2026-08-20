@@ -47,6 +47,8 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/sessions/{id}/hops": {"get": {Summary: "NDJSON dump of an active session's hops so far"}},
 
 		"/api/openapi.json": {"get": {Summary: "This document"}},
+
+		"/api/shutdown": {"post": {Summary: "Gracefully stop the ensemble process (loopback only)"}},
 	}
 
 	return map[string]any{

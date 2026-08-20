@@ -696,6 +696,52 @@ func TestSeedUnknownIs404(t *testing.T) {
 	}
 }
 
+func TestShutdownInvokesHookWhenConfigured(t *testing.T) {
+	e := newTestEnv(t)
+
+	called := make(chan struct{}, 1)
+	handler := server.New(server.Deps{
+		Cfg: e.cfg, Orch: e.orch, Rec: e.rec, Lat: e.lat, Sessions: e.sessions, Version: "test",
+		Shutdown: func() { called <- struct{}{} },
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/shutdown", "", nil)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["ok"] != true {
+		t.Errorf("ok = %v, want true", got["ok"])
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown hook was not invoked")
+	}
+}
+
+func TestShutdownNotConfiguredIs501(t *testing.T) {
+	e := newTestEnv(t)
+	resp, body := e.post(t, "/api/shutdown", nil)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestOpenAPIListsEndpoints(t *testing.T) {
 	e := newTestEnv(t)
 	resp, body := e.get(t, "/api/openapi.json")
@@ -719,7 +765,7 @@ func TestOpenAPIListsEndpoints(t *testing.T) {
 		"/api/traces/{traceId}", "/api/traces/{traceId}/export",
 		"/api/latency", "/api/latency/arm-all", "/api/latency/reset",
 		"/api/sessions", "/api/sessions/{id}", "/api/sessions/{id}/hops",
-		"/api/openapi.json",
+		"/api/openapi.json", "/api/shutdown",
 	} {
 		if _, ok := doc.Paths[want]; !ok {
 			t.Errorf("openapi missing path %q", want)
