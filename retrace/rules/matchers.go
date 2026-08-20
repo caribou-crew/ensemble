@@ -35,6 +35,11 @@ const (
 	KindPattern Kind = "pattern"
 )
 
+// Matcher is not a wire type — it never crosses a REST response. A rule's
+// wire form is Raw (JSON/YAML), and a diff entry reports a matcher as its
+// Label() string. Constructing one outside ParseMatcher (a JSON round-trip
+// included, since re is unexported) is fine: Classify handles it through
+// Matcher.ready() rather than assuming ParseMatcher built it.
 type Matcher struct {
 	Kind    Kind
 	Name    string
@@ -65,10 +70,18 @@ var named = map[string]func(any) bool{
 		return ok && httpDateRe.MatchString(s) && parses(s, http.TimeFormat)
 	},
 	// Accepts a JSON number too — a body field carries 1760, a header "1760".
+	// Also accepts Go's own integer kinds: every value that reaches Classify
+	// from encoding/json arrives as float64, but a Go-side caller (a test,
+	// a future in-process consumer) may hand this a real int — accept it
+	// rather than silently failing a comparison that is obviously an integer.
 	"integer": func(v any) bool {
 		switch t := v.(type) {
 		case float64:
 			return t == float64(int64(t))
+		case float32:
+			return float64(t) == float64(int64(t))
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return true
 		case json.Number:
 			_, err := t.Int64()
 			return err == nil
@@ -79,16 +92,27 @@ var named = map[string]func(any) bool{
 	},
 }
 
+// parses is the "is it a real date" backstop behind isoRe/httpDateRe: the
+// regex is the gate (it rejects "Wed" and other junk), this only confirms
+// the value parses as a real instant. It must accept every shape isoRe
+// blesses — including the colon-less zone offset ("+0530") that Java, Python
+// and Go's own time.Format("...Z0700") all emit — or a user who wrote an
+// iso8601 rule to excuse a timestamp gets a false "violation" on exactly the
+// field they excused. Layouts are generated, not hand-picked, so the set
+// stays complete against isoRe's grammar: separator T or space, fractional
+// seconds present or not, zone absent/"Z"/colon/colon-less.
 func parses(s, layout string) bool {
 	if _, err := time.Parse(layout, s); err == nil {
 		return true
 	}
-	// RFC3339 without a zone, and the "YYYY-MM-DD HH:MM:SS" variant the
-	// regex already blessed, still parse — the regex is the gate, this is
-	// only the "is it a real date" backstop.
-	for _, alt := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02T15:04:05.999999999Z07:00"} {
-		if _, err := time.Parse(alt, s); err == nil {
-			return true
+	for _, sep := range []string{"T", " "} {
+		for _, frac := range []string{"", ".999999999"} {
+			for _, zone := range []string{"Z07:00", "Z0700", ""} {
+				alt := "2006-01-02" + sep + "15:04:05" + frac + zone
+				if _, err := time.Parse(alt, s); err == nil {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -134,6 +158,12 @@ func ParseMatcher(spec any, where string) (Matcher, error) {
 	return Matcher{}, fmt.Errorf("invalid matcher%s — expected a name or {pattern: ...}", at)
 }
 
+// compilePattern rejects an empty pattern (the prototype's new RegExp(empty
+// string) accepts it and matches everything — total silent tolerance; this
+// is deliberately stricter). A non-empty pattern is compiled as-is and NOT
+// auto-anchored —
+// {"pattern": "v\\d+"} tolerates "xxv1yy" vs "zzv9zz" — matching the prototype's
+// own new RegExp(p).test(value) exactly; anchoring is the caller's job.
 func compilePattern(p, at string) (Matcher, error) {
 	if p == "" {
 		return Matcher{}, fmt.Errorf("invalid matcher%s — expected a name or {pattern: ...}", at)
@@ -156,10 +186,51 @@ func (m Matcher) satisfies(v any) bool {
 	return false
 }
 
+// ready prepares m for evaluation and reports whether it can be evaluated
+// at all. Classify must be total — a Matcher built any other way than
+// through ParseMatcher (most commonly a JSON/YAML round-trip: Matcher's re
+// field is unexported and never survives serialization) must never panic.
+//
+//  1. A matcher reconstructible from its exported fields is reconstructed:
+//     a pattern matcher with re == nil but a non-empty Pattern recompiles,
+//     so a round-tripped valid matcher keeps working instead of degrading.
+//  2. A matcher that cannot be evaluated — empty or uncompilable Pattern,
+//     an unknown named matcher, or an unrecognized Kind — reports false
+//     readiness. Classify then answers Violation, never Ignored/Tolerated:
+//     something that cannot evaluate must never be able to say "fine".
+func (m Matcher) ready() (Matcher, bool) {
+	switch m.Kind {
+	case KindNamed:
+		_, ok := named[m.Name]
+		return m, ok
+	case KindPattern:
+		if m.re != nil {
+			return m, true
+		}
+		if m.Pattern == "" {
+			return m, false
+		}
+		re, err := regexp.Compile(m.Pattern)
+		if err != nil {
+			return m, false
+		}
+		m.re = re
+		return m, true
+	default:
+		return m, false
+	}
+}
+
 // Classify decides what a difference between two values means under a
 // matcher. bothPresent is false when one side has no value at all: a value
 // matcher cannot speak to a value that does not exist, so an appearing or
 // disappearing field stays a real change — only ignore silences it.
+//
+// The zero Matcher (Kind == "") means "no rule applies" and always
+// classifies as Changed — never Ignored, never Tolerated. That is load-
+// bearing: Resolved.ForHeader/ForField return the zero Matcher when nothing
+// matches, so if this ever tolerated or ignored a zero Matcher, an unruled
+// field would silently stop being compared at all.
 func Classify(m Matcher, a, b any, bothPresent bool) Outcome {
 	switch m.Kind {
 	case KindIgnore:
@@ -170,7 +241,11 @@ func Classify(m Matcher, a, b any, bothPresent bool) Outcome {
 	if !bothPresent {
 		return Changed
 	}
-	if m.satisfies(a) && m.satisfies(b) {
+	ready, ok := m.ready()
+	if !ok {
+		return Violation
+	}
+	if ready.satisfies(a) && ready.satisfies(b) {
 		return Tolerated
 	}
 	return Violation
