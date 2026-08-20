@@ -172,6 +172,18 @@ func TestFieldGlobDoesNotFilterEmptySegments(t *testing.T) {
 	}
 }
 
+// TestEmptyFieldPathDoesNotMatchTheEmptyGlob pins the empty-fieldPath guard:
+// an empty fieldPath must produce zero path segments, not one empty segment
+// from a naive strings.Split(fieldPath, "."). Without the guard,
+// MatchFieldGlob("", "") would match — contradicting the package doc's own
+// promise that MatchFieldGlob("", x) is false for every x, unlike
+// MatchPathGlob("", x), because "" is a legal literal glob here, not "unset".
+func TestEmptyFieldPathDoesNotMatchTheEmptyGlob(t *testing.T) {
+	if MatchFieldGlob("", "") {
+		t.Error(`MatchFieldGlob("", "") must be false — "" is a literal glob, not "match anything"`)
+	}
+}
+
 func TestNormalizeRejectsAnUnknownMatcherNamingTheRuleIndex(t *testing.T) {
 	_, err := Normalize([]Raw{
 		{},

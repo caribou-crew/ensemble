@@ -14,6 +14,9 @@ func TestNamedMatchersAcceptTheirFormatAndRejectOthers(t *testing.T) {
 		{"iso8601", "Wed", false}, // stricter than time.Parse-anything on purpose
 		{"http-date", "Wed, 21 Aug 2026 10:15:00 GMT", true},
 		{"http-date", "2026-08-21T10:15:00Z", false},
+		// Matches httpDateRe's shape but August has only 31 days — the
+		// parses() backstop must still catch it.
+		{"http-date", "Wed, 32 Aug 2026 10:15:00 GMT", false},
 		{"etag", `W/"abc"`, true},
 		{"etag", "abc", false},
 		{"integer", 1760.0, true}, // a JSON number decodes as float64
@@ -78,10 +81,12 @@ func TestIso8601AcceptsEveryShapeItsOwnRegexBlesses(t *testing.T) {
 	accepted := []string{
 		"2026-08-21T10:15:00.123Z",
 		"2026-08-13T10:20:24.149439-05:00",
-		"2026-08-21T10:15:00+0530", // colon-less offset — Java/Python/Go emit this
-		"2026-08-21T10:15:00-0500", // colon-less offset, negative
-		"2026-08-21 10:15:00Z",     // space separator instead of T
-		"2026-08-21T10:15:00",      // no zone at all — isoRe's zone group is optional
+		"2026-08-21T10:15:00+0530",     // colon-less offset — Java/Python/Go emit this
+		"2026-08-21T10:15:00-0500",     // colon-less offset, negative
+		"2026-08-21 10:15:00Z",         // space separator instead of T
+		"2026-08-21T10:15:00",          // no zone at all — isoRe's zone group is optional
+		"2026-08-21 10:15:00.123Z",     // fractional seconds with the space separator
+		"2026-08-21T10:15:00.123+0530", // fractional seconds with a colon-less offset
 	}
 	for _, v := range accepted {
 		if got := Classify(m, v, v, true); got != Tolerated {
@@ -172,6 +177,7 @@ func TestClassifyIsTotalOnAMatcherParseMatcherNeverBuilt(t *testing.T) {
 		{"unknown named matcher", Matcher{Kind: KindNamed, Name: "uuidv4"}},
 		{"named matcher with no name", Matcher{Kind: KindNamed}},
 		{"pattern matcher with no pattern and no compiled re", Matcher{Kind: KindPattern}},
+		{"pattern matcher with an uncompilable pattern and no compiled re", Matcher{Kind: KindPattern, Pattern: "["}},
 		{"unrecognized kind", Matcher{Kind: "bogus"}},
 	}
 	for _, c := range cases {
