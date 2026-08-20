@@ -151,11 +151,18 @@ func TestCreateFailsOnRunIDCollision(t *testing.T) {
 //
 // Extended here (the probe did not reach it) to cover ListRunsErr, the
 // other lister with no error-channel excuse for skipping validation.
+//
+// The decoy tree has a child under SECRET that looks like a real run id
+// (re-review round 3): with SECRET childless, ListRuns(root, esc,
+// "SECRET") and FindRun(root, esc, "SECRET", "latest") return empty
+// whether or not their guard exists, so those two assertions were vacuous
+// — deleting either guard kept this test green. A child directory gives
+// both something to find if the guard is missing.
 func TestSiblingsHonorTheGuard(t *testing.T) {
 	tmp := t.TempDir()
 	root := RunsRoot(filepath.Join(tmp, "proj"))
 	outside := filepath.Join(tmp, "outside")
-	if err := os.MkdirAll(filepath.Join(outside, "SECRET"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(outside, "SECRET", "20260101T000000Z-deadbee"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	esc := filepath.Join("..", "..", "..", "outside")
@@ -186,6 +193,15 @@ func TestSiblingsHonorTheGuard(t *testing.T) {
 // joins selector into a filesystem path itself — it only compares it
 // against run ids already read from the (validated) root/app/flow
 // directory — so no separate traversal guard is needed for it here.
+//
+// The short-sha assertion alone cannot detect this property (re-review
+// round 3): "aaa1111" is itself a valid component, so it resolves
+// identically whether or not FindRun validates selector — the test passed
+// just as happily against a FindRun that added selector to
+// validateComponents. "" is a selector the component rules WOULD reject
+// (validateComponent rejects empty names), and FindRun's own contract
+// requires "" to mean "latest", so asserting on it is a selector value
+// the two behaviors actually disagree on.
 func TestFindRunDoesNotValidateSelector(t *testing.T) {
 	root := RunsRoot(t.TempDir())
 	if _, err := Create(root, "web", "checkout", "20260821T100000Z-aaa1111"); err != nil {
@@ -193,6 +209,9 @@ func TestFindRunDoesNotValidateSelector(t *testing.T) {
 	}
 	if got := FindRun(root, "web", "checkout", "aaa1111"); got != "20260821T100000Z-aaa1111" {
 		t.Fatalf("FindRun by short sha = %q", got)
+	}
+	if got := FindRun(root, "web", "checkout", ""); got != "20260821T100000Z-aaa1111" {
+		t.Fatalf(`FindRun with an empty selector = %q, want the latest run — "" must mean "latest", not "invalid component"`, got)
 	}
 }
 
