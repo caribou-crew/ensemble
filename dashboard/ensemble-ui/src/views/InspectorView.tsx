@@ -5,20 +5,17 @@
 // to the first available option rather than erroring.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, messageOf } from '../api/client';
 import { subscribeChanges } from '../api/sse';
 import type { Column, DatabaseInfo, Table } from '../api/types';
 import { renderCellValue } from '../format';
 import { useUrlParam } from '../urlState';
+import InlineError from '../components/InlineError';
 import './InspectorView.css';
 
 const ROWS_LIMIT = 50;
 /** How long a changed table stays visually flashed in the sidebar. */
 const FLASH_MS = 1200;
-
-function messageOf(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? err.message : fallback;
-}
 
 function useDatabases() {
   const [databases, setDatabases] = useState<DatabaseInfo[] | null>(null);
@@ -87,12 +84,25 @@ function useRows(db: string | null, table: string | null, limit: number, offset:
   const [loading, setLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
 
+  // Clears `rows` when db/table/offset actually change (a stale table's rows must never
+  // render under a different table's just-switched headers — final review I1) but NOT on the
+  // SSE-driven `refreshToken` bump alone, which deliberately wants to stay flicker-free for
+  // the currently-selected table.
+  const keyRef = useRef('');
+
   useEffect(() => {
     if (!db || !table) {
+      keyRef.current = '';
       setRows(null);
       setError(null);
       return;
     }
+    const key = `${db} ${table} ${offset}`;
+    if (keyRef.current !== key) {
+      keyRef.current = key;
+      setRows(null);
+    }
+    setError(null); // an error must never outlive the request that produced it
     let cancelled = false;
     setLoading(true);
     api
@@ -134,6 +144,27 @@ export default function InspectorView() {
   const { tables, error: schemaError } = useSchema(activeDb);
   const activeTable =
     tableParam && tables?.some((t) => t.name === tableParam) ? tableParam : (tables?.[0]?.name ?? null);
+
+  // A ?db= that names nothing falls back to the first database, but a leftover ?table=
+  // would then be read against that fallback's schema — leaving the URL, and any link copied
+  // from the address bar, disagreeing with what's on screen. Drop the whole stale selection,
+  // mirroring EntityView.tsx:413-419's identical ?entity=/?id= fix (final review I2).
+  // Self-terminating: clearing dbParam makes the guard below false on the next pass.
+  useEffect(() => {
+    if (!databases || !dbParam) return;
+    if (databases.some((d) => d.name === dbParam)) return;
+    setDb(null);
+    setTable(null);
+  }, [databases, dbParam, setDb, setTable]);
+
+  // ?table= is only meaningful relative to ?db= — once that db's schema is loaded, a
+  // ?table= that names nothing in it gets the same treatment, independently of the guard
+  // above (a VALID ?db= can still carry a stale ?table=).
+  useEffect(() => {
+    if (!tables || !tableParam) return;
+    if (tables.some((t) => t.name === tableParam)) return;
+    setTable(null);
+  }, [tables, tableParam, setTable]);
 
   const [offset, setOffset] = useState(0);
   const { rows, error: rowsError, loading: rowsLoading, refresh } = useRows(activeDb, activeTable, ROWS_LIMIT, offset);
@@ -233,7 +264,7 @@ export default function InspectorView() {
             </option>
           ))}
         </select>
-        {schemaError && <div className="inspector-view__schema-error">{schemaError}</div>}
+        {schemaError && <InlineError message={schemaError} />}
         {!tables ? (
           <Spinner />
         ) : (
@@ -279,7 +310,7 @@ export default function InspectorView() {
             </button>
           </div>
         </div>
-        {rowsError && <div className="inspector-view__rows-error">{rowsError}</div>}
+        {rowsError && <InlineError message={rowsError} />}
         {rowsLoading && !rows ? (
           <div className="inspector-view__rows-loading">
             <Spinner />

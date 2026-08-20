@@ -85,6 +85,7 @@ export interface LogicalHop {
 export interface Column {
   name: string;
   type: string;
+  nullable: boolean;
 }
 
 export interface Table {

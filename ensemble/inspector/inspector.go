@@ -164,18 +164,43 @@ func (i *Inspector) Watch(interval time.Duration) (<-chan ChangeEvent, func()) {
 	go func() {
 		defer close(doneCh)
 
+		// pollCtx is cancelled the instant stop() closes stopCh, so a driver call already
+		// in flight when stop() is called unblocks immediately instead of running out its
+		// full pollTimeout — see the phase-3 final review's Parked #1: without this, stop()
+		// blocked on doneCh for up to 10s x (1 Tables + N Fingerprint) x drivers against an
+		// unresponsive database, and meanwhile the caller (inspectHub) had already nil'd its
+		// stopFn, letting a second Watch poller start on the same databases.
+		pollCtx, cancelPoll := context.WithCancel(context.Background())
+		defer cancelPoll()
+		go func() {
+			<-stopCh
+			cancelPoll()
+		}()
+
 		last := map[string]string{} // "db\x00table" -> last-seen fingerprint
 
 		poll := func() bool {
 			for _, entry := range i.snapshot() {
-				ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+				select {
+				case <-stopCh:
+					return false
+				default:
+				}
+
+				ctx, cancel := context.WithTimeout(pollCtx, pollTimeout)
 				tables, err := entry.d.Tables(ctx)
 				cancel()
 				if err != nil {
 					continue
 				}
 				for _, tbl := range tables {
-					ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+					select {
+					case <-stopCh:
+						return false
+					default:
+					}
+
+					ctx, cancel := context.WithTimeout(pollCtx, pollTimeout)
 					fp, err := entry.d.Fingerprint(ctx, tbl.Name)
 					cancel()
 					if err != nil {

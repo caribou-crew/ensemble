@@ -20,7 +20,7 @@ body {
 #root {
   min-height: 100vh;
   background-color: var(--bg-base);
-  background-image: radial-gradient(120% 60% at 50% -10%, rgba(124, 92, 255, 0.06), transparent 60%);
+  background-image: radial-gradient(120% 60% at 50% -10%, var(--accent-glow), transparent 60%);
   background-attachment: fixed;
 }
 

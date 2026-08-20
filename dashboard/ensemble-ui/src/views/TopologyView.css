@@ -41,8 +41,12 @@
   border-color: var(--accent-strong);
 }
 
-.topo-view__trace-error {
-  color: var(--status-red);
+/* Sizes InlineError down to sit inline in .topo-view__trace-bar's own flex row/padding,
+   rather than adding InlineError's own block padding on top of the bar's. Two classes, to
+   out-specificity InlineError.css's own same-specificity `.inline-error` rule regardless of
+   which stylesheet's <link> happens to land later in the bundle. */
+.inline-error.topo-view__trace-error {
+  padding: 0;
   font-size: 0.75rem;
 }
 
@@ -255,6 +259,10 @@
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: 3px 0 0 3px;
+  /* Deliberate literal, not a palette color (final review M4): a black hatch drawn OVER
+     whichever heat-tier color the bar underneath happens to be (topo-hop-bar-cold/warm/hot,
+     all tokens.css --status-* hues) — it needs to read as a texture against any of them, so
+     it can't itself be one of those tokens. */
   background-image: repeating-linear-gradient(
     45deg,
     rgba(0, 0, 0, 0.35) 0,
