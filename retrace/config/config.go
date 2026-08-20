@@ -18,11 +18,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
+
+// overlayMu serializes every read-modify-write of the machine-owned overlay
+// file across goroutines in this process. AppendWireRule additionally writes
+// atomically (temp file + rename), so a concurrent reader never observes a
+// partially-written file either.
+var overlayMu sync.Mutex
 
 const OverlayPath = ".retrace/wire-rules.json"
 
@@ -56,6 +63,13 @@ type Config struct {
 	// accept a `dir:` key in the file and then Load will overwrite it —
 	// a setting that appears to work and silently does nothing.
 	Dir string `yaml:"-"`
+	// Loaded reports whether a real retrace.yaml was found and read. Its
+	// zero value, false, is deliberately the unsafe-to-proceed one: no
+	// config means no redaction rules, so a consumer that captures traffic
+	// must refuse rather than proceed when Loaded is false — writing
+	// unredacted hops to disk is a leak, not a degraded mode. Discover sets
+	// this true only when it actually reads a retrace.yaml off disk.
+	Loaded bool `yaml:"-"`
 }
 
 type Flow struct {
@@ -128,7 +142,19 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	// A `---` second document is not merged, appended, or silently kept —
+	// yaml.v3's Decoder only ever fills c from the first one, so a second
+	// document would otherwise vanish without a word. Decode into a
+	// throwaway value just to detect its presence; io.EOF means there is no
+	// second document.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("%s: multiple YAML documents are not supported", path)
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	c.Dir = filepath.Dir(path)
+	c.Loaded = true
 	applyDefaults(&c)
 	for i := range c.PathNormalize {
 		re, err := regexp.Compile(c.PathNormalize[i].Pattern)
@@ -221,12 +247,28 @@ func (c *Config) NormalizePath(path string) string {
 // queue's `rule` verb can be pressed twice on the same field (or by a human
 // and an agent at once) and must not grow the file each time.
 //
+// The rule is validated with rules.Normalize before anything is written —
+// an unknown matcher name must fail the append, not brick every later
+// Discover call in this project with no way to repair it through the API.
+//
+// The read-modify-write is serialized by overlayMu and the write itself is
+// atomic (temp file in the same directory, then os.Rename over the target),
+// so concurrent appends never lose a rule and a concurrent reader never
+// observes a partially-written file.
+//
 // dir is a working-directory ROOT, exactly like runs.PathsFor's root — it
 // is intentionally not validated as a path component; only a
 // caller-supplied NAME joined into a path gets that treatment, and there
 // is none here.
 func AppendWireRule(dir string, r rules.Raw) error {
+	if _, err := rules.Normalize([]rules.Raw{r}); err != nil {
+		return err
+	}
 	path := filepath.Join(dir, OverlayPath)
+
+	overlayMu.Lock()
+	defer overlayMu.Unlock()
+
 	existing, err := readOverlay(path)
 	if err != nil {
 		return err
@@ -242,14 +284,42 @@ func AppendWireRule(dir string, r rules.Raw) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir2 := filepath.Dir(path)
+	if err := os.MkdirAll(dir2, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	tmp, err := os.CreateTemp(dir2, ".wire-rules-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	// Same-directory matters: os.Rename is only atomic within a filesystem,
+	// so a reader either sees the old file or the new one, never a tear.
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // readOverlay reads the machine-owned wire-rule overlay. A missing overlay
-// is not an error — no rule has been reviewed yet.
+// is not an error — no rule has been reviewed yet. DisallowUnknownFields
+// matches the strictness of the YAML side's KnownFields(true): a mis-shaped
+// rule (a typo'd key from a serialization bug) must fail loudly rather than
+// decode as an empty, match-everything rules.Raw.
 func readOverlay(path string) ([]rules.Raw, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -259,7 +329,9 @@ func readOverlay(path string) ([]rules.Raw, error) {
 		return nil, err
 	}
 	var out []rules.Raw
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return out, nil
