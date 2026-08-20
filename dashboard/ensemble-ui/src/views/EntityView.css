@@ -38,14 +38,6 @@
   font-size: 0.75rem;
 }
 
-.entity-view__panel-error {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  color: var(--status-red);
-  font-size: 0.8rem;
-}
 
 /* A 200 whose body was empty — a real answer, not a failure and not still loading. */
 .entity-view__panel-empty {

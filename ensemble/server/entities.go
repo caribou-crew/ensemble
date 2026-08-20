@@ -41,7 +41,15 @@ type entityInfo struct {
 func (s *server) handleEntities(w http.ResponseWriter, r *http.Request) {
 	out := make([]entityInfo, 0, len(s.Cfg.Entities))
 	for _, name := range sortedKeys(s.Cfg.Entities) {
-		out = append(out, entityInfo{Name: name, ID: s.Cfg.Entities[name].ID})
+		// config.Validate requires entity.base but says nothing about entity.id, so an
+		// entity configured without one is a valid config — defaulting here (rather than
+		// forwarding "" verbatim) keeps every consumer of this endpoint, CLI/agents
+		// included, from having to know "id" is the fallback (final review I4).
+		id := s.Cfg.Entities[name].ID
+		if id == "" {
+			id = "id"
+		}
+		out = append(out, entityInfo{Name: name, ID: id})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entities": out})
 }

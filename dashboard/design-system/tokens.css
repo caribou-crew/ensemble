@@ -26,6 +26,10 @@
   --accent-strong: #9b82ff;
   --accent-dim: rgba(124, 92, 255, 0.16);
   --accent-border: rgba(124, 92, 255, 0.4);
+  /* App.css's header background glow — same accent RGB as the two above, just a much
+     fainter alpha. Was a hardcoded literal (final review M4); tokenized so re-theming
+     --accent doesn't leave the glow behind. */
+  --accent-glow: rgba(124, 92, 255, 0.06);
 
   /* Status — reserved strictly for meaningful deviation */
   --status-green: #3ecf8e;

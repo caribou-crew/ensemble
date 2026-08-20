@@ -77,6 +77,41 @@ func TestEntitiesDiscoveryList(t *testing.T) {
 	}
 }
 
+// TestEntitiesDiscoveryDefaultsEmptyIDToId guards final-review-phase-3.md's I4:
+// config.Validate requires entity.base but says nothing about entity.id, so
+// `entities: { users: { base: "..." } }` is a valid config — forwarding its
+// empty ID verbatim made EntityView's idField "", which made detail/edit/delete
+// unreachable for every row and blamed the user's (valid) config. The server
+// side of the fix defaults it here so every consumer of this endpoint (not
+// just the dashboard) sees a usable id field name.
+func TestEntitiesDiscoveryDefaultsEmptyIDToId(t *testing.T) {
+	ts := newEntitiesTestEnv(t, map[string]config.Entity{
+		"users": {Base: "http://127.0.0.1:1"}, // no ID configured
+	})
+
+	resp, err := http.Get(ts.URL + "/api/entities")
+	if err != nil {
+		t.Fatalf("GET /api/entities: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got struct {
+		Entities []struct {
+			Name string `json:"name"`
+			ID   string `json:"id"`
+		} `json:"entities"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, body)
+	}
+	if len(got.Entities) != 1 || got.Entities[0].ID != "id" {
+		t.Fatalf("entities = %+v, want one entity with id defaulted to \"id\"", got.Entities)
+	}
+}
+
 func TestEntityProxyGETPassesQueryThrough(t *testing.T) {
 	upstream := echoUpstream(t)
 	ts := newEntitiesTestEnv(t, map[string]config.Entity{

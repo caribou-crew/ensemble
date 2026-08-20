@@ -38,10 +38,6 @@
   font-size: 0.8rem;
 }
 
-.inspector-view__schema-error {
-  color: var(--status-red);
-  font-size: 0.72rem;
-}
 
 .inspector-view__tables {
   list-style: none;
@@ -155,11 +151,6 @@
   text-align: center;
 }
 
-.inspector-view__rows-error {
-  padding: 0.5rem 0.9rem;
-  color: var(--status-red);
-  font-size: 0.78rem;
-}
 
 .inspector-view__rows-loading {
   flex: 1;

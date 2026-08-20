@@ -98,7 +98,7 @@ export interface LatencyRule {
 }
 export interface LogicalHop { hop: Hop; origin: Hop | null; via?: string[]; index: number; statusMismatch?: boolean }
 // Task 3.4 additions:
-export interface Column { name: string; type: string }
+export interface Column { name: string; type: string; nullable: boolean }
 export interface Table { name: string; columns: Column[] }
 export interface ChangeEvent { db: string; table: string; at: string }
 ```

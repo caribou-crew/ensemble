@@ -3,7 +3,7 @@
 // already lives on the Hop the caller has in hand (from /api/traffic or
 // the SSE stream) — no extra fetch needed, only the export endpoint is a
 // live network call.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@ensemble/design-system';
 import type { Hop, Timings } from '../api/types';
 import { isRedactedValue } from '../redaction';
@@ -69,6 +69,19 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const isError = (hop.status ?? 0) >= 400 || Boolean(hop.err);
 
+  // A second "curl" export within the 1.5s window used to schedule a SECOND idle timer on
+  // top of the first, so the earlier one reset copyState back to 'idle' mid-display of the
+  // newer export's own result — and an unmount mid-window wrote to a dead component (final
+  // review M7). Tracking the pending timer lets a new export clear the old one before
+  // scheduling its own, and the cleanup effect clears it on unmount.
+  const idleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+    };
+  }, []);
+
   async function handleExport(format: ExportFormat) {
     if (!hop.traceId) return;
     const url = exportUrl(hop.traceId, format);
@@ -85,7 +98,11 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
       // navigator.clipboard in this context) isn't fatal.
       setCopyState('failed');
     } finally {
-      window.setTimeout(() => setCopyState('idle'), 1500);
+      if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = window.setTimeout(() => {
+        idleTimerRef.current = null;
+        setCopyState('idle');
+      }, 1500);
     }
   }
 

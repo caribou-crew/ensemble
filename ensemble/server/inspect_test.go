@@ -326,3 +326,94 @@ func TestInspectorStreamEmitsChangeEvent(t *testing.T) {
 		t.Fatalf("event = %+v, want DB=primary Table=users At=<non-zero>", ev)
 	}
 }
+
+// readOneChangeEvent reads stream frames from r until an `event: change`
+// arrives (or deadline passes) and returns its raw JSON data line.
+func readOneChangeEvent(t *testing.T, r *bufio.Reader, deadline time.Time) string {
+	t.Helper()
+	for time.Now().Before(deadline) {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read stream: %v", err)
+		}
+		if strings.HasPrefix(line, "event: change") {
+			dataLine, err := r.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read data line: %v", err)
+			}
+			return strings.TrimPrefix(strings.TrimSpace(dataLine), "data: ")
+		}
+	}
+	t.Fatal("no change event observed within deadline")
+	return ""
+}
+
+// TestInspectorStreamFansOutToMultipleSubscribers guards the multi-subscriber
+// path final-review-phase-3.md's Parked #1 flagged as untested: inspectHub
+// multiplexes one inspector.Watch poller to N concurrent SSE clients, started
+// lazily on the first subscriber and stopped again once the last one
+// disconnects. This exercises exactly that lifecycle — two concurrent
+// subscribers both observe the same change event, and a subscriber
+// disconnecting (which tears down and, if it was the last one, stops the
+// poller) does not disrupt a survivor or break a fresh subscriber that joins
+// right after.
+func TestInspectorStreamFansOutToMultipleSubscribers(t *testing.T) {
+	e := newInspectTestEnv(t, nil)
+	fd := newFakeInspectorDriver(inspector.Table{Name: "users"})
+	e.insp.Register("primary", fd)
+
+	open := func() (*http.Response, *bufio.Reader, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(t.Context())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.ts.URL+"/api/inspector/stream", nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET stream: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+		return resp, bufio.NewReader(resp.Body), cancel
+	}
+
+	resp1, r1, cancel1 := open()
+	defer resp1.Body.Close()
+	defer cancel1()
+	resp2, r2, cancel2 := open()
+	defer resp2.Body.Close()
+	defer cancel2()
+
+	// Give the (single, shared) poller a moment to establish its baseline before flipping.
+	time.Sleep(30 * time.Millisecond)
+	fd.setFingerprint("users", "v1")
+
+	deadline := time.Now().Add(5 * time.Second)
+	data1 := readOneChangeEvent(t, r1, deadline)
+	data2 := readOneChangeEvent(t, r2, deadline)
+	if data1 == "" || data1 != data2 {
+		t.Fatalf("subscribers saw different events: %q vs %q", data1, data2)
+	}
+
+	// Subscriber 1 tabs away — its cancel() unregisters it and, since it's the FIRST of two,
+	// must NOT stop the shared poller (only the last subscriber's cancel does that).
+	cancel1()
+	resp1.Body.Close()
+
+	// A third subscriber joins right after. If the teardown above were slow (the pre-fix
+	// bug: stop() blocking on in-flight queries while stopFn was already nil'd), this dial
+	// would race a still-draining first poller into starting a stacked second one. Every
+	// survivor/newcomer must still see exactly one event for the next flip.
+	resp3, r3, cancel3 := open()
+	defer resp3.Body.Close()
+	defer cancel3()
+
+	fd.setFingerprint("users", "v2")
+	deadline = time.Now().Add(5 * time.Second)
+	data2b := readOneChangeEvent(t, r2, deadline)
+	data3 := readOneChangeEvent(t, r3, deadline)
+	if data2b == "" || data2b != data3 {
+		t.Fatalf("surviving/new subscribers saw different events: %q vs %q", data2b, data3)
+	}
+}

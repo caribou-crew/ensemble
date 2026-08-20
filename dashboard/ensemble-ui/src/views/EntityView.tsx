@@ -6,19 +6,16 @@
 // no router — matching the rest of the dashboard.
 import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
-import { api, ApiError } from '../api/client';
+import { api, messageOf } from '../api/client';
 import type { EntityInfo } from '../api/types';
 import { renderCellValue, unionKeys } from '../format';
 import { useUrlParam } from '../urlState';
 import JsonView from '../components/JsonView';
+import InlineError from '../components/InlineError';
 import './EntityView.css';
 
 const MUTATION_NOTE =
   "Mutations here only show up in Traffic when this entity's configured base points at an ensemble intercept port — a raw upstream base leaves them unrecorded.";
-
-function messageOf(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? err.message : fallback;
-}
 
 function useEntities() {
   const [entities, setEntities] = useState<EntityInfo[] | null>(null);
@@ -103,12 +100,7 @@ function EntityList({
   }, [name]);
 
   if (error) {
-    return (
-      <div className="entity-view__panel-error">
-        <Badge tone="red">error</Badge>
-        <span>{error}</span>
-      </div>
-    );
+    return <InlineError message={error} />;
   }
 
   if (loading) {
@@ -124,6 +116,9 @@ function EntityList({
   }
 
   const rows = asRowArray(data);
+  // Computed once for the whole table, not per row — unionKeys is O(rows × keys), so calling
+  // it again inside rows.map would run it once per row, O(n²) overall (final review M6).
+  const keys = rows ? unionKeys(rows) : [];
 
   return (
     <div className="entity-list">
@@ -151,7 +146,7 @@ function EntityList({
           <table className="entity-table">
             <thead>
               <tr>
-                {unionKeys(rows).map((k) => (
+                {keys.map((k) => (
                   <th key={k}>{k}</th>
                 ))}
               </tr>
@@ -166,7 +161,7 @@ function EntityList({
                     onClick={() => rid && onSelectRow(rid)}
                     title={rid ? undefined : `row is missing its "${idField}" field — detail view unavailable`}
                   >
-                    {unionKeys(rows).map((k) => (
+                    {keys.map((k) => (
                       <td key={k}>{renderCellValue(row[k])}</td>
                     ))}
                   </tr>
@@ -287,10 +282,7 @@ function EntityDetail({
       </div>
       <p className="entity-view__hint">{MUTATION_NOTE}</p>
       {error ? (
-        <div className="entity-view__panel-error">
-          <Badge tone="red">error</Badge>
-          <span>{error}</span>
-        </div>
+        <InlineError message={error} />
       ) : loading ? (
         <Spinner />
       ) : data === undefined ? (
@@ -375,10 +367,7 @@ function EntityCreate({
       </div>
       <p className="entity-view__hint">{MUTATION_NOTE}</p>
       {error && (
-        <div className="entity-view__panel-error">
-          <Badge tone="red">error</Badge>
-          <span>{error}</span>
-        </div>
+        <InlineError message={error} />
       )}
       <textarea
         className="entity-detail__textarea"
@@ -450,7 +439,11 @@ export default function EntityView() {
     );
   }
 
-  const idField = activeInfo?.id ?? 'id';
+  // `??` only coalesces null/undefined — an entity configured with no `id:` (a valid config;
+  // config.Validate never required it) comes back as `id: ""` from the server, which `??`
+  // lets straight through, making idField `""` and detail/edit/delete unreachable for every
+  // row (final review I4). `||` also catches that empty-string case.
+  const idField = activeInfo?.id || 'id';
 
   return (
     <div className="entity-view">

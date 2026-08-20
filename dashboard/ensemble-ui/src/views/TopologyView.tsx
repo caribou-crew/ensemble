@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
-import { api, ApiError } from '../api/client';
+import { api, messageOf } from '../api/client';
 import type { Hop, ServiceState, Topology } from '../api/types';
 import { categoryOf } from '../topology/categories';
 import { layoutClustered } from '../topology/layout';
@@ -8,6 +8,7 @@ import { layoutTrace, causalHopOrder } from '../topology/traceLayout';
 import { heatTier, hopDepths, hopTimeline, type HeatTier } from '../topology/hopTimeline';
 import type { CategoryId } from '../topology/types';
 import TopologyGraph from '../components/TopologyGraph';
+import InlineError from '../components/InlineError';
 import { useUrlParam } from '../urlState';
 import './TopologyView.css';
 
@@ -41,19 +42,31 @@ function useTopologyPoll() {
   const [traffic, setTraffic] = useState<Hop[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Generation guard: refresh() is called both from the 5s poll interval AND out-of-band
+  // from restart()/flip() (:321-329), so more than one call can be in flight at once with no
+  // guarantee which resolves first. A `cancelled` boolean threaded from the effect (App.tsx's
+  // shape) only covers unmount — it says nothing about an OLDER refresh() resolving after a
+  // NEWER one, which is exactly the case that matters here (see final review I3). Comparing
+  // against a ref counter bumped on every entry means only the latest-STARTED call's result
+  // is ever applied, regardless of resolution order.
+  const generationRef = useRef(0);
+
   const refresh = useCallback(async () => {
+    const generation = ++generationRef.current;
     try {
       const [t, s, hops] = await Promise.all([
         api.topology(),
         api.status(),
         api.traffic({ limit: TRAFFIC_SAMPLE }),
       ]);
+      if (generation !== generationRef.current) return;
       setTopology(t);
       setStatuses(s);
       setTraffic(hops);
       setError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'failed to reach the ensemble API');
+      if (generation !== generationRef.current) return;
+      setError(messageOf(err, 'failed to reach the ensemble API'));
     }
   }, []);
 
@@ -99,7 +112,7 @@ function useTracePoll(traceId: string | null) {
       .catch((err) => {
         if (!cancelled) {
           setHops(null);
-          setError(err instanceof ApiError ? err.message : `failed to load trace ${traceId}`);
+          setError(messageOf(err, `failed to load trace ${traceId}`));
         }
       });
     return () => {
@@ -356,7 +369,7 @@ export default function TopologyView() {
           <button type="button" onClick={() => setTraceId(null)}>
             back to topology
           </button>
-          {traceError && <span className="topo-view__trace-error">{traceError}</span>}
+          {traceError && <InlineError message={traceError} className="topo-view__trace-error" />}
         </div>
       )}
       <div className="topo-view__body">

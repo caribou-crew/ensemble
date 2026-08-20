@@ -5,7 +5,7 @@
 // drops data out of the ring.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
-import { api, ApiError } from '../api/client';
+import { api, messageOf } from '../api/client';
 import { subscribeHops } from '../api/sse';
 import type { Hop } from '../api/types';
 import { writeParams } from '../urlState';
@@ -65,7 +65,7 @@ function useHopRing() {
       } catch (err) {
         if (!cancelled) {
           setLoading(false);
-          setError(err instanceof ApiError ? err.message : 'failed to reach the ensemble API');
+          setError(messageOf(err, 'failed to reach the ensemble API'));
         }
       }
     }

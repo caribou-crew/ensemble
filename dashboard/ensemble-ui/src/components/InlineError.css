@@ -1,0 +1,9 @@
+/* Shared sub-resource error treatment — see InlineError.tsx (final review M5). */
+.inline-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--status-red);
+  font-size: 0.78rem;
+}

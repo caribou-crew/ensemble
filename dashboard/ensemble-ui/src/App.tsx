@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs, type TabItem } from '@ensemble/design-system';
-import { api, ApiError } from './api/client';
+import { api, messageOf } from './api/client';
 import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
 import TopologyView from './views/TopologyView';
@@ -36,7 +36,7 @@ function useHealthPoll(intervalMs = 5000) {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof ApiError ? err.message : 'failed to reach the ensemble API');
+          setError(messageOf(err, 'failed to reach the ensemble API'));
         }
       }
     }

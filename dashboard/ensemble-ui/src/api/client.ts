@@ -22,6 +22,13 @@ export class ApiError extends Error {
   }
 }
 
+/** Every view's catch block wants the same thing: an ApiError's own message when there is
+ * one, else a caller-supplied fallback for anything else (a network failure, a thrown
+ * non-ApiError). Was six near-identical copies across the dashboard's views before this. */
+export function messageOf(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   const text = await res.text();

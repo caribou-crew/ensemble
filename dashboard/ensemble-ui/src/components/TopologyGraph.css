@@ -27,6 +27,9 @@
 }
 
 .topo-cluster {
+  /* Deliberate literal, not a palette color (final review M4): a barely-there white wash
+     under every cluster's own stroke color, not one of tokens.css's --accent/--status/
+     --topo-cat hues, so it has nothing to re-theme against. */
   fill: rgba(255, 255, 255, 0.014);
   stroke-width: 1;
   stroke-dasharray: 4 5;

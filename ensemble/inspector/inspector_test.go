@@ -192,6 +192,75 @@ func TestWatchStop(t *testing.T) {
 	}
 }
 
+// slowDriver's Tables call blocks until its context is cancelled, then returns
+// ctx.Err() — standing in for a real database call against an unresponsive
+// server, which is only interruptible via context cancellation (as the real
+// postgres/mysql drivers are, threading ctx through database/sql).
+type slowDriver struct {
+	started chan struct{}
+}
+
+func newSlowDriver() *slowDriver {
+	return &slowDriver{started: make(chan struct{}, 1)}
+}
+
+func (d *slowDriver) Tables(ctx context.Context) ([]Table, error) {
+	select {
+	case d.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (d *slowDriver) Rows(ctx context.Context, table string, limit, offset int) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (d *slowDriver) Fingerprint(ctx context.Context, table string) (string, error) {
+	return "", nil
+}
+
+// TestWatchStopCancelsInFlightQueryInsteadOfWaitingOutPollTimeout guards the
+// final review's Parked #1 adjudication: stop() used to close stopCh and then
+// block on <-doneCh while the poller's in-flight Tables/Fingerprint call was
+// built from context.Background() with a 10s pollTimeout — uncancellable by
+// stopCh at all. Against an unresponsive database, stop() waited out the
+// ENTIRE remaining poll (10s × every remaining driver/table), and meanwhile
+// the caller (inspectHub) had already nil'd its stopFn, so a rapid
+// tab-away-then-back could stack a second poller on the same databases.
+//
+// The fix derives the per-query context from one cancelled by stopCh, so an
+// in-flight call unblocks the instant stop() is called rather than running out
+// its full timeout.
+func TestWatchStopCancelsInFlightQueryInsteadOfWaitingOutPollTimeout(t *testing.T) {
+	sd := newSlowDriver()
+	insp := New()
+	insp.Register("primary", sd)
+
+	// A long interval means only the initial (pre-ticker) poll runs — exactly the call this
+	// test needs to catch mid-flight.
+	_, stop := insp.Watch(time.Hour)
+
+	select {
+	case <-sd.started:
+	case <-time.After(time.Second):
+		t.Fatal("poller never called Tables")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("stop() blocked waiting out the in-flight query instead of cancelling it")
+	}
+}
+
 // Test: multiple registered databases/tables each get independent change
 // tracking.
 func TestWatchTracksMultipleDatabasesIndependently(t *testing.T) {
