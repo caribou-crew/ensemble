@@ -46,6 +46,17 @@ func buildOpenAPI(version string) map[string]any {
 		},
 		"/api/sessions/{id}/hops": {"get": {Summary: "NDJSON dump of an active session's hops so far"}},
 
+		"/api/databases":               {"get": {Summary: "Databases with a registered inspector driver (name/type)"}},
+		"/api/databases/{name}/schema": {"get": {Summary: "A database's tables and columns"}},
+		"/api/databases/{name}/rows":   {"get": {Summary: "Paged rows of ?table=, limit default 50 (cap 500), ?offset="}},
+		"/api/inspector/stream":        {"get": {Summary: "Server-Sent Events stream of inspector change events"}},
+
+		"/api/entities": {"get": {Summary: "Configured entities available for the dashboard's entity pages"}},
+		// Registered once per method in routes.go (GET/HEAD/POST/PUT/PATCH/
+		// DELETE/OPTIONS all reverse-proxy identically) — listed under "get"
+		// here since every verb's behavior/summary is the same.
+		"/api/entities/{name}/{path...}": {"get": {Summary: "Reverse-proxy (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS) to the entity's configured base"}},
+
 		"/api/openapi.json": {"get": {Summary: "This document"}},
 
 		"/api/shutdown": {"post": {Summary: "Gracefully stop the ensemble process (loopback only)"}},

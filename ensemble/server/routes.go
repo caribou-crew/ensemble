@@ -45,6 +45,46 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.withAnnotation(s.handleSessionEnd))
 	mux.HandleFunc("GET /api/sessions/{id}/hops", s.handleSessionHops)
 
+	mux.HandleFunc("GET /api/databases", s.handleDatabases)
+	mux.HandleFunc("GET /api/databases/{name}/schema", s.handleDatabaseSchema)
+	mux.HandleFunc("GET /api/databases/{name}/rows", s.handleDatabaseRows)
+	mux.HandleFunc("GET /api/inspector/stream", s.handleInspectorStream)
+
+	// The discovery route ("GET /api/entities", exact) and the passthrough
+	// ("/api/entities/{name}/{path...}") share the /api/entities prefix;
+	// ServeMux resolves the ambiguity by preferring the more specific
+	// pattern, so registration order here doesn't matter, but listing the
+	// exact match first documents the intent.
+	//
+	// The passthrough is registered once per method rather than as a single
+	// method-less ("any") pattern: net/http.ServeMux's own conflict check
+	// rejects a method-less wildcard-path pattern alongside "GET /" (the
+	// dashboard SPA fallback, registered in New) — neither pattern is
+	// strictly more specific than the other in both the method and path
+	// dimensions at once, which ServeMux treats as an unresolvable
+	// ambiguity and panics on at registration time. A method-qualified
+	// pattern doesn't have that problem (same shape as every other GET
+	// route here coexisting with the "GET /" fallback), so entity requests
+	// are proxied per explicit verb instead.
+	mux.HandleFunc("GET /api/entities", s.handleEntities)
+	for _, method := range []string{
+		http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+	} {
+		// Both registered (not just the {path...} one): "/{name}/{path...}"
+		// requires a "/" delimiter before the wildcard, so it does NOT
+		// match a bare "/api/entities/{name}" (no trailing slash, no
+		// subpath) — e.g. POST /api/entities/users to create a resource at
+		// an entity's root. Relying on ServeMux's subtree-redirect instead
+		// (registering only the {path...} form) would 301 that request,
+		// and net/http.Client's redirect handling converts POST to GET on
+		// a 301/302, silently dropping the body — the second, exact
+		// registration avoids that trap entirely rather than working
+		// around it.
+		mux.HandleFunc(method+" /api/entities/{name}", s.handleEntityProxy)
+		mux.HandleFunc(method+" /api/entities/{name}/{path...}", s.handleEntityProxy)
+	}
+
 	mux.HandleFunc("GET /api/openapi.json", s.handleOpenAPI)
 
 	mux.HandleFunc("POST /api/shutdown", s.withAnnotation(s.handleShutdown))

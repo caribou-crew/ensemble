@@ -84,6 +84,14 @@ func (i *Inspector) driver(db string) (Driver, bool) {
 	return d, ok
 }
 
+// Has reports whether db has a registered Driver — the server package's
+// GET /api/databases uses this to compute cfg.Databases ∩ registered
+// drivers without issuing a live Schema call just to probe membership.
+func (i *Inspector) Has(db string) bool {
+	_, ok := i.driver(db)
+	return ok
+}
+
 // snapshot returns a stable copy of the current name -> Driver registry,
 // sorted by name, for callers (Watch's poller) that must iterate outside
 // the registry lock.

@@ -114,6 +114,13 @@ func TestRegisterSchemaAndRows(t *testing.T) {
 	if _, err := insp.Rows(context.Background(), "nope", "users", 10, 0); err == nil {
 		t.Fatal("Rows on unregistered db: want error, got nil")
 	}
+
+	if !insp.Has("primary") {
+		t.Error(`Has("primary") = false, want true`)
+	}
+	if insp.Has("nope") {
+		t.Error(`Has("nope") = true, want false`)
+	}
 }
 
 // Test: Watch's poller emits a ChangeEvent when a table's fingerprint
