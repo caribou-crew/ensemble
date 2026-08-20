@@ -8,6 +8,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"time"
 
@@ -58,7 +59,19 @@ const shutdownGrace = 5 * time.Second
 // Returns nil on a clean shutdown; any other bind/serve error is returned
 // as-is.
 func Serve(ctx context.Context, addr string, h http.Handler) error {
-	srv := &http.Server{Addr: addr, Handler: h}
+	// BaseContext ties every accepted connection's (and therefore every
+	// request's) context to ctx, so a handler blocked on r.Context().Done()
+	// — e.g. handleTrafficStream's SSE loop — unblocks the instant ctx is
+	// canceled, rather than only when the client disconnects. Without this,
+	// Shutdown below waits out the full shutdownGrace for such handlers and
+	// returns context.DeadlineExceeded.
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: h,
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

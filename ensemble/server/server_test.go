@@ -772,3 +772,55 @@ func TestOpenAPIListsEndpoints(t *testing.T) {
 		}
 	}
 }
+
+// TestServeReturnsPromptlyOnShutdownWithAttachedSSEStream guards final-review
+// finding I1: http.Server.Shutdown does not cancel in-flight request
+// contexts on its own, so a handler blocked on r.Context().Done() (like
+// handleTrafficStream) only returns when the *client* disconnects — and
+// Shutdown then burns the full shutdownGrace and returns
+// context.DeadlineExceeded. Serve must give stream handlers a context tied
+// to its own ctx so they unblock immediately on shutdown, independent of the
+// client, and a clean shutdown must return nil.
+func TestServeReturnsPromptlyOnShutdownWithAttachedSSEStream(t *testing.T) {
+	e := newTestEnv(t)
+	handler := server.New(server.Deps{
+		Cfg: e.cfg, Orch: e.orch, Rec: e.rec, Lat: e.lat, Sessions: e.sessions, Version: "test",
+	})
+	addr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx, addr, handler) }()
+
+	var resp *http.Response
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + addr + "/api/traffic/stream")
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("connect to stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	// Do NOT close resp.Body before canceling: the fix must not depend on
+	// client disconnect to unblock the handler.
+	cancel()
+
+	select {
+	case serveErr := <-serveErrCh:
+		if serveErr != nil {
+			t.Fatalf("Serve returned %v, want nil", serveErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return within 2s of ctx cancellation (shutdownGrace is 5s)")
+	}
+}
