@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { api, ApiError } from '../api/client';
 import type { Hop, ServiceState, Topology } from '../api/types';
+import { categoryOf } from '../topology/categories';
 import { layoutClustered } from '../topology/layout';
 import { layoutTrace, causalHopOrder } from '../topology/traceLayout';
-import { heatTier, hopTimeline, type HeatTier } from '../topology/hopTimeline';
+import { heatTier, hopDepths, hopTimeline, type HeatTier } from '../topology/hopTimeline';
+import type { CategoryId } from '../topology/types';
 import TopologyGraph from '../components/TopologyGraph';
 import { useUrlParam } from '../urlState';
 import './TopologyView.css';
@@ -208,11 +210,17 @@ function HopTimingPanel({
 }) {
   const ordered = useMemo(() => causalHopOrder(hops), [hops]);
   const timings = useMemo(() => hopTimeline(ordered), [ordered]);
+  // hopDepths sorts by start time internally and returns depths indexed to match its INPUT
+  // array's order, not any canonical order — calling it with `ordered` (rather than the raw
+  // `hops` prop) means depths[i] lines up directly with ordered[i] below, no re-keying by
+  // seq needed.
+  const depths = useMemo(() => hopDepths(ordered), [ordered]);
 
   return (
     <div className="topo-hop-panel">
       {ordered.map((h, i) => {
         const t = timings[i];
+        const depth = depths[i] ?? 0;
         // injectedDelayMs runs BEFORE the upstream clock starts (see hopTimeline.ts's
         // durationOf), so the hatched segment is the bar's leading edge — the caller was
         // blocked on artificial latency before any real work began.
@@ -225,7 +233,13 @@ function HopTimingPanel({
             onClick={() => onSelectHop(h.seq)}
           >
             <span className="topo-hop-meta">
-              #{h.seq} {h.from ?? 'client'} → {h.to}
+              <span className="topo-hop-seq">#{h.seq}</span>{' '}
+              <span className="topo-hop-consumer" style={{ paddingLeft: depth * 12 }}>
+                {depth > 0 && <span className="topo-hop-nest-glyph">↳</span>}
+                {h.from ?? 'client'}
+              </span>
+              {' → '}
+              {h.to}
               {h.method && <span className="topo-hop-method"> {h.method}</span>}
               {h.status !== undefined && <span className="topo-hop-status"> {h.status}</span>}
             </span>
@@ -269,10 +283,31 @@ export default function TopologyView() {
   const statusMap = useMemo(() => new Map((statuses ?? []).map((s) => [s.name, s])), [statuses]);
   const nodeHeat = useMemo(() => heatByService(traffic), [traffic]);
 
+  // layoutTrace stays a pure (hops) => GraphLayout function with no per-node category (see
+  // traceLayout.ts) — every trace-mode node renders 'other'. TopologyView is the seam that
+  // already holds a live Topology fetch, so it can restore the real accent by name after the
+  // fact; a hop endpoint the topology doesn't know (an untraced upstream, or the synthetic
+  // "client" root) is left 'other', same as before.
+  const categoryByName = useMemo(() => {
+    const m = new Map<string, CategoryId>();
+    (topology?.nodes ?? []).forEach((n) => m.set(n.name, categoryOf(n)));
+    return m;
+  }, [topology]);
+
   const layout = useMemo(() => {
-    if (traceId) return traceHops ? layoutTrace(traceHops) : null;
+    if (traceId) {
+      if (!traceHops) return null;
+      const base = layoutTrace(traceHops);
+      return {
+        ...base,
+        nodes: base.nodes.map((n) => {
+          const category = categoryByName.get(n.id);
+          return category ? { ...n, category } : n;
+        }),
+      };
+    }
     return topology ? layoutClustered(topology, statusMap, expandedBundles) : null;
-  }, [traceId, traceHops, topology, statusMap, expandedBundles]);
+  }, [traceId, traceHops, topology, statusMap, expandedBundles, categoryByName]);
 
   const toggleBundle = useCallback((key: string) => {
     setExpandedBundles((cur) => {
