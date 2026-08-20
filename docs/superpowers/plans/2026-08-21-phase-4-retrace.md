@@ -3713,6 +3713,32 @@ git commit -m "feat(retrace): ensemble-attached capture with drain-before-end ho
   func FindGaps(hops []trace.Hop, threshold time.Duration, quiet []runs.Group) []runs.Gap
   ```
 
+**`RequestsSeen` is inflated, and this task owns the rule that reads it.**
+Task 4's re-review measured what the counter actually counts: `onAdmitted`
+fires for everything the *mux* rejects after the guard admits it — the
+nameless-marker 400 that this plan's own preflight probe sends, a
+malformed-body 400, `GET /` → 404, a 405, a 301. It correctly excludes
+everything the **guard** rejects (verified across an 18-case matrix: never
+fires on cross-site, rebinding-Host, cross-Origin or null-Origin 403s), so
+the security-relevant half is right. But `markers.go`'s doc comment claims
+mux-rejected requests "must never count", and that claim is false.
+
+The consequence lands here, not there: `RequestsSeen() == 0` is the rule
+this task uses to decide that nothing reached retrace at all, and a run
+where the preflight probe was the only traffic reports `1`. So **do not
+treat `RequestsSeen() > 0` as proof that real traffic flowed.** Either
+have Task 6 discount the known-probe requests, or move the counter to the
+handler bodies so it counts only requests that did something — this task
+is where that choice belongs, because this task is the first consumer and
+the shape of `AssessInput` is its call. Task 4 deliberately left the seam
+alone rather than pre-empting this decision.
+
+Pin whichever you choose with a test that fails if the discount is
+removed. This interacts with `ProxyFailure` deliberately: they were the
+two halves of a single guard against "the proxy died and nobody noticed",
+and the re-review found that leaning on either alone fails on the same
+input.
+
 - [ ] **Step 1: Write the failing trust test** — one subtest per reason code,
   ported from flowlens `src/capture-health.mjs`:
 
