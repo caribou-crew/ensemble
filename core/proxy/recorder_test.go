@@ -17,6 +17,23 @@ func TestRecorderAssignsSeqAndSnapshots(t *testing.T) {
 	}
 }
 
+// TestRecordStampsSchemaVersion guards final-review finding I3:
+// Writer.Write previously stamped Hop.Schema only on its own local copy, so
+// a hop served straight from the recorder (ring/API) carried an empty
+// schema while the byte-identical hop on disk carried trace.SchemaVersion.
+// Record must stamp it once, in one place, so every consumer agrees.
+func TestRecordStampsSchemaVersion(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	got := rec.Record(trace.Hop{To: "a"})
+	if got.Schema != trace.SchemaVersion {
+		t.Fatalf("Record returned Schema = %q, want %q", got.Schema, trace.SchemaVersion)
+	}
+	snap := rec.Snapshot()
+	if len(snap) != 1 || snap[0].Schema != trace.SchemaVersion {
+		t.Fatalf("Snapshot()[0].Schema = %q, want %q", snap[0].Schema, trace.SchemaVersion)
+	}
+}
+
 func TestRecorderRingEvictsOldest(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 4})
 	for i := 0; i < 6; i++ {

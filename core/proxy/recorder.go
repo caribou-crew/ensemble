@@ -56,7 +56,11 @@ func NewRecorder(opts RecorderOpts) *Recorder {
 }
 
 // Record assigns the next sequence number, scrubs, retains, and fans out.
+// Schema is stamped here — the single place, so the ring, every subscriber
+// (API/SSE), and the NDJSON file all agree; Writer.Write stamps it too but
+// only as a no-op safety net for callers that bypass Record.
 func (r *Recorder) Record(h trace.Hop) trace.Hop {
+	h.Schema = trace.SchemaVersion
 	if r.opts.Redactor != nil {
 		h = r.opts.Redactor.Hop(h)
 	}
