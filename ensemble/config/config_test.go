@@ -169,3 +169,83 @@ func TestLoadValidFullConfig(t *testing.T) {
 		t.Error(`ServicesForProfiles(["full"]) should include ledger`)
 	}
 }
+
+// --- ServicesForProfiles: reconciling Service.Profile with top-level
+// Profiles group membership (carried over from the task 2.1 review). ---
+
+func TestServicesForProfilesNoMembershipAlwaysIncluded(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"bff": {Run: "x", Port: 1},
+	}}
+	out := c.ServicesForProfiles(nil)
+	if _, ok := out["bff"]; !ok {
+		t.Error("service with no profile membership at all must always be included")
+	}
+}
+
+func TestServicesForProfilesOwnProfileInactiveExcludes(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"ledger": {Run: "x", Port: 1, Profile: "full"},
+	}}
+	out := c.ServicesForProfiles(nil)
+	if _, ok := out["ledger"]; ok {
+		t.Error("service whose only membership is an inactive own-Profile must be excluded")
+	}
+}
+
+func TestServicesForProfilesGroupOnlyInactiveExcludes(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"ledger": {Run: "x", Port: 1}, // no own Profile field
+		},
+		Profiles: map[string][]string{"full": {"ledger"}},
+	}
+	out := c.ServicesForProfiles(nil)
+	if _, ok := out["ledger"]; ok {
+		t.Error("service listed only in an inactive top-level group must be excluded")
+	}
+}
+
+func TestServicesForProfilesGroupOnlyActiveIncludes(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"ledger": {Run: "x", Port: 1}, // no own Profile field
+		},
+		Profiles: map[string][]string{"full": {"ledger"}},
+	}
+	out := c.ServicesForProfiles([]string{"full"})
+	if _, ok := out["ledger"]; !ok {
+		t.Error("service listed in an active top-level group must be included")
+	}
+}
+
+// Union semantics: either mechanism being active is enough, even when the
+// other mechanism names an inactive profile.
+func TestServicesForProfilesUnionOverridesInactiveOwnProfile(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			// own Profile names an inactive profile, but the service is
+			// also listed in an active top-level group.
+			"ledger": {Run: "x", Port: 1, Profile: "solo-inactive"},
+		},
+		Profiles: map[string][]string{"full": {"ledger"}},
+	}
+	out := c.ServicesForProfiles([]string{"full"})
+	if _, ok := out["ledger"]; !ok {
+		t.Error("membership in an active group must include the service even if its own Profile is inactive")
+	}
+}
+
+func TestServicesForProfilesUnionOverridesInactiveGroup(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			// listed in an inactive group, but its own Profile is active.
+			"ledger": {Run: "x", Port: 1, Profile: "full"},
+		},
+		Profiles: map[string][]string{"other": {"ledger"}},
+	}
+	out := c.ServicesForProfiles([]string{"full"})
+	if _, ok := out["ledger"]; !ok {
+		t.Error("an active own-Profile must include the service even if it's also listed in an inactive group")
+	}
+}
