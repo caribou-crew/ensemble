@@ -16,7 +16,9 @@
 - One hop schema: `core/trace` types only — never redefine hop/trace shapes.
 - API-first parity: every capability is a REST/SSE JSON endpoint first; CLI consumes the API.
 - Redaction at capture (already in core); the server never adds secrets to responses; DB DSNs/creds never appear in `/api/*` output.
-- `go test -race ./...` green at every commit; `go vet` clean.
+- `go test -race ./core/... ./ensemble/... ./encore/...` green at every commit;
+  same pattern for `go vet` (bare `./...` cannot work from the workspace root —
+  it is not a module directory).
 - Repo root is a Go workspace (`go.work`) — run commands from repo root; the ensemble module lives at `ensemble/`.
 - Commit after each task with a conventional message; never commit unrelated files.
 
