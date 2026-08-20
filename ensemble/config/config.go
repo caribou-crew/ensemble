@@ -149,18 +149,56 @@ func Load(path string) (*Config, error) {
 }
 
 // ServicesForProfiles returns the services that should be active given the
-// set of active profile names: every service with an empty Profile, plus
-// any whose Profile appears in active.
+// set of active profile names.
+//
+// A service can declare profile membership two ways, and both are honored:
+//   - Service.Profile: the service names one profile it belongs to.
+//   - the top-level Profiles map: a group name lists member service names
+//     (e.g. `profiles: {full: [ledger]}`).
+//
+// A service's full set of "requirement profiles" is the union of its own
+// Profile field (if non-empty) and every top-level group that lists its
+// name. Precedence:
+//   - Empty requirement set (no own Profile, not listed in any group) ->
+//     always included, unchanged from the pre-reconciliation default.
+//   - Non-empty requirement set -> included iff it intersects active, i.e.
+//     iff AT LEAST ONE of its qualifying profiles is active. So a service
+//     is excluded only when *every* mechanism that names it points at an
+//     inactive profile; membership in a single active group or an active
+//     own-Profile is enough to include it even if another mechanism names
+//     an inactive profile.
 func (c *Config) ServicesForProfiles(active []string) map[string]Service {
 	activeSet := make(map[string]bool, len(active))
 	for _, p := range active {
 		activeSet[p] = true
 	}
 
+	// groupsOf[service] accumulates every top-level Profiles group that
+	// lists it, so membership in an active group can be checked below.
+	groupsOf := make(map[string][]string)
+	for group, members := range c.Profiles {
+		for _, name := range members {
+			groupsOf[name] = append(groupsOf[name], group)
+		}
+	}
+
 	out := make(map[string]Service, len(c.Services))
 	for name, svc := range c.Services {
-		if svc.Profile == "" || activeSet[svc.Profile] {
+		var requires []string
+		if svc.Profile != "" {
+			requires = append(requires, svc.Profile)
+		}
+		requires = append(requires, groupsOf[name]...)
+
+		if len(requires) == 0 {
 			out[name] = svc
+			continue
+		}
+		for _, p := range requires {
+			if activeSet[p] {
+				out[name] = svc
+				break
+			}
 		}
 	}
 	return out
