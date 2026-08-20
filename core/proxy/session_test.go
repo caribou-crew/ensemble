@@ -273,4 +273,51 @@ func TestEndStopsEdgeAndFinalizesSession(t *testing.T) {
 	}
 }
 
+// TestSlowSubscriberDropDegradesSessionVerdict guards final-review finding
+// I8: the Recorder's fan-out to SessionManager's subscription is
+// non-blocking, so a burst that outpaces the manager's own single
+// consumption goroutine silently dropped hops for it — a session could
+// lose hops yet still report verdict "ok". A capture-trust verdict that
+// reads "ok" on an incomplete capture is worse than no verdict, so a
+// detected drop must degrade every session active while it happened.
+//
+// Forces a real overflow (not a synthetic signal): a single producer
+// goroutine floods rec.Record — cheap (one mutex, a 1-entry subs map, a
+// non-blocking send) — far faster than the manager's consumer goroutine,
+// which does real work per hop (channel receive, lock, map lookup,
+// append), so the subscription's 256-slot buffer is guaranteed to
+// overflow well before the consumer can drain it.
+func TestSlowSubscriberDropDegradesSessionVerdict(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	mgr := NewSessionManager(p, rec, nil)
+	defer mgr.Close()
+	ses, err := mgr.Start("run-drop", "svc", "http://127.0.0.1:1") // never dialed
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const flood = 5000
+	for i := 0; i < flood; i++ {
+		rec.Record(trace.Hop{Session: ses.ID, To: "svc", TraceID: fmt.Sprintf("t-%d", i)})
+	}
+
+	waitFor(t, "degraded verdict from a dropped hop", func() bool {
+		v, _ := ses.Verdict()
+		return v == trace.VerdictDegraded
+	})
+	_, reasons := ses.Verdict()
+	found := false
+	for _, r := range reasons {
+		if contains(r, "dropped") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reason must mention the drop: %v", reasons)
+	}
+}
+
 func contains(s, sub string) bool { return strings.Contains(s, sub) }

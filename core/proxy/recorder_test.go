@@ -50,7 +50,7 @@ func TestSubscribeReplaysFromCursorThenLive(t *testing.T) {
 	rec.Record(trace.Hop{To: "old-1"})
 	rec.Record(trace.Hop{To: "old-2"})
 
-	ch, cancel := rec.Subscribe(0)
+	ch, _, cancel := rec.Subscribe(0)
 	defer cancel()
 
 	got := func() trace.Hop {
@@ -78,9 +78,9 @@ func TestSubscribeReplaysFromCursorThenLive(t *testing.T) {
 
 func TestSubscribeCursorSkipsAlreadySeen(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 16})
-	rec.Record(trace.Hop{To: "a"}) // seq 1
-	rec.Record(trace.Hop{To: "b"}) // seq 2
-	ch, cancel := rec.Subscribe(1) // cursor: last seen seq 1
+	rec.Record(trace.Hop{To: "a"})    // seq 1
+	rec.Record(trace.Hop{To: "b"})    // seq 2
+	ch, _, cancel := rec.Subscribe(1) // cursor: last seen seq 1
 	defer cancel()
 	select {
 	case h := <-ch:
@@ -92,6 +92,33 @@ func TestSubscribeCursorSkipsAlreadySeen(t *testing.T) {
 	}
 }
 
+// TestSubscribeDroppedCountsOverflow guards final-review finding I8: the
+// Recorder's fan-out to a subscriber is non-blocking (Record must never
+// stall the capture path on a slow consumer), so a full buffer silently
+// dropped hops with nothing tracking it. dropped() must report how many
+// hops were lost for THIS subscription once its buffer fills, so a
+// consumer (e.g. SessionManager) can detect that its capture is
+// incomplete instead of silently under-reporting.
+func TestSubscribeDroppedCountsOverflow(t *testing.T) {
+	// Subscribe's buffer is sized len(ring)+256 at subscription time; the
+	// ring is empty here (nothing Recorded yet), so the buffer cap is 256.
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	ch, dropped, cancel := rec.Subscribe(0)
+	defer cancel()
+	_ = ch // deliberately never drained: the slow-subscriber scenario
+
+	const sent = 1000
+	for i := 0; i < sent; i++ {
+		rec.Record(trace.Hop{To: "x"})
+	}
+
+	const bufCap = 256
+	wantDropped := uint64(sent - bufCap)
+	if got := dropped(); got != wantDropped {
+		t.Fatalf("dropped() = %d, want %d (sent %d into a %d-cap buffer)", got, wantDropped, sent, bufCap)
+	}
+}
+
 func TestSubscribeReplaysFullRingWithoutDeadlock(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 2048})
 	for i := 0; i < 2048; i++ {
@@ -99,7 +126,7 @@ func TestSubscribeReplaysFullRingWithoutDeadlock(t *testing.T) {
 	}
 	done := make(chan int)
 	go func() {
-		ch, cancel := rec.Subscribe(0)
+		ch, _, cancel := rec.Subscribe(0)
 		defer cancel()
 		n := 0
 		for range 2048 {

@@ -74,6 +74,7 @@ type SessionManager struct {
 	sessions map[string]*Session
 	entries  map[string]bool // target names clients legitimately call context-less
 
+	dropped   func() uint64 // cumulative hops the Recorder has dropped for our subscription
 	cancelSub func()
 	done      chan struct{}
 }
@@ -91,16 +92,48 @@ func NewSessionManager(p *Proxy, rec *Recorder, entryTargets []string) *SessionM
 	for _, e := range entryTargets {
 		m.entries[e] = true
 	}
-	ch, cancel := rec.Subscribe(0)
+	ch, dropped, cancel := rec.Subscribe(0)
+	m.dropped = dropped
 	m.cancelSub = cancel
 	go m.loop(ch)
 	return m
 }
 
+// dropReason is the fixed (dedup-friendly, per Session.degrade) reason
+// string used whenever the Recorder reports it dropped hops for our
+// subscription — see loop's drop check.
+const dropReason = "recorder dropped hops for this subscriber (buffer full, slow consumer) — capture is incomplete"
+
 func (m *SessionManager) loop(ch <-chan trace.Hop) {
 	defer close(m.done)
+	var lastDropped uint64
 	for h := range ch {
+		// The Recorder's fan-out to our subscription channel is
+		// non-blocking (Record must never stall on a slow subscriber), so a
+		// full buffer silently drops hops rather than notifying us
+		// directly. We can't know a drop happened the instant it does, but
+		// checking the cumulative counter on every hop we DO receive
+		// catches it promptly — SessionManager's job is exactly to notice
+		// capture loss, and reporting verdict "ok" on an incomplete capture
+		// is worse than no verdict.
+		if d := m.dropped(); d != lastDropped {
+			lastDropped = d
+			m.degradeActiveSessions(dropReason)
+		}
 		m.route(h)
+	}
+}
+
+// degradeActiveSessions marks every currently active session degraded with
+// reason — used when the Recorder reports it dropped hops for our
+// subscription: we can't know which session(s) the dropped hop(s) belonged
+// to, so every session active right now must be treated as possibly
+// incomplete.
+func (m *SessionManager) degradeActiveSessions(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ses := range m.sessions {
+		ses.degrade(trace.VerdictDegraded, reason)
 	}
 }
 
