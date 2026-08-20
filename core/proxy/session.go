@@ -182,6 +182,16 @@ func (m *SessionManager) Start(id, entryName, entryUpstream string) (*Session, e
 	return ses, nil
 }
 
+// Get returns id's active session, or nil if no session is active under
+// that id (never started, or already ended). Used by read-only consumers
+// (e.g. the control API's hop-tail endpoint) that must not end the session
+// as a side effect of looking it up.
+func (m *SessionManager) Get(id string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[id]
+}
+
 // End closes the session's edge listener and detaches it from routing.
 // Returns the finalized session, or nil if unknown.
 func (m *SessionManager) End(id string) *Session {
