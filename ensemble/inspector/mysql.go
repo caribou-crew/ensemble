@@ -120,14 +120,41 @@ func (m *MySQLDriver) columns(ctx context.Context, table string) ([]Column, erro
 	return cols, rows.Err()
 }
 
-// Rows returns up to limit rows of table, skipping offset.
+// Rows returns up to limit rows of table, skipping offset, ordered by
+// orderColumnFor (primary key, else first column) so LIMIT/OFFSET paging
+// is deterministic across calls.
 func (m *MySQLDriver) Rows(ctx context.Context, table string, limit, offset int) ([]map[string]any, error) {
-	query := fmt.Sprintf("SELECT * FROM %s LIMIT ? OFFSET ?", quoteIdentMySQL(table))
+	orderBy, err := m.orderColumn(ctx, table)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf("SELECT * FROM %s", quoteIdentMySQL(table))
+	if orderBy != "" {
+		query += " ORDER BY " + quoteIdentMySQL(orderBy)
+	}
+	query += " LIMIT ? OFFSET ?"
 	rows, err := m.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("inspector: mysql: rows %s: %w", table, err)
 	}
 	return scanRowsToMaps(rows)
+}
+
+// orderColumn resolves table's ORDER BY column for Rows — see
+// orderColumnFor for the (DB-independent) decision itself.
+func (m *MySQLDriver) orderColumn(ctx context.Context, table string) (string, error) {
+	pk, hasPK, err := m.primaryKeyColumn(ctx, table)
+	if err != nil {
+		return "", err
+	}
+	if hasPK {
+		return orderColumnFor(pk, true, nil), nil
+	}
+	cols, err := m.columns(ctx, table)
+	if err != nil {
+		return "", err
+	}
+	return orderColumnFor("", false, cols), nil
 }
 
 // Fingerprint is count(*) plus max(pk) when table has a single-column

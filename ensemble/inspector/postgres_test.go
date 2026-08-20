@@ -123,6 +123,26 @@ func TestPostgresDriverIntegration(t *testing.T) {
 		t.Fatalf("Rows = %d, want 2: %+v", len(rows), rows)
 	}
 
+	// Final-review finding #16 (promoted from task 2.5): Rows must ORDER BY
+	// so LIMIT/OFFSET paging is deterministic — page through one row at a
+	// time and confirm it's the same order (by primary key "id") as a
+	// single unpaged fetch, with no duplicate or skipped id.
+	page1, err := drv.Rows(ctx, "inspector_test_widgets", 1, 0)
+	if err != nil {
+		t.Fatalf("Rows page1: %v", err)
+	}
+	page2, err := drv.Rows(ctx, "inspector_test_widgets", 1, 1)
+	if err != nil {
+		t.Fatalf("Rows page2: %v", err)
+	}
+	if len(page1) != 1 || len(page2) != 1 {
+		t.Fatalf("paged rows = %+v / %+v, want 1 row each", page1, page2)
+	}
+	if page1[0]["id"] != rows[0]["id"] || page2[0]["id"] != rows[1]["id"] {
+		t.Fatalf("paged order (id=%v, id=%v) does not match unpaged order (id=%v, id=%v) — Rows is not deterministically ordered",
+			page1[0]["id"], page2[0]["id"], rows[0]["id"], rows[1]["id"])
+	}
+
 	fp1, err := drv.Fingerprint(ctx, "inspector_test_widgets")
 	if err != nil {
 		t.Fatalf("Fingerprint: %v", err)

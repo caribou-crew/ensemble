@@ -219,6 +219,24 @@ func (i *Inspector) Watch(interval time.Duration) (<-chan ChangeEvent, func()) {
 	return events, stop
 }
 
+// orderColumnFor picks the column a SQL driver's Rows query should ORDER BY
+// for deterministic paging: the table's single-column primary key when it
+// has one (pk/hasPK, as returned by each driver's primaryKeyColumn), else
+// the first column by ordinal position, else "" (nothing to order by — a
+// table with no columns). Pure and DB-independent so it's unit-testable
+// without a live connection; LIMIT/OFFSET is unordered in both postgres
+// and mysql without an ORDER BY, so paging would otherwise
+// non-deterministically duplicate or skip rows across pages.
+func orderColumnFor(pk string, hasPK bool, cols []Column) string {
+	if hasPK {
+		return pk
+	}
+	if len(cols) == 0 {
+		return ""
+	}
+	return cols[0].Name
+}
+
 // scanRowsToMaps drains rows into one map[string]any per row, keyed by
 // column name. Shared by the postgres and mysql drivers, both of which
 // query through database/sql. []byte values are converted to string (both

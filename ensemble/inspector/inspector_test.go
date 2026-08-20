@@ -52,6 +52,37 @@ func (f *fakeDriver) setFingerprint(table, fp string) {
 	f.fps[table] = fp
 }
 
+// TestOrderColumnForPrefersPrimaryKeyThenFirstColumn guards final-review
+// finding #16 (promoted from task 2.5's deferred-minors list): the SQL
+// drivers' Rows queries did LIMIT/OFFSET with no ORDER BY, which is
+// unordered in both postgres and mysql — so entity-page pagination could
+// non-deterministically duplicate or skip rows across pages. orderColumnFor
+// is the pure (DB-independent) piece of that decision: a single-column
+// primary key when the table has one, else the first column by ordinal
+// position, else "" (no ORDER BY possible — a table with no columns).
+// Unit-testable without a live database; the actual query wiring is
+// covered by the env-gated live-DB integration tests.
+func TestOrderColumnForPrefersPrimaryKeyThenFirstColumn(t *testing.T) {
+	cases := []struct {
+		name  string
+		pk    string
+		hasPK bool
+		cols  []Column
+		want  string
+	}{
+		{"pk wins over columns", "id", true, []Column{{Name: "name"}, {Name: "id"}}, "id"},
+		{"no pk falls back to first column", "", false, []Column{{Name: "name"}, {Name: "note"}}, "name"},
+		{"no pk, no columns", "", false, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := orderColumnFor(tc.pk, tc.hasPK, tc.cols); got != tc.want {
+				t.Fatalf("orderColumnFor(%q, %v, %v) = %q, want %q", tc.pk, tc.hasPK, tc.cols, got, tc.want)
+			}
+		})
+	}
+}
+
 // Test: Register makes a driver's schema and rows reachable by name, and an
 // unregistered name errors cleanly.
 func TestRegisterSchemaAndRows(t *testing.T) {
