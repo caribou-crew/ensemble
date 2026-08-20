@@ -60,10 +60,15 @@ export interface HopTiming {
   heat: number;
 }
 
+export type HeatTier = 'normal' | 'warm' | 'hot';
+
 /** Bucket a heat value into a discrete, status-style signal instead of a continuous ramp —
     "is this one worth noticing" rather than a precise magnitude (the bar's width already
-    gives you that). */
-export function heatTier(heat: number): 'normal' | 'warm' | 'hot' {
+    gives you that). Also reused by TopologyView for the graph's per-node "recent activity"
+    glow (a hop-count ratio run through the same 0.5/0.85 thresholds), not just this file's
+    own within-trace heat value — the bucketing makes sense for any 0..1 "how hot is this"
+    ratio, not only a hop duration. */
+export function heatTier(heat: number): HeatTier {
   if (heat >= 0.85) return 'hot';
   if (heat >= 0.5) return 'warm';
   return 'normal';

@@ -63,6 +63,18 @@
   opacity: 0.3;
 }
 
+/* Recent-activity glow — orthogonal to health (topo-node-box's stroke), so it layers a
+   filter on the whole card rather than recoloring anything. Amber/red read as "busy", not
+   "broken", matching the amber/red already used for latency heat in hopTimeline's own
+   waterfall bars. */
+.topo-node-heat-warm .topo-node-box {
+  filter: drop-shadow(0 0 5px var(--status-amber-bg)) drop-shadow(0 0 1px var(--status-amber));
+}
+
+.topo-node-heat-hot .topo-node-box {
+  filter: drop-shadow(0 0 7px var(--status-red-bg)) drop-shadow(0 0 1.5px var(--status-red));
+}
+
 .topo-edge-dim {
   opacity: 0.25;
 }
