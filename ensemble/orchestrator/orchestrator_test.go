@@ -1,0 +1,348 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ensemble-dev/ensemble/core/proxy"
+	"github.com/ensemble-dev/ensemble/ensemble/config"
+)
+
+// freePort finds a currently-unused TCP port on 127.0.0.1 by briefly
+// binding then releasing it.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freePort: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func newTestOrchestrator(t *testing.T, cfg *config.Config, opts Opts) *Orchestrator {
+	t.Helper()
+	if opts.LogDir == "" {
+		opts.LogDir = t.TempDir()
+	}
+	px := proxy.New(proxy.NewRecorder(proxy.RecorderOpts{Ring: 64}))
+	return New(cfg, px, opts)
+}
+
+// Test 1: topological order. a depends on b depends on c; Up must start
+// them c, b, a.
+func TestUpTopologicalOrder(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"a": {Run: "sleep 30", DependsOn: []string{"b"}},
+			"b": {Run: "sleep 30", DependsOn: []string{"c"}},
+			"c": {Run: "sleep 30"},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	var order []string
+	o.testStartHook = func(name string) { order = append(order, name) }
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	want := []string{"c", "b", "a"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("start order = %v, want %v", order, want)
+	}
+}
+
+// Test 2: a cycle a<->b must be reported, naming both services.
+func TestUpCycleDetection(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"a": {Run: "sleep 30", DependsOn: []string{"b"}},
+			"b": {Run: "sleep 30", DependsOn: []string{"a"}},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	err := o.Up(context.Background())
+	if err == nil {
+		t.Fatal("expected a cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "a") || !strings.Contains(err.Error(), "b") {
+		t.Fatalf("cycle error doesn't name both services: %v", err)
+	}
+}
+
+// Test 3: a health path with nothing listening must fail within the
+// configured HealthTimeout, and mark the service state failed.
+func TestUpHealthGateFailure(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"bff": {Run: "sleep 30", Port: freePort(t), Health: "/healthz"},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{HealthTimeout: 500 * time.Millisecond})
+
+	start := time.Now()
+	err := o.Up(context.Background())
+	elapsed := time.Since(start)
+	defer o.Down()
+
+	if err == nil {
+		t.Fatal("expected a health gate error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bff") {
+		t.Fatalf("error doesn't name the service: %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("health gate took too long: %v (timeout override not honored?)", elapsed)
+	}
+
+	st, ok := o.Service("bff")
+	if !ok {
+		t.Fatal("expected a state for bff")
+	}
+	if st.Status != StatusFailed {
+		t.Fatalf("status = %q, want %q", st.Status, StatusFailed)
+	}
+}
+
+// Test 5: build-if-stale, driven through Restart. First Restart builds
+// (stamp missing); a Restart with no watched-file changes skips the build;
+// touching a watched file forces the next Restart to rebuild.
+func TestRestartBuildIfStale(t *testing.T) {
+	dir := t.TempDir()
+	builtPath := filepath.Join(dir, "built")
+
+	cfg := &config.Config{
+		Dir: dir,
+		Services: map[string]config.Service{
+			"svc": {
+				Dir:   ".",
+				Build: "touch built",
+				Watch: []string{"*.txt"},
+				Run:   "true",
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	if err := o.Restart(context.Background(), "svc"); err != nil {
+		t.Fatalf("first Restart: %v", err)
+	}
+	info1, err := os.Stat(builtPath)
+	if err != nil {
+		t.Fatalf("expected build to run: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if err := o.Restart(context.Background(), "svc"); err != nil {
+		t.Fatalf("second Restart: %v", err)
+	}
+	info2, err := os.Stat(builtPath)
+	if err != nil {
+		t.Fatalf("built file disappeared: %v", err)
+	}
+	if !info2.ModTime().Equal(info1.ModTime()) {
+		t.Fatalf("build re-ran with nothing changed: %v -> %v", info1.ModTime(), info2.ModTime())
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write watched file: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := o.Restart(context.Background(), "svc"); err != nil {
+		t.Fatalf("third Restart: %v", err)
+	}
+	info3, err := os.Stat(builtPath)
+	if err != nil {
+		t.Fatalf("built file disappeared: %v", err)
+	}
+	if !info3.ModTime().After(info2.ModTime()) {
+		t.Fatalf("build did not re-run after watched file changed: %v -> %v", info2.ModTime(), info3.ModTime())
+	}
+}
+
+// Test 6: a service with Proxy set gets wired during Up; a GET through the
+// intercept port reaches the upstream and lands a hop in the recorder.
+func TestUpProxyWiring(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello from upstream"))
+	}))
+	defer upstream.Close()
+
+	upURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	upPort, err := strconv.Atoi(upURL.Port())
+	if err != nil {
+		t.Fatalf("upstream port: %v", err)
+	}
+	proxyPort := freePort(t)
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30", Port: upPort, Proxy: proxyPort},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", proxyPort))
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "hello from upstream" {
+		t.Fatalf("body = %q, want %q", body, "hello from upstream")
+	}
+
+	hops := rec.Snapshot()
+	if len(hops) == 0 {
+		t.Fatal("expected at least one hop in the recorder")
+	}
+	if hops[0].To != "svc" {
+		t.Fatalf("hop.To = %q, want %q", hops[0].To, "svc")
+	}
+}
+
+// Restart must not re-wire the proxy: px.Serve binds a listener with no
+// release mechanism, so a second bind on the same Listen address would
+// fail with "address already in use". The original wiring from Up keeps
+// forwarding to the service's (static) port across restarts.
+func TestRestartDoesNotRewireProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+	upPort, _ := strconv.Atoi(upURL.Port())
+	proxyPort := freePort(t)
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30", Port: upPort, Proxy: proxyPort},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	if err := o.Restart(context.Background(), "svc"); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", proxyPort))
+	if err != nil {
+		t.Fatalf("GET through proxy after restart: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+// Docker driver: exercised with a fake `docker` on PATH so CI needs no real
+// docker install. Confirms run/inspect/rm shape out the documented CLI
+// invocations and that the orchestrator's own state tracks them.
+func TestDockerServiceLifecycle(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "docker-calls.log")
+	writeFakeDocker(t, binDir, logPath)
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+origPath)
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"payments": {
+				Docker: &config.DockerPlacement{
+					Image: "payments:local",
+					Ports: []string{"8010:8080"},
+				},
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	st, ok := o.Service("payments")
+	if !ok || st.Status != StatusHealthy || st.Placement != "docker" {
+		t.Fatalf("state = %+v (ok=%v), want healthy/docker", st, ok)
+	}
+
+	if err := o.Down(); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake docker call log: %v", err)
+	}
+	log := string(calls)
+	if !strings.Contains(log, "run -d --name ensemble-payments") {
+		t.Errorf("docker run not shaped as expected:\n%s", log)
+	}
+	if !strings.Contains(log, "inspect -f {{.State.Running}} ensemble-payments") {
+		t.Errorf("docker inspect not shaped as expected:\n%s", log)
+	}
+	if !strings.Contains(log, "rm -f ensemble-payments") {
+		t.Errorf("docker rm not shaped as expected:\n%s", log)
+	}
+}
+
+// writeFakeDocker drops a `docker` shell script on PATH that logs its
+// argv and answers `inspect -f {{.State.Running}}` with "true" so the
+// no-health-path gate (process/container running check) is satisfied.
+func writeFakeDocker(t *testing.T, dir, logPath string) {
+	t.Helper()
+	script := `#!/bin/sh
+echo "$@" >> "` + logPath + `"
+case "$1" in
+  inspect) echo true ;;
+  run) echo fakecontainerid ;;
+esac
+exit 0
+`
+	path := filepath.Join(dir, "docker")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+}
