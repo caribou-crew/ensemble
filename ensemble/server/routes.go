@@ -315,7 +315,8 @@ func parseBool(s string) bool {
 
 func (s *server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	since := parseUint(q.Get("since"))
+	sinceParam := q.Get("since")
+	since := parseUint(sinceParam)
 	limit := parseInt(q.Get("limit"))
 	errorsOnly := parseBool(q.Get("errorsOnly"))
 	session := q.Get("session")
@@ -335,7 +336,19 @@ func (s *server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		out = append(out, h)
 	}
 	if limit > 0 && len(out) > limit {
-		out = out[len(out)-limit:]
+		if sinceParam != "" {
+			// Cursor paging (since + limit): return the OLDEST `limit`
+			// hops after since, oldest first, so a client that advances
+			// its cursor to the last hop it received and re-polls never
+			// skips the hops in between — the newest-`limit` behavior
+			// below would silently drop everything before the tail of a
+			// burst larger than limit.
+			out = out[:limit]
+		} else {
+			// No cursor: `limit` alone means "the most recent N" — a tail
+			// view for a client that isn't paging.
+			out = out[len(out)-limit:]
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hops": out})
 }
