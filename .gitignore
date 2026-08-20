@@ -2,10 +2,22 @@ node_modules/
 dist/
 *.log
 .DS_Store
-.retrace/runs/
-# The recording team key is a secret: env RETRACE_RECORDING_KEY or this file,
-# never a commit.
-.retrace/recording.key
+# Everything retrace generates lives under .retrace/ — run dirs, diff images,
+# repro bundles — and none of it belongs in a commit. Ignore the directory's
+# contents wholesale rather than naming each subdir as it is added, so a new
+# generated location is covered the day it appears.
+#
+# The `.retrace/*` form matters: git cannot re-include a path whose PARENT
+# directory is excluded, so a blanket `.retrace/` would make the negation
+# below dead. Ignoring the entries instead leaves the directory itself
+# traversable.
+#
+# The recording team key is a secret: it comes from RETRACE_RECORDING_KEY or
+# .retrace/recording.key, and must never be committed. It is covered here.
+.retrace/*
+# ...except the machine-owned wire-rule overlay, which IS committed — it is
+# the reviewed record of which fields are allowed to vary (config.OverlayPath).
+!.retrace/wire-rules.json
 coverage/
 bin/
 
