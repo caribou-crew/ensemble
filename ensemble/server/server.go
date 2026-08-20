@@ -86,7 +86,7 @@ func New(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	mux.Handle("GET /", ui.Handler())
-	return guard(newHostSet(d.AllowedHosts), mux)
+	return guard(d.AllowedHosts, mux)
 }
 
 // shutdownGrace bounds how long Serve waits for in-flight requests (notably
