@@ -1,0 +1,63 @@
+/* ============================================================
+   ensemble dashboard — design tokens.
+   Ported from local-stack-console's instrument-panel tokens
+   (/Users/steven/dev/oss/local-stack/web/src/index.css). Dark-mode-only is
+   deliberate — this is a local dev tool, not a marketing surface, and a
+   single committed palette means no light-mode drift to maintain.
+   ============================================================ */
+
+:root {
+  /* Surfaces */
+  --bg-base: #0d0e14;
+  --bg-panel: #131521;
+  --bg-raised: #1a1d2b;
+  --bg-raised-2: #212437;
+  --border-hairline: #24273a;
+  --border-hairline-strong: #2f3349;
+
+  /* Text */
+  --text-primary: #e7e6f4;
+  --text-secondary: #9390ab;
+  --text-tertiary: #605c78;
+  --text-on-accent: #14061f;
+
+  /* Accent — confident violet, ensemble's own identity */
+  --accent: #7c5cff;
+  --accent-strong: #9b82ff;
+  --accent-dim: rgba(124, 92, 255, 0.16);
+  --accent-border: rgba(124, 92, 255, 0.4);
+
+  /* Status — reserved strictly for meaningful deviation */
+  --status-green: #3ecf8e;
+  --status-green-bg: rgba(62, 207, 142, 0.14);
+  --status-amber: #e0a339;
+  --status-amber-bg: rgba(224, 163, 57, 0.14);
+  --status-red: #ea5470;
+  --status-red-bg: rgba(234, 84, 112, 0.14);
+  --status-blue: #5b9de0;
+  --status-blue-bg: rgba(91, 157, 224, 0.14);
+
+  /* Topology category accents, verbatim from the source palette. Only
+     three carry a hue: no fourth categorical hue can be told apart from
+     these all-pairs, by colorblind readers or otherwise (verified with the
+     dataviz palette validator on this surface — worst pair CVD ΔE 9.4,
+     normal 20.9). The two supporting categories are therefore neutrals
+     separated by lightness, and lean on the cluster label for identity.
+     Both clear 3:1 on --bg-panel. Task 3.2's categories.ts maps ensemble's
+     TopologyNode.category ("service" | "database" | "stub") onto this set. */
+  --topo-cat-edge: #199e70;
+  --topo-cat-debit: #3987e5;
+  --topo-cat-credit: #d95926;
+  --topo-cat-infra: #9aa2b5;
+  --topo-cat-stub: #63697d;
+  /* Only ever seen when a node is missing from the category map — an error
+     state, and drawn dashed so it doesn't read as a real grouping. */
+  --topo-cat-other: #7a6f95;
+
+  /* Type */
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', Monaco, Consolas, monospace;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+}

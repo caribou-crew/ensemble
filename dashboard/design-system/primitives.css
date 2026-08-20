@@ -1,0 +1,76 @@
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.15em 0.6em;
+  border-radius: 999px;
+  font-size: 0.8em;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.ds-badge--neutral {
+  background: var(--bg-raised-2);
+  color: var(--text-secondary);
+}
+.ds-badge--accent {
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+.ds-badge--green {
+  background: var(--status-green-bg);
+  color: var(--status-green);
+}
+.ds-badge--amber {
+  background: var(--status-amber-bg);
+  color: var(--status-amber);
+}
+.ds-badge--red {
+  background: var(--status-red-bg);
+  color: var(--status-red);
+}
+.ds-badge--blue {
+  background: var(--status-blue-bg);
+  color: var(--status-blue);
+}
+
+.ds-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border-hairline);
+}
+.ds-tabs__tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.ds-tabs__tab:hover {
+  color: var(--text-primary);
+}
+.ds-tabs__tab[aria-selected='true'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.ds-spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  border: 2px solid var(--border-hairline-strong);
+  border-top-color: var(--accent);
+  animation: ds-spin 700ms linear infinite;
+}
+@keyframes ds-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/ensemble/config"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server/ui"
 )
 
 // Deps wires the server to the live orchestrator and proxy machinery it
@@ -33,6 +34,13 @@ type Deps struct {
 	// Serve. Nil disables the endpoint (501); the endpoint is further
 	// guarded to loopback callers regardless.
 	Shutdown func()
+	// AllowedHosts extends the Host/Origin allow-list the browser guard
+	// enforces (see guard.go). Loopback literals and "localhost" are
+	// always allowed, so the zero value is the right one for the default
+	// loopback bind; a caller that binds elsewhere must name that host
+	// (or pass the single entry "*" to turn host/origin matching off for
+	// a bind whose reachable names can't be enumerated).
+	AllowedHosts []string
 }
 
 // server holds Deps plus nothing else — handlers are methods on it so they
@@ -41,14 +49,23 @@ type server struct {
 	Deps
 }
 
-// New builds the /api control-plane surface as an http.Handler. A later
-// task embeds the dashboard's static assets at "/"; for now unmatched paths
-// 404 via the mux's default behavior.
+// New builds ensemble's single-origin HTTP surface: the /api control plane
+// plus the embedded dashboard, mounted at "/" behind every more specific
+// "/api/..." pattern — Go 1.22's ServeMux prefers the more specific match,
+// so the dashboard's SPA fallback never shadows an API route.
+//
+// Everything is wrapped in guard, which rejects cross-origin browser calls
+// and Host headers we don't serve — the control plane is unauthenticated,
+// so that guard is the only thing standing between a random web page the
+// developer has open and this stack's control surface. The dashboard is
+// mounted inside that wrapper, not outside it, so its routes get the same
+// CSRF/DNS-rebinding protection as /api/*.
 func New(d Deps) http.Handler {
 	s := &server{Deps: d}
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return mux
+	mux.Handle("GET /", ui.Handler())
+	return guard(newHostSet(d.AllowedHosts), mux)
 }
 
 // shutdownGrace bounds how long Serve waits for in-flight requests (notably
