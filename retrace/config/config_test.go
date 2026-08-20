@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -410,6 +411,184 @@ func TestLoadRejectsASecondYamlDocument(t *testing.T) {
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("a second YAML document must fail Load, not be silently dropped")
+	}
+}
+
+// TestGatesPixelDefaultsFromThresholdsGateAndZeroIsMeaningful pins the
+// controller's ruling for item 1: gates.pixel absent must default from
+// thresholds.gate (never zero, never ungated), but an EXPLICIT
+// `budget_pct: 0` must round-trip to exactly 0, not be treated as unset.
+// See task-C-config-shapes-report.md for the mutate/revert transcript that
+// shows this test catching applyDefaults collapsing the two.
+func TestGatesPixelDefaultsFromThresholdsGateAndZeroIsMeaningful(t *testing.T) {
+	dir := t.TempDir()
+
+	// No gates: block at all — pixel must still default to DefaultGate.
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	cfg, err := Load(filepath.Join(dir, "retrace.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	g, ok := cfg.Gates["pixel"]
+	if !ok || g.BudgetPct == nil {
+		t.Fatalf("gates.pixel must be present and set when absent from config, got %+v", cfg.Gates)
+	}
+	if *g.BudgetPct != DefaultGate {
+		t.Fatalf("gates.pixel.budget_pct with no gates: block = %v, want DefaultGate (%v)", *g.BudgetPct, DefaultGate)
+	}
+
+	// Explicit budget_pct: 0 must survive as exactly 0.
+	path2 := filepath.Join(dir, "retrace2.yaml")
+	os.WriteFile(path2, []byte("app: web\ngates:\n  pixel:\n    budget_pct: 0\n"), 0o644)
+	cfg2, err := Load(path2)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	g2, ok := cfg2.Gates["pixel"]
+	if !ok || g2.BudgetPct == nil {
+		t.Fatalf("gates.pixel must be present when explicitly set to 0, got %+v", cfg2.Gates)
+	}
+	if *g2.BudgetPct != 0 {
+		t.Fatalf("gates.pixel.budget_pct explicitly set to 0 must stay 0, got %v", *g2.BudgetPct)
+	}
+
+	// wire/hop/perf have no default and must stay absent (ungated).
+	if _, ok := cfg.Gates["wire"]; ok {
+		t.Fatalf("gates.wire must stay absent (ungated) when not configured, got %+v", cfg.Gates)
+	}
+}
+
+// TestFailOnAndOtherPlaneGatesRoundTripThroughRealYaml is the item-1 text
+// test for fail_on and the non-pixel planes: parses real YAML, not a struct
+// literal, so the yaml tags are actually exercised.
+func TestFailOnAndOtherPlaneGatesRoundTripThroughRealYaml(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"gates:\n" +
+		"  pixel: { budget_pct: 0.2 }\n" +
+		"  wire: { budget_pct: 0.05 }\n" +
+		"  hop: { budget_pct: 0 }\n" +
+		"fail_on: [\"pixel\", \"wire\"]\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Gates["pixel"].BudgetPct; got == nil || *got != 0.2 {
+		t.Fatalf("gates.pixel.budget_pct = %v, want 0.2", got)
+	}
+	if got := cfg.Gates["wire"].BudgetPct; got == nil || *got != 0.05 {
+		t.Fatalf("gates.wire.budget_pct = %v, want 0.05", got)
+	}
+	if got := cfg.Gates["hop"].BudgetPct; got == nil || *got != 0 {
+		t.Fatalf("gates.hop.budget_pct = %v, want 0 (explicit)", got)
+	}
+	if _, ok := cfg.Gates["perf"]; ok {
+		t.Fatalf("gates.perf must stay absent when not configured, got %+v", cfg.Gates)
+	}
+	if len(cfg.FailOn) != 2 || cfg.FailOn[0] != "pixel" || cfg.FailOn[1] != "wire" {
+		t.Fatalf("fail_on = %+v, want [pixel wire]", cfg.FailOn)
+	}
+}
+
+// TestRectWhyFieldRoundTripsThroughYamlAndJson is the item-2 text test:
+// Rect.Why must parse from real YAML and, separately, marshal to the
+// "why" JSON key (with omitempty when blank).
+func TestRectWhyFieldRoundTripsThroughYamlAndJson(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"masks:\n" +
+		"  cart: [{ x: 10, y: 20, width: 100, height: 40, why: \"flaky ad slot\" }]\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rects := cfg.Masks["cart"]
+	if len(rects) != 1 || rects[0].Why != "flaky ad slot" {
+		t.Fatalf("masks.cart[0].why = %+v, want \"flaky ad slot\"", rects)
+	}
+
+	b, err := json.Marshal(rects[0])
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"why":"flaky ad slot"`) {
+		t.Fatalf("marshaled Rect must carry why, got %s", b)
+	}
+
+	blank, err := json.Marshal(Rect{X: 1, Y: 1, Width: 2, Height: 2})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(blank), "why") {
+		t.Fatalf("a blank Why must be omitted from JSON (omitempty), got %s", blank)
+	}
+}
+
+// TestWireIgnoreAcceptsBareStringAndObjectForm is the item-3 text test:
+// both YAML shapes must parse into the same []WireIgnoreEntry, and the bare
+// form (every existing config's shape) must keep working.
+func TestWireIgnoreAcceptsBareStringAndObjectForm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"wire_ignore:\n" +
+		"  - \"date\"\n" +
+		"  - path: \"/health\"\n" +
+		"    why: \"polled by the load balancer\"\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.WireIgnore) != 2 {
+		t.Fatalf("wire_ignore = %+v, want 2 entries", cfg.WireIgnore)
+	}
+	if cfg.WireIgnore[0].Path != "date" || cfg.WireIgnore[0].Why != "" {
+		t.Fatalf("bare-scalar wire_ignore entry = %+v, want Path=date Why=\"\"", cfg.WireIgnore[0])
+	}
+	if cfg.WireIgnore[1].Path != "/health" || cfg.WireIgnore[1].Why != "polled by the load balancer" {
+		t.Fatalf("object-form wire_ignore entry = %+v", cfg.WireIgnore[1])
+	}
+}
+
+// TestPreflightSetupTeardownParseOnConfigAndFlow is the item-4 text test:
+// shape only, parsed and tagged, not executed.
+func TestPreflightSetupTeardownParseOnConfigAndFlow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"preflight: [\"npm run db:seed\"]\n" +
+		"flows:\n" +
+		"  checkout:\n" +
+		"    command: npx playwright test checkout.spec.ts\n" +
+		"    preflight: [\"npm run flow:seed\"]\n" +
+		"    setup: [\"npm run flow:setup\"]\n" +
+		"    teardown: [\"npm run flow:teardown\"]\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Preflight) != 1 || cfg.Preflight[0] != "npm run db:seed" {
+		t.Fatalf("Config.Preflight = %+v", cfg.Preflight)
+	}
+	flow := cfg.Flows["checkout"]
+	if len(flow.Preflight) != 1 || flow.Preflight[0] != "npm run flow:seed" {
+		t.Fatalf("Flow.Preflight = %+v", flow.Preflight)
+	}
+	if len(flow.Setup) != 1 || flow.Setup[0] != "npm run flow:setup" {
+		t.Fatalf("Flow.Setup = %+v", flow.Setup)
+	}
+	if len(flow.Teardown) != 1 || flow.Teardown[0] != "npm run flow:teardown" {
+		t.Fatalf("Flow.Teardown = %+v", flow.Teardown)
 	}
 }
 

@@ -48,7 +48,7 @@ type Config struct {
 	Flows            map[string]Flow   `yaml:"flows"`
 	Entry            string            `yaml:"entry"`
 	Upstream         string            `yaml:"upstream"`
-	WireIgnore       []string          `yaml:"wire_ignore"`
+	WireIgnore       []WireIgnoreEntry `yaml:"wire_ignore"`
 	WireRules        []rules.Raw       `yaml:"wire_rules"`
 	PathNormalize    []Normalize       `yaml:"path_normalize"`
 	ExpectedStatuses []StatusRule      `yaml:"expected_statuses"`
@@ -58,6 +58,25 @@ type Config struct {
 	OpenAPI          string            `yaml:"openapi"`
 	Redact           []string          `yaml:"redact"`
 	Deviations       string            `yaml:"deviations"`
+	// Gates holds the per-plane CI budget (percent of checkpoints/calls
+	// allowed to differ before the run fails). Plane keys are "pixel",
+	// "wire", "hop", "perf". A plane with no entry (or an entry whose
+	// BudgetPct is nil) is NOT gated — except "pixel", which applyDefaults
+	// fills from Thresholds.Gate when absent, because pixel is gated today
+	// at DefaultGate and must stay gated. This is a SEPARATE number from
+	// Thresholds.Gate/Fine, which keep their existing meaning (the
+	// tolerated-vs-failing pixel diff size); Gates["pixel"].BudgetPct is the
+	// CI budget layered on top, defaulted from it but independently
+	// settable.
+	Gates map[string]Gate `yaml:"gates"`
+	// FailOn lists the plane keys ("pixel", "wire", "hop", "perf") whose
+	// gate failures should fail the run. Shape only: which planes actually
+	// gate a build is the consuming task's decision, not this package's.
+	FailOn []string `yaml:"fail_on"`
+	// Preflight commands run once, before any flow. Per-flow Preflight (see
+	// Flow.Preflight) then runs before that specific flow. Shape only: not
+	// executed by this package.
+	Preflight []string `yaml:"preflight"`
 	// Dir is set by Load from the file's own location and is NOT a YAML
 	// key. It must be tagged `yaml:"-"`, or KnownFields(true) will happily
 	// accept a `dir:` key in the file and then Load will overwrite it —
@@ -76,6 +95,26 @@ type Flow struct {
 	Command      string            `yaml:"command"`
 	PerfBudgetMs float64           `yaml:"perf_budget_ms"`
 	Masks        map[string][]Rect `yaml:"masks"`
+	// Preflight commands run before THIS flow specifically, after the
+	// global Config.Preflight has already run. Shape only: not executed by
+	// this package.
+	Preflight []string `yaml:"preflight"`
+	// Setup commands run before the flow's own Command; Teardown commands
+	// run after it, whether or not Command succeeded is the executing
+	// task's call to make — this package only carries the shape. Not
+	// executed here.
+	Setup    []string `yaml:"setup"`
+	Teardown []string `yaml:"teardown"`
+}
+
+// Gate is one plane's CI budget entry under Config.Gates. BudgetPct is a
+// pointer so an explicit `budget_pct: 0` (a real, meaningful setting: "any
+// change at all fails") can be distinguished from the key being absent
+// entirely (not gated, or — for "pixel" only — defaulted by applyDefaults).
+// A bare float64 cannot make that distinction: its zero value and an
+// explicit zero are the same bits.
+type Gate struct {
+	BudgetPct *float64 `yaml:"budget_pct"`
 }
 
 type Normalize struct {
@@ -117,6 +156,50 @@ type Rect struct {
 	Y      int `json:"y" yaml:"y"`
 	Width  int `json:"width" yaml:"width"`
 	Height int `json:"height" yaml:"height"`
+	// Why explains what this mask is hiding and why. A mask hides pixels
+	// from the diff; an un-explained mask is indistinguishable from one
+	// added to silence a real regression, and masks outlive the person who
+	// added them. Optional — omitted on the JSON side so existing configs
+	// and reports without it keep loading — but every mask added going
+	// forward should carry one.
+	Why string `json:"why,omitempty" yaml:"why"`
+}
+
+// WireIgnoreEntry is one entry of Config.WireIgnore. It accepts two YAML
+// shapes:
+//
+//	wire_ignore:
+//	  - "date"                      # bare scalar: Path only, Why empty
+//	  - path: "/health"
+//	    why: "polled by the load balancer"
+//
+// The bare-scalar form must keep working: every existing config and test in
+// this repo uses it. UnmarshalYAML is what makes both shapes parse into the
+// same Go type instead of requiring a schema-breaking change.
+type WireIgnoreEntry struct {
+	Path string `yaml:"path"`
+	Why  string `yaml:"why"`
+}
+
+func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		w.Path = s
+		w.Why = ""
+		return nil
+	}
+	// Avoid infinite recursion into WireIgnoreEntry.UnmarshalYAML by
+	// decoding into a distinct named type with the same fields.
+	type plain WireIgnoreEntry
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*w = WireIgnoreEntry(p)
+	return nil
 }
 
 // Thresholds gates how big a pixel diff must be before it's a Fine
@@ -204,6 +287,18 @@ func applyDefaults(c *Config) {
 	}
 	if c.Thresholds.Fine == 0 {
 		c.Thresholds.Fine = DefaultFine
+	}
+	// Pixel is the one plane gated by default (at Thresholds.Gate, already
+	// defaulted above). Wire, hop and perf have no default today and stay
+	// ungated when their gates entry is absent — do not extend this to
+	// every plane, or pixel's "gated at 0.1 unless configured otherwise"
+	// behavior silently disappears alongside them.
+	if c.Gates == nil {
+		c.Gates = map[string]Gate{}
+	}
+	if g, ok := c.Gates["pixel"]; !ok || g.BudgetPct == nil {
+		gate := c.Thresholds.Gate
+		c.Gates["pixel"] = Gate{BudgetPct: &gate}
 	}
 }
 
