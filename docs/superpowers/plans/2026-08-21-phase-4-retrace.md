@@ -6286,7 +6286,7 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
     checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
     groups?: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
     capture: CaptureTrust; wire: { calls: number }; hops?: { calls: number };
-    test: { command: string; exitCode: number; durationMs: number }; env: { go: string; platform: string } }
+    test: { command: string; exitCode: number; durationMs: number }; env: { go: string; platform: string; retrace: string } }
   export interface RunRef { runId: string; kind: 'bundle'|'run'|'none'; dir: string; manifest: Manifest }
   export interface Route { to: string; method: string; path: string; via?: string[] }
   export interface ServiceCount { service: string; a: number; b: number; deviates: boolean }
@@ -6783,7 +6783,7 @@ git commit -m "feat(adapters): retrace-js, retrace-playwright and retrace-maestr
 **Recommendation, stated so nobody has to re-decide it: migrate them, here,
 after Task 15 — not "left as-is", and not earlier.**
 
-- *Why migrate at all:* leaving ten hand-rolled copies in `ensemble-ui`
+- *Why migrate at all:* leaving eleven hand-rolled copies in `ensemble-ui`
   while `retrace-ui` uses the hook means the bug class is only half
   eliminated, and the next reviewer finds the fourth instance in the half
   that was skipped. Three race bugs have already come out of this pattern.
@@ -6859,7 +6859,7 @@ only file whose state is also written by mutations — see watch-out 4.
 The mechanical shape of each replacement:
 
 ```tsx
-// BEFORE — one of ten near-identical copies
+// BEFORE — one of eleven near-identical copies
 const [topology, setTopology] = useState<Topology | null>(null);
 const [error, setError] = useState<string | null>(null);
 useEffect(() => {
@@ -7008,7 +7008,7 @@ Run against the four specs with fresh eyes. Findings and their resolutions:
 Two additions came from the Phase 3 whole-phase review rather than from a
 spec, and are tracked here so they are not read as scope creep: **Task 14**
 (`useAsync`, the shared async-load hook, plus a Global Constraint binding
-every new view to it) and **Task 18** (migrating Phase 3's ten hand-rolled
+every new view to it) and **Task 18** (migrating Phase 3's eleven hand-rolled
 fetch effects onto it, recommended explicitly rather than left open). Both
 are infrastructure the Phase 3 review identified as "the one piece of shared
 infrastructure this phase should have had and does not"; neither changes
