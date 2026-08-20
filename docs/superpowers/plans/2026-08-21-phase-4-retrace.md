@@ -3019,6 +3019,29 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 }
 ```
 
+**`retrace run` REFUSES to capture when no `retrace.yaml` was found.**
+Task 3's `config.Discover` deliberately does not walk up the directory tree
+— its inability to reach a parent directory or `~` is a security property,
+not a limitation — so running from a subdirectory of a monorepo finds no
+config at all. `Discover` then returns a defaulted `Config` whose `Redact`
+list is EMPTY, and capture writes **unredacted** hops to disk. Absent
+config and permissive config are different meanings, and this is the one
+place in the plan where confusing them leaks secrets to a file rather than
+mis-gating a diff.
+
+So `cmdRun` checks the flag Task 3 sets on the loaded config (`false` = no
+`retrace.yaml` was found, these are synthesized defaults — the zero value
+is the unsafe-to-proceed one on purpose) and, when it is false, exits
+**2** with a message naming the absolute path it looked for and the
+`--no-config` flag that overrides. `--no-config` is declared in this task
+and read on this line, so it compiles here. Capturing unredacted traffic
+to disk is not a degraded mode that warrants a warning; it is a refusal
+with an explicit opt-out.
+
+The test asserts the exit code through a BUILT binary, never `go run` —
+see the Global Constraint; `go run` collapses 2 to 1 and the assertion
+would pass for the wrong reason.
+
 **`--ensemble` and `--no-ensemble` are deliberately NOT declared here.**
 They belong to the attach decision, and every line that could read them —
 the health check, `NewClient`, the fallback note — is Task 5's code. A
