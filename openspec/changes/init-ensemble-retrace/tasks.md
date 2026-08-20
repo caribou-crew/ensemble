@@ -97,6 +97,15 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
 ## Phase 4 — retrace: capture/replay/diff/review
 
+Split into two plans. **Part 1 = boxes 4.1-4.7**, planned in
+`docs/superpowers/plans/2026-08-21-phase-4-retrace.md` (18 tasks). **Part 2 =
+box 4.8 plus the a11y-tree diff**, deferred to its own plan and enumerated in
+part 1's header so it cannot be dropped. 4.8 is split out because it rewrites
+`core/trace.Redactor` on ensemble's already-shipped capture path, it is the
+only cryptographic surface in the product and deserves one coherent security
+review, and it cannot be tested end to end until part 1's replay server and
+review UI exist.
+
 - [ ] 4.1 `retrace/run`: `retrace run --flow -- <cmd>` — session registration
       w/ ensemble (or standalone capture proxy), env handshake
       (RETRACE_RUN_DIR/RETRACE_PROXY_URL), run-dir writer (manifest, wire.jsonl,
@@ -126,6 +135,10 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
       key wrapping w/ team key (env/keyfile), `retrace rekey`; replay-time
       decryption; encrypt-all option; reveal-eyeball + add-rule actions in
       traffic and review UIs (ties into 3.3/4.6).
+- [ ] 4.9 a11y-tree diff (flagged experimental until device-verified).
+      Required by `specs/retrace-diff-review/spec.md` ("SHALL retain: …
+      a11y-tree diff") but never tracked as a box until now, and dropped
+      from part 1. Belongs to part 2 alongside 4.8.
 
 ## Phase 5 — sample stack ("brew")
 
