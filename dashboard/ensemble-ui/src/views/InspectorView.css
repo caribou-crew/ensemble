@@ -1,0 +1,215 @@
+.inspector-view {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.inspector-view--error,
+.inspector-view--loading,
+.inspector-view--empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.inspector-view__sidebar {
+  flex-shrink: 0;
+  width: 240px;
+  border-right: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow-y: auto;
+}
+
+.inspector-view__db-select {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.inspector-view__schema-error {
+  color: var(--status-red);
+  font-size: 0.72rem;
+}
+
+.inspector-view__tables {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.inspector-view__no-tables {
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  padding: 0.3rem 0;
+}
+
+.inspector-view__table-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.4s var(--ease), border-color 0.4s var(--ease);
+}
+
+.inspector-view__table-btn:hover {
+  background: var(--bg-raised);
+}
+
+.inspector-view__table-btn--active {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.inspector-view__table-btn--flash {
+  background: var(--status-blue-bg);
+  border-color: var(--status-blue);
+  color: var(--text-primary);
+}
+
+.inspector-view__col-count {
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+}
+
+.inspector-view__rows {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspector-view__rows-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+}
+
+.inspector-view__rows-table {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.inspector-view__paging {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inspector-view__paging button {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.inspector-view__paging button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-strong);
+}
+
+.inspector-view__paging button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.inspector-view__paging-range {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  min-width: 70px;
+  text-align: center;
+}
+
+.inspector-view__rows-error {
+  padding: 0.5rem 0.9rem;
+  color: var(--status-red);
+  font-size: 0.78rem;
+}
+
+.inspector-view__rows-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.inspector-view__no-rows {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+
+.inspector-view__table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.inspector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.inspector-table thead th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-hairline-strong);
+  white-space: nowrap;
+}
+
+.inspector-table tbody td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-primary);
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspector-table tbody tr:hover td {
+  background: var(--bg-raised);
+}

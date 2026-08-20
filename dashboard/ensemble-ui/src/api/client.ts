@@ -5,6 +5,7 @@
 
 import type { Hop, LatencyRule, LogicalHop, ServiceState, Topology } from './types';
 import type { SeedStepResult } from './types';
+import type { DatabaseInfo, EntityInfo, Table } from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -137,5 +138,63 @@ export const api = {
 
   seed(name: string): Promise<SeedResult> {
     return request<SeedResult>(`/api/seed/${encodeURIComponent(name)}`, jsonInit('POST'));
+  },
+
+  // --- inspector (Task 3.5): databases/schema/rows. Every one of these
+  // 501s when no inspector is configured for the stack — callers should
+  // treat `err.status === 501` as "inspection unavailable", not a generic
+  // failure. ---
+
+  databases(): Promise<DatabaseInfo[]> {
+    return request<{ databases: DatabaseInfo[] }>('/api/databases').then((r) => r.databases);
+  },
+
+  databaseSchema(name: string): Promise<Table[]> {
+    return request<{ tables: Table[] }>(`/api/databases/${encodeURIComponent(name)}/schema`).then(
+      (r) => r.tables,
+    );
+  },
+
+  databaseRows(
+    name: string,
+    table: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<Record<string, unknown>[]> {
+    return request<{ rows: Record<string, unknown>[] }>(
+      `/api/databases/${encodeURIComponent(name)}/rows${query({ table, limit, offset })}`,
+    ).then((r) => r.rows);
+  },
+
+  // --- entities (Task 3.5): discovery + generic passthrough CRUD. The
+  // passthrough endpoints reverse-proxy to whatever the configured entity's
+  // base returns — the body shape is unknown JSON by design, so callers
+  // must render it defensively rather than assume a contract. ---
+
+  entities(): Promise<EntityInfo[]> {
+    return request<{ entities: EntityInfo[] }>('/api/entities').then((r) => r.entities);
+  },
+
+  entityList(name: string): Promise<unknown> {
+    return request<unknown>(`/api/entities/${encodeURIComponent(name)}`);
+  },
+
+  entityGet(name: string, id: string): Promise<unknown> {
+    return request<unknown>(`/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+  },
+
+  entityCreate(name: string, body: unknown): Promise<unknown> {
+    return request<unknown>(`/api/entities/${encodeURIComponent(name)}`, jsonInit('POST', body));
+  },
+
+  entityUpdate(name: string, id: string, body: unknown): Promise<unknown> {
+    return request<unknown>(
+      `/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+      jsonInit('PUT', body),
+    );
+  },
+
+  entityDelete(name: string, id: string): Promise<unknown> {
+    return request<unknown>(`/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`, jsonInit('DELETE'));
   },
 };

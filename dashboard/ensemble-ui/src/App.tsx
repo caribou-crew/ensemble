@@ -5,16 +5,17 @@ import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
 import TopologyView from './views/TopologyView';
 import TrafficView from './views/TrafficView';
+import LatencyView from './views/LatencyView';
+import InspectorView from './views/InspectorView';
+import EntityView from './views/EntityView';
 import './App.css';
 
-// Task 3.5 replaces the remaining placeholders (latency, inspector) with
-// the real views; the shell, tab wiring, and ?view= deep link were 3.1's
-// job, topology 3.2's, traffic this task's.
 const VIEWS: TabItem[] = [
   { id: 'topology', label: 'Topology' },
   { id: 'traffic', label: 'Traffic' },
   { id: 'latency', label: 'Latency' },
   { id: 'inspector', label: 'Inspector' },
+  { id: 'entities', label: 'Entities' },
 ];
 
 const DEFAULT_VIEW = VIEWS[0].id;
@@ -83,16 +84,6 @@ function HealthStrip() {
   );
 }
 
-function PlaceholderView({ id }: { id: string }) {
-  const view = VIEWS.find((v) => v.id === id);
-  return (
-    <div className="view-placeholder">
-      <h2>{view?.label ?? id}</h2>
-      <p>This view ships in a later Phase 3 task.</p>
-    </div>
-  );
-}
-
 export default function App() {
   const [view, setView] = useUrlParam('view');
   const activeView = view && VIEWS.some((v) => v.id === view) ? view : DEFAULT_VIEW;
@@ -109,8 +100,12 @@ export default function App() {
           <TopologyView />
         ) : activeView === 'traffic' ? (
           <TrafficView />
+        ) : activeView === 'latency' ? (
+          <LatencyView />
+        ) : activeView === 'inspector' ? (
+          <InspectorView />
         ) : (
-          <PlaceholderView id={activeView} />
+          <EntityView />
         )}
       </main>
     </div>

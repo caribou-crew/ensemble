@@ -100,13 +100,3 @@ pre {
 .health-strip--error {
   color: var(--status-red);
 }
-
-.view-placeholder {
-  color: var(--text-secondary);
-}
-
-.view-placeholder h2 {
-  color: var(--text-primary);
-  font-weight: 600;
-  margin: 0 0 0.5rem;
-}
