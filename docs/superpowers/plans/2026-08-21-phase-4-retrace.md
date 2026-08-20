@@ -2097,6 +2097,19 @@ Key body:
 // by a later reviewed one but never clobbered on disk.
 package config
 
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+
+	"gopkg.in/yaml.v3"
+)
+
 const OverlayPath = ".retrace/wire-rules.json"
 
 func Load(path string) (*Config, error) {
