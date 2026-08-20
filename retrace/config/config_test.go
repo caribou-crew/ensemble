@@ -1,9 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/caribou-crew/ensemble/retrace/rules"
@@ -143,5 +146,314 @@ func TestZeroThresholdsAreTreatedAsUnsetNotAsZeroGate(t *testing.T) {
 	}
 	if cfg.Thresholds.Fine != DefaultFine {
 		t.Fatalf("Thresholds.Fine left unset must default to DefaultFine, got %v", cfg.Thresholds.Fine)
+	}
+}
+
+// TestConcurrentAppendWireRuleProducesNRulesWithNoLoss pins the CRITICAL
+// finding: AppendWireRule's read-modify-write must be serialized. Before the
+// fix, 8 concurrent appends on a fresh directory left 2 rules on disk (6
+// silently lost, every call still returning nil). See task-3-report.md for
+// the mutate/revert transcript.
+func TestConcurrentAppendWireRuleProducesNRulesWithNoLoss(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = AppendWireRule(dir, rules.Raw{Path: fmt.Sprintf("/item/%d", i)})
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AppendWireRule(%d): %v", i, err)
+		}
+	}
+
+	cfg, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(cfg.WireRules) != n {
+		t.Fatalf("want %d rules on disk, got %d: %+v", n, len(cfg.WireRules), cfg.WireRules)
+	}
+}
+
+// TestConcurrentAppendNeverExposesATornOverlayToReaders pins the other half
+// of the CRITICAL finding: a writer mid-append must never let a concurrent
+// Discover observe a partial file. Before the fix, one appender racing four
+// readers over a 50-rule overlay produced 92 "unexpected end of JSON input"
+// failures.
+func TestConcurrentAppendNeverExposesATornOverlayToReaders(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	for i := 0; i < 50; i++ {
+		if err := AppendWireRule(dir, rules.Raw{Path: fmt.Sprintf("/seed/%d", i)}); err != nil {
+			t.Fatalf("seed append %d: %v", i, err)
+		}
+	}
+
+	var writerWG sync.WaitGroup
+	writerWG.Add(1)
+	go func() {
+		defer writerWG.Done()
+		for i := 0; i < 50; i++ {
+			AppendWireRule(dir, rules.Raw{Path: fmt.Sprintf("/writer/%d", i)})
+		}
+	}()
+
+	stop := make(chan struct{})
+	var readerWG sync.WaitGroup
+	var readErrs int32
+	for r := 0; r < 4; r++ {
+		readerWG.Add(1)
+		go func() {
+			defer readerWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := Discover(dir); err != nil {
+					atomic.AddInt32(&readErrs, 1)
+				}
+			}
+		}()
+	}
+
+	writerWG.Wait()
+	close(stop)
+	readerWG.Wait()
+
+	if readErrs != 0 {
+		t.Fatalf("%d concurrent Discover calls observed a torn overlay", readErrs)
+	}
+}
+
+// TestAppendWireRuleRejectsAnInvalidRule pins MAJOR finding 2: a bad matcher
+// name must fail the append itself, not get written and brick every later
+// Discover call in the project.
+func TestAppendWireRuleRejectsAnInvalidRule(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+
+	err := AppendWireRule(dir, rules.Raw{Path: "/cart", Headers: map[string]any{"date": "httpdate"}})
+	if err == nil {
+		t.Fatal("AppendWireRule must reject an unknown matcher")
+	}
+	if !strings.Contains(err.Error(), "http-date") {
+		t.Fatalf("error should suggest the real matcher name, got: %v", err)
+	}
+
+	// The project must still be usable afterwards — nothing was written.
+	if _, err := Discover(dir); err != nil {
+		t.Fatalf("a rejected append must not brick Discover: %v", err)
+	}
+}
+
+// TestDiscoverAppliesDefaultsWhenNoConfigIsPresent pins MAJOR finding 3's
+// no-config path: dropping applyDefaults from Discover's no-config branch
+// (M1 in the review) left Thresholds at the zero value, which this project's
+// zero-value rule says must never mean "fine".
+func TestDiscoverAppliesDefaultsWhenNoConfigIsPresent(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if cfg.Thresholds.Gate != DefaultGate || cfg.Thresholds.Fine != DefaultFine {
+		t.Fatalf("Discover with no retrace.yaml must default Thresholds, got %+v", cfg.Thresholds)
+	}
+	if cfg.Loaded {
+		t.Fatal("Loaded must be false when no retrace.yaml was found")
+	}
+}
+
+// TestDiscoverLoadsRetraceYamlWhenPresent pins MAJOR finding 3's yaml
+// branch: making Discover's os.Stat/Load branch unreachable (M20 in the
+// review) was invisible to the old suite because nothing asserted on a
+// yaml-derived field through Discover specifically.
+func TestDiscoverLoadsRetraceYamlWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	cfg, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if cfg.App != "web" {
+		t.Fatalf("Discover must load retrace.yaml, got App=%q", cfg.App)
+	}
+	if !cfg.Loaded {
+		t.Fatal("Loaded must be true when Discover reads a real retrace.yaml")
+	}
+}
+
+// TestAppendWireRuleNeverOverwritesExistingRules pins MAJOR finding 4's M10:
+// replacing the append's `existing = append(existing, r)` with
+// `existing = []rules.Raw{r}` clobbers every previously reviewed rule. The
+// old suite only ever appended one rule, so an append-that-overwrites looked
+// identical to a real append.
+func TestAppendWireRuleNeverOverwritesExistingRules(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+
+	for _, p := range []string{"/a", "/b", "/c"} {
+		if err := AppendWireRule(dir, rules.Raw{Path: p}); err != nil {
+			t.Fatalf("AppendWireRule(%s): %v", p, err)
+		}
+	}
+	cfg, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(cfg.WireRules) != 3 {
+		t.Fatalf("three appends must leave three rules, got %d: %+v", len(cfg.WireRules), cfg.WireRules)
+	}
+}
+
+// TestOverlayRuleIsMergedAfterYamlAndCanOverrideIt pins MAJOR finding 4's
+// M6: the doc comment's headline promise is that the overlay is merged
+// AFTER the yaml rules, so a later reviewed rule can override a
+// hand-written one. Merging it before survives the old suite silently.
+func TestOverlayRuleIsMergedAfterYamlAndCanOverrideIt(t *testing.T) {
+	dir := t.TempDir()
+	yamlSrc := "app: web\nwire_rules:\n  - path: /cart\n    body: { total: integer }\n"
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte(yamlSrc), 0o644)
+	if err := AppendWireRule(dir, rules.Raw{Path: "/cart", Body: map[string]any{"total": "uuid"}}); err != nil {
+		t.Fatalf("AppendWireRule: %v", err)
+	}
+
+	cfg, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	rs, err := cfg.Rules()
+	if err != nil {
+		t.Fatalf("Rules: %v", err)
+	}
+	resolved := rules.Resolve(rs, "GET", "/cart")
+	if got := resolved.ForField("total").Name; got != "uuid" {
+		t.Fatalf(`overlay rule must win over the yaml rule for the same field, got matcher %q, want "uuid"`, got)
+	}
+}
+
+// TestMasksForPrefersFlowLevelMasksOverTopLevel pins MAJOR finding 4's M13:
+// making MasksFor ignore flow-level masks entirely survived because the
+// brief's own test only ever exercised the top-level map.
+func TestMasksForPrefersFlowLevelMasksOverTopLevel(t *testing.T) {
+	c := &Config{
+		Masks: map[string][]Rect{"cart": {{X: 1, Y: 1, Width: 20, Height: 20}}},
+		Flows: map[string]Flow{
+			"checkout": {Masks: map[string][]Rect{"cart": {{X: 9, Y: 9, Width: 5, Height: 5}}}},
+		},
+	}
+	got := c.MasksFor("checkout", "cart")
+	if len(got) != 1 || got[0].Width != 5 {
+		t.Fatalf("a flow-level mask must win over the top-level map, got %+v", got)
+	}
+}
+
+// TestOverlayJSONRejectsUnknownFields pins MINOR finding 5: a mis-shaped
+// rule in the machine-owned overlay must fail loudly rather than decode as
+// an empty, match-everything rules.Raw — matching the strictness of the
+// yaml side's KnownFields(true).
+func TestOverlayJSONRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	overlayDir := filepath.Join(dir, ".retrace")
+	os.MkdirAll(overlayDir, 0o755)
+	os.WriteFile(filepath.Join(overlayDir, "wire-rules.json"), []byte(`[{"pathh":"/cart","bodyy":{}}]`), 0o644)
+
+	_, err := Discover(dir)
+	if err == nil {
+		t.Fatal("an unknown field in the overlay must be an error, not a silent match-everything rule")
+	}
+}
+
+// TestLoadRejectsASecondYamlDocument pins MINOR finding 6: a `---` second
+// document must not be silently dropped.
+func TestLoadRejectsASecondYamlDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\n---\nentry: gw\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("a second YAML document must fail Load, not be silently dropped")
+	}
+}
+
+// TestABadPathNormalizeRegexFailsLoadNamingIt pins MINOR finding 8's M17:
+// a typo'd path_normalize pattern must be a hard Load error, not a silent
+// no-op that leaves every later diff unnormalized.
+func TestABadPathNormalizeRegexFailsLoadNamingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("path_normalize:\n  - { pattern: \"(unclosed\", replacement: \"x\" }\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("a bad path_normalize regex must fail Load")
+	}
+	if !strings.Contains(err.Error(), "path_normalize[0]") {
+		t.Fatalf("error must name the offending pattern, got: %v", err)
+	}
+}
+
+// TestZeroValueNormalizeApplyIsANoOp pins MINOR finding 8's M16: Apply's
+// nil-regex guard, which its doc comment specifically promises for a
+// hand-built or zero-value Normalize, must not panic.
+func TestZeroValueNormalizeApplyIsANoOp(t *testing.T) {
+	var n Normalize
+	if got := n.Apply("/users/42"); got != "/users/42" {
+		t.Fatalf("a zero-value Normalize.Apply must be a no-op, got %q", got)
+	}
+}
+
+// TestDiscoverValidatesRulesAfterMergingOverlay pins M8 from the review's
+// mutation ledger (not individually named in finding 4, but part of the
+// same "zero survivors" bar): dropping Discover's post-merge c.Rules()
+// validation would let a hand-edited overlay (bypassing AppendWireRule's
+// own validation) silently reach Discover with an unusable rule instead of
+// failing loudly.
+func TestDiscoverValidatesRulesAfterMergingOverlay(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	overlayDir := filepath.Join(dir, ".retrace")
+	os.MkdirAll(overlayDir, 0o755)
+	// Hand-written, not through AppendWireRule — an unknown matcher name.
+	os.WriteFile(filepath.Join(overlayDir, "wire-rules.json"), []byte(`[{"path":"/cart","headers":{"date":"httpdate"}}]`), 0o644)
+
+	_, err := Discover(dir)
+	if err == nil {
+		t.Fatal("Discover must validate rules after merging the overlay, not just after loading yaml")
+	}
+	if !strings.Contains(err.Error(), "http-date") {
+		t.Fatalf("error should suggest the real matcher name, got: %v", err)
+	}
+}
+
+// TestMalformedOverlayJSONFailsDiscoverNamingThePath pins MINOR finding 8's
+// M19: a syntactically broken overlay must be a named error, not silently
+// ignored.
+func TestMalformedOverlayJSONFailsDiscoverNamingThePath(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	overlayDir := filepath.Join(dir, ".retrace")
+	os.MkdirAll(overlayDir, 0o755)
+	os.WriteFile(filepath.Join(overlayDir, "wire-rules.json"), []byte(`not json`), 0o644)
+
+	_, err := Discover(dir)
+	if err == nil {
+		t.Fatal("malformed overlay JSON must fail Discover")
+	}
+	if !strings.Contains(err.Error(), "wire-rules.json") {
+		t.Fatalf("error must name the overlay path, got: %v", err)
 	}
 }
