@@ -13,6 +13,10 @@ type Raw struct {
 	Body    map[string]any `json:"body,omitempty"    yaml:"body"`
 }
 
+// BodyRule and Rule are not wire types — like Matcher, they never cross a
+// REST response; only Raw does (see Raw's json/yaml tags). Rule.Method is
+// stored upper-cased by Normalize; Resolve upper-cases the incoming method
+// too, so lookup is case-insensitive on both sides.
 type BodyRule struct {
 	Glob    string
 	Matcher Matcher
@@ -28,7 +32,13 @@ type Rule struct {
 // Normalize validates and lowers a config's raw rules. Map iteration order
 // is random in Go, so header and body entries within ONE raw rule are
 // sorted by key — otherwise "last one wins" would be nondeterministic
-// between runs of the same config.
+// between runs of the same config. Sorting is alphabetical, which means
+// precedence among two overlapping globs in the SAME raw rule is
+// alphabetical too, not authorship order: "*" (0x2A) sorts below every
+// letter and digit, so a wildcard-leading glob sorts first and a more
+// specific glob written before it in the config still wins the last-write
+// race. Rules split across separate Raw entries are unaffected — those are
+// resolved in the caller's list order by Resolve, not by this sort.
 func Normalize(raw []Raw) ([]Rule, error) {
 	out := make([]Rule, 0, len(raw))
 	for i, r := range raw {
@@ -62,6 +72,10 @@ func sortedKeys(m map[string]any) []string {
 	return out
 }
 
+// Resolved is not a wire type either — see Rule's comment. ForHeader and
+// ForField both return the zero Matcher (Zero() == true) when nothing
+// applies; that zero classifies as Changed under Classify, never Ignored —
+// an unruled field is compared normally, not silently excused.
 type Resolved struct {
 	Headers map[string]Matcher
 	Body    []BodyRule
@@ -115,8 +129,22 @@ func MatchPathGlob(glob, path string) bool {
 // Array indices are part of their segment ("items[0]"), so "items[*]" is
 // spelled "items.*" only when the walker emits index segments — see
 // retrace/diff/wire.go, which emits "items[0].sku".
+//
+// Unlike MatchPathGlob, this does NOT filter out empty segments — matching
+// flowlens's matchesFieldGlob, which splits on '.' without a filter (only
+// its path splitter filters). So "a.b" does not match the field path
+// "a..b" (an empty middle segment is real structure, e.g. an empty-string
+// JSON key), while "a.*.b" does, since '*' matches any one segment
+// including an empty one. This also makes MatchFieldGlob("", x) false where
+// MatchPathGlob("", x) is true — deliberate: Rule.Path uses "" to mean "any
+// path" (a Go string cannot be null, unlike flowlens's JS), but a body glob
+// is a map key, where "" is a legal literal glob rather than "unset".
 func MatchFieldGlob(glob, fieldPath string) bool {
-	return matchSegs(split(glob, "."), split(fieldPath, "."))
+	var pathSegs []string
+	if fieldPath != "" {
+		pathSegs = strings.Split(fieldPath, ".")
+	}
+	return matchSegs(strings.Split(glob, "."), pathSegs)
 }
 
 func split(s, sep string) []string {
