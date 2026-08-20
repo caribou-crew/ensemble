@@ -10,9 +10,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -217,6 +220,112 @@ func TestUp_ClientRoundTripAndSIGINTShutdown(t *testing.T) {
 	if err := env.wait(t, 5*time.Second); err != nil {
 		t.Fatalf("runUp returned error after context cancel: %v", err)
 	}
+}
+
+// findPID looks up the pid of a running process whose full command line
+// contains marker, via `pgrep -f` (present on the ubuntu-latest CI runner
+// and on macOS). Returns 0, false if none is found (already reaped, or
+// never started).
+func findPID(t *testing.T, marker string) (int, bool) {
+	t.Helper()
+	out, err := exec.Command("pgrep", "-f", marker).Output()
+	if err != nil {
+		return 0, false // pgrep exits non-zero when nothing matches
+	}
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	pid, err := strconv.Atoi(line)
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// TestRunUp_BindFailureTearsDownAndReturnsError is the fix-round-1
+// regression test (code review finding): if the control-plane API listener
+// can't bind (e.g. the address is already in use — a second `ensemble up`),
+// runUp must not hang forever waiting on shutdownCtx.Done(), which only
+// fires on SIGINT/SIGTERM or a successful POST /api/shutdown — neither of
+// which a synchronous bind failure triggers. It must instead return a
+// non-nil error promptly and tear down whatever it already started (here:
+// a native service process).
+//
+// The service's pid is found via `pgrep -f` against a unique marker in its
+// `run` command, rather than having the process itself write its pid to a
+// file — cmd.Start() makes a process visible to `ps`/`pgrep` synchronously,
+// at fork/exec time, before any of its script has actually run, so this
+// avoids a real race: orch.Up()'s health gate here is satisfied by an
+// already-listening httptest upstream (matching the rest of this file's
+// tests), completely independent of the native process's own progress, so
+// a self-reporting pid file could plausibly never get written if Down()
+// reaps the process before the OS ever schedules it.
+func TestRunUp_BindFailureTearsDownAndReturnsError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	defer upstream.Close()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream url: %v", err)
+	}
+	upPort, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("upstream port: %v", err)
+	}
+	proxyPort := freePort(t)
+	apiPort := freePort(t)
+
+	// Occupy the API port so server.Serve's bind fails synchronously.
+	occupied, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", apiPort))
+	if err != nil {
+		t.Fatalf("occupy api port: %v", err)
+	}
+	defer occupied.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ensemble.yaml")
+	marker := fmt.Sprintf("ensemble-bindfail-test-marker-%d", os.Getpid())
+	yaml := fmt.Sprintf(`
+services:
+  svc:
+    run: "sleep 30 # %s"
+    port: %d
+    proxy: %d
+    entry: true
+`, marker, upPort, proxyPort)
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Cleanup(func() {
+		if pid, ok := findPID(t, marker); ok {
+			syscall.Kill(pid, syscall.SIGKILL) // best-effort, in case the test itself failed the assertion below
+		}
+	})
+
+	opts := upOptions{ConfigPath: cfgPath, Addr: fmt.Sprintf("127.0.0.1:%d", apiPort)}
+	var stdout, stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- runUp(context.Background(), opts, &stdout, &stderr) }()
+
+	select {
+	case runErr := <-done:
+		if runErr == nil {
+			t.Fatal("expected runUp to return a non-nil error on API bind failure")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runUp did not return after a bind failure — it hung")
+	}
+
+	// Confirm orch.Down() actually reaped the service process rather than
+	// leaving it running after runUp gave up on the API listener.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, alive := findPID(t, marker); !alive {
+			return // process gone: torn down successfully
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("service process matching %q still alive after runUp returned — orch.Down was not called on bind failure", marker)
 }
 
 // TestCLI_StatusJSON drives the actual `run()` entrypoint (subcommand

@@ -134,15 +134,33 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		Shutdown: cancelShutdown,
 	})
 
-	fmt.Fprintf(stdout, "ensemble: serving API on %s\n", opts.Addr)
+	// "starting", not "serving": server.Serve binds inside the goroutine
+	// below, so at this point the listener isn't confirmed up yet — the
+	// select below is what actually observes bind success (shutdownCtx
+	// stays live) vs. failure (serveErrCh fires immediately).
+	fmt.Fprintf(stdout, "ensemble: starting API on %s\n", opts.Addr)
 	serveErrCh := make(chan error, 1)
 	go func() { serveErrCh <- server.Serve(shutdownCtx, opts.Addr, handler) }()
 
-	<-shutdownCtx.Done()
-	fmt.Fprintln(stdout, "ensemble: shutting down")
+	// Two ways this stops waiting: a normal shutdown (SIGINT/SIGTERM
+	// canceled ctx, or POST /api/shutdown called cancelShutdown), or Serve
+	// returning on its own — which only happens on a bind failure, since a
+	// clean shutdown's Serve return is instead observed via shutdownCtx.Done
+	// racing it. Without this second case, a bind failure (e.g. the address
+	// is already in use) left the error sitting unread in serveErrCh
+	// forever: services and stubs kept running, and runUp never returned.
+	var serveErr error
+	select {
+	case <-shutdownCtx.Done():
+		fmt.Fprintln(stdout, "ensemble: shutting down")
+		serveErr = <-serveErrCh
+	case serveErr = <-serveErrCh:
+		if serveErr != nil {
+			fmt.Fprintf(stderr, "ensemble: API server failed to start: %v\n", serveErr)
+		}
+	}
 
 	downErr := orch.Down()
-	serveErr := <-serveErrCh
 	if serveErr != nil {
 		return serveErr
 	}
