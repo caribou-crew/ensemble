@@ -204,11 +204,18 @@ func startStubs(cfg *config.Config, rec *proxy.Recorder) ([]*stub.Stub, error) {
 	for name, st := range cfg.Stubs {
 		routes := make([]stub.Route, len(st.Routes))
 		for i, r := range st.Routes {
+			// BodyFile is declared relative to Config.Dir, same as
+			// SeedSQL.File (orchestrator/seed.go) — not the process CWD,
+			// which is what core/stub's os.ReadFile would otherwise use.
+			bodyFile := r.Respond.BodyFile
+			if bodyFile != "" && !filepath.IsAbs(bodyFile) {
+				bodyFile = filepath.Join(cfg.Dir, bodyFile)
+			}
 			routes[i] = stub.Route{
 				Match: stub.Match{Method: r.Match.Method, Path: r.Match.Path},
 				Respond: stub.Respond{
 					Status: r.Respond.Status, Headers: r.Respond.Headers,
-					Body: r.Respond.Body, BodyFile: r.Respond.BodyFile, Template: r.Respond.Template,
+					Body: r.Respond.Body, BodyFile: bodyFile, Template: r.Respond.Template,
 				},
 			}
 		}
