@@ -85,7 +85,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if !cfg.Loaded && !*noConfig {
 		fmt.Fprintf(stderr, "retrace: refusing to capture — no retrace.yaml at %s\n", filepath.Join(cwd, "retrace.yaml"))
 		fmt.Fprintf(stderr, "  retrace does not search parent directories on purpose, so run from the directory\n")
-		fmt.Fprintf(stderr, "  that holds retrace.yaml, or pass --no-config to record without your own redaction keys.\n")
+		fmt.Fprintf(stderr, "  that holds retrace.yaml, or pass --no-config to proceed WITHOUT your own redaction\n")
+		fmt.Fprintf(stderr, "  keys — every captured request and response body will be written to disk with only\n")
+		fmt.Fprintf(stderr, "  the built-in header/query redaction applied; secrets in body fields (passwords,\n")
+		fmt.Fprintf(stderr, "  tokens) are written unredacted.\n")
 		return exitGate
 	}
 
@@ -118,12 +121,20 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	// exits, before reading anything back off disk.
 	defer sess.Close()
 
+	// When --json is set, stdout must carry the manifest ALONE — that is
+	// the documented CI contract (`retrace run --json | jq`). The test
+	// command's own stdout goes to stderr instead, so a test runner's own
+	// log lines never land ahead of (or inside) the JSON document.
+	testStdout := stdout
+	if *asJSON {
+		testStdout = stderr
+	}
 	m, err := runFlow(sess, runOptions{
 		Cwd:     cwd,
 		App:     appName,
 		Flow:    *flow,
 		TestCmd: testCmd,
-		Stdout:  stdout,
+		Stdout:  testStdout,
 		Stderr:  stderr,
 		Now:     time.Now,
 	})
@@ -179,6 +190,15 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		if errors.As(runErr, &ee) {
 			exitCode = ee.ExitCode()
 		} else {
+			// The test command never started (bad path, not executable,
+			// etc.) — no manifest will ever be written for this run, so the
+			// directory StartStandalone already created is removed rather
+			// than left behind as an orphan. runs.ListRuns lists any
+			// directory regardless of whether it holds a manifest, and a
+			// "latest" selector would otherwise resolve to a run that never
+			// happened (Task 8's diff). Best-effort: the command failure is
+			// the one that matters to the caller.
+			_ = os.RemoveAll(s.Paths.RunDir)
 			return runs.Manifest{}, fmt.Errorf("could not run the test command: %w", runErr)
 		}
 	}

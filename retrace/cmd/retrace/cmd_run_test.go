@@ -37,6 +37,26 @@ func TestHelperFetchesThroughProxy(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestHelperFetchesThroughProxyNoisy is TestHelperFetchesThroughProxy plus
+// stdout chatter BEFORE the request completes — the shape of a real test
+// runner (jest/junit reporters print their own JSON, and plain progress
+// dots, ahead of anything retrace writes). --json's whole point is that
+// none of this reaches retrace's own stdout.
+func TestHelperFetchesThroughProxyNoisy(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "fetch-noisy" {
+		return
+	}
+	fmt.Println(`{"junit":"noise","this":"is the test runner's stdout"}`)
+	fmt.Println("some plain log line")
+	resp, err := http.Get(os.Getenv("RETRACE_PROXY_URL") + "/cart")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "helper fetch:", err)
+		os.Exit(9)
+	}
+	resp.Body.Close()
+	os.Exit(0)
+}
+
 func TestHelperExitsSeven(t *testing.T) {
 	if os.Getenv("RETRACE_TEST_HELPER") != "exit7" {
 		return
@@ -289,6 +309,12 @@ func TestRunRefusesToCaptureWhenNoConfigWasFound(t *testing.T) {
 	if entries, _ := os.ReadDir(runs.RunsRoot(cwd)); len(entries) != 0 {
 		t.Errorf("a refused run wrote %d entries under the runs root", len(entries))
 	}
+	// The message must say plainly what proceeding costs, not just that
+	// config is missing — this is the one message standing between a user
+	// and a secret landing in a file they may later commit.
+	if !strings.Contains(res.stderr, "unredacted") {
+		t.Errorf("stderr does not say plainly that bodies would be written unredacted:\n%s", res.stderr)
+	}
 }
 
 // The refusal is keyed on Config.Loaded, NEVER on len(Redact): an empty
@@ -334,8 +360,37 @@ func TestRunNoConfigOverridesTheRefusal(t *testing.T) {
 	}
 }
 
-// --json is the CI contract: the manifest, verbatim, on stdout.
-func TestRunJSONEmitsTheManifestOnStdout(t *testing.T) {
+// An unstartable test command (bad path, not executable) never produces a
+// manifest — so the run directory StartStandalone already created must not
+// survive either. Left behind, runs.ListRuns would list it, and a "latest"
+// selector (Task 8) would resolve to a run that never happened.
+func TestRunUnstartableTestCommandLeavesNoOrphanRunDirectory(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\n")
+
+	res := runRetrace(t, bin, cwd, "", "run", "--flow", "checkout", "--app", "web",
+		"--upstream", upstream.URL, "--", "/no/such/binary-xyz")
+	if res.code != exitUsage {
+		t.Fatalf("exit = %d, want %d (could not run the test command)\nstdout: %s\nstderr: %s",
+			res.code, exitUsage, res.stdout, res.stderr)
+	}
+	if ids := runs.ListRuns(runs.RunsRoot(cwd), "web", "checkout"); len(ids) != 0 {
+		t.Errorf("run directories for web/checkout = %v, want none left behind", ids)
+	}
+}
+
+// --json is the CI contract: the manifest, verbatim and ALONE, on stdout.
+// The helper is deliberately noisy on its OWN stdout — the shape of a real
+// test runner (jest/junit reporters print JSON of their own) — to prove
+// that chatter is routed to stderr, not merely that a manifest can be found
+// somewhere inside a mixed stream. An assertion that locates the payload
+// with strings.Index(stdout, "{") cannot tell contaminated output from
+// clean; this one requires the WHOLE of stdout to parse.
+func TestRunJSONEmitsOnlyTheManifestOnStdout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 
@@ -344,22 +399,20 @@ func TestRunJSONEmitsTheManifestOnStdout(t *testing.T) {
 	writeConfig(t, cwd, "app: web\n")
 
 	args := append([]string{"run", "--flow", "checkout", "--app", "web", "--json", "--upstream", upstream.URL},
-		selfCmd(t, "TestHelperFetchesThroughProxy")...)
-	res := runRetrace(t, bin, cwd, "fetch", args...)
+		selfCmd(t, "TestHelperFetchesThroughProxyNoisy")...)
+	res := runRetrace(t, bin, cwd, "fetch-noisy", args...)
 	if res.code != 0 {
-		t.Fatalf("exit = %d, want 0\nstderr: %s", res.code, res.stderr)
-	}
-	// The helper's own `PASS`/`ok` chatter goes to the test command's
-	// stdout, so find the JSON document rather than assuming it is alone.
-	i := strings.Index(res.stdout, "{")
-	if i < 0 {
-		t.Fatalf("no JSON on stdout:\n%s", res.stdout)
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
 	}
 	var m runs.Manifest
-	if err := json.Unmarshal([]byte(res.stdout[i:]), &m); err != nil {
-		t.Fatalf("stdout is not a manifest: %v\n%s", err, res.stdout[i:])
+	if err := json.Unmarshal([]byte(res.stdout), &m); err != nil {
+		t.Fatalf("stdout does not parse AS A WHOLE as a manifest (contaminated?): %v\nstdout: %q", err, res.stdout)
 	}
 	if m.Schema != runs.Schema || m.Flow != "checkout" {
 		t.Fatalf("manifest = %+v", m)
+	}
+	// The noise didn't vanish — it went to stderr instead of stdout.
+	if !strings.Contains(res.stderr, "is the test runner's stdout") {
+		t.Errorf("the test command's stdout chatter did not reach stderr:\n%s", res.stderr)
 	}
 }
