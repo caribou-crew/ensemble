@@ -6,8 +6,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
+
+// The process-control primitives startNativeProcess builds on —
+// shellCommand, setProcessGroup, killProcessGroup, processAlive — are
+// platform-specific and live in proc_unix.go / proc_windows.go. Everything
+// in this file is shared.
 
 // homeDir wraps os.UserHomeDir so resolveDir can be tested and so a lookup
 // failure degrades gracefully (leaves the leading ~ untouched) instead of
@@ -45,24 +49,28 @@ func envSlice(env map[string]string) []string {
 	return out
 }
 
-// startNativeProcess launches run via `/bin/sh -c run` in workDir, its own
-// process group (so killProcessGroup can take down shell children too),
-// with stdout/stderr appended to logPath.
+// startNativeProcess launches run through the platform's shell
+// (shellCommand) in workDir, in its own process group (so killProcessGroup
+// can take down shell children too), with stdout/stderr appended to
+// logPath.
 func startNativeProcess(run, workDir string, env map[string]string, logPath string) (*exec.Cmd, error) {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	// 0700/0600: a service's stdout/stderr routinely carries connection
+	// strings, tokens, and request payloads — same reasoning as the hop
+	// log's permissions in cmd/ensemble's runUp.
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log %s: %w", logPath, err)
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", run)
+	cmd := shellCommand(run)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), envSlice(env)...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
@@ -75,27 +83,4 @@ func startNativeProcess(run, workDir string, env map[string]string, logPath stri
 		logFile.Close()
 	}()
 	return cmd, nil
-}
-
-// killProcessGroup signals the process group led by pid (negative pid
-// targets the whole group), so shell children spawned by Service.Run die
-// along with the shell itself. A group that's already gone is not an
-// error.
-func killProcessGroup(pid int, sig syscall.Signal) error {
-	if pid <= 0 {
-		return nil
-	}
-	err := syscall.Kill(-pid, sig)
-	if err != nil && err == syscall.ESRCH {
-		return nil
-	}
-	return err
-}
-
-// processAlive reports whether pid is still alive, via a signal-0 probe.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
 }
