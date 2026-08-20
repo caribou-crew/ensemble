@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -272,6 +274,70 @@ func TestRestartDoesNotRewireProxy(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "ok" {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+// Restart must record and abort, not paper over, a genuine failure to stop
+// the previous instance — starting a replacement over a possibly-still-live
+// predecessor on the same port would be worse than doing nothing. Injects
+// the failure via the killGroup seam (a real EPERM/EACCES from the OS is
+// not reliably provocable in a test).
+func TestRestartAbortsOnKillFailure(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30"},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	before, ok := o.Service("svc")
+	if !ok {
+		t.Fatal("expected a state for svc after Up")
+	}
+
+	injected := errors.New("injected kill failure")
+	o.killGroup = func(pid int, sig syscall.Signal) error { return injected }
+
+	t.Cleanup(func() {
+		// Restore the real implementation so cleanup actually kills the
+		// still-running "sleep 30" process instead of re-triggering the
+		// injected failure.
+		o.killGroup = killProcessGroup
+		o.Down()
+	})
+
+	err := o.Restart(context.Background(), "svc")
+	if err == nil {
+		t.Fatal("expected Restart to return an error")
+	}
+	if !strings.Contains(err.Error(), "svc") {
+		t.Fatalf("error doesn't name the service: %v", err)
+	}
+	if !errors.Is(err, injected) {
+		t.Fatalf("error doesn't wrap the injected failure: %v", err)
+	}
+
+	after, ok := o.Service("svc")
+	if !ok {
+		t.Fatal("expected a state for svc after the failed restart")
+	}
+	if after.Status != StatusFailed {
+		t.Fatalf("status = %q, want %q", after.Status, StatusFailed)
+	}
+	if !strings.Contains(after.LastErr, "injected kill failure") {
+		t.Fatalf("LastErr = %q, want it to mention the injected failure", after.LastErr)
+	}
+	// The strongest proof of "aborted, didn't start a replacement": the
+	// PID is unchanged from right after Up.
+	if after.PID != before.PID {
+		t.Fatalf("PID changed from %d to %d — Restart started a replacement despite the kill failure", before.PID, after.PID)
+	}
+	if !processAlive(before.PID) {
+		t.Fatalf("original process %d is gone — Restart's abort path must leave it tracked/running", before.PID)
 	}
 }
 
