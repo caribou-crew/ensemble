@@ -618,6 +618,71 @@ func TestTraceExportHAR(t *testing.T) {
 	}
 }
 
+// TestTraceExportRewritesHostToProxyPort guards the export-reproducibility
+// fix: a hop's `to` is a logical service name, not a resolvable host, so
+// exported requests must be rewritten to the intercept address the service
+// actually listens on. Unknown "to" names (stubs, external hosts) fall back
+// to the recorded Host header untouched.
+func TestTraceExportRewritesHostToProxyPort(t *testing.T) {
+	e := newTestEnv(t)
+
+	traceID := "trace-export-rewrite"
+	e.rec.Record(trace.Hop{
+		TraceID: traceID, SpanID: "span-known", To: "svc",
+		Method: "GET", Path: "/widgets", Status: 200,
+		Req: trace.Payload{Headers: map[string]string{"host": "svc.internal:9999"}},
+	})
+	e.rec.Record(trace.Hop{
+		TraceID: traceID, SpanID: "span-unknown", To: "some-stub",
+		Method: "GET", Path: "/stub-path", Status: 200,
+		Req: trace.Payload{Headers: map[string]string{"host": "stub.example:1234"}},
+	})
+
+	wantHost := fmt.Sprintf("127.0.0.1:%d", e.proxyPort)
+
+	_, curlBody := e.get(t, "/api/traces/"+traceID+"/export?format=curl")
+	curlOut := string(curlBody)
+	if !strings.Contains(curlOut, "http://"+wantHost+"/widgets") {
+		t.Fatalf("curl export did not rewrite known-service host: %s", curlOut)
+	}
+	if strings.Contains(curlOut, "svc.internal:9999") {
+		t.Fatalf("curl export leaked unreachable host for known service: %s", curlOut)
+	}
+	if !strings.Contains(curlOut, "http://stub.example:1234/stub-path") {
+		t.Fatalf("curl export must leave unknown service host untouched: %s", curlOut)
+	}
+
+	_, rawBody := e.get(t, "/api/traces/"+traceID+"/export?format=raw")
+	rawOut := string(rawBody)
+	if !strings.Contains(rawOut, "host: "+wantHost) {
+		t.Fatalf("raw export did not rewrite known-service host: %s", rawOut)
+	}
+	if !strings.Contains(rawOut, "host: stub.example:1234") {
+		t.Fatalf("raw export must leave unknown service host untouched: %s", rawOut)
+	}
+
+	_, harBody := e.get(t, "/api/traces/"+traceID+"/export?format=har")
+	var har trace.Har
+	if err := json.Unmarshal(harBody, &har); err != nil {
+		t.Fatalf("unmarshal HAR: %v (%s)", err, harBody)
+	}
+	var sawKnown, sawUnknown bool
+	for _, entry := range har.Log.Entries {
+		switch entry.Request.URL {
+		case "http://" + wantHost + "/widgets":
+			sawKnown = true
+		case "http://stub.example:1234/stub-path":
+			sawUnknown = true
+		}
+	}
+	if !sawKnown {
+		t.Fatalf("HAR export did not rewrite known-service URL: %+v", har.Log.Entries)
+	}
+	if !sawUnknown {
+		t.Fatalf("HAR export must leave unknown service URL untouched: %+v", har.Log.Entries)
+	}
+}
+
 func TestTraceHopsAndLogicalView(t *testing.T) {
 	e := newTestEnv(t)
 
