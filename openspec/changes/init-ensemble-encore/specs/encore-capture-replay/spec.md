@@ -44,6 +44,22 @@ Accepted recordings SHALL be stored as compact committed reference bundles
 - **WHEN** a reviewer accepts a run as the new reference
 - **THEN** a compact bundle is written under the references directory suitable for git commit
 
+### Requirement: Encrypted recordings replay with fidelity
+Replay SHALL decrypt encrypt-mode fields at serve time (team key from
+ENCORE_RECORDING_KEY env or a gitignored keyfile, envelope-wrapped per
+recording), SHALL treat destroy-mode placeholders as pairing-stable values,
+and SHALL support an opt-in encrypt-all mode for whole recordings. `encore
+rekey` SHALL rotate the team key by re-wrapping data keys without
+re-recording.
+
+#### Scenario: CI replay with the key
+- **WHEN** CI runs replay with ENCORE_RECORDING_KEY set against a recording with encrypted response fields
+- **THEN** the client under test receives the original recorded values
+
+#### Scenario: Recording without the key
+- **WHEN** a recording with encrypted fields is opened without the key
+- **THEN** views show masked markers, replay of those fields fails with a clear key-missing error, and nothing plaintext is recoverable from the artifact
+
 ### Requirement: Revalidation
 `encore revalidate` SHALL re-run reference recordings against a live stack and
 report server-side drift between the recording and current responses.

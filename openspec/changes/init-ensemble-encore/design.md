@@ -193,8 +193,43 @@ encore's own proxy records the client edge. Same artifact either way:
   groups.jsonl       # flow-part markers from adapters
 ```
 
-References are compact committed bundles under `.encore-ref/`. Redaction
-(auth/cookie/set-cookie/dpop + config list) applied at the proxy.
+References are compact committed bundles under `.encore-ref/`.
+
+### 6.1.1 Redaction modes and recording encryption
+
+Redaction serves two different jobs — protecting eyes (screens, demos) and
+protecting the artifact (recordings are committed and shared) — so keys get
+per-key modes in a shared `redaction:` config block read by both products.
+All modes apply at capture; plaintext never hits disk for encrypt/destroy.
+
+- `display` — stored plaintext, masked in every UI behind a reveal
+  (eyeball) click. Screen protection only.
+- `encrypt` — field-level AES-256-GCM at capture, stored as
+  `$enc:v1:<nonce+ciphertext>`. UIs mask with reveal-on-click (decrypts
+  only when the key is present locally). **Replay decrypts at serve time**,
+  so mocks keep full fidelity while the committed artifact is safe without
+  the key. Default for user-listed body fields.
+- `destroy` — irrecoverable, but as a deterministic placeholder
+  (`red-<hash8>`, HMAC keyed with a per-recording key that is then
+  discarded): the same original value maps to the same placeholder within
+  one recording, so value-echo flows still correlate and replay matching
+  still pairs. Default for auth-bearing headers
+  (authorization/cookie/set-cookie/dpop) — replay never needs them.
+- `recordings: encrypt-all` option: encrypt entire wire/hop bodies (opaque
+  without encore's UI/CLI + key). Not the default — field-level keeps
+  recordings human-diffable in PRs.
+
+Key model: **team key via env/keyfile** (`ENCORE_RECORDING_KEY` or
+gitignored `.encore/recording.key`), shared through the team's normal
+secrets channel; trivial in CI. Envelope encryption underneath — each
+recording gets a random data key wrapped by the team key — so `encore
+rekey` rotates cheaply and a public-key recipients model (age/SOPS style)
+can be added later without re-recording.
+
+GUI control: config is the source of truth; dashboards add per-field
+reveal and an "add redaction rule" action on any hop (edits config, like
+the review queue's `rule` verb). Level changes affect future captures
+only — nothing retroactively unredacts a destroyed value.
 
 ### 6.2 Replay (CI)
 

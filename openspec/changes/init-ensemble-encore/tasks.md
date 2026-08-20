@@ -120,6 +120,12 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 - [ ] 4.7 `adapters/`: encore-js (groups/markers), encore-playwright
       (fixture: checkpoint shots + groups), encore-maestro (HTTP markers);
       strict-mode env handshake failure message.
+- [ ] 4.8 Redaction modes + recording encryption: extend `core/trace`
+      Redactor with display/encrypt/destroy per-key modes (AES-256-GCM
+      `$enc:v1` markers, deterministic `red-<hash>` placeholders); envelope
+      key wrapping w/ team key (env/keyfile), `encore rekey`; replay-time
+      decryption; encrypt-all option; reveal-eyeball + add-rule actions in
+      traffic and review UIs (ties into 3.3/4.6).
 
 ## Phase 5 — sample stack ("brew")
 
