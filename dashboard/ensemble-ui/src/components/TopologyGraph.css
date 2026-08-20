@@ -1,0 +1,260 @@
+/* Ported from local-stack-console's App.css .topo-* rules (a 2821-line global stylesheet —
+   this is its topology slice, scoped to this component per Task 3.2's "plain CSS per
+   component" constraint). Token names are unchanged: tokens.css carried the same
+   --bg-*/--text-*/--accent*/--status-*/--topo-cat-* custom properties over verbatim. */
+
+.topo-graph {
+  display: flex;
+  flex-direction: column;
+  /* flex:1 rather than height:100% — in a flex column, a percentage height resolves against
+     the whole container, so the graph would push a trace-mode hop dock past the fold. */
+  flex: 1;
+  min-height: 0;
+}
+
+.topo-graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem;
+}
+
+.topo-svg {
+  /* Sized inline from the layout's own extent — see TopologyGraph.tsx for the scale clamp. */
+  display: block;
+  margin: 0 auto;
+}
+
+.topo-cluster {
+  fill: rgba(255, 255, 255, 0.014);
+  stroke-width: 1;
+  stroke-dasharray: 4 5;
+  opacity: 0.55;
+}
+
+.topo-cluster-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  opacity: 0.85;
+}
+
+.topo-node-box {
+  fill: var(--bg-raised);
+  stroke: var(--border-hairline-strong);
+  stroke-width: 1;
+}
+
+.topo-node-synthetic {
+  stroke-dasharray: 4 4;
+}
+
+.topo-node {
+  cursor: pointer;
+}
+
+.topo-node-selected .topo-node-box {
+  stroke: var(--accent-strong);
+  stroke-width: 2;
+}
+
+.topo-node-dim {
+  opacity: 0.3;
+}
+
+.topo-edge-dim {
+  opacity: 0.25;
+}
+
+.topo-pan-bg {
+  fill: transparent;
+  cursor: grab;
+}
+
+.topo-pan-bg:active {
+  cursor: grabbing;
+}
+
+.topo-zoom-controls {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.topo-zoom-controls button {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.topo-zoom-controls button:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-strong);
+}
+
+.topo-node-label {
+  fill: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.topo-node-sub {
+  fill: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.topo-health-up-native,
+.topo-health-up-container {
+  fill: var(--status-green);
+}
+
+/* New tier vs. the old stack: ensemble's ServiceState.status has a real "starting" state
+   (see layout.ts's healthOf) rather than collapsing every not-yet-up service into unknown. */
+.topo-health-starting {
+  fill: var(--status-amber);
+}
+
+.topo-health-down {
+  fill: var(--status-red);
+}
+
+.topo-health-unknown {
+  fill: var(--text-tertiary);
+}
+
+.topo-edge-line {
+  fill: none;
+  stroke: var(--border-hairline-strong);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.topo-edge-bundled .topo-edge-line {
+  stroke-width: 2.5;
+  cursor: pointer;
+}
+
+.topo-edge:hover .topo-edge-line,
+.topo-edge-selected .topo-edge-line {
+  stroke: var(--accent-strong);
+}
+
+.topo-edge-pill {
+  fill: var(--bg-panel);
+  stroke: var(--border-hairline-strong);
+  stroke-width: 1;
+}
+
+.topo-edge-pill-text {
+  fill: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.topo-edge:hover .topo-edge-pill-text,
+.topo-edge-selected .topo-edge-pill-text {
+  fill: var(--accent-strong);
+}
+
+.topo-edge-hop-number {
+  cursor: pointer;
+}
+
+.topo-edge-hop-number:hover {
+  fill: var(--accent-strong);
+  font-weight: bold;
+}
+
+.topo-edge-hop-number-selected {
+  fill: var(--accent-strong);
+  font-weight: bold;
+}
+
+.topo-edge-arrow {
+  fill: var(--border-hairline-strong);
+}
+
+.topo-edge-arrow-selected {
+  fill: var(--accent-strong);
+}
+
+.topo-edge-flow-dot {
+  fill: var(--accent-strong);
+  filter: drop-shadow(0 0 3px var(--accent-strong));
+}
+
+.topo-legend {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+  padding: 0.55rem 1rem;
+  border-top: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.topo-legend-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: center;
+}
+
+.topo-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.topo-legend-item.dim {
+  opacity: 0.7;
+}
+
+.topo-legend-bar {
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.topo-legend .topo-health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.topo-legend .topo-health-dot.topo-health-up-native {
+  background: var(--status-green);
+}
+
+.topo-legend .topo-health-dot.topo-health-starting {
+  background: var(--status-amber);
+}
+
+.topo-legend .topo-health-dot.topo-health-down {
+  background: var(--status-red);
+}
+
+.topo-legend .topo-health-dot.topo-health-unknown {
+  background: var(--text-tertiary);
+}
+
+.topo-empty-state {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+}
