@@ -75,6 +75,21 @@ type Orchestrator struct {
 	procs       map[string]*exec.Cmd // native nodes with a running process
 	dockerNodes map[string]bool      // nodes currently running as containers
 
+	// serviceLocks holds one mutex per service name, serializing Flip,
+	// Restart, and Down's per-service teardown against each other for a
+	// given name — guarding the whole read-current-placement, act (kill /
+	// docker rm / start replacement), mutate-maps span. Without this, two
+	// concurrent operations on the SAME service (e.g. Flip racing Restart)
+	// can both read the pre-op placement before either commits its
+	// teardown, then both start a replacement, leaving the maps with both
+	// placements tracked (a live orphan neither op knows about) or one
+	// clobbering the other's entry (an untracked, still-live process or
+	// container that Down will never find). Different services use
+	// different mutexes, so operations on different services still run
+	// fully concurrently — only mu (below) is used to guard the map itself,
+	// and only briefly, never held across a kill/start/health-wait.
+	serviceLocks map[string]*sync.Mutex
+
 	// testStartHook, set only from tests, is called with each node's name
 	// the moment Up begins starting it — proof of dependency order without
 	// depending on process-timing.
@@ -110,9 +125,25 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		states:                map[string]*ServiceState{},
 		procs:                 map[string]*exec.Cmd{},
 		dockerNodes:           map[string]bool{},
+		serviceLocks:          map[string]*sync.Mutex{},
 		killGroup:             killProcessGroup,
 		removeDockerContainer: dockerRemove,
 	}
+}
+
+// lockService acquires (lazily creating) the per-service mutex for name and
+// returns a func that releases it. Callers should defer the returned func
+// immediately. See the serviceLocks field comment for why this exists.
+func (o *Orchestrator) lockService(name string) func() {
+	o.mu.Lock()
+	l, ok := o.serviceLocks[name]
+	if !ok {
+		l = &sync.Mutex{}
+		o.serviceLocks[name] = l
+	}
+	o.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // Up starts every active service and database in dependency order,
@@ -160,37 +191,56 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 // Individual failures are collected and joined rather than aborting early,
 // so one stuck node doesn't strand the rest.
 func (o *Orchestrator) Down() error {
+	// Union of every name ever tracked as native or docker, taken up front
+	// so Down knows what to visit. The actual placement to tear down for
+	// each name is re-read under that name's lock below, not from this
+	// snapshot — a concurrent Flip/Restart may have changed it since.
 	o.mu.Lock()
-	procs := make(map[string]*exec.Cmd, len(o.procs))
-	for k, v := range o.procs {
-		procs[k] = v
+	names := make(map[string]bool, len(o.procs)+len(o.dockerNodes))
+	for k := range o.procs {
+		names[k] = true
 	}
-	dockerNodes := make(map[string]bool, len(o.dockerNodes))
-	for k, v := range o.dockerNodes {
-		dockerNodes[k] = v
+	for k := range o.dockerNodes {
+		names[k] = true
 	}
 	o.mu.Unlock()
 
 	var errs []error
-	for name, cmd := range procs {
-		if cmd.Process != nil {
-			if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
-				errs = append(errs, fmt.Errorf("%s: kill: %w", name, err))
+	for name := range names {
+		func() {
+			// Blocks until any in-flight Flip/Restart on name finishes, so
+			// Down never races a same-service operation past it and misses
+			// (or double-tears-down) whichever placement is actually live.
+			unlock := o.lockService(name)
+			defer unlock()
+
+			o.mu.Lock()
+			cmd, hasProc := o.procs[name]
+			isDocker := o.dockerNodes[name]
+			o.mu.Unlock()
+
+			if hasProc {
+				if cmd.Process != nil {
+					if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+						errs = append(errs, fmt.Errorf("%s: kill: %w", name, err))
+					}
+				}
+				o.mu.Lock()
+				delete(o.procs, name)
+				o.mu.Unlock()
 			}
-		}
-		o.mu.Lock()
-		delete(o.procs, name)
-		o.mu.Unlock()
-		o.setStatus(name, StatusStopped, "")
-	}
-	for name := range dockerNodes {
-		if err := o.removeDockerContainer(name); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", name, err))
-		}
-		o.mu.Lock()
-		delete(o.dockerNodes, name)
-		o.mu.Unlock()
-		o.setStatus(name, StatusStopped, "")
+			if isDocker {
+				if err := o.removeDockerContainer(name); err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", name, err))
+				}
+				o.mu.Lock()
+				delete(o.dockerNodes, name)
+				o.mu.Unlock()
+			}
+			if hasProc || isDocker {
+				o.setStatus(name, StatusStopped, "")
+			}
+		}()
 	}
 	return errors.Join(errs...)
 }
@@ -210,6 +260,12 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("orchestrator: restart %q: not an active service", name)
 	}
+
+	// Serialize against any concurrent Flip/Restart/Down teardown on this
+	// same service — see the serviceLocks field comment. Held across the
+	// whole read-act-mutate span below, not just the map accesses.
+	unlock := o.lockService(name)
+	defer unlock()
 
 	o.mu.Lock()
 	cmd, hasProc := o.procs[name]
