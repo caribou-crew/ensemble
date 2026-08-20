@@ -47,6 +47,19 @@ describe('hopDepths', () => {
     expect(hopDepths(hops)).toEqual([1, 0]);
   });
 
+  it('an injected delay keeps the parent frame open long enough for a sub-call it triggers after the delay', () => {
+    // edge-gateway -> orders takes 100ms total, but a 60ms latency rule runs before the
+    // upstream call starts, so the sub-call to orders-db (fired at +80ms) is still causally
+    // inside orders' frame even though the upstream leg alone (doneMs=40) would have closed
+    // it at +40ms.
+    const hops: Hop[] = [
+      { ...hop(undefined, 'edge-gateway', '2026-01-01T00:00:00.000Z', 10), injectedDelayMs: 0 },
+      { ...hop('edge-gateway', 'orders', '2026-01-01T00:00:00.000Z', 40), injectedDelayMs: 60 },
+      hop('orders', 'orders-db', '2026-01-01T00:00:00.080Z', 5),
+    ];
+    expect(hopDepths(hops)).toEqual([0, 1, 2]);
+  });
+
   it('falls back to firstByteMs when doneMs is absent (still-open upstream)', () => {
     const hops: Hop[] = [
       { schema: 'ensemble/1', seq: 0, from: undefined, to: 'a', t: { start: '2026-01-01T00:00:00.000Z', firstByteMs: 5 } },
