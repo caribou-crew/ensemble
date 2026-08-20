@@ -3,8 +3,15 @@ dist/
 *.log
 .DS_Store
 .encore/runs/
+# The recording team key is a secret: env ENCORE_RECORDING_KEY or this file,
+# never a commit.
+.encore/recording.key
 coverage/
 bin/
+
+# Subagent-driven-development scratch: ledgers, briefs, reports, review
+# packages. Local coordination state, never part of the source tree.
+.superpowers/
 
 # Dashboard build output is embedded via go:embed (ensemble/server/ui/ui.go).
 # Only the placeholder ensemble/server/ui/dist/index.html is committed — the
