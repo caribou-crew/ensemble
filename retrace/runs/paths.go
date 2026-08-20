@@ -78,15 +78,33 @@ func validateComponent(name string) error {
 	return nil
 }
 
+// validateComponents rejects any path component that could escape the runs
+// root. Every exported function in this package that joins a
+// caller-supplied component into a path calls this — validateComponent's
+// body must exist in exactly one place, because the re-review found the
+// single-call-site version (PathsFor only) left ListFlows, ListRuns,
+// ListFlowsErr, ListRunsErr and FindRun able to walk a request-supplied
+// app/flow anywhere on the host. See global-constraints.md: these values
+// can all originate from an HTTP request (Task 13's review server routes
+// /api/runs/{app}/{flow}/{run}/... straight into these functions), and
+// net/http.ServeMux cleans the path AFTER routing on the still-escaped
+// string.
+func validateComponents(names ...string) error {
+	for _, n := range names {
+		if err := validateComponent(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PathsFor computes the paths a run directory would have, without
-// touching disk. It validates app/flow/runID (see validateComponent) so
+// touching disk. It validates app/flow/runID (see validateComponents) so
 // every caller — Create, and every later task that resolves an existing
 // run from a selector — gets the same traversal guard from one place.
 func PathsFor(root, app, flow, runID string) (Paths, error) {
-	for _, c := range [...]string{app, flow, runID} {
-		if err := validateComponent(c); err != nil {
-			return Paths{}, err
-		}
+	if err := validateComponents(app, flow, runID); err != nil {
+		return Paths{}, err
 	}
 	dir := filepath.Join(root, app, flow, runID)
 	return Paths{
@@ -156,28 +174,59 @@ func dirNamesErr(dir string) ([]string, error) {
 	return out, nil
 }
 
-func ListApps(root string) []string            { return dirNames(root) }
-func ListFlows(root, app string) []string      { return dirNames(filepath.Join(root, app)) }
-func ListRuns(root, app, flow string) []string { return dirNames(filepath.Join(root, app, flow)) }
+func ListApps(root string) []string { return dirNames(root) }
+
+// ListFlows and ListRuns have no error channel — a caller-supplied app/flow
+// that fails validateComponents fails closed, the same as a root that was
+// never written: an empty slice, never a walk outside the runs root.
+func ListFlows(root, app string) []string {
+	if err := validateComponents(app); err != nil {
+		return nil
+	}
+	return dirNames(filepath.Join(root, app))
+}
+
+func ListRuns(root, app, flow string) []string {
+	if err := validateComponents(app, flow); err != nil {
+		return nil
+	}
+	return dirNames(filepath.Join(root, app, flow))
+}
 
 // ListAppsErr, ListFlowsErr and ListRunsErr surface a real I/O error
 // (permission denied, a broken mount, root being a regular file) instead of
 // silently returning empty — the difference between "no runs recorded" and
-// "can't read the runs root", which must not look alike to a CI gate.
-// Command entrypoints should call these; ListApps/ListFlows/ListRuns stay
-// for callers that only ever want "what's here right now".
+// "can't read the runs root", which must not look alike to a CI gate. They
+// also surface an invalid app/flow as the same validation error PathsFor
+// returns, rather than silently listing nothing. Command entrypoints should
+// call these; ListApps/ListFlows/ListRuns stay for callers that only ever
+// want "what's here right now".
 func ListAppsErr(root string) ([]string, error) { return dirNamesErr(root) }
 func ListFlowsErr(root, app string) ([]string, error) {
+	if err := validateComponents(app); err != nil {
+		return nil, err
+	}
 	return dirNamesErr(filepath.Join(root, app))
 }
 func ListRunsErr(root, app, flow string) ([]string, error) {
+	if err := validateComponents(app, flow); err != nil {
+		return nil, err
+	}
 	return dirNamesErr(filepath.Join(root, app, flow))
 }
 
 // FindRun resolves a user-facing selector: "latest", an exact run id, or a
 // git sha (full or short) whose run id ends in its 7-char prefix. Returns
-// "" when nothing matches — callers report that, never guess.
+// "" when nothing matches — callers report that, never guess. app/flow are
+// path components and go through validateComponents like every other
+// entry point; selector is deliberately NOT validated by the same rule —
+// it is never joined into a path here, only compared against run ids
+// already read from the (validated) root/app/flow directory, so the path
+// components' charset restrictions do not apply to it.
 func FindRun(root, app, flow, selector string) string {
+	if err := validateComponents(app, flow); err != nil {
+		return ""
+	}
 	ids := ListRuns(root, app, flow)
 	if len(ids) == 0 {
 		return ""

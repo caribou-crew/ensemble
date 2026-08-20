@@ -137,6 +137,65 @@ func TestCreateFailsOnRunIDCollision(t *testing.T) {
 	}
 }
 
+// TestSiblingsHonorTheGuard — review finding 2 (Critical), re-review
+// section 2. validateComponent was applied at PathsFor's single call site
+// only; every other exported function in this package that joins a
+// caller-supplied component into a path had no guard at all. Moved in from
+// the controller's probe (.superpowers/sdd/2026-08-21-phase-4-retrace/
+// probes/siblings_guard_probe_test.go), which measured against 7e5d5f3:
+//
+//	ListFlows(root, "../../..")            -> [outside proj]
+//	ListRuns(root, "../../..", "outside")  -> [secret]
+//	ListFlowsErr(root, "../../..")         -> ([outside proj], <nil>)
+//	FindRun(root, "../../..", "outside", "latest") -> "secret"
+//
+// Extended here (the probe did not reach it) to cover ListRunsErr, the
+// other lister with no error-channel excuse for skipping validation.
+func TestSiblingsHonorTheGuard(t *testing.T) {
+	tmp := t.TempDir()
+	root := RunsRoot(filepath.Join(tmp, "proj"))
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "SECRET"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	esc := filepath.Join("..", "..", "..", "outside")
+
+	if got := ListFlows(root, esc); len(got) > 0 {
+		t.Errorf("ListFlows escaped the runs root: %v", got)
+	}
+	if got, err := ListFlowsErr(root, esc); len(got) > 0 || err == nil {
+		t.Errorf("ListFlowsErr escaped the runs root: %v (err=%v)", got, err)
+	}
+	if got := ListRuns(root, esc, "SECRET"); len(got) > 0 {
+		t.Errorf("ListRuns escaped the runs root: %v", got)
+	}
+	if got, err := ListRunsErr(root, esc, "SECRET"); len(got) > 0 || err == nil {
+		t.Errorf("ListRunsErr escaped the runs root: %v (err=%v)", got, err)
+	}
+	if got := FindRun(root, esc, "SECRET", "latest"); got != "" {
+		t.Errorf("FindRun escaped the runs root: %q", got)
+	}
+}
+
+// TestFindRunDoesNotValidateSelector — FindRun validates app/flow (both are
+// path components) but must not apply the same component rules to selector:
+// a selector is "latest", an index, or a run-id prefix, never a path
+// component, so a legitimate short-sha selector containing characters
+// outside validComponent's charset (there are none in practice, but the
+// point is the rule set is different) must still resolve. FindRun never
+// joins selector into a filesystem path itself — it only compares it
+// against run ids already read from the (validated) root/app/flow
+// directory — so no separate traversal guard is needed for it here.
+func TestFindRunDoesNotValidateSelector(t *testing.T) {
+	root := RunsRoot(t.TempDir())
+	if _, err := Create(root, "web", "checkout", "20260821T100000Z-aaa1111"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := FindRun(root, "web", "checkout", "aaa1111"); got != "20260821T100000Z-aaa1111" {
+		t.Fatalf("FindRun by short sha = %q", got)
+	}
+}
+
 // TestListAppsErrDistinguishesMissingFromBroken — review finding 7 (Major).
 // A never-written root is legitimately empty; a root that exists but can't
 // be read (wrong permissions, a broken mount, or — as tested here — a

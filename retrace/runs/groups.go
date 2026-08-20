@@ -28,15 +28,26 @@ type Group struct {
 	Quiet     bool      `json:"quiet,omitempty"`
 }
 
-func AppendGroupRecord(runDir string, r GroupRecord) error {
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+// AppendGroupRecord and ReadGroupRecords take a Paths, not a bare runDir
+// string, so the traversal guard is structural rather than documented: a
+// Paths is only obtainable from PathsFor/Create, both of which validate
+// app/flow/runID (review finding 2, re-review section 2 — the write side).
+// The review named the old string signature as exactly the shape a Task 4
+// implementer wiring RETRACE_RUN_DIR or a request field into a marker
+// write would get no guard from, because nothing in it said "this must
+// have come from PathsFor". A Paths{RunDir: ...} literal is technically
+// still forgeable in Go; that is an accepted, documented residual (see
+// Paths' doc comment) — the goal here is removing the accidental door, not
+// making Paths unforgeable.
+func AppendGroupRecord(p Paths, r GroupRecord) error {
+	if err := os.MkdirAll(p.RunDir, 0o755); err != nil {
 		return err
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(runDir, "groups.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(p.RunDir, "groups.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -56,8 +67,8 @@ func AppendGroupRecord(runDir string, r GroupRecord) error {
 // alongside whatever was already collected). Unlike ReadHops this
 // function does not count drops (review finding 12, parked as an
 // acceptable Minor for this task).
-func ReadGroupRecords(runDir string) ([]GroupRecord, error) {
-	f, err := os.Open(filepath.Join(runDir, "groups.jsonl"))
+func ReadGroupRecords(p Paths) ([]GroupRecord, error) {
+	f, err := os.Open(filepath.Join(p.RunDir, "groups.jsonl"))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}

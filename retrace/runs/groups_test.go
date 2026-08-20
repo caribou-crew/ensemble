@@ -60,22 +60,60 @@ func TestGroupAtIsHalfOpen(t *testing.T) {
 }
 
 func TestAppendAndReadGroupRecordsSkipsCorruptLines(t *testing.T) {
-	dir := t.TempDir()
-	if err := AppendGroupRecord(dir, GroupRecord{Phase: "start", Name: "a", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := AppendGroupRecord(p, GroupRecord{Phase: "start", Name: "a", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
 		t.Fatalf("AppendGroupRecord: %v", err)
 	}
-	if err := appendRaw(dir, "{not json\n"); err != nil {
+	if err := appendRaw(p.RunDir, "{not json\n"); err != nil {
 		t.Fatalf("appendRaw: %v", err)
 	}
-	if err := AppendGroupRecord(dir, GroupRecord{Phase: "end", TS: ts("2026-08-21T10:00:05Z")}); err != nil {
+	if err := AppendGroupRecord(p, GroupRecord{Phase: "end", TS: ts("2026-08-21T10:00:05Z")}); err != nil {
 		t.Fatalf("AppendGroupRecord: %v", err)
 	}
-	got, err := ReadGroupRecords(dir)
+	got, err := ReadGroupRecords(p)
 	if err != nil {
 		t.Fatalf("ReadGroupRecords: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("a corrupt marker line must be dropped, not fatal: %+v", got)
+	}
+}
+
+// TestGroupFunctionsTakeAPathsNotAnOpaqueString — review finding 2
+// (Critical), re-review section 2, write side. AppendGroupRecord and
+// ReadGroupRecords used to accept a bare runDir string with no validation
+// and no doc comment saying it had to come from PathsFor/Create — the
+// review named this as exactly the shape a Task 4 marker-door handler
+// would wire RETRACE_RUN_DIR or a request field into with no guard at all.
+// They now require a Paths, which is only obtainable from PathsFor/Create
+// — both of which validate app/flow/runID (see TestPathsForRejectsTraversal
+// in paths_test.go). A Paths{RunDir: ...} literal built by hand (as this
+// test does) is still technically forgeable — that is an accepted,
+// documented residual (see Paths' and AppendGroupRecord's doc comments),
+// not a hole this round closes. What this test pins is the structural
+// guarantee itself: the only way a caller reaches these functions is
+// through a value shaped like Paths, so a caller who goes through the
+// sanctioned constructors (PathsFor/Create) cannot reach them with an
+// escaping RunDir at all.
+func TestGroupFunctionsTakeAPathsNotAnOpaqueString(t *testing.T) {
+	tmp := t.TempDir()
+	root := RunsRoot(filepath.Join(tmp, "proj"))
+	esc := filepath.Join("..", "..", "..", "outside")
+	if _, err := PathsFor(root, esc, "SECRET", "r1"); err == nil {
+		t.Fatal("PathsFor must reject a traversal component before any Paths carrying that RunDir could reach AppendGroupRecord/ReadGroupRecords")
+	}
+
+	// The accepted residual: a hand-built Paths literal is not rejected —
+	// only the sanctioned constructors are guarded.
+	forged := Paths{RunDir: filepath.Join(tmp, "forged-outside-run")}
+	if err := AppendGroupRecord(forged, GroupRecord{Phase: "start", Name: "a", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
+		t.Fatalf("AppendGroupRecord with a forged Paths: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(forged.RunDir, "groups.jsonl")); err != nil {
+		t.Fatalf("expected the forged RunDir to have been written to (documented residual, not a regression): %v", err)
 	}
 }
 
