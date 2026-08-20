@@ -39,6 +39,21 @@ streaming.
 - **WHEN** a proxied request carries an Authorization header
 - **THEN** the persisted and streamed hop shows a redaction marker, not the value
 
+### Requirement: Per-key redaction modes
+The system SHALL support per-key redaction modes — display (plaintext at
+rest, UI-masked), encrypt (field-level AES-256-GCM at capture, marker
+`$enc:v1:...`), destroy (deterministic placeholder `red-<hash>` keyed by a
+discarded per-recording key) — defaulting auth-bearing headers to destroy
+and user-listed fields to encrypt.
+
+#### Scenario: Destroyed values stay correlatable
+- **WHEN** the same secret value appears in two hops of one recording under destroy mode
+- **THEN** both hops carry the identical placeholder and the value is unrecoverable
+
+#### Scenario: Encrypted field round-trips with the key
+- **WHEN** a field is captured under encrypt mode and later read with the team key present
+- **THEN** the original value decrypts; without the key only the marker is visible
+
 ### Requirement: Export formats
 The core SHALL export any trace or hop set as HAR 1.2, curl command(s), and
 raw request/response text.
