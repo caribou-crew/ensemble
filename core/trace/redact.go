@@ -11,8 +11,37 @@ import (
 const Redacted = "[redacted]"
 
 // defaultRedactHeaders are always redacted regardless of user config —
-// redaction happens at capture, never post-hoc.
-var defaultRedactHeaders = []string{"authorization", "cookie", "set-cookie", "dpop"}
+// redaction happens at capture, never post-hoc. Beyond the four flowlens
+// shipped with, these are the headers that carry a bearer credential by
+// definition, so a capture that leaked them would leak an account: the
+// proxy-auth twin of Authorization, and the API-key/session-token headers
+// AWS, GCP, and most gateways use.
+var defaultRedactHeaders = []string{
+	"authorization", "cookie", "set-cookie", "dpop",
+	"proxy-authorization", "x-api-key", "api-key", "x-auth-token",
+	"x-amz-security-token", "x-goog-api-key",
+}
+
+// defaultRedactQuery names query parameters whose VALUES are always
+// redacted in Hop.Path, on top of the shared key set.
+//
+// Kept separate from defaultRedactHeaders because the shared key set
+// applies to headers AND JSON body fields: a URL carrying "?token=" is a
+// credential in transit — it lands in the hop log, every export, and the
+// shell history of whoever runs the curl export — while a body field named
+// "token" is frequently the exact value a developer is debugging (a login
+// response, a refresh flow), and redaction is irreversible.
+var defaultRedactQuery = func() map[string]bool {
+	m := map[string]bool{}
+	for _, k := range []string{
+		"access_token", "refresh_token", "id_token", "token",
+		"api_key", "apikey", "client_secret",
+		"signature", "x-amz-signature", "sig", "password", "pwd",
+	} {
+		m[k] = true
+	}
+	return m
+}()
 
 // Redactor scrubs sensitive headers and JSON body fields and caps body
 // size. The user key list applies to both headers and body field names
@@ -84,7 +113,8 @@ func (r *Redactor) redactPath(path string) string {
 	}
 	redacted := false
 	for k, vals := range q {
-		if !r.keys[strings.ToLower(k)] {
+		lk := strings.ToLower(k)
+		if !r.keys[lk] && !defaultRedactQuery[lk] {
 			continue
 		}
 		for i := range vals {
