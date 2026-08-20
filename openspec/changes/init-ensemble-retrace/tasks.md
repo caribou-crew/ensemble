@@ -195,6 +195,18 @@ exists (see 6.0/6.1).
       `config.Validate` (1-65535). Today an absurd or negative value is
       accepted by config parsing and fails late at `docker run` with a
       docker-level error instead of a config error naming the field.
+- [ ] F.3 Count dropped hops in `SessionManager.route`
+      (`core/proxy/session.go`) and expose the count so a capture can report
+      it. Measured during the Phase 4 Task 5 review: `rep.Hops` is
+      snapshotted when `End` deletes the session from the map, and any hop
+      routed after that is dropped by `route` with **no counter** — the hop
+      vanishes and the run still reports `verdict: "ok"` with an empty
+      `trustNotes`. retrace's drain narrows this window but provably cannot
+      close it from the outside, so the fix has to live here.
+      This is the zero-value trap at system scale: "no hops were lost" and
+      "hops were lost and nobody counted them" currently serialize to
+      identical bytes. A counter alone is enough to tell them apart — the
+      race itself may stay.
 
 ## Stretch (post-v1)
 
