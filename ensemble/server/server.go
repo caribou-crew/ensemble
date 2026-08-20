@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/ensemble/config"
-	"github.com/ensemble-dev/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 )
 
 // Deps wires the server to the live orchestrator and proxy machinery it

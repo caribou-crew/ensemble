@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // Test: a service declaring both run and docker starts native by default

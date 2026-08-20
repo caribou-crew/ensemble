@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // SQLRunner executes one seed SQL file (path) against dbName. Task 2.5

@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // PostgresDSN builds a postgres connection string for db, following the

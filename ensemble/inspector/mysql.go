@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // MySQLDSN builds a mysql connection string for db, following the official

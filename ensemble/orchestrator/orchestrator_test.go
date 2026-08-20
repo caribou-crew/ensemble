@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // freePort finds a currently-unused TCP port on 127.0.0.1 by briefly

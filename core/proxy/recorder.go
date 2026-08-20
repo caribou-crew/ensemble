@@ -6,7 +6,7 @@ package proxy
 import (
 	"sync"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // RecorderOpts configures hop retention and scrubbing.

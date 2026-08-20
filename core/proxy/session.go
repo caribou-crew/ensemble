@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // Session is one recording run: an ephemeral client-edge listener that

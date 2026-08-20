@@ -1,7 +1,7 @@
-module github.com/ensemble-dev/ensemble/encore
+module github.com/caribou-crew/ensemble/encore
 
 go 1.25
 
-require github.com/ensemble-dev/ensemble/core v0.0.0
+require github.com/caribou-crew/ensemble/core v0.0.0
 
-replace github.com/ensemble-dev/ensemble/core => ../core
+replace github.com/caribou-crew/ensemble/core => ../core

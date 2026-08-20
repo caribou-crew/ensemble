@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // Task-review finding: Flip/Restart read o.procs/o.dockerNodes, act (kill,

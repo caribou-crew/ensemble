@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // Status is a ServiceState's lifecycle stage.

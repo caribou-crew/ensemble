@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // waitFor polls until cond passes or the deadline hits — session hops are
