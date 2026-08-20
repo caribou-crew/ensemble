@@ -26,6 +26,12 @@ type Deps struct {
 	Lat      *proxy.LatencyStore
 	Sessions *proxy.SessionManager
 	Version  string
+	// Shutdown, when set, is invoked (in a new goroutine, after the
+	// response is written) by POST /api/shutdown — typically the
+	// context.CancelFunc a caller (e.g. cmd/ensemble's `up`) uses to stop
+	// Serve. Nil disables the endpoint (501); the endpoint is further
+	// guarded to loopback callers regardless.
+	Shutdown func()
 }
 
 // server holds Deps plus nothing else — handlers are methods on it so they
