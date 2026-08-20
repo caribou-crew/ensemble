@@ -76,3 +76,85 @@ func TestListingsOfMissingRootAreEmptyNotPanic(t *testing.T) {
 		t.Fatalf("ListRuns = %v", got)
 	}
 }
+
+// TestPathsForRejectsTraversal — review finding 2 (Critical). app/flow/runID
+// can all originate from an HTTP request (Task 13's review server routes
+// /api/runs/{app}/{flow}/{run}/... straight into PathsFor), and
+// net/http.ServeMux cleans the path AFTER routing on the still-escaped
+// string, so a component containing ".." must never reach filepath.Join.
+func TestPathsForRejectsTraversal(t *testing.T) {
+	root := RunsRoot(t.TempDir())
+	cases := []struct {
+		name, app, flow, runID string
+	}{
+		{"dot-dot app", "..", "checkout", "r1"},
+		{"dot-dot flow", "web", "..", "r1"},
+		{"dot-dot runID escapes to etc", "web", "checkout", "../../../../etc/pwn"},
+		{"embedded dot-dot escapes root", "web", "checkout", "../../../../escaped"},
+		{"embedded separator", "web", "che/ckout", "r1"},
+		{"leading dot", "web", ".checkout", "r1"},
+		{"bare dot-dot everywhere", "..", "..", ".."},
+		{"empty component", "web", "", "r1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := PathsFor(root, c.app, c.flow, c.runID); err == nil {
+				t.Fatalf("PathsFor(%q,%q,%q) = nil error, want rejection", c.app, c.flow, c.runID)
+			}
+		})
+	}
+}
+
+func TestPathsForAcceptsRefRunID(t *testing.T) {
+	root := RefsRoot(t.TempDir())
+	if _, err := PathsFor(root, "web", "checkout", RefRunID); err != nil {
+		t.Fatalf("PathsFor with RefRunID must be accepted: %v", err)
+	}
+}
+
+// TestCreatePropagatesPathsForRejection — a rejected Create must leave no
+// trace anywhere the runs root can be listed from.
+func TestCreatePropagatesPathsForRejection(t *testing.T) {
+	root := RunsRoot(t.TempDir())
+	if _, err := Create(root, "web", "checkout", "../../../../escaped"); err == nil {
+		t.Fatal("Create must reject a traversal run id, not create a directory outside root")
+	}
+	if got := ListApps(root); len(got) != 0 {
+		t.Fatalf("a rejected Create must leave no trace: ListApps = %v", got)
+	}
+}
+
+// TestCreateFailsOnRunIDCollision — review finding 3 (Major). Two runs must
+// never silently share one directory: the second Create with the same run
+// id must fail, not adopt the first run's files.
+func TestCreateFailsOnRunIDCollision(t *testing.T) {
+	root := RunsRoot(t.TempDir())
+	if _, err := Create(root, "web", "checkout", "same-id"); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if _, err := Create(root, "web", "checkout", "same-id"); err == nil {
+		t.Fatal("a second Create with the same run id must fail, not silently merge into the first run's directory")
+	}
+}
+
+// TestListAppsErrDistinguishesMissingFromBroken — review finding 7 (Major).
+// A never-written root is legitimately empty; a root that exists but can't
+// be read (wrong permissions, a broken mount, or — as tested here — a
+// regular file where a directory is expected) must surface as an error,
+// not silently report "no runs".
+func TestListAppsErrDistinguishesMissingFromBroken(t *testing.T) {
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "never-created")
+	if got, err := ListAppsErr(missing); err != nil || len(got) != 0 {
+		t.Fatalf("ListAppsErr(missing) = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	notADir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := ListAppsErr(notADir); err == nil {
+		t.Fatal("ListAppsErr must surface a real error when root is not a directory")
+	}
+}
