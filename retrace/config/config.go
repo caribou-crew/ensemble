@@ -253,8 +253,17 @@ func (c *Config) NormalizePath(path string) string {
 //
 // The read-modify-write is serialized by overlayMu and the write itself is
 // atomic (temp file in the same directory, then os.Rename over the target),
-// so concurrent appends never lose a rule and a concurrent reader never
-// observes a partially-written file.
+// so within a single process concurrent appends never lose a rule, and a
+// concurrent reader — even one in another process — never observes a
+// partially-written file.
+//
+// overlayMu is an in-process mutex, though: it does not serialize appends
+// made by two separate OS processes, and this function does not implement
+// cross-process locking. If the future `retrace ref rule` command and the
+// review server both end up calling AppendWireRule concurrently as separate
+// processes, one of their appends can still be silently lost — that case is
+// out of scope here and belongs to whichever task first makes the review
+// server a second live writer.
 //
 // dir is a working-directory ROOT, exactly like runs.PathsFor's root — it
 // is intentionally not validated as a path component; only a

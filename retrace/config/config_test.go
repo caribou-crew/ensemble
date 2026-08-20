@@ -323,9 +323,22 @@ func TestAppendWireRuleNeverOverwritesExistingRules(t *testing.T) {
 // hand-written one. Merging it before survives the old suite silently.
 func TestOverlayRuleIsMergedAfterYamlAndCanOverrideIt(t *testing.T) {
 	dir := t.TempDir()
-	yamlSrc := "app: web\nwire_rules:\n  - path: /cart\n    body: { total: integer }\n"
+	// createdAt is set ONLY by the yaml rule; the overlay never touches it.
+	// It must still resolve after the overlay merges in — a mutant that
+	// replaces the merge with c.WireRules = overlay (discarding every
+	// hand-written rule the moment one overlay rule exists) would resolve
+	// this to "" while leaving the "total" assertion below green.
+	yamlSrc := "app: web\nwire_rules:\n  - path: /cart\n    body: { total: integer, createdAt: iso8601 }\n"
 	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte(yamlSrc), 0o644)
 	if err := AppendWireRule(dir, rules.Raw{Path: "/cart", Body: map[string]any{"total": "uuid"}}); err != nil {
+		t.Fatalf("AppendWireRule: %v", err)
+	}
+	// A second overlay append, distinct from the first, to pin that the
+	// on-disk overlay order is append order — an unpinned mutant that
+	// prepends instead of appends (existing = append([]rules.Raw{r},
+	// existing...)) would still leave the right COUNT of rules (M10 covers
+	// count) but in the wrong order.
+	if err := AppendWireRule(dir, rules.Raw{Path: "/other", Body: map[string]any{"x": "uuid"}}); err != nil {
 		t.Fatalf("AppendWireRule: %v", err)
 	}
 
@@ -340,6 +353,17 @@ func TestOverlayRuleIsMergedAfterYamlAndCanOverrideIt(t *testing.T) {
 	resolved := rules.Resolve(rs, "GET", "/cart")
 	if got := resolved.ForField("total").Name; got != "uuid" {
 		t.Fatalf(`overlay rule must win over the yaml rule for the same field, got matcher %q, want "uuid"`, got)
+	}
+	if got := resolved.ForField("createdAt").Name; got != "iso8601" {
+		t.Fatalf(`a yaml-only field must still resolve after Discover merges the overlay, got matcher %q, want "iso8601"`, got)
+	}
+
+	onDisk, err := readOverlay(filepath.Join(dir, OverlayPath))
+	if err != nil {
+		t.Fatalf("readOverlay: %v", err)
+	}
+	if len(onDisk) != 2 || onDisk[0].Path != "/cart" || onDisk[1].Path != "/other" {
+		t.Fatalf("on-disk overlay order must be append order, got %+v", onDisk)
 	}
 }
 
