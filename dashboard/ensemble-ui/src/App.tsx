@@ -4,10 +4,12 @@ import { api, ApiError } from './api/client';
 import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
 import TopologyView from './views/TopologyView';
+import TrafficView from './views/TrafficView';
 import './App.css';
 
-// Task 3.3/3.5 replace the remaining placeholders with the real views; the
-// shell, tab wiring, and ?view= deep link are this task's job.
+// Task 3.5 replaces the remaining placeholders (latency, inspector) with
+// the real views; the shell, tab wiring, and ?view= deep link were 3.1's
+// job, topology 3.2's, traffic this task's.
 const VIEWS: TabItem[] = [
   { id: 'topology', label: 'Topology' },
   { id: 'traffic', label: 'Traffic' },
@@ -103,7 +105,13 @@ export default function App() {
         <HealthStrip />
       </header>
       <main className="app-main">
-        {activeView === 'topology' ? <TopologyView /> : <PlaceholderView id={activeView} />}
+        {activeView === 'topology' ? (
+          <TopologyView />
+        ) : activeView === 'traffic' ? (
+          <TrafficView />
+        ) : (
+          <PlaceholderView id={activeView} />
+        )}
       </main>
     </div>
   );

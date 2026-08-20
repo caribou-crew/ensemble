@@ -1,0 +1,149 @@
+// Side panel for one selected hop: headers, bodies (via JsonView), a
+// start→firstByte→done timing strip, and export. Every field it renders
+// already lives on the Hop the caller has in hand (from /api/traffic or
+// the SSE stream) — no extra fetch needed, only the export endpoint is a
+// live network call.
+import { useState } from 'react';
+import { Badge } from '@ensemble/design-system';
+import type { Hop, Timings } from '../api/types';
+import { isRedactedValue } from '../redaction';
+import JsonView from './JsonView';
+import './HopDetail.css';
+
+export interface HopDetailProps {
+  hop: Hop;
+  onClose: () => void;
+  /** Jumps the dashboard into topology's causal view for this hop's trace
+   * (see TrafficView, which wires this to a `?view=topology&trace=` URL
+   * patch — TopologyView already reads `?trace=` on its own). Omitted
+   * (hop has no traceId) hides the link. */
+  onViewTrace?: (traceId: string) => void;
+}
+
+type ExportFormat = 'har' | 'curl' | 'raw';
+
+function exportUrl(traceId: string, format: ExportFormat): string {
+  return `/api/traces/${encodeURIComponent(traceId)}/export?format=${format}`;
+}
+
+function HeadersTable({ headers }: { headers?: Record<string, string> }) {
+  const entries = Object.entries(headers ?? {});
+  if (entries.length === 0) {
+    return <p className="hop-detail__empty">no headers</p>;
+  }
+  return (
+    <table className="hop-detail__headers">
+      <tbody>
+        {entries.map(([name, value]) => {
+          const redacted = isRedactedValue(value);
+          return (
+            <tr key={name}>
+              <td className="hop-detail__header-name">{name}</td>
+              <td className={redacted ? 'redacted' : undefined} title={redacted ? 'revealed in task 4.8' : undefined}>
+                {value}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function TimingStrip({ t, injectedDelayMs }: { t: Timings; injectedDelayMs?: number }) {
+  return (
+    <dl className="hop-detail__timing">
+      <dt>start</dt>
+      <dd>{new Date(t.start).toLocaleTimeString()}</dd>
+      <dt>first byte</dt>
+      <dd>{t.firstByteMs !== undefined ? `${Math.round(t.firstByteMs)}ms` : '—'}</dd>
+      <dt>done</dt>
+      <dd>{t.doneMs !== undefined ? `${Math.round(t.doneMs)}ms` : '—'}</dd>
+      <dt>injected delay</dt>
+      <dd>{injectedDelayMs ? `+${Math.round(injectedDelayMs)}ms` : '—'}</dd>
+    </dl>
+  );
+}
+
+export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const isError = (hop.status ?? 0) >= 400 || Boolean(hop.err);
+
+  async function handleExport(format: ExportFormat) {
+    if (!hop.traceId) return;
+    const url = exportUrl(hop.traceId, format);
+    window.open(url, '_blank', 'noopener');
+    if (format !== 'curl') return;
+    try {
+      const res = await fetch(url);
+      const text = await res.text();
+      await navigator.clipboard.writeText(text);
+      setCopyState('copied');
+    } catch {
+      // Best-effort clipboard copy — the export tab already opened
+      // regardless, so a clipboard-API failure (no permission, no
+      // navigator.clipboard in this context) isn't fatal.
+      setCopyState('failed');
+    } finally {
+      window.setTimeout(() => setCopyState('idle'), 1500);
+    }
+  }
+
+  return (
+    <aside className="hop-detail">
+      <div className="hop-detail__header">
+        <h3>
+          #{hop.seq} {hop.method} {hop.path}
+        </h3>
+        <button type="button" className="hop-detail__close" onClick={onClose} aria-label="close">
+          ×
+        </button>
+      </div>
+
+      <div className="hop-detail__meta">
+        <Badge tone={isError ? 'red' : 'green'}>{hop.err ? 'err' : (hop.status ?? '—')}</Badge>
+        <span className="hop-detail__route">
+          {hop.from ?? 'client'} → {hop.to}
+        </span>
+        {hop.traceId && onViewTrace && (
+          <button type="button" className="hop-detail__trace-link" onClick={() => onViewTrace(hop.traceId as string)}>
+            view in topology →
+          </button>
+        )}
+      </div>
+
+      {hop.err && <p className="hop-detail__err">{hop.err}</p>}
+
+      <TimingStrip t={hop.t} injectedDelayMs={hop.injectedDelayMs} />
+
+      <section className="hop-detail__section">
+        <h4>request headers</h4>
+        <HeadersTable headers={hop.req?.headers} />
+        <h4>request body</h4>
+        <JsonView body={hop.req?.body} truncated={hop.req?.truncated} />
+      </section>
+
+      <section className="hop-detail__section">
+        <h4>response headers</h4>
+        <HeadersTable headers={hop.resp?.headers} />
+        <h4>response body</h4>
+        <JsonView body={hop.resp?.body} truncated={hop.resp?.truncated} />
+      </section>
+
+      {hop.traceId && (
+        <div className="hop-detail__export">
+          <span className="hop-detail__export-label">export</span>
+          <button type="button" onClick={() => void handleExport('har')}>
+            har
+          </button>
+          <button type="button" onClick={() => void handleExport('curl')}>
+            {copyState === 'copied' ? 'copied!' : copyState === 'failed' ? 'copy failed' : 'curl'}
+          </button>
+          <button type="button" onClick={() => void handleExport('raw')}>
+            raw
+          </button>
+        </div>
+      )}
+    </aside>
+  );
+}

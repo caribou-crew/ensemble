@@ -1,0 +1,78 @@
+.hop-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.hop-table thead th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-hairline-strong);
+}
+
+.hop-table__row {
+  cursor: pointer;
+}
+
+.hop-table__row td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.hop-table__row:hover {
+  background: var(--bg-raised);
+}
+
+.hop-table__row--selected {
+  background: var(--accent-dim);
+}
+
+/* A chain's first row gets a slightly stronger top rule so consecutive
+   same-trace requests visibly bracket as one group, matching the waterfall
+   panel's chain language in TopologyView. */
+.hop-table__row--chain-start td {
+  border-top: 1px solid var(--border-hairline-strong);
+}
+
+.hop-table__seq {
+  color: var(--text-tertiary);
+}
+
+.hop-table__route-indent {
+  display: inline-flex;
+  align-items: center;
+}
+
+.hop-table__nest-glyph {
+  color: var(--text-tertiary);
+  margin-right: 0.25rem;
+}
+
+.hop-table__method {
+  color: var(--status-blue);
+  margin-right: 0.35rem;
+}
+
+.hop-table__request {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.hop-table__status--error {
+  color: var(--status-red);
+  font-weight: 600;
+}
+
+.hop-table__done {
+  color: var(--text-secondary);
+  text-align: right;
+}
