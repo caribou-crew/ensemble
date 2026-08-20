@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -329,23 +330,52 @@ func TestInspectorStreamEmitsChangeEvent(t *testing.T) {
 
 // readOneChangeEvent reads stream frames from r until an `event: change`
 // arrives (or deadline passes) and returns its raw JSON data line.
+// The deadline must win the race against the read, not merely be consulted
+// between completed lines: bufio.Reader.ReadString blocks indefinitely, and no
+// read deadline is set on the connection. Looping on time.Now().Before(deadline)
+// therefore never fires when it matters — a regression that stops delivering
+// events blocks forever, the package hits Go's 10-minute timeout, and CI reports
+// a goroutine dump instead of this test failing. Reading on a goroutine and
+// selecting against the deadline turns that into a clean assertion failure.
 func readOneChangeEvent(t *testing.T, r *bufio.Reader, deadline time.Time) string {
 	t.Helper()
-	for time.Now().Before(deadline) {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read stream: %v", err)
-		}
-		if strings.HasPrefix(line, "event: change") {
+
+	type result struct {
+		data string
+		err  error
+	}
+	// Buffered so the reader goroutine cannot block forever if the deadline wins.
+	ch := make(chan result, 1)
+	go func() {
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				ch <- result{err: fmt.Errorf("read stream: %w", err)}
+				return
+			}
+			if !strings.HasPrefix(line, "event: change") {
+				continue
+			}
 			dataLine, err := r.ReadString('\n')
 			if err != nil {
-				t.Fatalf("read data line: %v", err)
+				ch <- result{err: fmt.Errorf("read data line: %w", err)}
+				return
 			}
-			return strings.TrimPrefix(strings.TrimSpace(dataLine), "data: ")
+			ch <- result{data: strings.TrimPrefix(strings.TrimSpace(dataLine), "data: ")}
+			return
 		}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		return res.data
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("no change event observed within deadline")
+		return ""
 	}
-	t.Fatal("no change event observed within deadline")
-	return ""
 }
 
 // TestInspectorStreamFansOutToMultipleSubscribers guards the multi-subscriber
