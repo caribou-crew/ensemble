@@ -17,10 +17,12 @@ layout/timeline algorithms port from `local-stack/web` with their tests
 (inventory: `.superpowers/phase-3-porting-inventory.md`). One Go task adds
 the inspector + entity-passthrough endpoints the UI needs (API-first).
 
-**Tech Stack:** React 19, Vite 6, TypeScript strict, vitest (+ happy-dom for
-the few component tests), plain CSS with custom-property tokens (no
-component/router/query libraries — deliberate, carried from the prototype),
-@fontsource IBM Plex Sans/Mono. Go: stdlib only.
+**Tech Stack:** React 19, Vite 8, TypeScript 7, vitest 4 (+ happy-dom for
+the few component tests) — bleeding-edge majors per Steven's 2026-08-20
+decision (upgrade BEFORE more dashboard code lands; TS 7 is the from-scratch
+rewrite, budget migration friction, not a drop-in bump). Plain CSS with
+custom-property tokens (no component/router/query libraries — deliberate,
+carried from the prototype), @fontsource IBM Plex Sans/Mono. Go: stdlib only.
 
 **Spec:** `openspec/changes/init-ensemble-encore/specs/ensemble-api-dashboard/spec.md`
 (+ design.md §4.5, §4.6). Roadmap boxes 3.1–3.4 in
