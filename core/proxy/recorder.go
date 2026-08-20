@@ -33,6 +33,12 @@ type Recorder struct {
 	owners   map[string]string         // span id -> service name that opened it
 	ownerQ   []string                  // FIFO for owner eviction
 	ownerCap int
+	// traceSes maps trace id -> session id, claimed at request START so
+	// causal order holds even though hops are recorded at completion
+	// (nested calls complete inner-first).
+	traceSes  map[string]string
+	traceQ    []string
+	traceCap  int
 }
 
 func NewRecorder(opts RecorderOpts) *Recorder {
@@ -44,6 +50,8 @@ func NewRecorder(opts RecorderOpts) *Recorder {
 		subs:     map[chan trace.Hop]uint64{},
 		owners:   map[string]string{},
 		ownerCap: 65536,
+		traceSes: map[string]string{},
+		traceCap: 65536,
 	}
 }
 
@@ -137,4 +145,29 @@ func (r *Recorder) SpanOwner(spanID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.owners[spanID]
+}
+
+// ClaimTrace records which session a trace belongs to, at request start.
+func (r *Recorder) ClaimTrace(traceID, session string) {
+	if traceID == "" || session == "" {
+		return
+	}
+	r.mu.Lock()
+	if _, exists := r.traceSes[traceID]; !exists {
+		r.traceQ = append(r.traceQ, traceID)
+		if len(r.traceQ) > r.traceCap {
+			evict := r.traceQ[0]
+			r.traceQ = r.traceQ[1:]
+			delete(r.traceSes, evict)
+		}
+	}
+	r.traceSes[traceID] = session
+	r.mu.Unlock()
+}
+
+// TraceSession resolves a trace id to the session that owns it ("" if none).
+func (r *Recorder) TraceSession(traceID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.traceSes[traceID]
 }

@@ -1,0 +1,231 @@
+package proxy
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ensemble-dev/ensemble/core/trace"
+)
+
+// waitFor polls until cond passes or the deadline hits — session hops are
+// appended by the manager's subscription goroutine, not the request path.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// buildChain stands up svc-front -> svc-leaf, both intercepted, and returns
+// the front's normal intercept address plus the leaf proxy address.
+// propagate controls which headers svc-front forwards downstream.
+func buildChain(t *testing.T, p *Proxy, propagate []string) (frontAddr string) {
+	t.Helper()
+	leaf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"leaf":true}`)
+	}))
+	t.Cleanup(leaf.Close)
+	leafProxy, err := p.Serve(Target{Name: "svc-leaf", Listen: "127.0.0.1:0", Upstream: leaf.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequest("GET", "http://"+leafProxy+"/leaf", nil)
+		for _, k := range propagate {
+			if v := r.Header.Get(k); v != "" {
+				req.Header.Set(k, v)
+			}
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		fmt.Fprint(w, `{"front":true}`)
+	}))
+	t.Cleanup(front.Close)
+	frontProxy, err := p.Serve(Target{Name: "svc-front", Listen: "127.0.0.1:0", Upstream: front.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frontProxy
+}
+
+func mustGet(t *testing.T, url string) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("GET %s: %d", url, resp.StatusCode)
+	}
+}
+
+func TestTwoConcurrentSessionsPlusAmbientDoNotCrossContaminate(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 256})
+	p := New(rec)
+	defer p.Close()
+	frontProxy := buildChain(t, p, []string{"traceparent", "baggage"})
+
+	mgr := NewSessionManager(p, rec, []string{"svc-front"})
+	defer mgr.Close()
+
+	sesA, err := mgr.Start("run-A", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sesB, err := mgr.Start("run-B", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Note the session edge fronts the front-proxy itself, so a session call
+	// records edge hop + front hop + leaf hop = 3 session hops.
+	mustGet(t, "http://"+sesA.EdgeAddr+"/flow-a")
+	mustGet(t, "http://"+sesB.EdgeAddr+"/flow-b")
+	mustGet(t, "http://"+frontProxy+"/ambient") // interactive user, no session
+
+	waitFor(t, "session A hops", func() bool { return len(sesA.Hops()) == 3 })
+	waitFor(t, "session B hops", func() bool { return len(sesB.Hops()) == 3 })
+
+	for _, h := range sesA.Hops() {
+		if h.Session != "run-A" {
+			t.Fatalf("foreign hop in session A: %+v", h)
+		}
+	}
+	for _, h := range sesB.Hops() {
+		if h.Session != "run-B" {
+			t.Fatalf("foreign hop in session B: %+v", h)
+		}
+	}
+
+	// Ambient traffic reached the recorder but neither session.
+	waitFor(t, "ambient hops recorded", func() bool {
+		n := 0
+		for _, h := range rec.Snapshot() {
+			if h.Session == "" {
+				n++
+			}
+		}
+		return n == 2 // front + leaf for the ambient call
+	})
+
+	if v, _ := sesA.Verdict(); v != trace.VerdictOK {
+		t.Fatalf("session A verdict should be ok: %v", v)
+	}
+}
+
+func TestPropagationGapDegradesSessionAndNamesService(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 256})
+	p := New(rec)
+	defer p.Close()
+	// svc-front forwards traceparent but DROPS baggage — the provable gap.
+	frontProxy := buildChain(t, p, []string{"traceparent"})
+
+	mgr := NewSessionManager(p, rec, []string{"svc-front"})
+	defer mgr.Close()
+	ses, err := mgr.Start("run-X", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mustGet(t, "http://"+ses.EdgeAddr+"/flow")
+
+	waitFor(t, "degraded verdict", func() bool {
+		v, _ := ses.Verdict()
+		return v == trace.VerdictDegraded
+	})
+	_, reasons := ses.Verdict()
+	found := false
+	for _, r := range reasons {
+		if contains(r, "svc-front") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reason must name the non-propagating service: %v", reasons)
+	}
+}
+
+func TestUnattributedMidChainTrafficMarksSuspect(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 256})
+	p := New(rec)
+	defer p.Close()
+	leaf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer leaf.Close()
+	leafProxy, err := p.Serve(Target{Name: "svc-leaf", Listen: "127.0.0.1:0", Upstream: leaf.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer front.Close()
+	frontProxy, err := p.Serve(Target{Name: "svc-front", Listen: "127.0.0.1:0", Upstream: front.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewSessionManager(p, rec, []string{"svc-front"}) // leaf is NOT an entry
+	defer mgr.Close()
+	ses, err := mgr.Start("run-Y", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A context-less call lands mid-chain while the session is active.
+	mustGet(t, "http://"+leafProxy+"/direct")
+
+	waitFor(t, "suspect verdict", func() bool {
+		v, _ := ses.Verdict()
+		return v == trace.VerdictSuspect
+	})
+}
+
+func TestEndStopsEdgeAndFinalizesSession(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 64})
+	p := New(rec)
+	defer p.Close()
+	frontProxy := buildChain(t, p, []string{"traceparent", "baggage"})
+
+	mgr := NewSessionManager(p, rec, []string{"svc-front"})
+	defer mgr.Close()
+	ses, err := mgr.Start("run-Z", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustGet(t, "http://"+ses.EdgeAddr+"/flow")
+	waitFor(t, "hops", func() bool { return len(ses.Hops()) == 3 })
+
+	done := mgr.End("run-Z")
+	if done == nil || len(done.Hops()) != 3 {
+		t.Fatalf("End must return the finalized session")
+	}
+	// The edge listener is gone.
+	if _, err := http.Get("http://" + ses.EdgeAddr + "/x"); err == nil {
+		t.Fatal("edge listener still accepting after End")
+	}
+	if mgr.End("run-Z") != nil {
+		t.Fatal("double End must return nil")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
