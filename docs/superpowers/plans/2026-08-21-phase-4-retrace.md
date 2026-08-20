@@ -29,8 +29,11 @@ weight:
    (Task 15 here) exists. Sequencing it after part 1 is not a deferral, it
    is the only order in which it can be tested end to end.
 
-**What part 2 (`docs/superpowers/plans/<date>-phase-4b-retrace-encryption.md`)
-must cover — do not drop it:**
+**What part 2
+(`docs/superpowers/plans/<date>-phase-4b-retrace-encryption-and-a11y.md`)
+must cover — do not drop it.** Part 2 is box 4.8 (encryption) **plus the
+a11y-tree diff**, which is a spec SHALL that part 1 does not implement and
+which would otherwise have no plan anywhere:
 
 - `core/trace`: per-key redaction modes `display` / `encrypt` / `destroy`,
   defaulting auth-bearing headers (authorization, cookie, set-cookie, dpop)
@@ -55,6 +58,25 @@ must cover — do not drop it:**
   (ties into shipped 3.3) and the retrace review UI (Task 15 here). Task 15
   in THIS plan ships the masked rendering and the `.redacted` styling hook
   but no reveal.
+- **Non-retroactivity, stated as a testable guarantee.** Changing a
+  redaction mode affects **future captures only**; it never re-processes,
+  re-encrypts, or re-reveals a recording already on disk. A `destroy` is
+  **irreversible** — the original never existed in any artifact, so no key,
+  no rekey, and no mode change can recover it. Part 2 must carry a
+  RED-first test for each half (`TestChangingAModeDoesNotRewriteExistingRuns`,
+  `TestRekeyCannotRecoverADestroyedValue`). This is precisely the clause
+  that gets implemented backwards when it is left unwritten: the obvious
+  reading of "switch this field to display" is "and show me the ones I
+  already recorded."
+- **A11y-tree diff** (`retrace-diff-review` SHALL, flagged experimental
+  until device-verified). Part 1 explicitly does not port it — see
+  "Explicitly NOT ported" in the flowlens inventory below — and the
+  wrap-up records that deferral against the openspec change. Part 2 owns
+  it: capture the a11y tree alongside each checkpoint shot, diff it as a
+  tree (not as text), and surface it as a fourth section beside
+  pixels/wire/hops. It is listed here so the SHALL has a home; it is
+  independent of the encryption work and may be sequenced either side of
+  it.
 
 Everything below is part 1.
 
@@ -86,6 +108,28 @@ Adapters are plain TS with zero runtime dependencies.
 - `openspec/changes/init-ensemble-retrace/design.md` §6 and §7
 - Roadmap boxes 4.1–4.7 in `openspec/changes/init-ensemble-retrace/tasks.md`
 
+**Where this plan exceeds the spec.** Three additions are not in any spec.
+Each is argued at its task and each must be reported to the spec owner as an
+additive extension; none of them narrows or reinterprets a spec'd behaviour:
+
+1. **`RETRACE_MARKER_URL`** (Task 4) — a third handshake variable beside the
+   spec'd `RETRACE_RUN_DIR` / `RETRACE_PROXY_URL`, because Maestro cannot
+   write files from a flow. The two spec'd variables remain authoritative
+   and sufficient for the file-writing adapters.
+2. **`RETRACE_STRICT`** (Task 17) — an additive env var that makes adapters
+   fail loudly when the handshake env is absent. The spec says adapters
+   "SHALL fail loudly if invoked without them when strict mode is on" but
+   never names the switch that turns strict mode on; this is that switch.
+   Unset, checkpoints stay no-ops outside a run, which is the spec'd
+   default behaviour.
+3. **The `core/httpguard` extraction** (Task 4) — moving
+   `ensemble/server/guard.go` into `core` so retrace's marker door and
+   review server sit behind the *same* guard rather than a copy. No spec
+   asks for the refactor; the alternative is three drifting copies of a
+   security check, which is worse. It is a pure move plus a rename: the
+   ensemble behaviour must not change, and Task 4 proves that by keeping
+   ensemble's existing guard tests green unmodified.
+
 ## Global Constraints
 
 - Go 1.25 workspace (`go.work` uses `./core ./retrace ./ensemble`); module
@@ -106,8 +150,13 @@ Adapters are plain TS with zero runtime dependencies.
   from a request value must root at `/` and `path.Clean` before use — see
   `ensemble/server/ui/ui.go` for the shape.
 - Every new HTTP route sits behind the existing Origin/Host guard
-  (`ensemble/server/guard.go`, extracted to `core/httpguard` in Task 13).
-  Control planes bind loopback only (`127.0.0.1`).
+  (`ensemble/server/guard.go`, extracted to `core/httpguard` in **Task 4**,
+  the task that first needs it). **No task may inline a second copy of any
+  part of that guard** — not the `Sec-Fetch-Site` check, not the Host
+  check, not the Origin check. Every loopback listener in this plan
+  (Task 4's marker door, Task 12's replay server, Task 13's review server)
+  wraps its mux in `httpguard.Handler`. Control planes bind loopback only
+  (`127.0.0.1`).
 - Dashboard toolchain: Vite 8 / TypeScript 7 (native `tsgo`) / vitest 4 /
   happy-dom. **No router, no data-fetching library, no component library.**
   URL-as-state via `history.replaceState`.
@@ -134,6 +183,15 @@ Adapters are plain TS with zero runtime dependencies.
 - `go test -race ./core/... ./ensemble/... ./retrace/...` AND `pnpm -r test`
   green at every commit, run from the repo root (bare `./...` does not
   resolve there). `gofmt` and `go vet` clean.
+- **Every exported Go field that crosses the wire carries an explicit
+  `json:` tag, in camelCase.** This covers all of `retrace/runs`,
+  `retrace/diff`, `retrace/serve`, `retrace/replay`, and `retrace/capture`.
+  Untagged exported fields marshal as `"Method"`, `"NewRoutes"`,
+  `"NormalizedPath"` — which would break, simultaneously and silently,
+  every REST response, the `--json` CI contract, `summary.json`, the static
+  export, and every TS mirror in Task 15. The tags are written into the type
+  declarations in this plan; they are not an implementer's judgment call. A
+  new exported field on a wire type without a tag is a review rejection.
 - One hop schema. `core/trace.Hop` (`schema: "ensemble/1"`) is what
   `wire.jsonl` and `hops.jsonl` contain, verbatim. retrace never defines a
   parallel record type for captured traffic.
@@ -188,7 +246,9 @@ do not. Same format as `docs/phase-3-porting-inventory.md`.
   corpus-mining specifics outside this product's scope.
 - `src/a11y-diff.mjs` — spec keeps a11y-tree diff "flagged experimental
   until device-verified". Deferred out of part 1; not in any task here.
-  Note it in the openspec change when part 1 lands.
+  **It is not dropped: part 2 owns it** (see the part-2 enumeration in the
+  scope ruling above). Note the deferral and its part-2 home in the
+  openspec change when part 1 lands.
 - `src/redact.mjs` — superseded by the shipped `core/trace.Redactor`.
 
 ### Architecture facts worth knowing before porting
@@ -211,8 +271,10 @@ do not. Same format as `docs/phase-3-porting-inventory.md`.
 
 ```
 core/
-  httpguard/guard.go          # Task 13: the Origin/Host + Sec-Fetch-Site guard,
-  httpguard/guard_test.go     #   moved out of ensemble/server so both products share it
+  httpguard/guard.go          # T4  the Origin/Host + Sec-Fetch-Site guard, moved out of
+  httpguard/guard_test.go     #     ensemble/server so both products share ONE copy. Extracted
+                              #     in T4 because T4's marker door is its first consumer;
+                              #     T12's replay server and T13's review server also wrap it.
 retrace/
   cmd/retrace/
     main.go                   # T1  dispatch + usage (mirrors ensemble/cmd/ensemble/main.go)
@@ -249,8 +311,11 @@ retrace/
     status.go status_test.go          # T9
     perf.go perf_test.go              # T9
     openapi.go openapi_test.go        # T9
-    summary.go summary_test.go        # T10
-    deviations.go deviations_test.go  # T11 (in diff, not refs — one-way dependency)
+    summary.go summary_test.go        # T10 Summary, Build, OptionsFor, ExitCode
+    deviations.go                     # T8  Deviation/ToleratedNote TYPES (diff's own structs
+                                      #     reference them, so they must compile with T8)
+                                      # T11 appends the ledger: Load/Resolve/Find
+    deviations_test.go                # T11
   refs/
     refs.go refs_test.go              # T11 bundles, resolve, accept
   replay/
@@ -262,6 +327,7 @@ retrace/
     routes.go routes_test.go          # T13 REST verbs
     server.go                         # T13
     export.go export_test.go          # T16 static report
+    report.tmpl.html                  # T16 the go:embed target (must exist to compile)
     ui/ui.go ui_test.go               # T15 go:embed of retrace-ui
     ui/dist/index.html                # T15 committed placeholder ONLY
 dashboard/design-system/
@@ -662,8 +728,11 @@ type Manifest struct {
 	StartedAt   time.Time    `json:"startedAt"`
 	FinishedAt  time.Time    `json:"finishedAt"`
 	Checkpoints []Checkpoint `json:"checkpoints"`
-	Device      *Device      `json:"device,omitempty"`
-	Groups      []Group      `json:"groups,omitempty"`
+	// Groups is the flow-part timeline, folded from groups.jsonl by
+	// Task 4's run body at manifest time. Task 10 loads it from BOTH
+	// manifests and feeds diff.Options.GroupsA/GroupsB, which is what
+	// gives the wire diff its named sections.
+	Groups []Group `json:"groups,omitempty"`
 	// Capture is never omitted: "no verdict recorded" and "verdict ok" must
 	// not serialize the same way, or a broken capture reads as a clean one.
 	Capture CaptureTrust `json:"capture"`
@@ -682,17 +751,20 @@ type Git struct {
 }
 
 type Checkpoint struct {
-	Name   string `json:"name"`
-	File   string `json:"file"` // run-dir-relative, e.g. "shots/cart.png"
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-}
-
-type Device struct {
-	Name   string `json:"name,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
-	Source string `json:"source,omitempty"` // "playwright" | "maestro" | "manual"
+	Name string `json:"name"`
+	File string `json:"file"` // run-dir-relative, e.g. "shots/cart.png"
+	// Width and Height are the shot's REAL geometry, always pre-trim. A
+	// checkpoint that asked for border trimming still reports what was
+	// captured; trimming is a compare-time decision (Tasks 7 and 10) and
+	// the rect actually used is reported there, per checkpoint pair.
+	Width  int `json:"width"`
+	Height int `json:"height"`
+	// Trim records that a `<name>.trim` marker sat beside the shot — the
+	// adapter asked for uniform-border trimming at compare time. Reading
+	// the marker here, rather than in the pixel engine, is what keeps
+	// `capture` from importing `pixel`: capture records a fact, compare
+	// acts on it.
+	Trim bool `json:"trim,omitempty"`
 }
 
 type Counts struct {
@@ -1755,8 +1827,8 @@ splits the user-facing story for no gain.
   func (n Normalize) Apply(path string) string
   type StatusRule struct { Path string; Status int }
   type RequiredRoute struct { Method, Path string; Status int }
-  type Rect struct { X, Y, Width, Height int }
-  type Thresholds struct { Gate, Fine float64 }   // defaults 0.1 / 0.05
+  type Rect struct { X, Y, Width, Height int }    // json+yaml tags, see Step 3
+  type Thresholds struct { Gate, Fine float64 }   // defaults DefaultGate / DefaultFine
   func Load(path string) (*Config, error)
   func Discover(cwd string) (*Config, error)      // retrace.yaml then .retrace/wire-rules.json overlay
   func (c *Config) Rules() ([]rules.Rule, error)
@@ -1824,8 +1896,36 @@ func TestAppendWireRuleWritesTheOverlayAndDiscoverMergesItAfterYaml(t *testing.T
 	if len(cfg.WireRules) != 1 { t.Fatalf("duplicate rule appended: %+v", cfg.WireRules) }
 }
 
-func TestAnInvalidMatcherFailsLoadNamingTheRule(t *testing.T)  // wire_rules[0].headers.date: "httpdate" → error mentions "wireRules[0].headers.date"
-func TestMasksForFallsBackToTheWildcardCheckpoint(t *testing.T) // masks: {"*": [...]} applies to every checkpoint
+// An unknown matcher must fail Load and NAME the offending rule. A config
+// error that says only "invalid matcher" costs an editing round-trip on a
+// file that may hold fifty rules.
+func TestAnInvalidMatcherFailsLoadNamingTheRule(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("wire_rules:\n  - path: /cart\n    headers:\n      date: httpdate\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("an unknown matcher must fail Load")
+	}
+	if !strings.Contains(err.Error(), "wireRules[0].headers.date") {
+		t.Fatalf("error must name the rule, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "http-date") {
+		t.Fatalf("error should suggest the real matcher name, got: %v", err)
+	}
+}
+
+func TestMasksForFallsBackToTheWildcardCheckpoint(t *testing.T) {
+	c := &Config{Masks: map[string][]Rect{"*": {{X: 0, Y: 0, Width: 10, Height: 10}}}}
+	if got := c.MasksFor("checkout", "cart"); len(got) != 1 || got[0].Width != 10 {
+		t.Fatalf(`the "*" key must apply to every checkpoint, got %+v`, got)
+	}
+	c.Masks["cart"] = []Rect{{X: 1, Y: 1, Width: 20, Height: 20}}
+	if got := c.MasksFor("checkout", "cart"); len(got) != 1 || got[0].Width != 20 {
+		t.Fatalf("a named checkpoint must win over the wildcard, got %+v", got)
+	}
+}
 ```
 
 - [ ] **Step 2: Run — expect FAIL** (`undefined: Load`).
@@ -1859,12 +1959,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	c.Dir = filepath.Dir(path)
-	if c.Thresholds.Gate == 0 {
-		c.Thresholds.Gate = 0.1
-	}
-	if c.Thresholds.Fine == 0 {
-		c.Thresholds.Fine = 0.05
-	}
+	applyDefaults(&c)
 	for i := range c.PathNormalize {
 		re, err := regexp.Compile(c.PathNormalize[i].Pattern)
 		if err != nil {
@@ -1884,7 +1979,11 @@ func Load(path string) (*Config, error) {
 // missing retrace.yaml is not an error — an app with no config still records
 // and diffs, it just has no rules.
 func Discover(cwd string) (*Config, error) {
-	c := &Config{Dir: cwd, Thresholds: Thresholds{Gate: 0.1, Fine: 0.05}}
+	// Defaults have ONE source: applyDefaults, which Load also calls. The
+	// earlier draft re-hardcoded 0.1/0.05 here, which is two places to
+	// change a number that appears in every pixel verdict.
+	c := &Config{Dir: cwd}
+	applyDefaults(c)
 	if _, err := os.Stat(filepath.Join(cwd, "retrace.yaml")); err == nil {
 		c, err = Load(filepath.Join(cwd, "retrace.yaml"))
 		if err != nil {
@@ -1938,8 +2037,65 @@ func AppendWireRule(dir string, r rules.Raw) error {
 }
 ```
 
-`MasksFor` resolves per-flow masks first, then top-level, then the `"*"`
-wildcard key, returning the first non-empty list.
+`applyDefaults` is the single home for every zero-value fallback in this
+package — `Load` calls it after decoding, `Discover` calls it for the
+no-config case, and nothing else hardcodes a default:
+
+```go
+// DefaultGate and DefaultFine are the pixel thresholds every verdict is
+// measured against. They are named constants because they appear in
+// report copy, in `retrace diff --help`, and in the docs.
+const (
+	DefaultGate = 0.1
+	DefaultFine = 0.05
+)
+
+func applyDefaults(c *Config) {
+	if c.Thresholds.Gate == 0 {
+		c.Thresholds.Gate = DefaultGate
+	}
+	if c.Thresholds.Fine == 0 {
+		c.Thresholds.Fine = DefaultFine
+	}
+}
+```
+
+`MasksFor` is real code, not a description — Task 10 calls it per
+checkpoint and converts the result into `pixel.Rect`:
+
+```go
+// Rect is the config-facing rectangle. It is deliberately NOT pixel.Rect:
+// retrace/config must not import retrace/pixel (config is the leaf every
+// package reads). Task 10 and Task 11 convert at the call site; the
+// conversion is one function, pixel.RectsFrom, and it lives in the pixel
+// package for the same reason.
+type Rect struct {
+	X      int `json:"x" yaml:"x"`
+	Y      int `json:"y" yaml:"y"`
+	Width  int `json:"width" yaml:"width"`
+	Height int `json:"height" yaml:"height"`
+}
+
+// MasksFor resolves the masks for one checkpoint: the flow's own map wins,
+// then the top-level map, and within each the named checkpoint wins over
+// the "*" wildcard. First non-empty list wins; an explicit empty list at a
+// more specific level does NOT mask anything (use it to opt a checkpoint
+// out of a wildcard).
+func (c *Config) MasksFor(flow, checkpoint string) []Rect {
+	for _, m := range []map[string][]Rect{c.Flows[flow].Masks, c.Masks} {
+		if m == nil {
+			continue
+		}
+		if r, ok := m[checkpoint]; ok {
+			return r
+		}
+		if r, ok := m["*"]; ok {
+			return r
+		}
+	}
+	return nil
+}
+```
 
 - [ ] **Step 4: Run — expect PASS** (`go test ./retrace/config/ -v`).
 
@@ -1958,6 +2114,8 @@ git commit -m "feat(retrace): retrace.yaml config with machine-owned wire-rule o
 ### Task 4: Standalone capture — `retrace run` without ensemble, marker door, env handshake
 
 **Files:**
+- Create: `core/httpguard/guard.go`, `core/httpguard/guard_test.go`
+- Modify: `ensemble/server/guard.go` (becomes a 4-line delegator), `ensemble/server/server.go:89`
 - Create: `retrace/capture/capture.go`, `retrace/capture/capture_test.go`
 - Create: `retrace/capture/markers.go`, `retrace/capture/markers_test.go`
 - Create: `retrace/cmd/retrace/cmd_run.go`, `retrace/cmd/retrace/cmd_run_test.go`
@@ -1970,6 +2128,16 @@ git commit -m "feat(retrace): retrace.yaml config with machine-owned wire-rule o
   `(*proxy.Recorder).Snapshot() []trace.Hop`, `(*proxy.Recorder).Subscribe(cursor uint64) (<-chan trace.Hop, func() uint64, func())`;
   `core/trace` — `trace.NewRedactor(userKeys []string, maxBody int) *trace.Redactor`, `trace.NewWriter(io.Writer) *trace.Writer`;
   `retrace/runs`, `retrace/config`.
+- Produces (used by Tasks 12, 13 — every loopback listener in this plan):
+  ```go
+  package httpguard
+  // Handler wraps h with the DNS-rebinding and cross-origin protections a
+  // loopback control plane needs. allowedHosts extends the always-allowed
+  // loopback literals and "localhost"; the single entry "*" disables
+  // host/origin matching (Sec-Fetch-Site is still enforced). Pass nil for
+  // a listener that should answer only as loopback.
+  func Handler(allowedHosts []string, h http.Handler) http.Handler
+  ```
 - Produces (used by Tasks 5, 6):
   ```go
   package capture
@@ -2007,7 +2175,66 @@ marker door and exports `RETRACE_MARKER_URL`. **Report this to the spec
 owner as an additive extension**; the two spec'd variables remain
 authoritative and sufficient for the file-writing adapters.
 
-- [ ] **Step 1: Write the failing marker-door test**
+- [ ] **Step 1: Extract the guard**
+
+Move `ensemble/server/guard.go`'s body into `core/httpguard/guard.go`
+verbatim — **including every explanatory comment**, they are the security
+rationale — exporting `Handler(allowedHosts []string, h http.Handler)` and
+keeping `hostSet`/`newHostSet`/`originAllowed`/`hostOnly` unexported there.
+It needs its own error writer (`writeErr`) since it can no longer use the
+server package's.
+
+Replace `ensemble/server/guard.go` with:
+```go
+package server
+
+import (
+	"net/http"
+
+	"github.com/caribou-crew/ensemble/core/httpguard"
+)
+
+// guard is the shared browser-facing protection, now living in
+// core/httpguard so retrace's marker door (Task 4), replay server
+// (Task 12) and review server (Task 13) get the identical treatment — the
+// rationale (CSRF against an unauthenticated loopback control plane; DNS
+// rebinding) applies to every one of them, and a second copy would drift.
+func guard(allowedHosts []string, h http.Handler) http.Handler {
+	return httpguard.Handler(allowedHosts, h)
+}
+```
+and `server.go:89` becomes `return guard(d.AllowedHosts, mux)`.
+
+Move `ensemble/server/guard_test.go`'s six cases —
+`TestGuardRejectsForeignHost`, `TestGuardAllowsLoopbackHostAndOrigin`,
+`TestGuardRejectsCrossOriginMutation`, `TestGuardRejectsNullOrigin`,
+`TestGuardRejectsCrossSiteFetchMetadata`,
+`TestGuardAllowsConfiguredNonLoopbackHost` (verified: those are exactly the
+six in the file today) — into `core/httpguard/guard_test.go`, rewritten
+against `httpguard.Handler` directly rather than through `server.New`.
+Leave ONE integration test behind in `ensemble/server` —
+`TestServerRejectsCrossOriginRequests`, a new thin test through
+`server.New` — proving the wiring survived the move. **Do not weaken or
+re-derive any assertion while moving them:** this step must be a pure
+refactor, and the six tests passing unchanged in their new home is the only
+evidence of that.
+
+Run: `go test -race ./core/httpguard/ ./ensemble/server/ -v` → PASS.
+Commit this step on its own: `refactor(core): extract the Origin/Host guard
+into core/httpguard for both products`.
+
+**Why this lives in Task 4 and not later.** The marker door two steps down
+is the first loopback listener retrace opens, and the version of this plan
+that reviewed clean had it inlining its own copy of the `Sec-Fetch-Site`
+check with the comment "same reasoning as `ensemble/server/guard.go`" — a
+copy that was **strictly weaker than the original**: no Host check (so DNS
+rebinding worked against it) and no Origin check. Extracting first and
+consuming immediately means the duplicate is never written. This is a
+plan-exceeds-spec refactor (see "Where this plan exceeds the spec"): it is
+a pure move, ensemble's behaviour must not change, and the proof is that
+ensemble's own guard tests stay green.
+
+- [ ] **Step 2: Write the failing marker-door test**
 
 `retrace/capture/markers_test.go`:
 ```go
@@ -2031,21 +2258,73 @@ func TestMarkerDoorAppendsStartAndEndRecords(t *testing.T) {
 	}
 }
 
+// 400 is the healthy answer here and is what a preflight probe keys on: the
+// door exists and refused a nameless marker. Anything else means some OTHER
+// server holds the port.
 func TestMarkerDoorRejectsAnUnnamedStart(t *testing.T) {
-	// 400 is the healthy answer and is what a preflight probe keys on: the
-	// door exists and refused a nameless marker. Anything else means some
-	// OTHER server holds the port.
+	srv := httptest.NewServer(NewMarkerDoor(t.TempDir(), nil))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/group", "application/json", strings.NewReader(`{"name":"  "}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
 }
 
-func TestMarkerDoorRejectsCrossSiteBrowserRequests(t *testing.T) {
-	// Sec-Fetch-Site: cross-site → 403. The door is loopback-bound but a
-	// page the developer has open can still reach 127.0.0.1.
+// A malformed body must not read as an empty one — otherwise an adapter
+// posting garbage looks exactly like an adapter posting nothing.
+func TestMarkerDoorRejectsAMalformedBody(t *testing.T) {
+	srv := httptest.NewServer(NewMarkerDoor(t.TempDir(), nil))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/group", "application/json", strings.NewReader(`{"name":`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// The door is loopback-bound, but a page the developer has open can still
+// reach 127.0.0.1. This asserts the door is behind httpguard.Handler and
+// not a hand-rolled subset of it: cross-site is refused, and so is a Host
+// header naming somebody else's domain (the DNS-rebinding case the old
+// inlined copy did not cover).
+func TestMarkerDoorRejectsCrossSiteAndReboundHosts(t *testing.T) {
+	dir := t.TempDir()
+	h := NewMarkerDoor(dir, nil)
+
+	crossSite := httptest.NewRequest("POST", "http://127.0.0.1/group", strings.NewReader(`{"name":"checkout"}`))
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, crossSite)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site status = %d, want 403", rec.Code)
+	}
+
+	rebound := httptest.NewRequest("POST", "http://127.0.0.1/group", strings.NewReader(`{"name":"checkout"}`))
+	rebound.Host = "attacker.example"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, rebound)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rebound-Host status = %d, want 403", rec.Code)
+	}
+
+	if recs, _ := runs.ReadGroupRecords(dir); len(recs) != 0 {
+		t.Fatalf("a rejected request wrote %d marker records", len(recs))
+	}
 }
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (`undefined: NewMarkerDoor`).
+- [ ] **Step 3: Run — expect FAIL** (`undefined: NewMarkerDoor`).
 
-- [ ] **Step 3: Implement `retrace/capture/markers.go`**
+- [ ] **Step 4: Implement `retrace/capture/markers.go`**
 
 ```go
 package capture
@@ -2056,6 +2335,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/httpguard"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -2074,7 +2354,14 @@ func NewMarkerDoor(runDir string, now func() time.Time) http.Handler {
 			Name  string `json:"name"`
 			Quiet bool   `json:"quiet"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		// A decode error is reported, not swallowed: a malformed marker body
+		// and an empty one are different mistakes, and an adapter that is
+		// silently posting garbage would otherwise look like an adapter that
+		// is working.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"marker body is not valid JSON: `+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
 		if strings.TrimSpace(body.Name) == "" {
 			http.Error(w, `{"error":"group markers require a non-empty name"}`, http.StatusBadRequest)
 			return
@@ -2094,22 +2381,18 @@ func NewMarkerDoor(runDir string, now func() time.Time) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// Same reasoning as ensemble/server/guard.go: loopback keeps the network
-	// out but not a browser tab. Sec-Fetch-Site is set by the browser and
-	// cannot be forged by page script.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
-			http.Error(w, `{"error":"cross-site browser requests are not permitted"}`, http.StatusForbidden)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	// The SAME guard ensemble's control plane uses — not a copy of its
+	// Sec-Fetch-Site check. Loopback keeps the network out but not a browser
+	// tab, and the door is a state-changing POST endpoint on a predictable
+	// port, so it needs the Host (DNS-rebinding) and Origin checks too, not
+	// just the cross-site one. nil allowed-hosts = answer only as loopback.
+	return httpguard.Handler(nil, mux)
 }
 ```
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 5: Run — expect PASS.**
 
-- [ ] **Step 5: Write the failing standalone-capture test**
+- [ ] **Step 6: Write the failing standalone-capture test**
 
 `retrace/capture/capture_test.go`:
 ```go
@@ -2147,19 +2430,67 @@ func TestStandaloneCaptureRecordsClientEdgeHopsAndWritesWireJsonl(t *testing.T) 
 }
 
 func TestSessionEnvCarriesTheFullHandshake(t *testing.T) {
-	// RETRACE_RUN_DIR, RETRACE_PROXY_URL, RETRACE_MARKER_URL all present and
-	// non-empty; RETRACE_RUN_DIR == s.Paths.RunDir.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	env := map[string]string{}
+	for _, kv := range s.Env() {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	for _, k := range []string{"RETRACE_RUN_DIR", "RETRACE_PROXY_URL", "RETRACE_MARKER_URL"} {
+		if env[k] == "" {
+			t.Errorf("%s is missing or empty; the handshake is all-or-nothing", k)
+		}
+	}
+	if env["RETRACE_RUN_DIR"] != s.Paths.RunDir {
+		t.Errorf("RETRACE_RUN_DIR = %q, want %q", env["RETRACE_RUN_DIR"], s.Paths.RunDir)
+	}
 }
 
+// Geometry comes from the PNG header, and it is the shot's REAL geometry —
+// pre-trim. Trimming is a compare-time decision (Task 7/Task 10); the
+// manifest records what was actually captured.
 func TestCheckpointsReadsShotGeometryFromPngHeaders(t *testing.T) {
-	// write a 40x40 PNG into s.Paths.ShotsDir/cart.png → Checkpoints()
-	// returns {Name:"cart", File:"shots/cart.png", Width:40, Height:40}.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 40, 40))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Paths.ShotsDir, "cart.png"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling marker file must not be mistaken for a checkpoint.
+	if err := os.WriteFile(filepath.Join(s.Paths.ShotsDir, "cart.trim"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cps, err := s.Checkpoints()
+	if err != nil {
+		t.Fatalf("Checkpoints: %v", err)
+	}
+	want := []runs.Checkpoint{{Name: "cart", File: "shots/cart.png", Width: 40, Height: 40, Trim: true}}
+	if !reflect.DeepEqual(cps, want) {
+		t.Fatalf("checkpoints = %+v, want %+v", cps, want)
+	}
 }
 ```
 
-- [ ] **Step 6: Run — expect FAIL** (`undefined: StartStandalone`).
+- [ ] **Step 7: Run — expect FAIL** (`undefined: StartStandalone`).
 
-- [ ] **Step 7: Implement `retrace/capture/capture.go`**
+- [ ] **Step 8: Implement `retrace/capture/capture.go`**
 
 ```go
 // Package capture owns the recording half of retrace: it opens (or borrows)
@@ -2173,12 +2504,15 @@ import (
 	"fmt"
 	"image"
 	_ "image/png"
+	"context"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -2205,13 +2539,25 @@ type Session struct {
 	Mode      string
 	StartedAt time.Time
 
-	rec        *proxy.Recorder
-	prox       *proxy.Proxy
-	stopProxy  func()
-	markerSrv  *http.Server
-	wireFile   *os.File
-	requests   atomic.Int64
-	closed     bool
+	rec       *proxy.Recorder
+	prox      *proxy.Proxy
+	stopProxy func()
+	markerSrv *http.Server
+	wireFile  *os.File
+	requests  atomic.Int64
+	closed    bool
+
+	mu           sync.Mutex
+	proxyFailure *ProxyFailure
+}
+
+// ProxyFailure is the one structured "the interceptor itself misbehaved"
+// fact a run can record. Phase is always "running": see Session.ProxyDied.
+// Task 6's Assess consumes this type; it is declared HERE, in the task that
+// produces it, so package capture has exactly one declaration of it.
+type ProxyFailure struct {
+	Phase   string `json:"phase"` // always "running" — see ProxyDied
+	Message string `json:"message"`
 }
 
 func StartStandalone(o Options) (*Session, error) {
@@ -2292,23 +2638,89 @@ func (s *Session) Env() []string {
 	}
 }
 
-func (s *Session) Hops() []trace.Hop { return s.rec.Snapshot() }
+func (s *Session) Hops() []trace.Hop {
+	if s.rec == nil {
+		return nil
+	}
+	return s.rec.Snapshot()
+}
 
 // RequestsSeen counts everything that reached retrace at all — proxied calls
 // plus markers. Zero of these is proof the app never routed through us,
 // which is a different (and much worse) fact than "the flow made no calls".
-func (s *Session) RequestsSeen() int { return len(s.rec.Snapshot()) + int(s.requests.Load()) }
+//
+// The nil check is load-bearing, not defensive style. In ensemble-attached
+// mode (Task 5) there is no local Recorder at all — ensemble owns the
+// listener and retrace drains hops over REST — so s.rec is nil, and
+// (*proxy.Recorder).Snapshot takes r.mu.Lock() on its receiver, which
+// panics on nil. Task 6 feeds RequestsSeen into Assess on EVERY run, so
+// without this guard every ensemble-attached `retrace run` crashes at
+// manifest time. Task 5 counts attached traffic into s.requests instead.
+func (s *Session) RequestsSeen() int {
+	n := int(s.requests.Load())
+	if s.rec != nil {
+		n += len(s.rec.Snapshot())
+	}
+	return n
+}
 
 func (s *Session) Close() error {
 	if s.closed {
 		return nil
 	}
 	s.closed = true
-	s.stopProxy()
+	if s.stopProxy != nil {
+		s.stopProxy()
+	}
 	if s.markerSrv != nil {
 		s.markerSrv.Close()
 	}
 	return s.wireFile.Close()
+}
+
+// ProxyDied records that the client-edge listener stopped answering while
+// the test command was still running. This is the ONLY producer of a
+// capture.ProxyFailure (Task 6 ranks it `broken/proxy-died`), and it is
+// what makes that reason code reachable outside its unit test: a bind
+// failure aborts StartStandalone before a manifest exists, so there is no
+// such thing as a recorded `proxy-never-started`.
+func (s *Session) ProxyDied(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.proxyFailure == nil {
+		s.proxyFailure = &ProxyFailure{Phase: "running", Message: err.Error()}
+	}
+}
+
+// ProxyFailure returns the recorded running-phase failure, or nil. Task 4's
+// run body calls this after the test command exits and passes the result
+// into Task 6's Assess.
+func (s *Session) ProxyFailure() *ProxyFailure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.proxyFailure
+}
+
+// WatchProxy polls the client-edge listener while the test command runs. A
+// listener that stops accepting is the difference between "the flow made no
+// calls" and "the flow's calls went nowhere" — Task 6 must be able to tell
+// those apart, and only this loop can tell it.
+func (s *Session) WatchProxy(ctx context.Context) {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c, err := net.DialTimeout("tcp", strings.TrimPrefix(s.ProxyURL, "http://"), 200*time.Millisecond)
+			if err != nil {
+				s.ProxyDied(err)
+				return
+			}
+			c.Close()
+		}
+	}
 }
 
 // Checkpoints reads shots/*.png and decodes each header for geometry. PNG
@@ -2333,11 +2745,21 @@ func (s *Session) Checkpoints() ([]runs.Checkpoint, error) {
 		if err != nil {
 			return nil, fmt.Errorf("checkpoint %s is not a readable PNG: %w", e.Name(), err)
 		}
+		name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		// A `<name>.trim` marker beside the shot means the adapter asked
+		// for uniform-border trimming. Record the request; do NOT trim
+		// here. Trimming needs retrace/pixel, and capture importing pixel
+		// would put a capture → pixel edge in a dependency graph that is
+		// deliberately capture → runs, proxy, trace. Width/Height stay
+		// pre-trim for the same reason: the manifest reports what was
+		// captured, and the compare step reports what it used.
+		_, trimErr := os.Stat(filepath.Join(s.Paths.ShotsDir, name+".trim"))
 		out = append(out, runs.Checkpoint{
-			Name:   strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())),
+			Name:   name,
 			File:   filepath.ToSlash(filepath.Join("shots", e.Name())),
 			Width:  cfg.Width,
 			Height: cfg.Height,
+			Trim:   trimErr == nil,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -2347,16 +2769,38 @@ func (s *Session) Checkpoints() ([]runs.Checkpoint, error) {
 // gitSHA shells out to git for the run id's provenance suffix. A repo-less
 // directory is normal (a user trying retrace in /tmp), so failure is "" and
 // NewRunID falls back to "nogit" — never an error that blocks a recording.
-func gitSHA(dir string) string { /* exec.Command("git","-C",dir,"rev-parse","HEAD"); trim; "" on error */ }
+func gitSHA(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// gitInfo is the manifest's provenance block. Same rule as gitSHA: a
+// missing repo is a zero value, never an error — Task 6's manifest needs
+// it and Task 11's reference-eligibility rules read Git.Dirty.
+func gitInfo(dir string) runs.Git {
+	g := runs.Git{SHA: gitSHA(dir)}
+	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		g.Branch = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output(); err == nil {
+		g.Dirty = strings.TrimSpace(string(out)) != ""
+	}
+	return g
+}
 ```
 
-Also add `gitInfo(dir string) runs.Git` (sha, branch, `git status --porcelain`
-non-empty → dirty) in the same file — Task 6's manifest needs it and Task 11's
-reference eligibility rules read `Git.Dirty`.
+Add `os/exec` to the import block above (`gitSHA`/`gitInfo` are its only
+users). `gitInfo` gets one test —
+`TestGitInfoIsAZeroValueOutsideARepository` — asserting that
+`gitInfo(t.TempDir())` returns `runs.Git{}` and does not error: a user
+trying retrace in `/tmp` must still get a recording.
 
-- [ ] **Step 8: Run — expect PASS** (`go test -race ./retrace/capture/ -v`).
+- [ ] **Step 9: Run — expect PASS** (`go test -race ./retrace/capture/ -v`).
 
-- [ ] **Step 9: `retrace run` command, standalone path**
+- [ ] **Step 10: `retrace run` command, standalone path**
 
 `retrace/cmd/retrace/cmd_run.go` — flag set `--flow` (required), `--app`
 (default: the config's `app`, else the cwd base name), `--upstream`,
@@ -2384,12 +2828,138 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 }
 ```
 
-The run body: start the session → `exec.CommandContext` with
-`os.Environ()` + `session.Env()`, stdout/stderr piped through → wait →
-capture exit code and duration → `session.Close()` → assess trust (Task 6)
-→ write manifest → print summary (or `--json`).
+**Step 10b: the run body and manifest assembly, written out.** The earlier
+draft of this plan ended this sketch in `...`, and the result was that
+`Manifest.Groups` had no writer anywhere in the plan while `diff.Options`
+had no source for it — a feature that records markers all the way to disk
+and then silently drops them at the last hop, with every unit test still
+green. Every manifest field is assigned here, in one place:
 
-- [ ] **Step 10: CLI test**
+```go
+// runOptions is what cmdRun has already resolved from flags and config by
+// the time it gets here.
+type runOptions struct {
+	Cwd       string
+	App, Flow string
+	TestCmd   []string        // everything after "--"
+	Stdout    io.Writer
+	Stderr    io.Writer
+	Now       func() time.Time
+}
+
+// runFlow executes the test command against an already-started session and
+// returns the assembled manifest. Every Manifest field is set here; if a
+// field has no assignment in this function it has no writer at all.
+func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go s.WatchProxy(ctx)          // R12: the only producer of a ProxyFailure
+
+	started := o.Now()
+	cmd := exec.CommandContext(ctx, o.TestCmd[0], o.TestCmd[1:]...)
+	cmd.Env = append(os.Environ(), s.Env()...)
+	cmd.Stdout, cmd.Stderr, cmd.Dir = o.Stdout, o.Stderr, o.Cwd
+	runErr := cmd.Run()
+	cancel()
+	elapsed := o.Now().Sub(started)
+
+	exitCode := 0
+	if runErr != nil {
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) {
+			exitCode = ee.ExitCode()
+		} else {
+			return runs.Manifest{}, fmt.Errorf("could not run the test command: %w", runErr)
+		}
+	}
+
+	// Close BEFORE reading anything off disk: it flushes wire.jsonl (and,
+	// in attached mode, drains and writes hops.jsonl — see Task 5).
+	if err := s.Close(); err != nil {
+		return runs.Manifest{}, err
+	}
+
+	checkpoints, err := s.Checkpoints()
+	if err != nil && !os.IsNotExist(err) {
+		return runs.Manifest{}, err
+	}
+
+	// Flow-part groups: markers were appended to groups.jsonl by the marker
+	// door and by file-writing adapters. THIS is where they stop being a
+	// log and become part of the run. Without these three lines the wire
+	// diff has no sections and nothing anywhere reports that.
+	records, err := runs.ReadGroupRecords(s.Paths.RunDir)
+	if err != nil {
+		return runs.Manifest{}, err
+	}
+	groups := runs.DeriveGroups(records, o.Now())
+
+	// Read back what actually reached disk rather than what the ring
+	// happened to hold — Close() has already flushed.
+	wireHops, err := runs.ReadHops(s.Paths.WirePath)
+	if err != nil {
+		return runs.Manifest{}, err
+	}
+
+	hops := s.Hops()
+	trust := assessTrust(s, hops, checkpoints, groups, exitCode)
+
+	m := runs.Manifest{
+		Schema:      runs.Schema,
+		App:         o.App,
+		Flow:        o.Flow,
+		RunID:       s.RunID,
+		Mode:        s.Mode,
+		Git:         gitInfo(o.Cwd),
+		StartedAt:   started,
+		FinishedAt:  o.Now(),
+		Checkpoints: checkpoints,
+		Groups:      groups,
+		Capture:     trust,
+		Wire:        runs.Counts{Calls: len(wireHops)},
+		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
+		Env:         runs.Env{Go: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH},
+	}
+	// Hops is a *Counts on purpose: nil means "standalone, no chain was
+	// recorded", present-and-zero means "the chain was recorded and was
+	// empty". Task 5 sets it; standalone leaves it nil.
+	if s.Mode == runs.ModeEnsemble {
+		m.Hops = &runs.Counts{Calls: len(hops)}
+	}
+	return m, runs.WriteManifest(s.Paths, m)
+}
+```
+
+`WatchProxy` is the exported name of the proxy-liveness loop from Step 8 —
+the run body lives in `package main`, so declare it exported there rather
+than as `watchProxy`.
+
+`assessTrust` is the **seam Task 6 fills**. Capture-trust rules are Task 6's
+subject, and `capture.Assess` does not exist yet, so this task ships the
+seam and a deliberately honest placeholder — not an `ok`, which would be a
+manifest claiming a clean capture nobody checked:
+
+```go
+// TODO(task-6): replace this body with capture.Assess. Task 6 owns the
+// rules; this task owns only the call site and the manifest field.
+func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
+	groups []runs.Group, exitCode int) runs.CaptureTrust {
+	return runs.CaptureTrust{
+		Status:  trace.VerdictSuspect,
+		Summary: "capture-trust not assessed yet — see Task 6",
+	}
+}
+```
+
+Task 6 Step 5 replaces the body with the real `capture.Assess` call,
+passing `s.ProxyFailure()`, `s.RequestsSeen()`, `len(cps)`, the previous
+run's checkpoint count, and `quietOnly(groups)` — a three-line filter on
+`g.Quiet`. Keeping the signature stable means Task 6 changes one function
+body and nothing else.
+
+Then: print the summary, or `--json` the manifest, and exit with the test
+command's code.
+
+- [ ] **Step 11: CLI test**
 
 `retrace/cmd/retrace/cmd_run_test.go`:
 `TestRunStandaloneRecordsAndWritesAManifest` — spins an httptest upstream,
@@ -2405,8 +2975,16 @@ Assert: exit code 0, `manifest.json` exists, `mode == "standalone"`,
 `TestRunPropagatesTheTestCommandsExitCode` — helper exits 7 → `retrace run`
 exits 7 (a failing test must fail the pipeline; retrace's own exit codes only
 apply when the command itself succeeded).
+`TestRunFoldsMarkersIntoManifestGroups` — the helper posts two `/group`
+markers to `$RETRACE_MARKER_URL` and one `/group/end`; assert
+`manifest.Groups` has both names, in start order, with the first closed at
+the second's start. **This is the test that keeps flow-part groups from
+being a write-only feature**: markers reached `groups.jsonl` in the earlier
+draft and stopped there, so the wire diff's sections silently collapsed to
+one unnamed section on every real run while every unit test stayed green.
+Task 10 has the matching assertion at the reading end.
 
-- [ ] **Step 11: Full suites + commit**
+- [ ] **Step 12: Full suites + commit**
 
 ```bash
 go test -race ./core/... ./ensemble/... ./retrace/...
@@ -2421,7 +2999,10 @@ git commit -m "feat(retrace): standalone capture, marker door, env handshake, re
 **Files:**
 - Create: `retrace/cmd/retrace/client.go`
 - Create: `retrace/capture/ensemble.go`, `retrace/capture/ensemble_test.go`
+- Create: `retrace/cmd/retrace/cmd_run_ensemble_test.go`
 - Modify: `retrace/cmd/retrace/cmd_run.go` (attach path)
+- **Not modified: `retrace/go.mod`.** This task adds no module dependency —
+  see Step 7.
 
 **Interfaces:**
 - Consumes: ensemble's control plane, exactly as `ensemble/server/routes.go`
@@ -2463,44 +3044,107 @@ to `suspect` with reason `"N hop(s) arrived after the drain window"`.
 
 - [ ] **Step 1: Write the failing drain test**
 
+**No sleeps in this test.** This is the plan's flagship "write the race test
+first" task, and the first draft of it synchronised a goroutine with
+`time.Sleep(150ms)` against a 100 ms poll and a 2 s cap — a timing-dependent
+test for a timing bug, which flakes on a loaded CI box in *both* directions
+(false green and false red). The fake injects the late hop **on the first
+poll, from inside the poll**, which is the same causal ordering as reality
+(a downstream call completing after the command exited) with none of the
+timing. Every shared field is guarded by the same mutex: the task's own
+commit gate is `go test -race`.
+
 `retrace/capture/ensemble_test.go`:
 ```go
-// fakeEnsemble serves hops on a delay so the test reproduces the real
-// timing: a downstream call that completes AFTER the test command exits.
+// fakeEnsemble stands in for ensemble's control plane. It reproduces the
+// ordering this task exists to defend against — a hop that lands after the
+// test command exits — deterministically, by appending `late` during the
+// first SessionHops call rather than after a wall-clock delay.
 type fakeEnsemble struct {
-	mu       sync.Mutex
-	hops     []trace.Hop
-	ended    bool
-	endCount int
+	mu        sync.Mutex
+	hops      []trace.Hop
+	late      *trace.Hop // injected on the first poll, then cleared
+	polls     int
+	endCalled bool
+	hopsAtEnd int // len(hops) when EndSession was called — the ordering assertion
+}
+
+func (f *fakeEnsemble) push(h trace.Hop) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hops = append(f.hops, h)
 }
 
 func (f *fakeEnsemble) Health(context.Context) error { return nil }
-func (f *fakeEnsemble) StartSession(_ context.Context, id, entry string) (string, error) { return "127.0.0.1:0", nil }
-func (f *fakeEnsemble) SessionHops(context.Context) ... // returns the current slice
-func (f *fakeEnsemble) EndSession(...) (EndReport, error) { f.ended = true; return EndReport{Hops: len(f.hops), Verdict: trace.VerdictOK}, nil }
+
+func (f *fakeEnsemble) StartSession(_ context.Context, id, entry string) (string, error) {
+	return "127.0.0.1:0", nil
+}
+
+// SessionHops takes the id the interface declares, and returns a COPY: the
+// caller keeps the slice past the lock, so handing out the backing array
+// would be a data race the -race gate catches on a good day and misses on
+// a bad one.
+func (f *fakeEnsemble) SessionHops(_ context.Context, id string) ([]trace.Hop, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.polls++
+	if f.polls == 1 && f.late != nil {
+		f.hops = append(f.hops, *f.late)
+		f.late = nil
+	}
+	return append([]trace.Hop(nil), f.hops...), nil
+}
+
+// EndSession records how many hops existed at teardown. Everything it
+// touches is under f.mu — the earlier draft wrote f.ended lock-free while
+// a goroutine appended to f.hops under the lock, which is a data race in
+// the one task gated on -race.
+func (f *fakeEnsemble) EndSession(_ context.Context, id string) (EndReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.endCalled, f.hopsAtEnd = true, len(f.hops)
+	return EndReport{Hops: len(f.hops), Verdict: trace.VerdictOK}, nil
+}
 
 func TestDrainWaitsForLateHopsBeforeEndingTheSession(t *testing.T) {
-	f := &fakeEnsemble{}
+	late := hop(2, "catalog")
+	f := &fakeEnsemble{late: &late}
 	f.push(hop(1, "edge"))
-	go func() {                       // a downstream call finishing 150ms late
-		time.Sleep(150 * time.Millisecond)
-		f.push(hop(2, "catalog"))
-	}()
 
 	s := attachedSessionFor(t, f)
-	if err := s.Drain(context.Background()); err != nil { t.Fatalf("Drain: %v", err) }
-	if err := s.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	hops, _ := runs.ReadHops(s.Paths.HopsPath)
 	if len(hops) != 2 {
 		t.Fatalf("Drain must not end the session before late hops land: got %d, want 2", len(hops))
 	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// The ordering, asserted directly rather than inferred from the count:
+	// ensemble's SessionManager drops hops for a session it has already
+	// ended, so EndSession must observe the fully drained state.
+	if !f.endCalled || f.hopsAtEnd != 2 {
+		t.Fatalf("EndSession saw %d hop(s) (called=%v); it must run AFTER the drain", f.hopsAtEnd, f.endCalled)
+	}
+	// Stability needs two agreeing polls; one poll would mean the loop
+	// stopped at the first answer it got.
+	if f.polls < 2 {
+		t.Fatalf("polls = %d; the drain must confirm stability across two polls", f.polls)
+	}
 }
 
 func TestHopsArrivingAfterTheDrainWindowDegradeTheVerdict(t *testing.T) {
-	// EndSession reports 3 hops but only 2 were written → session's
-	// TrustNote records "1 hop(s) arrived after the drain window" and the
-	// capture status is at least suspect.
+	// A fake whose EndReport.Hops is 3 while only 2 were ever served →
+	// Session.trustNotes records "1 hop(s) arrived after the drain window
+	// and are missing from this recording" and the capture status is at
+	// least suspect. No sleeps: the shortfall is a value the fake returns.
 }
 
 func TestWireJsonlIsTheClientEdgeSubsetOfHopsJsonl(t *testing.T) {
@@ -2665,8 +3309,31 @@ func writeHops(path string, hops []trace.Hop, red *trace.Redactor, keep func(tra
 Add the fields this uses to `Session`: `ens EnsembleClient`, `hops
 []trace.Hop`, `endReport EndReport`, `trustNotes []string`, `redact
 []string`, `maxBody int`. Set `redact`/`maxBody` in BOTH constructors.
-Update `Session.Hops()` to return `s.hops` when attached and
-`s.rec.Snapshot()` when standalone.
+
+**Methods this task changes, all of them.** `StartAttached` leaves
+`s.rec` and `s.stopProxy` nil — ensemble owns the listener — so every
+method that touches them must tolerate an attached session. Miss one and
+it panics on every attached run, not on an edge case:
+
+| Method | Attached behaviour |
+|---|---|
+| `Hops()` | return `s.hops` (the drained slice), not `s.rec.Snapshot()` |
+| `RequestsSeen()` | the atomic counter alone — see the nil guard in Task 4 |
+| `Close()` | nil-check `s.stopProxy` before calling it |
+| `ProxyFailure()` | always nil: retrace does not own the listener, so it cannot witness it dying |
+
+Also add three accessors over the fields above, which Task 6's
+`assessTrust` reads and nothing else may reach into directly:
+`EndVerdict() trace.Verdict` and `EndReasons() []string` (from
+`s.endReport`, zero values before `Close`), and `TrustNotes() []string`
+(a copy of `s.trustNotes`).
+
+`RequestsSeen` in attached mode counts marker-door hits only, and that is
+the honest number: proxied requests reach *ensemble's* edge listener and
+never touch retrace, so retrace has nothing else it could truthfully
+count. It still separates the two cases Task 6 needs separated — a flow
+that posted markers but recorded no calls is a different (and less
+alarming) fact than a flow that produced neither.
 
 - [ ] **Step 4: Run — expect PASS** (`go test -race ./retrace/capture/ -run Drain -v`).
 
@@ -2697,15 +3364,55 @@ if !*noEnsemble && cfg.Entry != "" {
 }
 ```
 
-- [ ] **Step 7: Integration test against a REAL ensemble server**
+- [ ] **Step 7: Integration test over real HTTP — against a fake control
+  plane, NOT the ensemble module**
 
-`retrace/cmd/retrace/cmd_run_ensemble_test.go`:
-`TestRunAttachedToALiveEnsembleRecordsTheFullChain` — build a live
-`ensemble/server.New(Deps{...})` in-process over a two-service fake stack
-(an "edge" proxy target whose upstream calls a "catalog" target), point
-`retrace run` at it, assert `hops.jsonl` has both hops sharing one traceId
-and `wire.jsonl` has only the edge hop. This is the "one schema, two
-consumers" scenario from the core-trace-model spec, executed end to end.
+**Ruling, and it is a hard constraint: `retrace` must not import
+`ensemble`.** Not in production code and not in a test. Design §1 argues
+that a team can adopt retrace in CI without ever running ensemble, and a
+test-only import is still a `require` + `replace` in `retrace/go.mod` —
+which would also make Task 3's `go mod tidy` step try to fetch an
+unpublished module. The dependency direction stays
+`retrace → core`, `ensemble → core`, and the two products never see each
+other.
+
+What this test must still prove is that `client.go` speaks ensemble's wire
+contract correctly — which is an HTTP-level property, so an HTTP-level
+fake proves it. `retrace/cmd/retrace/cmd_run_ensemble_test.go`:
+
+```go
+// ensembleAPI is an httptest server that answers exactly the four routes
+// retrace uses, in exactly the shapes ensemble/server/routes.go serves
+// them. The shapes are pinned in this plan's Task 5 Interfaces block and
+// were verified against routes.go; if ensemble ever changes them, THIS is
+// the test that must be updated, deliberately, rather than a compile error
+// telling us after we have already coupled the modules.
+func ensembleAPI(t *testing.T, hops []trace.Hop) *httptest.Server
+```
+It serves `GET /api/health` → `{"ok":true,"version":"test"}`;
+`POST /api/sessions` → `{"id":...,"edgeAddr":<a real httptest edge addr>}`;
+`GET /api/sessions/{id}/hops` → **NDJSON** written with `trace.NewWriter`
+(the encoder ensemble itself uses, so the bytes are not hand-rolled);
+`DELETE /api/sessions/{id}` → `{"id":...,"hops":N,"verdict":"ok","reasons":[]}`.
+
+`TestRunAttachedRecordsTheFullChainAndSplitsWireFromHops` — two hops
+sharing one traceId, one with `From: ""` (the client edge) and one with
+`From: "edge"`; point `retrace run` at the fake; assert `hops.jsonl` has
+both, `wire.jsonl` has only the `From == ""` hop, and `manifest.mode` is
+`"ensemble"`. This is the core-trace-model spec's "one schema, two
+consumers" scenario, executed end to end over real HTTP.
+
+`TestSessionHopsParsesNdjsonNotAJsonArray` — the single most likely
+integration bug, and the one a hand-written fake could paper over: feed
+three `trace.Hop` records written by `trace.NewWriter` (blank line
+included, which `trace.NewReader` skips) and assert the client returns
+three hops. A client written against `json.Unmarshal` of an array fails
+here, which is the point.
+
+**Verify before committing:** `retrace/go.mod` still requires only `core`.
+If a future step genuinely cannot be tested without the real
+`ensemble/server`, stop and raise it — adding the module edge is the
+controller's decision, not the implementer's.
 
 - [ ] **Step 8: Full suites + commit**
 
@@ -2730,7 +3437,10 @@ git commit -m "feat(retrace): ensemble-attached capture with drain-before-end ho
   ```go
   package capture
   const GapThreshold = 60 * time.Second
-  type ProxyFailure struct { Phase string; Message string } // Phase: "bind" | "running"
+  // ProxyFailure is DECLARED IN TASK 4 (retrace/capture/capture.go), the
+  // only thing that produces one. Task 6 consumes it and must not
+  // re-declare it — same package, one declaration.
+  //   type ProxyFailure struct { Phase, Message string }  // Phase: "running"
   type AssessInput struct {
       ProxyConfigured     bool
       ProxyFailure        *ProxyFailure
@@ -2763,7 +3473,6 @@ func TestAssessRanksTheWorstEvidence(t *testing.T) {
 	}{
 		{"clean run", AssessInput{ProxyConfigured: true, Hops: hops(3), Checkpoints: 2, RequestsSeen: 3}, trace.VerdictOK, ""},
 		{"failed test outranks everything", AssessInput{TestExitCode: 1, ProxyConfigured: true, Hops: hops(3), RequestsSeen: 3}, trace.VerdictFailed, "test-failed"},
-		{"proxy never bound", AssessInput{ProxyConfigured: true, ProxyFailure: &ProxyFailure{Phase: "bind", Message: "address in use"}, RequestsSeen: 0}, trace.VerdictBroken, "proxy-never-started"},
 		{"proxy died mid-run", AssessInput{ProxyConfigured: true, ProxyFailure: &ProxyFailure{Phase: "running", Message: "closed"}, Hops: hops(1), RequestsSeen: 1}, trace.VerdictBroken, "proxy-died"},
 		{"zero calls AND zero requests", AssessInput{ProxyConfigured: true, RequestsSeen: 0}, trace.VerdictBroken, "proxy-never-reached"},
 		{"zero calls but requests seen", AssessInput{ProxyConfigured: true, RequestsSeen: 4}, trace.VerdictDegraded, "no-calls"},
@@ -2775,19 +3484,55 @@ func TestAssessRanksTheWorstEvidence(t *testing.T) {
 	// each: Assess(in).Status == want, and want=="" or a reason with that Code exists
 }
 
+// A flow that declared "I am waiting for a push notification" explained its
+// own silence; an undeclared 120s hole did not.
 func TestFindGapsSubtractsDeclaredQuietIntervals(t *testing.T) {
-	// two hops 120s apart, with a quiet group covering 90s of it → no gap
-	// (a flow that declared "waiting for a push notification" explained its
-	// own silence); without the quiet group → one 120s gap, status suspect.
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	hops := []trace.Hop{
+		{T: trace.Timings{Start: t0}},
+		{T: trace.Timings{Start: t0.Add(120 * time.Second)}},
+	}
+	quiet := []runs.Group{{
+		Name: "await-push", Quiet: true,
+		StartedAt: t0.Add(10 * time.Second), EndedAt: t0.Add(100 * time.Second),
+	}}
+
+	if gaps := FindGaps(hops, 60*time.Second, quiet); len(gaps) != 0 {
+		t.Fatalf("a declared quiet interval must not read as a gap: %+v", gaps)
+	}
+	gaps := FindGaps(hops, 60*time.Second, nil)
+	if len(gaps) != 1 || gaps[0].Seconds != 120 {
+		t.Fatalf("gaps = %+v, want one 120s gap", gaps)
+	}
 }
 
+// A wire-only flow captures no screenshots by design. Nagging about it
+// every run is how a real warning gets tuned out.
 func TestAWireOnlyFlowIsNeverNaggedAboutScreenshots(t *testing.T) {
-	// ExpectedCheckpoints == 0 and Checkpoints == 0 → ok.
+	got := Assess(AssessInput{
+		ProxyConfigured: true, Hops: hops(1), RequestsSeen: 1,
+		Checkpoints: 0, ExpectedCheckpoints: 0,
+	})
+	if got.Status != trace.VerdictOK {
+		t.Fatalf("status = %s (%s), want ok", got.Status, got.Summary)
+	}
 }
 
+// Blaming the capture for a test that fell over early points at the wrong
+// thing: the screenshots are missing BECAUSE the test died.
 func TestNoScreenshotReasonIsSuppressedWhenTheTestFailed(t *testing.T) {
-	// blaming the capture for a test that fell over early points at the
-	// wrong thing — status is failed, and only test-failed is reported.
+	got := Assess(AssessInput{
+		ProxyConfigured: true, Hops: hops(1), RequestsSeen: 1,
+		Checkpoints: 0, ExpectedCheckpoints: 3, TestExitCode: 1,
+	})
+	if got.Status != trace.VerdictFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	for _, r := range got.Reasons {
+		if r.Code == "no-screenshots" {
+			t.Fatalf("no-screenshots must be suppressed when the test failed: %+v", got.Reasons)
+		}
+	}
 }
 ```
 
@@ -2825,12 +3570,13 @@ func Assess(in AssessInput) runs.CaptureTrust {
 			"fix the failing test and re-run; a failed test proves nothing about the capture")
 	}
 
-	switch {
-	case in.ProxyFailure != nil && in.ProxyFailure.Phase == "bind":
-		add("proxy-never-started", trace.VerdictBroken,
-			"the capture listener could not bind: "+in.ProxyFailure.Message,
-			"free the port (lsof -ti tcp:<port>) and re-run — this capture recorded no calls")
-	case in.ProxyFailure != nil:
+	// There is deliberately no `proxy-never-started` reason. A bind failure
+	// aborts StartStandalone before a run directory or a manifest exists,
+	// so a recording can never carry it — a reason code only its own unit
+	// test can reach is a reason code that lies about coverage. The one
+	// producer of a ProxyFailure is Session.ProxyDied, and it always sets
+	// Phase "running".
+	if in.ProxyFailure != nil {
 		add("proxy-died", trace.VerdictBroken,
 			"the capture listener stopped during the run: "+in.ProxyFailure.Message,
 			"re-run — calls made after it stopped were never recorded")
@@ -2915,18 +3661,100 @@ func Fatal(c runs.CaptureTrust) bool {
 }
 ```
 
-`FindGaps` sorts `hop.T.Start` values, walks consecutive pairs, subtracts
-overlap with any `Quiet` group, and emits a `runs.Gap` when the remainder
-reaches the threshold.
+`FindGaps` is real code, not a description — it is the only producer of
+`CaptureTrust.Gaps` and its quiet-subtraction is what the test above pins:
+
+```go
+// FindGaps reports stretches where nothing was recorded for longer than
+// threshold, MINUS any interval a flow explicitly declared quiet. A flow
+// that said "I am waiting on a push notification here" has explained its
+// own silence; an undeclared hole of the same length has not, and is
+// usually the app having stopped routing through us mid-run.
+func FindGaps(hops []trace.Hop, threshold time.Duration, quiet []runs.Group) []runs.Gap {
+	if len(hops) < 2 || threshold <= 0 {
+		return nil
+	}
+	starts := make([]time.Time, len(hops))
+	for i, h := range hops {
+		starts[i] = h.T.Start
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i].Before(starts[j]) })
+
+	var out []runs.Gap
+	for i := 1; i < len(starts); i++ {
+		from, to := starts[i-1], starts[i]
+		d := to.Sub(from)
+		for _, g := range quiet {
+			if !g.Quiet {
+				continue
+			}
+			d -= overlap(from, to, g.StartedAt, g.EndedAt)
+		}
+		if d >= threshold {
+			out = append(out, runs.Gap{From: from, To: to, Seconds: int(d.Seconds())})
+		}
+	}
+	return out
+}
+
+// overlap is the intersection of two half-open intervals, or zero.
+func overlap(aStart, aEnd, bStart, bEnd time.Time) time.Duration {
+	start, end := aStart, aEnd
+	if bStart.After(start) {
+		start = bStart
+	}
+	if bEnd.Before(end) {
+		end = bEnd
+	}
+	if !end.After(start) {
+		return 0
+	}
+	return end.Sub(start)
+}
+```
+
+Note that `Gap.Seconds` reports the **unexplained** remainder, not the
+wall-clock span — the number in the report is the number the reader has to
+account for.
 
 - [ ] **Step 4: Run — expect PASS** (`go test -race ./retrace/capture/ -run 'Assess|Gaps|Screenshot' -v`).
 
-- [ ] **Step 5: Banner it in `cmdRun`**
+- [ ] **Step 5: Fill Task 4's seam and banner it in `cmdRun`**
 
-After `session.Close()`: compute `ExpectedCheckpoints` from the previous run
-of the same app/flow (`runs.ListRuns` → second-to-last → its manifest's
-`len(Checkpoints)`; `-1` when there is no history), call `Assess`, store it
-in `Manifest.Capture`, and print — **to stderr, before the summary, always**:
+Task 4 shipped `assessTrust(s, hops, cps, groups, exitCode) runs.CaptureTrust`
+in `cmd_run.go` with a `TODO(task-6)` placeholder body that returns
+`suspect / "not assessed yet"`. **Replace that body — do not add a second
+call site**; `runFlow` already stores the result in `Manifest.Capture`:
+
+```go
+func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
+	groups []runs.Group, exitCode int) runs.CaptureTrust {
+	return capture.Assess(capture.AssessInput{
+		ProxyConfigured:     true,
+		ProxyFailure:        s.ProxyFailure(),
+		Hops:                hops,
+		Checkpoints:         len(cps),
+		ExpectedCheckpoints: expectedCheckpoints(s.Paths),
+		RequestsSeen:        s.RequestsSeen(),
+		TestExitCode:        exitCode,
+		// Quiet intervals come from the SAME derived groups the manifest
+		// stores, so "the report says this stretch was deliberately quiet"
+		// and "the verdict forgave this stretch" can never disagree.
+		Quiet:          quietOnly(groups),
+		GapThreshold:   DefaultGapThreshold,
+		SessionVerdict: s.EndVerdict(),
+		SessionReasons: s.EndReasons(),
+		Notes:          s.TrustNotes(),
+	})
+}
+```
+
+`expectedCheckpoints` reads the previous run of the same app/flow
+(`runs.ListRuns` → second-to-last → its manifest's `len(Checkpoints)`) and
+returns `-1` when there is no history. `EndVerdict`/`EndReasons`/`TrustNotes`
+are accessors over the `endReport`/`trustNotes` fields Task 5 added.
+
+Then print — **to stderr, before the summary, always**:
 
 ```go
 if trust.Status != trace.VerdictOK {
@@ -2963,12 +3791,32 @@ git commit -m "feat(retrace): capture-trust verdict with ranked evidence and rep
 - Create: `retrace/diff/pixel/gen_testdata_test.go` (regenerates the goldens)
 
 **Interfaces:**
-- Consumes: stdlib `image`, `image/png`, `image/draw` only.
+- Consumes: stdlib `image`, `image/png`, `image/draw`, plus `retrace/config`
+  for `RectsFrom` (config is a leaf: `pixel → config` is safe, the reverse
+  is not).
 - Produces (used by Tasks 10, 11, 13, 16):
   ```go
   package pixel
-  type Rect struct { X, Y, Width, Height int }
-  type Options struct { Masks []Rect; GateThreshold, FineThreshold float64; WantDiff, WantOverlay bool }
+  type Rect struct {
+      X      int `json:"x"`
+      Y      int `json:"y"`
+      Width  int `json:"width"`
+      Height int `json:"height"`
+  }
+  type Options struct {
+      Masks         []Rect
+      GateThreshold float64
+      FineThreshold float64
+      WantDiff      bool
+      WantOverlay   bool
+      // Trim crops a uniform border off BOTH shots before comparing,
+      // when the checkpoint asked for it (runs.Checkpoint.Trim, set at
+      // capture from a `<name>.trim` marker). Trimming is a COMPARE-time
+      // decision on purpose: it must never alter what was captured, and
+      // putting it here is what keeps retrace/capture from importing
+      // retrace/diff/pixel.
+      Trim bool
+  }
   type Overlap struct { Width, Height int; DiffPct, DiffPctFine float64; NumDiff int; PaddingPct float64 }
   type Result struct {
       Width, Height  int
@@ -2979,16 +3827,32 @@ git commit -m "feat(retrace): capture-trust verdict with ranked evidence and rep
       PaddedForDiff  bool
       WidthA, HeightA, WidthB, HeightB int
       Overlap        *Overlap
+      // TrimA/TrimB are the rects Compare actually kept when Options.Trim
+      // was set, in the ORIGINAL images' coordinates; nil when trimming
+      // was not requested or was refused. WidthA/HeightA/WidthB/HeightB
+      // remain the shots' real, pre-trim geometry — the report says what
+      // was captured AND what was compared, never one standing in for the
+      // other.
+      TrimA, TrimB *Rect
   }
   type Images struct { Diff, Overlay *image.RGBA } // nil when not requested or NumDiff == 0
   func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error)
   func Match(a, b, out *image.RGBA, threshold float64, diffMask bool) int
   func ApplyMasks(img *image.RGBA, rects []Rect)
-  func TrimUniformBorder(pngBytes []byte) ([]byte, error)
+  // TrimUniformBorder returns the tight rect and the cropped image, or
+  // ok=false when it refuses (see Step 6). Compare is its only caller.
+  func TrimUniformBorder(img *image.RGBA) (cropped *image.RGBA, kept Rect, ok bool)
   func Encode(img *image.RGBA) ([]byte, error)
   func Decode(pngBytes []byte) (*image.RGBA, error)
+  // RectsFrom converts the config package's YAML rectangles into pixel
+  // rectangles. It lives HERE, not in config, because config is the leaf
+  // package everything reads and must not import an engine. Tasks 10 and
+  // 11 both call it — it is the ONLY conversion between the two Rect
+  // types, so there is no second one to drift.
+  func RectsFrom(rs []config.Rect) []Rect
   ```
-  Defaults when zero: `GateThreshold = 0.1`, `FineThreshold = 0.05`.
+  Defaults when zero: `GateThreshold = config.DefaultGate` (0.1),
+  `FineThreshold = config.DefaultFine` (0.05).
 
 - [ ] **Step 1: Generate the golden fixtures**
 
@@ -3042,6 +3906,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/png"
 	"math"
 )
@@ -3246,7 +4111,16 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 ```
 
 `Compare` orchestrates, exactly as flowlens did:
-1. decode both; record `WidthA/HeightA/WidthB/HeightB`.
+1. decode both; record `WidthA/HeightA/WidthB/HeightB` — these are the
+   shots' real geometry and are never overwritten by anything below.
+1b. if `o.Trim` → `TrimUniformBorder` each image independently; on `ok`,
+   replace the working image and record the kept rect in `Result.TrimA` /
+   `Result.TrimB`. A refusal (see Step 6) is not an error: the working
+   image stays whole and the corresponding `Trim*` stays nil, so the
+   report can say "trim was requested and declined" rather than silently
+   comparing something other than what it claims. **This is
+   `TrimUniformBorder`'s only caller** — an earlier draft implemented it
+   and never called it from anywhere.
 2. if sizes differ → compute `Overlap` on the **cropped intersection** first
    (that is the only number that means "the content changed"), then pad both
    onto the union canvas and set `PaddedForDiff`.
@@ -3265,11 +4139,21 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 - [ ] **Step 6: Port `trim.go` + its test**
 
 `TrimUniformBorder` crops a uniform border matched against the top-left
-pixel, **refusing** to trim when the result would be <2px in either
-dimension or when nothing would change — a fully uniform shot means nothing
-rendered, and trimming it to a sliver destroys the evidence.
+pixel, **refusing** to trim (returning `ok == false`) when the result would
+be <2px in either dimension or when nothing would change — a fully uniform
+shot means nothing rendered, and trimming it to a sliver destroys the
+evidence. It works on a decoded `*image.RGBA`, not on PNG bytes: `Compare`
+has already decoded, and a re-encode round trip inside the compare path
+would be pure waste.
 Tests: `TestTrimsAUniformBorder`, `TestRefusesToTrimAFullyUniformImage`,
-`TestLeavesAnAlreadyTightImageByteIdentical`.
+`TestRefusesToTrimBelowTwoPixels`,
+`TestLeavesAnAlreadyTightImageUntouched`.
+Plus the wiring test, which is the one that would have caught the dead
+function: `TestCompareTrimsBothSidesWhenTrimIsRequested` — a 40×40 pair
+whose only difference sits inside a 10px uniform border; with
+`Options{Trim: false}` the diff is non-zero, with `Options{Trim: true}` the
+borders come off, `Result.TrimA`/`TrimB` are non-nil, and `WidthA`/`WidthB`
+still report 40.
 
 - [ ] **Step 7: Commit**
 
@@ -3286,10 +4170,25 @@ git commit -m "feat(retrace): pixelmatch port with masks, thresholds, border tri
 **Files:**
 - Create: `retrace/diff/wire.go`, `retrace/diff/wire_test.go`
 - Create: `retrace/diff/order.go`, `retrace/diff/order_test.go`
+- Create: `retrace/diff/deviations.go` — **types only in this task**
+  (`Deviation`, `ToleratedNote`); Task 11 adds the ledger logic to the same
+  file. Without this file the package does not compile, because `Options`
+  and `Call` below reference both types.
 
 **Interfaces:**
-- Consumes: `core/trace.Hop`, `retrace/rules`, `retrace/config`, `retrace/runs`.
+- Consumes: `core/trace.Hop`, `retrace/rules`, `retrace/runs`. (**Not**
+  `retrace/config` — an earlier draft listed it and nothing in this task's
+  code touches it. `Options.Normalize` is a `func(string) string` precisely
+  so the engine takes a behaviour, not a config object.)
 - Produces (used by Tasks 10, 12, 13, 16):
+
+  **Every one of these types is serialized** — into `summary.json`, into
+  `retrace diff --json`, into the REST responses Task 13 serves, and into
+  the TypeScript mirrors Task 15 declares. The `json:` tags below are part
+  of the contract, not decoration: without them `encoding/json` emits
+  `"Method"`, `"NormalizedPath"`, `"NewRoutes"`, and every consumer breaks
+  at once, silently, with the Go tests still green. Copy them exactly.
+
   ```go
   package diff
   type Options struct {
@@ -3298,7 +4197,7 @@ git commit -m "feat(retrace): pixelmatch port with masks, thresholds, border tri
       Normalize  func(path string) string        // config.NormalizePath
       GroupsA    []runs.Group
       GroupsB    []runs.Group
-      Deviations []Deviation                     // defined in diff/deviations.go (Task 11); nil until then
+      Deviations []Deviation                     // see deviations.go, below
   }
   type Pair struct { Method, NormalizedPath string; A, B trace.Hop }
   func PairCalls(a, b []trace.Hop, normalize func(string) string) (pairs []Pair, missing, extra []trace.Hop)
@@ -3306,35 +4205,124 @@ git commit -m "feat(retrace): pixelmatch port with masks, thresholds, border tri
   func NormalizeQuery(rawQuery string) string
   func SplitPath(hopPath string) (path, rawQuery string)
 
-  type FieldDiff struct { Scope, Path, Type string; A, B any; Matcher, Glob string }
-  type HeaderDiff struct { Scope, Name, Type string; A, B string; Matcher string }
-  type StatusChange struct { A, B int }
-  type Entry struct {
-      Method, NormalizedPath string
-      SeqA, SeqB             uint64
-      PosA, PosB             int
-      GroupA, GroupB         string
-      Moved                  bool
-      Truncated              bool
-      Classes                []string
-      StatusChange           *StatusChange
-      BodyDiff               []FieldDiff
-      BodyTolerated          []FieldDiff
-      BodyViolations         []FieldDiff
-      BodyIgnored            []FieldDiff
-      OrderingChanges        []FieldDiff
-      HeaderDiff             []HeaderDiff
+  type FieldDiff struct {
+      Scope   string `json:"scope"`   // "req" | "resp"
+      Path    string `json:"path"`    // dotted field path
+      Type    string `json:"type"`    // "changed" | "added" | "removed"
+      A       any    `json:"a"`
+      B       any    `json:"b"`
+      Matcher string `json:"matcher,omitempty"`
+      Glob    string `json:"glob,omitempty"`
   }
-  type Wire struct { Paired []Entry; Missing, Extra []Call; Groups *GroupNames }
-  type Call struct { Method, Path string; Seq uint64; Status int; Group string; Tolerated *ToleratedNote }
-  type GroupNames struct { A, B []string `json:"a","b"` }
+  type HeaderDiff struct {
+      Scope   string `json:"scope"`
+      Name    string `json:"name"`
+      Type    string `json:"type"`
+      A       string `json:"a"`
+      B       string `json:"b"`
+      Matcher string `json:"matcher,omitempty"`
+  }
+  type StatusChange struct {
+      A int `json:"a"`
+      B int `json:"b"`
+  }
+  type Entry struct {
+      Method          string        `json:"method"`
+      NormalizedPath  string        `json:"normalizedPath"`
+      SeqA            uint64        `json:"seqA"`
+      SeqB            uint64        `json:"seqB"`
+      PosA            int           `json:"posA"`
+      PosB            int           `json:"posB"`
+      GroupA          string        `json:"groupA,omitempty"`
+      GroupB          string        `json:"groupB,omitempty"`
+      Moved           bool          `json:"moved,omitempty"`
+      Truncated       bool          `json:"truncated,omitempty"`
+      Classes         []string      `json:"classes,omitempty"`
+      StatusChange    *StatusChange `json:"statusChange,omitempty"`
+      BodyDiff        []FieldDiff   `json:"bodyDiff,omitempty"`
+      BodyTolerated   []FieldDiff   `json:"bodyTolerated,omitempty"`
+      BodyViolations  []FieldDiff   `json:"bodyViolations,omitempty"`
+      BodyIgnored     []FieldDiff   `json:"bodyIgnored,omitempty"`
+      OrderingChanges []FieldDiff   `json:"orderingChanges,omitempty"`
+      HeaderDiff      []HeaderDiff  `json:"headerDiff,omitempty"`
+  }
+  type Wire struct {
+      Paired  []Entry     `json:"paired"`
+      Missing []Call      `json:"missing"`
+      Extra   []Call      `json:"extra"`
+      Groups  *GroupNames `json:"groups,omitempty"`
+  }
+  type Call struct {
+      Method    string         `json:"method"`
+      Path      string         `json:"path"`
+      Seq       uint64         `json:"seq"`
+      Status    int            `json:"status"`
+      Group     string         `json:"group,omitempty"`
+      Tolerated *ToleratedNote `json:"tolerated,omitempty"`
+  }
+  // One tag string per field, and a multi-name field cannot carry two of
+  // them — `A, B []string `json:"a","b"`` is not valid Go, it is a struct
+  // tag containing a comma. Declare the fields separately.
+  type GroupNames struct {
+      A []string `json:"a"`
+      B []string `json:"b"`
+  }
   func DiffWire(a, b []trace.Hop, o Options) Wire
   func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []HeaderDiff
 
-  type Section struct { Name string; Entries []Entry; Counts map[string]int }
+  type Section struct {
+      Name    string         `json:"name"`
+      Entries []Entry        `json:"entries"`
+      Counts  map[string]int `json:"counts"`
+  }
   func BuildSections(entries []Entry, groups *GroupNames) []Section
   func LISIndices(seq []int) []int
   ```
+
+  **These two types are declared HERE, in `retrace/diff/deviations.go`,
+  even though nothing populates them until Task 11.** A struct field whose
+  type is undeclared is a *compile error* in Go, not an inert field —
+  `Options.Deviations []Deviation` and `Call.Tolerated *ToleratedNote`
+  would fail `go test ./retrace/diff/`, which is this task's own commit
+  gate. Task 11 fills in the ledger logic (`LoadDeviations`, `Applies`,
+  expiry) in the same file; this task creates the file with the types and
+  a doc comment:
+
+  ```go
+  // deviations.go — a deviation is a recorded human decision to tolerate a
+  // specific difference between two apps' runs: "these two are expected to
+  // differ here, and here is why". Task 11 owns the ledger that loads,
+  // resolves and matches them. The TYPES live here because this package's
+  // own structs reference them, and a struct field whose type is undeclared
+  // does not compile.
+  package diff
+
+  // Deviation is one entry in the ledger file named by config.Deviations.
+  // Status is "proposed" | "approved": teams that want the ceremony gate on
+  // approved; teams that do not, approve on write.
+  type Deviation struct {
+      ID     string    `json:"id"`
+      Status string    `json:"status"`
+      Apps   [2]string `json:"apps"`
+      Method string    `json:"method"`
+      Path   string    `json:"path"`
+      Reason string    `json:"reason"`
+  }
+
+  // ToleratedNote is what a consumer sees on a difference a Deviation
+  // covered: the difference still happened and is still reported, it just
+  // does not count against the verdict. Never drop the difference itself —
+  // "tolerated" and "absent" must never look the same to a reviewer.
+  type ToleratedNote struct {
+      ID     string `json:"id"`
+      Reason string `json:"reason"`
+  }
+  ```
+
+  Task 11 adds `LoadDeviations`, `ResolveDeviations` and `FindDeviation` to
+  this same file. This task adds nothing else to it and does not populate
+  `Options.Deviations` — a run before Task 11 simply passes nil, which is a
+  no-op, and `TestNilDeviationsToleratesNothing` pins that.
 
 - [ ] **Step 1: Write the failing pairing test**
 
@@ -3492,37 +4480,95 @@ git commit -m "feat(retrace): wire diff with similarity pairing, field-level rul
 - Produces (used by Tasks 10, 13, 16):
   ```go
   package diff
+  // Every type here is embedded in diff.Summary and therefore serialized.
+  // Tags are mandatory (Global Constraints) and are what Task 15's TS
+  // mirrors transcribe.
+
   // status.go
-  type StatusFinding struct { Seq uint64; Method, Path string; Status int }
+  type StatusFinding struct {
+      Seq    uint64 `json:"seq"`
+      Method string `json:"method"`
+      Path   string `json:"path"`
+      Status int    `json:"status"`
+  }
   func MatchURLGlob(pattern, urlPath string) bool     // query stripped before matching
   func FindUnexpectedStatuses(hops []trace.Hop, expected []config.StatusRule) []StatusFinding
 
   // hop.go
   const DefaultCountTolerance = 0.5
-  type ServiceCount struct { Service string; A, B int; Deviates bool }
-  type Route struct { To, Method, Path string; Via []string }
-  type RouteFailure struct { Method, Path string; ExpectedStatus int; ActualStatus int; Reason string } // "missing" | "wrong-status"
-  type HopDiff struct {
-      ServiceCounts         []ServiceCount
-      NewErrors, GoneErrors []StatusFinding
-      NewRoutes, GoneRoutes []Route
-      RequiredRouteFailures []RouteFailure
-      HopRequireConfigured  bool
+  type ServiceCount struct {
+      Service  string `json:"service"`
+      A        int    `json:"a"`
+      B        int    `json:"b"`
+      Deviates bool   `json:"deviates"`
   }
-  type HopOptions struct { Normalize func(string) string; Expected []config.StatusRule; Require []config.RequiredRoute; CountTolerance float64; Collapse bool }
+  type Route struct {
+      To     string   `json:"to"`
+      Method string   `json:"method"`
+      Path   string   `json:"path"`
+      Via    []string `json:"via,omitempty"` // relays folded into this route
+  }
+  type RouteFailure struct {
+      Method         string `json:"method"`
+      Path           string `json:"path"`
+      ExpectedStatus int    `json:"expectedStatus"`
+      ActualStatus   int    `json:"actualStatus"`
+      Reason         string `json:"reason"` // "missing" | "wrong-status"
+  }
+  type HopDiff struct {
+      ServiceCounts         []ServiceCount  `json:"serviceCounts"`
+      NewErrors             []StatusFinding `json:"newErrors,omitempty"`
+      GoneErrors            []StatusFinding `json:"goneErrors,omitempty"`
+      NewRoutes             []Route         `json:"newRoutes"`
+      GoneRoutes            []Route         `json:"goneRoutes"`
+      RequiredRouteFailures []RouteFailure  `json:"requiredFailures,omitempty"`
+      HopRequireConfigured  bool            `json:"hopRequireConfigured"`
+  }
+  type HopOptions struct {
+      Normalize func(string) string
+      Expected  []config.StatusRule
+      Require   []config.RequiredRoute
+      // CountTolerance zero means "unset" and falls back to
+      // DefaultCountTolerance — a caller that wants NO tolerance passes a
+      // negative value. Stated because a zero-value field that silently
+      // means something other than zero is exactly how a "0% tolerance"
+      // intent becomes 50%.
+      CountTolerance float64
+      Collapse       bool
+  }
   func DiffHops(a, b []trace.Hop, o HopOptions) HopDiff
   func CollapsedRoutes(hops []trace.Hop, normalize func(string) string) []Route  // relay-folded, with Via
-  func RequiredRouteFailures(hops []trace.Hop, require []config.RequiredRoute) []RouteFailure
+  // RequiredRouteFailures takes ONE hop slice, and the caller contract is
+  // that it is side B, RAW (uncollapsed) — a hard gate must be evaluated
+  // against what actually happened on the candidate, not against a folded
+  // view of it and not against the reference. DiffHops calls it with b.
+  func RequiredRouteFailures(hopsB []trace.Hop, require []config.RequiredRoute) []RouteFailure
 
   // perf.go
-  type PerfResult struct { Status string; MeasuredMs, BudgetMs float64 } // "ok" | "over" | "unset"
-  type PerfBudget struct { BudgetMs float64; SampleCount int; MeasuredMaxMs, MeasuredMedianMs, MarginFactor float64 }
+  type PerfResult struct {
+      Status     string  `json:"status"` // "ok" | "over" | "unset"
+      MeasuredMs float64 `json:"measuredMs"`
+      BudgetMs   float64 `json:"budgetMs"`
+  }
+  type PerfBudget struct {
+      BudgetMs         float64 `json:"budgetMs"`
+      SampleCount      int     `json:"sampleCount"`
+      MeasuredMaxMs    float64 `json:"measuredMaxMs"`
+      MeasuredMedianMs float64 `json:"measuredMedianMs"`
+      MarginFactor     float64 `json:"marginFactor"`
+  }
   func TotalCallDurationMs(hops []trace.Hop) float64
   func DerivePerfBudget(samples []float64, marginFactor float64) (PerfBudget, error)
   func CheckPerfBudget(hops []trace.Hop, budgetMs float64) PerfResult
 
   // openapi.go
-  type ConformanceFinding struct { Method, Path string; Status int; Kind, Detail string } // Kind: "unknown-path"|"unknown-method"|"undocumented-status"|"missing-required-field"
+  type ConformanceFinding struct {
+      Method string `json:"method"`
+      Path   string `json:"path"`
+      Status int    `json:"status"`
+      Kind   string `json:"kind"` // "unknown-path"|"unknown-method"|"undocumented-status"|"missing-required-field"
+      Detail string `json:"detail"`
+  }
   func CheckOpenAPI(hops []trace.Hop, specPath string) ([]ConformanceFinding, error)
   ```
 
@@ -3658,45 +4704,94 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
   ```go
   package diff
   const SummarySchema = "retrace-diff/1"
-  type RunRef struct { RunID, Kind, Dir string; Manifest runs.Manifest } // Kind: "run" | "reference"
+
+  // Kind uses ONE vocabulary across this package and refs: "bundle" (an
+  // accepted reference bundle), "run" (a run directory), "none" (no side
+  // resolved). refs.Resolve returns the same three strings — an earlier
+  // draft had this type saying "reference" where refs said "bundle", with
+  // no mapping anywhere, so the two never agreed on the default path.
+  type RunRef struct {
+      RunID    string        `json:"runId"`
+      Kind     string        `json:"kind"` // "bundle" | "run" | "none"
+      Dir      string        `json:"dir"`
+      Manifest runs.Manifest `json:"manifest"`
+  }
   type CheckpointVerdict struct {
-      Name       string
-      Verdict    string          // "ok" | "changed" | "missing" | "added" | "unreadable"
-      DiffPct    float64
-      DiffPctFine float64
-      NumDiff    int
-      Mismatch   bool
-      Overlap    *pixel.Overlap
-      Images     CheckpointImages // run-dir-relative paths, "" when not written
+      Name        string           `json:"name"`
+      Verdict     string           `json:"verdict"` // "ok" | "changed" | "missing" | "added" | "unreadable"
+      DiffPct     float64          `json:"diffPct"`
+      DiffPctFine float64          `json:"diffPctFine"`
+      NumDiff     int              `json:"numDiff"`
+      Mismatch    bool             `json:"mismatch,omitempty"`
+      Overlap     *pixel.Overlap   `json:"overlap,omitempty"`
+      // Trimmed reports the rects Compare actually used when the
+      // checkpoint asked for border trimming, in the originals'
+      // coordinates. nil = no trim requested, or trim refused.
+      Trimmed *TrimRects       `json:"trimmed,omitempty"`
+      Images  CheckpointImages `json:"images"` // run-dir-relative paths, "" when not written
   }
-  type CheckpointImages struct { A, B, Diff, Overlay string }
-  type Counts struct { Checkpoints, PixelChanged, WirePaired, WireChanged, WireMoved, WireMissing, WireExtra, Violations, HopNew, HopGone, UnexpectedStatuses, Conformance int }
+  type TrimRects struct {
+      A *pixel.Rect `json:"a,omitempty"`
+      B *pixel.Rect `json:"b,omitempty"`
+  }
+  type CheckpointImages struct {
+      A       string `json:"a,omitempty"`
+      B       string `json:"b,omitempty"`
+      Diff    string `json:"diff,omitempty"`
+      Overlay string `json:"overlay,omitempty"`
+  }
+  type Counts struct {
+      Checkpoints        int `json:"checkpoints"`
+      PixelChanged       int `json:"pixelChanged"`
+      WirePaired         int `json:"wirePaired"`
+      WireChanged        int `json:"wireChanged"`
+      WireMoved          int `json:"wireMoved"`
+      WireMissing        int `json:"wireMissing"`
+      WireExtra          int `json:"wireExtra"`
+      Violations         int `json:"violations"`
+      HopNew             int `json:"hopNew"`
+      HopGone            int `json:"hopGone"`
+      UnexpectedStatuses int `json:"unexpectedStatuses"`
+      Conformance        int `json:"conformance"`
+  }
   type Summary struct {
-      Schema      string
-      App, Flow   string
-      A, B        RunRef
-      Verdict     string        // "pass" | "changed" | "failed"
-      Checkpoints []CheckpointVerdict
-      Wire        Wire
-      Sections    []Section
-      Hops        HopDiff
-      UnexpectedStatuses []StatusFinding
-      Perf        PerfResult
-      Conformance []ConformanceFinding
-      Capture     CaptureBanner
-      Counts      Counts
-      Gates       []string      // human-readable reasons the verdict is "failed"
+      Schema             string              `json:"schema"`
+      App                string              `json:"app"`
+      Flow               string              `json:"flow"`
+      A                  RunRef              `json:"a"`
+      B                  RunRef              `json:"b"`
+      Verdict            string              `json:"verdict"` // "pass" | "changed" | "failed"
+      Checkpoints        []CheckpointVerdict `json:"checkpoints"`
+      Wire               Wire                `json:"wire"`
+      Sections           []Section           `json:"sections"`
+      Hops               HopDiff             `json:"hops"`
+      UnexpectedStatuses []StatusFinding     `json:"unexpectedStatuses"`
+      Perf               PerfResult          `json:"perf"`
+      Conformance        []ConformanceFinding `json:"conformance"`
+      Capture            CaptureBanner       `json:"capture"`
+      Counts             Counts              `json:"counts"`
+      Gates              []string            `json:"gates"` // human-readable reasons the verdict is "failed"
   }
-  type CaptureBanner struct { A, B runs.CaptureTrust }
+  type CaptureBanner struct {
+      A runs.CaptureTrust `json:"a"`
+      B runs.CaptureTrust `json:"b"`
+  }
   type BuildInput struct {
-      App, Flow string
-      A, B      RunRef
-      Cfg       *config.Config
-      Options   Options
+      App, Flow  string
+      A, B       RunRef
+      Cfg        *config.Config
+      Options    Options
       WantImages bool
-      OutDir    string          // where diff/overlay PNGs are written (usually B's run dir)
+      OutDir     string          // where diff/overlay PNGs are written (usually B's run dir)
   }
   func Build(in BuildInput) (Summary, error)
+  // OptionsFor is the ONE place BuildInput.Options is assembled from a
+  // config plus two manifests. cmd_diff, serve and export all call it —
+  // an earlier draft left Options "caller-supplied" with no step telling
+  // any caller to populate it, and the result was that wire sections and
+  // deviations were silently empty on every real run while the unit tests,
+  // which pass Options directly, stayed green.
+  func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error)
   func ExitCode(s Summary) int          // 0 pass, 1 changed, 2 failed
   func RenderText(w io.Writer, s Summary)
   ```
@@ -3749,7 +4844,66 @@ func Build(in BuildInput) (Summary, error) {
 
 	// --- pixel, per checkpoint, by name union so a checkpoint that
 	// appeared or vanished is its own verdict rather than a silent skip.
-	for _, name := range checkpointUnion(in.A.Manifest, in.B.Manifest) { ... }
+	// This loop is written out rather than elided because it is where the
+	// spec's two pixel scenarios actually live: masks must be converted
+	// and passed (an earlier draft asserted
+	// TestAMaskedRegionDoesNotAffectTheCheckpointVerdict against a loop
+	// that never mentioned masks), and a trim request recorded at capture
+	// must be honoured here, at compare time.
+	for _, name := range checkpointUnion(in.A.Manifest, in.B.Manifest) {
+		cpA, okA := findCheckpoint(in.A.Manifest, name)
+		cpB, okB := findCheckpoint(in.B.Manifest, name)
+		switch {
+		case !okA:
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "added"})
+			continue
+		case !okB:
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "missing"})
+			continue
+		}
+		aPNG, errA := os.ReadFile(filepath.Join(in.A.Dir, cpA.File))
+		bPNG, errB := os.ReadFile(filepath.Join(in.B.Dir, cpB.File))
+		if errA != nil || errB != nil {
+			// Unreadable is its own verdict. "I could not compare this"
+			// must never render as "this did not change".
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable"})
+			continue
+		}
+		// config.Rect → pixel.Rect, via the single conversion function.
+		// MasksFor resolves flow-specific masks, then top-level, then the
+		// "*" wildcard (Task 3).
+		masks := pixel.RectsFrom(in.Cfg.MasksFor(in.Flow, name))
+		res, imgs, err := pixel.Compare(aPNG, bPNG, pixel.Options{
+			Masks:         masks,
+			GateThreshold: in.Cfg.Thresholds.Gate,
+			FineThreshold: in.Cfg.Thresholds.Fine,
+			WantDiff:      in.WantImages,
+			WantOverlay:   in.WantImages,
+			// Either side asking for a trim trims both — comparing a
+			// trimmed shot against an untrimmed one would be a geometry
+			// mismatch invented by the tool.
+			Trim: cpA.Trim || cpB.Trim,
+		})
+		if err != nil {
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable"})
+			continue
+		}
+		v := CheckpointVerdict{
+			Name: name, DiffPct: res.DiffPct, DiffPctFine: res.DiffPctFine,
+			NumDiff: res.NumDiff, Mismatch: res.Mismatch, Overlap: res.Overlap,
+			Verdict: "ok",
+		}
+		if res.TrimA != nil || res.TrimB != nil {
+			v.Trimmed = &TrimRects{A: res.TrimA, B: res.TrimB}
+		}
+		if res.DiffPct > in.Cfg.Thresholds.Gate || res.Mismatch {
+			v.Verdict = "changed"
+		}
+		if in.WantImages {
+			v.Images = writeCheckpointImages(in.OutDir, name, cpA, cpB, imgs) // "" for any it did not write
+		}
+		s.Checkpoints = append(s.Checkpoints, v)
+	}
 
 	// --- wire, from each side's client-edge hops
 	hopsA, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
@@ -3766,7 +4920,15 @@ func Build(in BuildInput) (Summary, error) {
 	}
 
 	// --- auxiliary checks always run against side B (the candidate).
-	s.UnexpectedStatuses = FindUnexpectedStatuses(append(hopsB, chainB...), in.Cfg.ExpectedStatuses)
+	// Status checks run over the WIDEST record of side B that exists, but
+	// each call exactly once: hops.jsonl is a superset of wire.jsonl (the
+	// client edge is part of the chain), so `append(hopsB, chainB...)`
+	// would report every client-edge 500 twice.
+	statusHops := chainB
+	if statusHops == nil {
+		statusHops = hopsB
+	}
+	s.UnexpectedStatuses = FindUnexpectedStatuses(statusHops, in.Cfg.ExpectedStatuses)
 	s.Perf = CheckPerfBudget(hopsB, in.Cfg.Flows[in.Flow].PerfBudgetMs)
 	if in.Cfg.OpenAPI != "" {
 		s.Conformance, err = CheckOpenAPI(hopsB, filepath.Join(in.Cfg.Dir, in.Cfg.OpenAPI))
@@ -3794,6 +4956,39 @@ func ExitCode(s Summary) int {
 	}
 	return 0
 }
+
+// OptionsFor assembles the diff Options from the config and the two
+// manifests. EVERY caller of Build uses it — cmd_diff, serve, export — so
+// there is exactly one place where "what the engine was told" is decided.
+//
+// The Groups lines are the whole reason this function exists. Markers are
+// written by the marker door, folded into Manifest.Groups by `retrace run`
+// (Task 4), and read HERE. Miss this hop and BuildSections falls back to a
+// single unnamed section on every real run: the wire diff still renders,
+// nothing errors, no test fails, and the flow-part feature is silently
+// dead end to end. That is exactly what happened in the earlier draft.
+func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
+	rs, err := cfg.Rules()
+	if err != nil {
+		return Options{}, err
+	}
+	o := Options{
+		WireIgnore: cfg.WireIgnore,
+		Rules:      rs,
+		Normalize:  cfg.NormalizePath,
+		GroupsA:    a.Groups,
+		GroupsB:    b.Groups,
+	}
+	// TODO(task-11): load the deviations ledger here —
+	//   if cfg.Deviations != "" {
+	//       ds, err := LoadDeviations(filepath.Join(cfg.Dir, cfg.Deviations))
+	//       o.Deviations = ResolveDeviations(ds, a.App, b.App)
+	//   }
+	// LoadDeviations/ResolveDeviations are Task 11's; referencing them now
+	// would not compile. o.Deviations stays nil until then, which is a
+	// no-op (TestNilDeviationsToleratesNothing, Task 8).
+	return o, nil
+}
 ```
 
 `RenderText` prints, in this order: the capture-trust banner for either side
@@ -3810,15 +5005,48 @@ not a dashboard.
 `cmd_diff.go` flags: `--flow` (required), `--app`, `--a` (default
 `reference`, else `previous`), `--b` (default `latest`), `--json`,
 `--images` (default true), `--out`. Selector resolution: `reference` →
-`refs.Resolve` (Task 11; until then, `--a` accepts only run selectors and
-`reference` errors with "run `retrace ref accept` first"), otherwise
-`runs.FindRun`.
+`refs.Resolve` (Task 11), otherwise `runs.FindRun`.
+
+**The stub, and who removes it.** `refs` does not exist yet, so
+`resolveSide("reference")` returns a `RunRef{Kind: "none"}` and
+`cmd_diff` exits 3 with "no reference bundle: run `retrace ref accept`
+first". `--a reference` is the DEFAULT, so this stub is on the main path
+and must not survive: **Task 11 lists `cmd_diff.go` as a file it modifies
+and removing this stub is one of its steps.** Mark it in the source so it
+cannot be missed:
+
+```go
+// TODO(task-11): replace with refs.Resolve. Until then the default
+// selector errors — see Task 11, which owns this line.
+```
+
+`cmd_diff` builds its input in exactly this order — resolve both sides,
+read both manifests, then `OptionsFor`. There is no path that constructs
+`BuildInput` without it:
+
+```go
+a, b := resolveSide(*aSel), resolveSide(*bSel)   // RunRef, Kind bundle|run|none
+opts, err := diff.OptionsFor(cfg, a.Manifest, b.Manifest)
+if err != nil {
+	return usageErr(stderr, err)                 // exit 3: config/IO, not a diff result
+}
+s, err := diff.Build(diff.BuildInput{
+	App: app, Flow: *flow, A: a, B: b, Cfg: cfg,
+	Options: opts, WantImages: *images, OutDir: outDir,
+})
+```
 
 Tests: `TestDiffExitsZeroOnIdenticalRuns`,
 `TestDiffExitsOneWhenAFieldChanged`,
 `TestDiffExitsTwoOnAnUnexpected500`,
 `TestDiffJsonIsParseableAndCarriesTheVerdict`,
-`TestDiffNamesTheMissingRunInsteadOfPanicking`.
+`TestDiffNamesTheMissingRunInsteadOfPanicking`,
+`TestSectionsComeFromTheManifestsGroups` — **the reading half of Task 4's
+`TestRunFoldsMarkersIntoManifestGroups`.** Two run dirs whose manifests
+carry groups `["login","checkout"]`; assert the summary's `Sections` are
+named after them and that every paired entry lands in the section its
+timestamp falls in. Without this test the whole marker → group → section
+chain can break at its last link and every other test still passes.
 
 - [ ] **Step 6: Full suites + commit**
 
@@ -3834,7 +5062,13 @@ git commit -m "feat(retrace): unified diff summary with --json and CI exit codes
 
 **Files:**
 - Create: `retrace/refs/refs.go`, `retrace/refs/refs_test.go`
-- Create: `retrace/diff/deviations.go`, `retrace/diff/deviations_test.go`
+- **Modify** (not create): `retrace/diff/deviations.go` — Task 8 created it
+  with the two type declarations; this task appends the ledger functions.
+- Create: `retrace/diff/deviations_test.go`
+- **Modify: `retrace/cmd/retrace/cmd_diff.go`** — Task 10 shipped it with a
+  deliberate stub that errors on `--a reference`; this task removes the stub
+  and routes it through `refs.Resolve`. Without this edit the default diff
+  path stays broken.
 - Create: `retrace/cmd/retrace/cmd_ref.go`, `retrace/cmd/retrace/cmd_ref_test.go`
 - Modify: `retrace/cmd/retrace/main.go` (dispatch `ref`), `.gitignore`
 
@@ -3844,21 +5078,76 @@ git commit -m "feat(retrace): unified diff summary with --json and CI exit codes
   package refs
   const MaxBundleBytes = 8 << 20   // 8 MiB per bundle, enforced at accept
   func BundleDir(cwd, app, flow string) string   // <cwd>/.retrace-ref/<app>/<flow>/reference
-  type Candidate struct { RunID string; Eligible bool; Reason, Detail string }
-  type Reference struct { Kind string; Dir, RunID string; Manifest runs.Manifest; Reason string; History []Candidate }
+  type Candidate struct {
+      RunID    string `json:"runId"`
+      Eligible bool   `json:"eligible"`
+      Reason   string `json:"reason"`
+      Detail   string `json:"detail,omitempty"`
+  }
+  type Reference struct {
+      // Kind is the SAME vocabulary as diff.RunRef.Kind: "bundle" | "run"
+      // | "none". Task 10 maps a Reference onto a RunRef by copying this
+      // field through unchanged — there is no translation table, because
+      // there are no two vocabularies to translate between.
+      Kind     string        `json:"kind"`
+      Dir      string        `json:"dir"`
+      RunID    string        `json:"runId"`
+      Manifest runs.Manifest `json:"manifest"`
+      Reason   string        `json:"reason,omitempty"`
+      History  []Candidate   `json:"history,omitempty"`
+  }
   func Resolve(cwd, runsRoot, app, flow string) Reference   // Kind: "bundle" | "run" | "none"
-  type AcceptOptions struct { Cwd, RunsRoot, App, Flow, RunID string; Masks []pixel.Rect; MasksFor func(checkpoint string) []pixel.Rect; Force bool }
-  type AcceptResult struct { Dir string; Files []string; RunID string; Bytes int64; CaptureStatus trace.Verdict }
+  type AcceptOptions struct {
+      Cwd, RunsRoot, App, Flow, RunID string
+      // MasksFor is the ONLY mask input. The earlier draft carried a flat
+      // `Masks []pixel.Rect` alongside it with no precedence rule, which
+      // is a coin-flip waiting to be resolved differently by two readers.
+      // Masks are per-checkpoint by nature — the whole point is "ignore
+      // the clock in the header of THIS screen" — so the function form is
+      // the one that can express the requirement. Callers wrap
+      // config.MasksFor + pixel.RectsFrom; see Step 3.
+      MasksFor func(checkpoint string) []pixel.Rect
+      Force    bool
+  }
+  type AcceptResult struct {
+      Dir           string        `json:"dir"`
+      Files         []string      `json:"files"`
+      RunID         string        `json:"runId"`
+      Bytes         int64         `json:"bytes"`
+      CaptureStatus trace.Verdict `json:"captureStatus"`
+  }
   func Accept(o AcceptOptions) (AcceptResult, error)
   type RejectOptions struct { Cwd, RunsRoot, App, Flow, RunID, OutDir string; Summary *diff.Summary }
-  type RejectResult struct { Dir string; Files []string }
+  type RejectResult struct {
+      Dir   string   `json:"dir"`
+      Files []string `json:"files"`
+  }
   func Reject(o RejectOptions) (RejectResult, error)
+  ```
+
+  The caller-side wiring, written out once so both call sites match — the
+  `config.Rect` → `pixel.Rect` conversion happens here, at the boundary,
+  through `pixel.RectsFrom` and nowhere else:
+
+  ```go
+  o := refs.AcceptOptions{
+      Cwd: cwd, RunsRoot: runsRoot, App: app, Flow: flow, RunID: runID,
+      MasksFor: func(checkpoint string) []pixel.Rect {
+          return pixel.RectsFrom(cfg.MasksFor(flow, checkpoint))
+      },
+  }
   ```
   ```go
   package diff   // deviations.go — in diff, NOT refs: refs.RejectOptions carries a
                  // *diff.Summary, so refs → diff is the only direction available.
-  type Deviation struct { ID, Status string; Apps [2]string; Method, Path, Reason string }
-  type ToleratedNote struct { ID, Reason string }
+  //
+  // `Deviation` and `ToleratedNote` are ALREADY DECLARED, by Task 8, in
+  // this same file — Task 8's Options.Deviations and Call.Tolerated
+  // reference them, and an undeclared type there is a compile error, not a
+  // dormant field. This task adds the ledger functions BELOW those
+  // declarations and must not restate them.
+  //   type Deviation struct { ID, Status string; Apps [2]string; Method, Path, Reason string }
+  //   type ToleratedNote struct { ID, Reason string }
   func LoadDeviations(file string) ([]Deviation, error)
   func ResolveDeviations(ds []Deviation, appA, appB string) []Deviation
   func FindDeviation(ds []Deviation, method, path string) *Deviation
@@ -3921,9 +5210,13 @@ func TestAcceptWarnsButProceedsOnANonOkCapture(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Implement `Accept`** — `os.RemoveAll` then copy; shots go
-  through `pixel.Decode` → `pixel.ApplyMasks` → `pixel.Encode` when the
-  checkpoint has masks, plain copy otherwise; sum bytes as it goes and fail
+- [ ] **Step 5: Implement `Accept`** — `os.RemoveAll` then copy; for each
+  shot call `o.MasksFor(checkpointName)` and, when it returns a non-empty
+  list, run `pixel.Decode` → `pixel.ApplyMasks` → `pixel.Encode`; plain
+  copy otherwise. `MasksFor` is already `[]pixel.Rect` — the
+  `config.Rect` → `pixel.Rect` conversion happened once, in the caller's
+  closure above, via `pixel.RectsFrom`. Do not convert again here and do
+  not reach for `config` from this package. Sum bytes as it goes and fail
   with `fmt.Errorf("reference bundle for %s/%s would be %s, over the %s
   budget — the largest file is %s (%s); add a mask, trim the flow, or raise
   MaxBundleBytes deliberately", ...)`.
@@ -3935,16 +5228,23 @@ func TestAcceptWarnsButProceedsOnANonOkCapture(t *testing.T) {
 a repro bundle someone can attach to a bug. Test:
 `TestRejectEmitsASelfContainedReproBundle`.
 
-`retrace/diff/deviations.go` ports `src/deviations.mjs` verbatim in spirit: an agent can
+`retrace/diff/deviations.go` already exists — Task 8 created it with the
+`Deviation` and `ToleratedNote` declarations, because its own structs
+reference them. **Append to it; do not re-declare those two types.** The
+ledger logic ports `src/deviations.mjs` verbatim in spirit: an agent can
 append `status: "proposed"` (visible, git-diffable, inert); only a human
 flipping it to `approved` makes retrace honor it. Tests:
 `TestOnlyApprovedDeviationsApply`, `TestAppPairMatchingIsOrderIndependent`,
 `TestAMalformedEntryIsAnErrorNamingItsIndex`.
 
-Wire `Deviations` into `diff.Options`: a matched deviation **annotates**
-`Call.Tolerated` rather than removing the entry, so it stays visible in
-every consumer's output and only stops counting as a finding.
-Test in `retrace/diff`: `TestASanctionedDeviationAnnotatesButDoesNotHide`.
+Wire `Deviations` into `diff.Options` by filling **Task 10's
+`TODO(task-11)` in `OptionsFor`** — that is the one assembly point, so
+there is no second place for a caller to forget. A matched deviation
+**annotates** `Call.Tolerated` rather than removing the entry, so it stays
+visible in every consumer's output and only stops counting as a finding.
+Tests in `retrace/diff`: `TestASanctionedDeviationAnnotatesButDoesNotHide`,
+and `TestOptionsForLoadsTheLedgerNamedByConfig` — the seam itself, which
+is what would otherwise be silently skipped.
 
 - [ ] **Step 7: `retrace ref` CLI**
 
@@ -3958,6 +5258,17 @@ retrace ref rule   --flow N --scope req|resp --field PATH --matcher NAME [--meth
 queue's `rule` verb uses, so the CLI and the UI cannot drift.
 Tests: `TestRefAcceptThenDiffAgainstReferenceExitsZero` (the round trip that
 proves the whole chain), `TestRefRuleAppendsToTheOverlayAndSilencesTheDiff`.
+
+**Step 7b: remove Task 10's stub.** `cmd_diff.go` currently carries a
+`TODO(task-11)` where `--a reference` — the DEFAULT selector — errors out.
+Replace it with `refs.Resolve`, mapping the returned `Reference` onto a
+`diff.RunRef` by copying `Kind` straight through (both use
+`"bundle" | "run" | "none"`; there is nothing to translate). The
+round-trip test above is what proves the stub is gone: it exercises the
+default selector, so it cannot pass while the stub stands.
+`TestDiffAgainstAMissingReferenceExplainsHowToCreateOne` keeps the good
+half of the stub's behaviour — `Kind == "none"` still exits 3 naming
+`retrace ref accept`, rather than diffing against nothing.
 
 - [ ] **Step 8: `.gitignore`**
 
@@ -3991,35 +5302,80 @@ git commit -m "feat(retrace): reference bundles with accept/reject/rule verbs an
 - Produces:
   ```go
   package replay
-  type Key struct { Method, Path, Query string }
+  type Key struct {
+      Method string `json:"method"`
+      Path   string `json:"path"`
+      Query  string `json:"query,omitempty"`
+  }
   type Exchange struct {
-      Key      Key
-      ReqBody  any
-      Status   int
-      Headers  map[string]string
-      Body     string
-      Seq      uint64
-      used     int
+      Key     Key               `json:"key"`
+      ReqBody any               `json:"reqBody,omitempty"`
+      Status  int               `json:"status"`
+      Headers map[string]string `json:"headers,omitempty"`
+      Body    string            `json:"body"`
+      Seq     uint64            `json:"seq"`
+      // used counts how many times this exchange has already been served.
+      // It is unexported because it is replay state, not bundle content:
+      // marshalling it would put a runtime counter into an artifact. It is
+      // what makes repeated identical calls come back in recorded order
+      // (see Step 3) — a poll-until-ready flow that got the same first
+      // response forever would hang.
+      used int
   }
   type Bundle struct { Dir string; Manifest runs.Manifest; Exchanges []Exchange }
   func LoadBundle(dir string) (*Bundle, error)   // reads wire.jsonl through runs.ReadHops
-  type MissField struct { Field, Expected, Actual string }
+  type MissField struct {
+      Field    string `json:"field"`
+      Expected string `json:"expected"`
+      Actual   string `json:"actual"`
+  }
   type Result struct { Hit *Exchange; Miss bool; Nearest *Exchange; Diff []MissField }
   type Request struct { Method, Path, Query string; Body any }
   type Options struct {
       Rules       []rules.Rule
       Normalize   func(string) string
       QueryIgnore []string
-      MissPath    string    // misses.jsonl
+      // No MissPath here. The misses file has ONE name and ONE owner:
+      // runs.Paths.MissesPath. A second field naming the same file is a
+      // second thing to keep in sync, and the loser of that race writes
+      // misses nobody reads. NewServer takes the path explicitly.
   }
   func (b *Bundle) Match(r Request, o Options) Result
   type Server struct { http.Handler }
-  func NewServer(b *Bundle, o Options) *Server
+  // NewServer takes the misses path directly — from runs.Paths.MissesPath
+  // at the call site. An empty string means "record misses in memory only",
+  // which is what the unit tests use.
+  func NewServer(b *Bundle, o Options, missesPath string) *Server
   func (s *Server) Misses() []Miss
   func (s *Server) MissCount() int
-  type Miss struct { TS time.Time; Kind string; Method, Path, Query string; Diff []MissField; Nearest *Key }
-  type Drift struct { Method, Path string; Status StatusDrift; Fields []diff.FieldDiff }
-  type RevalReport struct { Flow string; Checked int; Drifts []Drift; Verdict string }
+  type Miss struct {
+      TS     time.Time   `json:"ts"`
+      Kind   string      `json:"kind"`
+      Method string      `json:"method"`
+      Path   string      `json:"path"`
+      Query  string      `json:"query,omitempty"`
+      Diff   []MissField `json:"diff,omitempty"`
+      Nearest *Key       `json:"nearest,omitempty"`
+  }
+  // StatusDrift is nil when the status did not change. Declared here, in
+  // the only package that uses it — an earlier draft referenced it from
+  // Drift without declaring it anywhere at all.
+  type StatusDrift struct {
+      Recorded int `json:"recorded"`
+      Live     int `json:"live"`
+  }
+  type Drift struct {
+      Method string           `json:"method"`
+      Path   string           `json:"path"`
+      Status *StatusDrift     `json:"status,omitempty"`
+      Fields []diff.FieldDiff `json:"fields,omitempty"`
+  }
+  type RevalReport struct {
+      Flow    string  `json:"flow"`
+      Checked int     `json:"checked"`
+      Drifts  []Drift `json:"drifts"`
+      Verdict string  `json:"verdict"`
+  }
   func Revalidate(ctx context.Context, b *Bundle, upstream string, o Options) (RevalReport, error)
   ```
 
@@ -4079,11 +5435,27 @@ func TestCorsHeadersAreReflectedOnHitsAndMisses(t *testing.T) {
 func TestOptionsPreflightIsAnsweredNotMissed(t *testing.T)
 ```
 
-- [ ] **Step 5: Implement `server.go`.** Routes register per-method for every
-  verb over both `/{path...}` and the bare `/` (the ServeMux traps in Global
-  Constraints), or — simpler and what this task does — a single
-  `http.HandlerFunc` with no mux at all, since a mock server matches on its
-  own table rather than on route patterns.
+- [ ] **Step 5: Implement `server.go`.** **One implementation, not a
+  choice:** a single `http.HandlerFunc` with no `ServeMux` at all. A mock
+  server matches against its own exchange table, so route patterns would
+  add nothing but the ServeMux traps in Global Constraints. Concretely
+  that means the handler answers *every* method and path itself, including
+  the two cases a mux would otherwise have handled for free:
+
+  - `OPTIONS` is answered before the table lookup — a preflight is not a
+    recorded exchange and must never be a miss. Reflect the request's
+    `Origin`, `Access-Control-Allow-Methods: *`, and echo
+    `Access-Control-Request-Headers`.
+  - Every other verb falls through to `Match`; a miss is a 501 with the
+    explanatory body, never a fallthrough.
+
+  CORS headers are reflected on hits AND misses: a browser blocked by CORS
+  never sees the loud 501 body, only a network error, which reads to a
+  developer as an app bug rather than as a replay miss. Reflect the actual
+  `Origin`, never a bare `*` — with `*` a credentialed request fails.
+
+  The whole handler sits behind `httpguard.Handler(nil, ...)` (extracted in
+  Task 4), same as every other loopback listener in this plan.
 
 - [ ] **Step 6: `retrace replay` CLI**
 
@@ -4093,7 +5465,9 @@ retrace replay --ref FLOW [--app N] [--listen 127.0.0.1:0] [--json] -- <test com
 Resolves the reference via `refs.Resolve` (a `Kind == "none"` is exit 3 with
 the candidate history printed), starts the server, exports
 `RETRACE_PROXY_URL` + `RETRACE_RUN_DIR` + `RETRACE_MARKER_URL` exactly as
-`retrace run` does, runs the command, then: **exit 2 if `MissCount() > 0`**,
+`retrace run` does, passes `runs.Paths.MissesPath` to `NewServer` as the
+misses path (one name for that file, set at the one call site that knows
+the run directory), runs the command, then: **exit 2 if `MissCount() > 0`**,
 else the command's own exit code. Prints a miss report — one line per miss
 with its nearest exchange and field diff.
 
@@ -4126,34 +5500,29 @@ git commit -m "feat(retrace): strict replay with miss reporting, and revalidate 
 ### Task 13: Review queue + `retrace serve` REST (and the shared Origin/Host guard)
 
 **Files:**
-- Create: `core/httpguard/guard.go`, `core/httpguard/guard_test.go`
-- Modify: `ensemble/server/guard.go`, `ensemble/server/server.go:89`
 - Create: `retrace/serve/queue.go`, `retrace/serve/queue_test.go`
 - Create: `retrace/serve/server.go`, `retrace/serve/routes.go`, `retrace/serve/routes_test.go`
 - Create: `retrace/cmd/retrace/cmd_serve.go`
 - Modify: `retrace/cmd/retrace/main.go`
 
 **Interfaces:**
+- Consumes: `core/httpguard` — `httpguard.Handler(allowedHosts []string, h http.Handler) http.Handler`,
+  **extracted in Task 4**, which is also its first consumer (the marker
+  door). This task adds no second copy and no new guard code; it wraps its
+  mux exactly as Task 4's door does.
 - Produces:
-  ```go
-  package httpguard
-  // Handler wraps h with the DNS-rebinding and cross-origin protections a
-  // loopback control plane needs. allowedHosts extends the always-allowed
-  // loopback literals and "localhost"; the single entry "*" disables
-  // host/origin matching (Sec-Fetch-Site is still enforced).
-  func Handler(allowedHosts []string, h http.Handler) http.Handler
-  ```
   ```go
   package serve
   type Item struct {
-      App, Flow string
-      Verdict   string          // diff.Summary.Verdict
-      Score     float64         // worst-first sort key
-      RunID     string
-      RefRunID  string
-      Counts    diff.Counts
-      Capture   diff.CaptureBanner
-      Gates     []string
+      App      string             `json:"app"`
+      Flow     string             `json:"flow"`
+      Verdict  string             `json:"verdict"` // diff.Summary.Verdict
+      Score    float64            `json:"score"`   // worst-first sort key
+      RunID    string             `json:"runId"`
+      RefRunID string             `json:"refRunId,omitempty"`
+      Counts   diff.Counts        `json:"counts"`
+      Capture  diff.CaptureBanner `json:"capture"`
+      Gates    []string           `json:"gates,omitempty"`
   }
   type Deps struct {
       Cwd          string
@@ -4165,6 +5534,11 @@ git commit -m "feat(retrace): strict replay with miss reporting, and revalidate 
   func BuildQueue(d Deps) ([]Item, error)
   func SummaryFor(d Deps, app, flow string) (diff.Summary, error)
   func New(d Deps) http.Handler
+  // ScoreOf is the ONE definition of the worst-first sort key. It is
+  // exported because it is tested directly and because the ordering is
+  // part of the REST contract; it is NOT re-derived anywhere else, in Go
+  // or in TypeScript — the UI reads Item.score.
+  func ScoreOf(s diff.Summary) float64
   ```
 
 **Routes** (JSON; errors `{"error":"..."}`; every one behind
@@ -4175,7 +5549,7 @@ GET  /api/queue                               → {items: Item[]}          worst
 GET  /api/queue/{app}/{flow}                  → {summary: diff.Summary}
 POST /api/queue/{app}/{flow}/accept           → {ok, bundle: {dir, files, bytes}}
 POST /api/queue/{app}/{flow}/reject           → {ok, repro: {dir, files}}
-POST /api/queue/{app}/{flow}/rule             → {ok, rule, rules: RawRule[]}
+POST /api/queue/{app}/{flow}/rule             → {ok, rule, rules: rules.Raw[]}
 GET  /api/shots/{app}/{flow}/{side}/{name}    → image/png   side: a|b|diff|overlay
 GET  /                                        → embedded retrace-ui (Task 15)
 ```
@@ -4187,46 +5561,13 @@ plus `WireChanged + WireMissing + WireExtra`. Passing flows score 0 and the
 UI collapses them. The formula lives in one exported function,
 `ScoreOf(s diff.Summary) float64`, so the UI never re-derives it.
 
-- [ ] **Step 1: Extract the guard**
+**And it genuinely never does.** The server is authoritative: `Item.score`
+is on the wire, the UI sorts by it and renders it, and there is no
+TypeScript copy of this formula for the two to drift apart. Task 15's
+`src/score.ts` is tone-only (`verdictTone`) for exactly this reason — see
+the note there.
 
-Move `ensemble/server/guard.go`'s body into `core/httpguard/guard.go`
-verbatim — **including every explanatory comment**, they are the security
-rationale — exporting `Handler(allowedHosts []string, h http.Handler)` and
-keeping `hostSet`/`newHostSet`/`originAllowed`/`hostOnly` unexported there.
-It needs its own error writer (`writeErr`) since it can no longer use the
-server package's.
-
-Replace `ensemble/server/guard.go` with:
-```go
-package server
-
-import (
-	"net/http"
-
-	"github.com/caribou-crew/ensemble/core/httpguard"
-)
-
-// guard is the shared browser-facing protection, now living in
-// core/httpguard so retrace's review server gets the identical treatment —
-// the rationale (CSRF against an unauthenticated loopback control plane;
-// DNS rebinding) applies to both products, and a second copy would drift.
-func guard(allowedHosts []string, h http.Handler) http.Handler {
-	return httpguard.Handler(allowedHosts, h)
-}
-```
-and `server.go:89` becomes `return guard(d.AllowedHosts, mux)`.
-
-Move `ensemble/server/guard_test.go`'s cases into
-`core/httpguard/guard_test.go` (they currently exercise the guard through
-`server.New`; rewrite them against `httpguard.Handler` directly), and leave
-ONE integration test in `ensemble/server` —
-`TestServerRejectsCrossOriginRequests` — proving the wiring survived.
-
-Run: `go test -race ./core/httpguard/ ./ensemble/server/ -v` → PASS.
-Commit this step on its own: `refactor(core): extract the Origin/Host guard
-into core/httpguard for both products`.
-
-- [ ] **Step 2: Write the failing queue test**
+- [ ] **Step 1: Write the failing queue test**
 
 ```go
 func TestQueueIsWorstFirstWithPassingFlowsLast(t *testing.T)
@@ -4237,11 +5578,11 @@ func TestQueueSurvivesAnUnreadableRunDirectory(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Implement `BuildQueue`** — for each app/flow under the runs
+- [ ] **Step 2: Implement `BuildQueue`** — for each app/flow under the runs
   root: resolve the reference (A) and the latest run (B), `diff.Build`,
   `ScoreOf`, sort descending, stable by `app/flow` for ties.
 
-- [ ] **Step 4: Write the failing routes test**
+- [ ] **Step 3: Write the failing routes test**
 
 ```go
 func TestGetQueueReturnsItemsWorstFirst(t *testing.T)
@@ -4262,7 +5603,7 @@ func TestShotPathsCannotEscapeTheRunDirectory(t *testing.T) {
 func TestAnUnknownAppOrFlowIs404NotAPanic(t *testing.T)
 ```
 
-- [ ] **Step 5: Implement `routes.go`**
+- [ ] **Step 4: Implement `routes.go`**
 
 ```go
 func (s *server) routes(mux *http.ServeMux) {
@@ -4290,17 +5631,37 @@ func safeShotPath(runDir, name string) (string, error) {
 }
 ```
 
-- [ ] **Step 6: `retrace serve` CLI** — `--addr 127.0.0.1:4800` (loopback
+**Where the four shot sides come from.** `handleShot` serves
+`side ∈ {a, b, diff, overlay}`, and only two of those are files somebody
+else already wrote. Resolve them in one place, `shotDirFor(side)`:
+
+- `a` → the A-side run (or bundle) directory's `shots/`, from
+  `Summary.A.Dir`.
+- `b` → `Summary.B.Dir` + `shots/`.
+- `diff` / `overlay` → **generated by `diff.Build`**, into
+  `BuildInput.OutDir`. `SummaryFor` therefore calls `Build` with
+  `WantImages: true` and `OutDir` set to a per-flow directory under
+  `<cwd>/.retrace/diffs/<app>/<flow>/`, and the returned
+  `CheckpointVerdict.Images` paths are relative to it. Serving a
+  `diff`/`overlay` side for a checkpoint whose `Images.Diff` is `""` is a
+  404 with `{"error":"no diff image: this checkpoint did not change"}` —
+  not an empty 200, which would render as a blank comparison pane and read
+  as "identical".
+
+`.retrace/` is already gitignored, so generated diff images never reach a
+commit. `safeShotPath` guards the name in every case.
+
+- [ ] **Step 5: `retrace serve` CLI** — `--addr 127.0.0.1:4800` (loopback
   only; a non-loopback bind requires an explicit `--allow-host` and prints a
   warning), `--open`. Reuses `server.Serve`-style graceful shutdown:
   `BaseContext` ties every connection to the CLI's context so Ctrl-C is
   immediate.
 
-- [ ] **Step 7: Full suites + commit**
+- [ ] **Step 6: Full suites + commit**
 
 ```bash
 go test -race ./core/... ./ensemble/... ./retrace/...
-git add core/httpguard ensemble/server retrace/serve retrace/cmd/retrace
+git add retrace/serve retrace/cmd/retrace
 git commit -m "feat(retrace): review queue and retrace serve REST verbs behind the shared guard"
 ```
 
@@ -4594,7 +5955,8 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
 - Create: `dashboard/retrace-ui/{package.json,vite.config.ts,tsconfig.json,index.html}`
 - Create: `dashboard/retrace-ui/src/{main.tsx,App.tsx,App.css}`
 - Create: `dashboard/retrace-ui/src/api/{types.ts,client.ts}`
-- Create: `dashboard/retrace-ui/src/{urlState.ts,keys.ts,keys.test.ts,score.ts,score.test.ts}`
+- Create: `dashboard/retrace-ui/src/{urlState.ts,keys.ts,keys.test.ts,tone.ts}`
+  — note there is **no** `score.ts`/`score.test.ts`: see the ruling below.
 - Create: `dashboard/retrace-ui/src/components/{QueueList,ShotCompare,WireDiffTable,HopDeltaList,CaptureBanner}.tsx` (+ `.css` each)
 - Create: `dashboard/retrace-ui/src/components/{ShotCompare,WireDiffTable}.test.tsx`
 - Create: `retrace/serve/ui/ui.go`, `retrace/serve/ui/ui_test.go`, `retrace/serve/ui/dist/index.html` (placeholder)
@@ -4613,8 +5975,12 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
   export interface TrustReason { code: string; status: Verdict; detail: string; hint?: string }
   export interface CaptureTrust { status: Verdict; reasons?: TrustReason[]; gaps?: Gap[]; summary: string; hint?: string }
   export interface Gap { from: string; to: string; seconds: number }
+  export interface Rect { x: number; y: number; width: number; height: number }
   export interface CheckpointVerdict { name: string; verdict: 'ok'|'changed'|'missing'|'added'|'unreadable';
-    diffPct: number; diffPctFine: number; numDiff: number; mismatch: boolean; images: { a: string; b: string; diff: string; overlay: string } }
+    diffPct: number; diffPctFine: number; numDiff: number; mismatch?: boolean;
+    overlap?: { width: number; height: number; diffPct: number; diffPctFine: number; numDiff: number; paddingPct: number };
+    trimmed?: { a?: Rect; b?: Rect };
+    images: { a?: string; b?: string; diff?: string; overlay?: string } }
   export interface FieldDiff { scope: string; path: string; type: 'changed'|'added'|'removed'; a?: unknown; b?: unknown; matcher?: string; glob?: string }
   export interface HeaderDiff { scope: string; name: string; type: 'changed'|'added'|'removed'|'tolerated'|'violation'; a?: string; b?: string; matcher?: string }
   export interface Entry { method: string; normalizedPath: string; seqA: number; seqB: number; posA: number; posB: number;
@@ -4627,11 +5993,43 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
     unexpectedStatuses: number; conformance: number }
   export interface Item { app: string; flow: string; verdict: 'pass'|'changed'|'failed'; score: number;
     runId: string; refRunId: string; counts: Counts; capture: { a: CaptureTrust; b: CaptureTrust }; gates: string[] }
+  export interface Call { method: string; path: string; seq: number; status: number;
+    group?: string; tolerated?: { id: string; reason: string } }
+  export interface GroupNames { a: string[]; b: string[] }
+  export interface Manifest { schema: string; app: string; flow: string; runId: string; mode: 'ensemble'|'standalone';
+    git: { sha: string; branch: string; dirty: boolean }; startedAt: string; finishedAt: string;
+    checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
+    groups?: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
+    capture: CaptureTrust; wire: { calls: number }; hops?: { calls: number };
+    test: { command: string; exitCode: number; durationMs: number }; env: { go: string; platform: string } }
+  export interface RunRef { runId: string; kind: 'bundle'|'run'|'none'; dir: string; manifest: Manifest }
+  export interface Route { to: string; method: string; path: string; via?: string[] }
+  export interface ServiceCount { service: string; a: number; b: number; deviates: boolean }
+  export interface RouteFailure { method: string; path: string; expectedStatus: number;
+    actualStatus: number; reason: 'missing'|'wrong-status' }
+  export interface StatusFinding { seq: number; method: string; path: string; status: number }
+  export interface HopDiff { serviceCounts: ServiceCount[];
+    newErrors?: StatusFinding[]; goneErrors?: StatusFinding[];
+    newRoutes: Route[]; goneRoutes: Route[];
+    requiredFailures?: RouteFailure[]; hopRequireConfigured: boolean }
+  export interface PerfResult { status: 'ok'|'over'|'unset'; measuredMs: number; budgetMs: number }
+  export interface ConformanceFinding { method: string; path: string; status: number;
+    kind: 'unknown-path'|'unknown-method'|'undocumented-status'|'missing-required-field'; detail: string }
   export interface Summary { schema: string; app: string; flow: string; verdict: 'pass'|'changed'|'failed';
-    checkpoints: CheckpointVerdict[]; wire: { paired: Entry[]; missing: Call[]; extra: Call[] };
+    a: RunRef; b: RunRef;
+    checkpoints: CheckpointVerdict[];
+    wire: { paired: Entry[]; missing: Call[]; extra: Call[]; groups?: GroupNames };
     sections: Section[]; hops: HopDiff; unexpectedStatuses: StatusFinding[]; perf: PerfResult;
     conformance: ConformanceFinding[]; capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts; gates: string[] }
   ```
+
+  **These names are not a guess — they are the `json:` tags from Tasks 8
+  and 10, transcribed.** If a Go type here gains a field, its tag is the
+  TS property name; if a tag is missing on the Go side, this whole block is
+  wrong and so is every REST response. Tasks 8, 10, 12 and 13 carry the
+  tags explicitly for exactly this reason. `TestSummaryJsonShapeIsStable`
+  (Task 10) is the golden that catches a drift here from the Go side; the
+  `.test.tsx` files below catch it from this side.
 - Consumes: `useAsync(fn, deps)` from `@ensemble/design-system/useAsync`
   (Task 14). **Every fetch in this app goes through it** — the queue load,
   the item load, and the post-mutation refetch (which is a `useAsync` whose
@@ -4656,9 +6054,22 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
   // keys.ts
   export type Action = 'next'|'prev'|'accept'|'reject'|'rule'|'toggleOverlay'|'scrubLeft'|'scrubRight'|'help'|'back';
   export function actionFor(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; target: EventTarget | null }): Action | null;
-  // score.ts (mirrors serve.ScoreOf — tested against a fixture the Go side also uses)
+  // tone.ts — presentation only. There is deliberately NO TypeScript copy
+  // of serve.ScoreOf: the server computes the score, puts it on the wire
+  // as Item.score, and this app sorts and renders that number. A mirrored
+  // formula is two implementations of one rule, and the day they disagree
+  // the queue silently orders itself differently from the CI report.
   export function verdictTone(v: Item['verdict']): 'green' | 'amber' | 'red';
   ```
+
+  **Ruling (scoring has one home).** An earlier draft had `score.ts`
+  "mirroring `serve.ScoreOf`, tested against a fixture the Go side also
+  uses" while Task 13 argued `ScoreOf` exists "so the UI never re-derives
+  it" — the plan mandated both. The server wins: it is the surface an
+  agent hits over REST, and `Item.score` is already in the payload. The
+  only thing this file ever held that the UI genuinely needs is
+  `verdictTone`, which is the one function its own interface block
+  declared, so it becomes `tone.ts` and the mirror disappears with it.
 
 **Keyboard map** (the "keyboard-driven item screen" the spec requires):
 `j`/`↓` next · `k`/`↑` prev · `enter` open · `esc` back to queue ·
@@ -4732,7 +6143,8 @@ after the `/api/...` patterns, which ServeMux prefers automatically.
 
 - [ ] **Step 3: Queue screen**
 
-`QueueList.tsx`: worst-first rows (`Badge` tone from `verdictTone`), each
+`QueueList.tsx`: worst-first rows sorted by the server's `item.score` —
+never recomputed here (`Badge` tone from `verdictTone` in `tone.ts`), each
 showing app/flow, verdict, the gate count, and a one-line counts strip
 (`3 shots · 12 wire · +1 hop`). Passing flows render collapsed under a
 "N passing" disclosure — the spec's "passing collapsed". Selection is
@@ -4744,9 +6156,11 @@ keyboard-driven and mirrored into the URL (`?app=&flow=`) via `urlState.ts`
 `ShotCompare.tsx`: A/B/overlay with a drag-or-arrow-key slider, and a
 `diff` tab. Images come from `api.shotUrl(...)` — never a data URI, the
 server already serves PNGs.
-Test (`ShotCompare.test.tsx`, happy-dom):
-`TestSliderPositionIsClampedToZeroThroughOneHundred`,
-`TestOverlayToggleSwapsTheRenderedImageSource`.
+Test (`ShotCompare.test.tsx`, happy-dom) — vitest `it(...)` names, not Go
+`TestXxx` identifiers; these are `.tsx` files:
+`it('clamps the slider position to 0–100')`,
+`it('swaps the rendered image source when the overlay toggles')`,
+`it('renders the no-diff-image case as an explanation, not a blank pane')`.
 
 `WireDiffTable.tsx`: one collapsible section per flow part (from
 `summary.sections`), rows carrying `classes` as CSS class names
@@ -4755,8 +6169,11 @@ A `truncated` entry renders "body was size-capped at capture — not field
 diffed" instead of an empty diff. Redaction markers (`[redacted]`, and
 `$enc:v1:` once Phase 4b lands) render with the `.redacted` class and a
 title tooltip; **no reveal control in this task**.
-Test: `TestAToleratedFieldRendersItsMatcherInsteadOfCountingAsAChange`,
-`TestATruncatedBodyExplainsItselfRatherThanRenderingEmpty`.
+Test (`WireDiffTable.test.tsx`):
+`it('renders a tolerated field with its matcher instead of counting it as a change')`,
+`it('explains a truncated body rather than rendering an empty diff')`,
+`it('names each section from summary.sections')` — the UI end of the
+marker → group → section chain.
 
 `HopDeltaList.tsx`: new/gone routes and deviating service counts.
 `CaptureBanner.tsx`: renders a non-ok `CaptureTrust` at the top of BOTH the
@@ -4799,6 +6216,9 @@ git commit -m "feat(dashboard): retrace review UI — worst-first queue, keyboar
 
 **Files:**
 - Create: `retrace/serve/export.go`, `retrace/serve/export_test.go`
+- Create: `retrace/serve/report.tmpl.html` — **the embedded template.**
+  `//go:embed` fails to compile when its target is missing, so this file is
+  created in Step 3 along with the code that embeds it, not left implied.
 - Create: `retrace/cmd/retrace/cmd_export.go`
 - Modify: `retrace/cmd/retrace/main.go`
 
@@ -4848,14 +6268,20 @@ func TestExportOfAnUnknownFlowIsAnErrorNamingIt(t *testing.T)
 - [ ] **Step 2: Run — expect FAIL. Step 3: implement** with
   `html/template` (which escapes by default — never `template.HTML` on
   anything derived from a recording), one `//go:embed report.tmpl.html`
-  template, and a tiny inlined `<style>` block. No JavaScript at all except
+  template — **write `retrace/serve/report.tmpl.html` in this step**; an
+  embed directive pointing at a file that does not exist is a compile
+  error, not a runtime one — and a tiny inlined `<style>` block. No JavaScript at all except
   a ~15-line inline overlay toggle, written as a `<details>`/`<input
   type=range>` pair where possible so it degrades without script.
 
 - [ ] **Step 4: `retrace export` CLI** — `--out` (required), `--app`,
   `--flow`, `--json` (prints the `ExportResult`). Exit code mirrors the
   worst verdict exported, so `retrace export` can be the only step in a CI
-  job.
+  job: `max(diff.ExitCode(s))` across everything exported — 0 all pass,
+  1 any changed, 2 any failed. Assert it, or it is a claim rather than a
+  behaviour: `TestExportExitsWithTheWorstVerdictItExported` — two flows,
+  one `pass` and one `failed`, exits 2; the same pair with `pass` and
+  `changed`, exits 1; two passes, exits 0.
 
 - [ ] **Step 5: Commit**
 
@@ -4873,12 +6299,21 @@ git commit -m "feat(retrace): retrace export static report"
 - Create: `adapters/js/{package.json,tsconfig.json,vite.config.ts,src/index.ts,src/handshake.ts,src/handshake.test.ts,src/groups.test.ts,README.md}`
 - Create: `adapters/playwright/{package.json,tsconfig.json,vite.config.ts,src/index.ts,src/fixture.ts,src/fixture.test.ts,README.md}`
 - Create: `adapters/maestro/{package.json,bin/retrace-maestro.mjs,src/index.ts,src/index.test.ts,README.md}`
-- Modify: nothing in Go. **All heavy lifting stays in the binary** — the
-  adapters only mark flow parts and capture screenshots.
+- Modify: nothing in Go, and that is now literally true. **All heavy
+  lifting stays in the binary** — the adapters only mark flow parts and
+  capture screenshots. (An earlier draft said this while Step 2 also
+  mandated a `capture.Checkpoints()` change; the trim marker is now read by
+  Task 4 and acted on by Tasks 7/10, so this task really is Go-free.)
 
 **Interfaces:**
 - Consumes: the env handshake from Task 4 — `RETRACE_RUN_DIR`,
   `RETRACE_PROXY_URL`, `RETRACE_MARKER_URL`, `RETRACE_STRICT`.
+  **`RETRACE_STRICT` is plan-exceeds-spec** (see "Where this plan exceeds
+  the spec" in the header): the spec requires adapters to "fail loudly if
+  invoked without [the handshake] when strict mode is on" but never names
+  the switch that turns strict mode on. This is that switch, and unset it
+  preserves the spec'd default of no-op-outside-a-run. Report it to the
+  spec owner alongside `RETRACE_MARKER_URL`.
 - Produces:
   ```ts
   // @caribou-crew/retrace-js
@@ -4950,7 +6385,6 @@ screenshot }) }`), so the package's tests need no browser:
 it('writes <name>.png into the run dir shots directory', async () => {});
 it('scopes the shot to a selector when given one', async () => {});
 it('accepts an already-scoped Locator (for cross-origin frames)', async () => {});
-it('records the viewport as device.json so the run knows what it captured on', async () => {});
 it('is a no-op outside a run when strict is off', async () => {});
 it('throws the handshake message in strict mode', async () => {});
 ```
@@ -4958,13 +6392,23 @@ it('throws the handshake message in strict mode', async () => {});
 owns their Playwright version.
 
 Note: `trim` (uniform-border cropping) is **NOT** implemented in the
-adapter, unlike flowlens. The Go binary owns pixel work
-(`pixel.TrimUniformBorder`), and duplicating it in TS would be a second
-implementation to keep in sync. The fixture's `trim: true` writes a
-`<name>.trim` marker file next to the shot; `capture.Checkpoints()` reads it
-and trims on the Go side. Add the matching Go test in Task 4's file:
-`TestACheckpointMarkedTrimIsCroppedOnRead`. *(Implementers: this is a
-deliberate deviation from the ported file — do not "restore" the JS trim.)*
+adapter, unlike flowlens. The Go binary owns pixel work, and duplicating it
+in TS would be a second implementation to keep in sync.
+
+**The whole trim path, so no task has to guess at its half:**
+`trim: true` writes an empty `<name>.trim` marker file beside the shot —
+that is this task's entire contribution, and it is a file write, not a Go
+change. **Task 4** notices the marker and records `Checkpoint.Trim` in the
+manifest (a fact about the capture; `Width`/`Height` stay the shot's real
+pre-trim geometry). **Tasks 7 and 10** do the cropping, at compare time,
+via `pixel.Options.Trim` → `pixel.TrimUniformBorder`, and report the rect
+actually used in `CheckpointVerdict.Trimmed`. Trimming at compare time
+rather than capture time is what keeps `retrace/capture` from importing
+`retrace/diff/pixel`, and it means the recorded artifact is never altered
+by a display preference.
+Test here: `it('writes a .trim marker beside the shot when trim is true')`.
+*(Implementers: this is a deliberate deviation from the ported file — do
+not "restore" the JS trim, and do not crop in the adapter.)*
 
 - [ ] **Step 3: `adapters/maestro`**
 
@@ -4984,17 +6428,43 @@ it('throws the handshake message in strict mode', () => {});
     env: { ARGS: "group checkout" }
 ```
 
-- [ ] **Step 4: Workspace wiring**
+- [ ] **Step 4: Workspace wiring and package entry points**
 
 `pnpm-workspace.yaml` already globs `adapters/*` — no change needed. Verify:
 `pnpm install && pnpm -r test` picks up all three packages.
+
+Each `package.json` must declare what Step 5 consumes, or "imports the
+built `adapters/js`" has nothing to import:
+
+```jsonc
+{
+  "name": "@caribou-crew/retrace-js",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  }
+}
+```
+`retrace-playwright` is the same shape plus `"peerDependencies": {
+"@playwright/test": ">=1.40" }`. `retrace-maestro` additionally declares
+`"bin": { "retrace-maestro": "./bin/retrace-maestro.mjs" }`, and that file
+is plain `.mjs` (not built) so the Maestro `runScript` path never depends
+on a build having run.
 
 - [ ] **Step 5: End-to-end proof**
 
 `retrace/cmd/retrace/cmd_run_adapters_test.go`:
 `TestARunWithMarkersAndAScreenshotProducesGroupsAndCheckpoints` — the test
 command is a small Node script (skipped with `t.Skip` when `node` is not on
-PATH) that imports the built `adapters/js` and calls `group`, `endGroup`,
+PATH, and with `pnpm --filter @caribou-crew/retrace-js build` run first —
+the script imports `dist/`, so the build is a precondition of the test, not
+an assumption) that imports the built `adapters/js` and calls `group`,
+`endGroup`,
 and writes a PNG into `$RETRACE_RUN_DIR/shots`. Asserts the manifest ends up
 with one group interval and one checkpoint. This is the spec's "Playwright
 fixture" scenario reduced to its testable core without requiring browsers in
@@ -5145,8 +6615,9 @@ git commit -m "docs: record the useAsync migration in the phase-3 inventory"
   `openspec/changes/init-ensemble-retrace/tasks.md`, leaving 4.8 unticked
   with a pointer to the part-2 plan.
 - [ ] Add a one-line note under 4.4 recording that **a11y-tree diff is
-  deferred** (spec keeps it "flagged experimental until device-verified";
-  no task here implements it).
+  deferred to part 2** (spec keeps it "flagged experimental until
+  device-verified"; no task here implements it, and the part-2 plan's scope
+  enumeration lists it alongside encryption so the SHALL has a home).
 - [ ] Record the `RETRACE_MARKER_URL` handshake extension in the
   `adapters` spec, or raise it with the spec owner if the two-variable list
   is meant to be exhaustive.
@@ -5178,12 +6649,12 @@ Run against the four specs with fresh eyes. Findings and their resolutions:
 | diff-review · Pixel diff (thresholds, masks, border trim, A/B/overlay/diff) | 7 |
 | diff-review · Wire diff (pairing, field+header, LIS reorder, rules exit non-zero) | 8, 10 |
 | diff-review · Hop diff (added/removed, hopRequire hard gates) | 9 |
-| diff-review · Machine-readable everything (`--json`, stable shapes, exit codes) | 10 |
-| diff-review · Review queue (worst-first, keyboard, three verbs, same over REST) | 13, 14 |
+| diff-review · Machine-readable everything (`--json`, stable shapes, exit codes) | 10 (+ 16, the static export) |
+| diff-review · Review queue (worst-first, keyboard, three verbs, same over REST) | 13 (REST), 15 (UI) |
 | diff-review · Auxiliary checks (≥400 + expectedStatuses, OpenAPI, perf) | 9 |
-| diff-review · Auxiliary checks (a11y-tree diff) | **Deferred** — see wrap-up; spec itself flags it experimental |
-| adapters · Thin in-test adapters (playwright, maestro, js) | 16 |
-| adapters · Env-based handshake + loud strict failure | 4, 16 |
+| diff-review · Auxiliary checks (a11y-tree diff) | **Deferred to part 2** — enumerated in the scope ruling; spec itself flags it experimental |
+| adapters · Thin in-test adapters (playwright, maestro, js) | 17 |
+| adapters · Env-based handshake + loud strict failure | 4 (server side), 17 (adapter side) |
 | core-trace-model · Unified hop schema used identically by both | 1, 4, 5 (`wire.jsonl`/`hops.jsonl` ARE `trace.Hop`) |
 | core-trace-model · W3C propagation, baggage join key | reused from shipped `core/proxy` + `core/trace`; asserted end-to-end in 5 |
 | core-trace-model · Relay collapse | already shipped (`core/trace/collapse.go`) — **and given its first product consumer in Task 9** |
@@ -5213,48 +6684,131 @@ the wrap-up and in the porting inventory's "NOT ported" list; (b) the
 "banner non-ok verdicts on all report surfaces" requirement was only in
 Task 6 — assertions were added to Tasks 10, 13 and 16.
 
-**2. Placeholder scan.** Searched for TBD / TODO / "implement later" /
+**2. Placeholder scan.** Searched for TBD / "implement later" /
 "add appropriate error handling" / "similar to Task N" / "write tests for
 the above": none present. Three places name a file to port rather than
 inlining 200 lines of it (`wire.mjs`'s walker, `capture-health.mjs`'s reason
 list, `reference.mjs`'s eligibility ladder) — each names the exact source
 path, the exact function, and the exact behaviours its tests must pin, which
-is the porting equivalent of showing the code. The one genuinely open
-question — whether `RETRACE_MARKER_URL` is acceptable — is called out as a
-question for the spec owner rather than left as a silent choice.
+is the porting equivalent of showing the code.
+
+Three `TODO(task-N)` markers survive **deliberately**, and each is a seam a
+later task is contractually required to fill, named in that task's Files
+block and covered by a test that cannot pass while the seam is open:
+
+| Marker | Written by | Filled by | Test that proves it was filled |
+|---|---|---|---|
+| `TODO(task-6)` in `assessTrust` | 4 | 6 | `TestRunBannersANonOkVerdict` |
+| `TODO(task-11)` in `cmd_diff.go`'s `reference` selector | 10 | 11 | `TestRefAcceptThenDiffAgainstReferenceExitsZero` |
+| `TODO(task-11)` in `OptionsFor`'s deviations branch | 10 | 11 | `TestOptionsForLoadsTheLedgerNamedByConfig` |
+
+A seam with a named owner and a failing test is not a placeholder; a seam
+without one is, which is why the earlier draft's "assess trust (Task 6)"
+inside an elided `...` was the more dangerous form.
+
+Two open questions are called out for the spec owner rather than left as
+silent choices: `RETRACE_MARKER_URL` and `RETRACE_STRICT`, both listed under
+"Where this plan exceeds the spec".
 
 **3. Type consistency.** Checked every name used across task boundaries:
 `runs.Paths`, `runs.Manifest`, `runs.CaptureTrust`, `runs.Group`,
-`runs.ReadHops`, `capture.Session`, `capture.Options`, `capture.Assess`,
-`capture.Fatal`, `rules.Matcher`, `rules.Resolved.ForField`,
-`config.Config.NormalizePath`, `config.AppendWireRule`, `pixel.Compare`,
-`pixel.ApplyMasks`, `pixel.Rect`, `diff.Options`, `diff.Entry`,
-`diff.Summary`, `diff.ExitCode`, `refs.Resolve`, `refs.Accept`,
-`replay.Bundle.Match`, `serve.Item`, `serve.ScoreOf`, `httpguard.Handler`,
-`useAsync`/`AsyncState<T>` (Task 14, consumed unchanged by Tasks 15 and 18),
-`HopOptions.Collapse` and `Route.Via` (Task 9, rendered by Task 15's
-`HopDeltaList`).
-Three inconsistencies were found and fixed inline:
-- `config.Rect` vs `pixel.Rect` — the config package's `Rect` is the YAML
-  shape; Task 11 and Task 10 both convert explicitly (`AcceptOptions.Masks
-  []pixel.Rect`), and `config.MasksFor` returns `[]Rect` that callers map.
-  Both are declared, so no task references an undefined type.
-- `diff.Counts` was referenced by `serve.Item` before being defined —
-  it is defined in Task 10, which precedes Task 13. Correct order.
+`runs.Checkpoint.Trim`, `runs.ReadHops`, `capture.Session`,
+`capture.Options`, `capture.ProxyFailure`, `capture.Assess`,
+`capture.Fatal`, `rules.Matcher`, `rules.Raw`, `rules.Resolved.ForField`,
+`config.Config.NormalizePath`, `config.MasksFor`, `config.AppendWireRule`,
+`config.DefaultGate`/`DefaultFine`, `pixel.Compare`, `pixel.ApplyMasks`,
+`pixel.Rect`, `pixel.RectsFrom`, `pixel.TrimUniformBorder`, `diff.Options`,
+`diff.Entry`, `diff.Deviation`, `diff.ToleratedNote`, `diff.Summary`,
+`diff.OptionsFor`, `diff.ExitCode`, `refs.Resolve`, `refs.Accept`,
+`replay.Bundle.Match`, `replay.StatusDrift`, `serve.Item`, `serve.ScoreOf`,
+`httpguard.Handler`, `useAsync`/`AsyncState<T>` (Task 14, consumed unchanged
+by Tasks 15 and 18), `HopOptions.Collapse` and `Route.Via` (Task 9, rendered
+by Task 15's `HopDeltaList`).
+
+Resolved during the first review:
+- `diff.Counts` is referenced by `serve.Item` and defined in Task 10, which
+  precedes Task 13. Correct order.
 - **An import cycle.** The first draft put `Deviation` in `refs` while
   `diff.Options` consumed it and `refs.RejectOptions` carried a
   `*diff.Summary` — `diff → refs → diff`. Fixed by moving the deviations
   ledger into `retrace/diff/deviations.go`: `refs → diff` is now the only
-  direction, and Task 11 creates the file there. Task 8's Interfaces block
-  declares `Deviations []Deviation` as inert until Task 11 turns it on, so
-  Task 8 still compiles standalone.
+  direction.
 
-Dependency direction after the fix, verified acyclic:
-`runs → trace` · `rules → ∅` · `config → rules` · `capture → runs, proxy,
-trace` · `pixel → ∅` · `diff → runs, rules, config, pixel, trace` ·
-`refs → diff, runs, pixel` · `replay → runs, rules, diff, trace` ·
+Resolved during the pre-flight revision round — **including two claims this
+self-review previously made that were wrong**, recorded here rather than
+quietly overwritten:
+
+- **"Task 8 still compiles standalone."** It did not. The earlier text said
+  `Options.Deviations []Deviation` was "inert until Task 11 turns it on";
+  in Go a struct field whose type is undeclared is a compile error, and
+  Task 8's own commit gate runs `go test ./retrace/diff/`. **Fixed:** the
+  `Deviation` and `ToleratedNote` *declarations* now live in Task 8, which
+  creates `deviations.go`; Task 11 appends the ledger functions to the same
+  file and is told not to re-declare them.
+- **"Task 11 and Task 10 both convert explicitly" between `config.Rect` and
+  `pixel.Rect`.** Neither task's steps showed the conversion, and Task 10's
+  `Build` sketch elided the entire pixel loop — so the spec scenario Task 10
+  asserts (`TestAMaskedRegionDoesNotAffectTheCheckpointVerdict`) tested code
+  no task wrote. **Fixed:** the conversion is one exported function,
+  `pixel.RectsFrom`, called at exactly two call sites, both now written out
+  — Task 10's checkpoint loop and Task 11's `AcceptOptions.MasksFor`
+  closure.
+- **JSON tags.** Every wire-crossing type in `diff`, `serve`, `replay`,
+  `capture` and `runs` now carries explicit camelCase `json:` tags, and
+  Task 15's TS mirrors are transcriptions of those tags rather than
+  independent guesses. Untagged, `encoding/json` would have emitted
+  `"Method"`/`"NewRoutes"` and broken every REST response, the `--json`
+  contract, `summary.json` and the whole UI at once — with all Go tests
+  green.
+- **Dead ends closed.** `Manifest.Device` (no writer, no reader) is gone
+  along with the adapter fixture that fed it; `Manifest.Groups` now has a
+  writer (Task 4's `runFlow`) and a reader (Task 10's `OptionsFor`), each
+  with its own test; `ProxyFailure` has a producer (`Session.ProxyDied`) and
+  lost its unreachable `proxy-never-started` case;
+  `pixel.TrimUniformBorder` has a caller (`Compare`, under `Options.Trim`);
+  `replay.Options.MissPath` and `refs.AcceptOptions.Masks` are gone as
+  duplicate inputs.
+- **The guard is extracted once, in Task 4, and consumed everywhere.** The
+  earlier draft had Task 4 inlining a weaker copy (no Host check, no Origin
+  check) and Task 13 extracting the canonical one nine tasks later, on the
+  stated grounds that a second copy would drift. The duplicate is now never
+  written.
+- **`retrace` does not import `ensemble`, in any build.** Task 5's
+  integration test runs against an `httptest` fake that speaks ensemble's
+  four routes, so `retrace/go.mod` still requires only `core` and design
+  §1's "adopt retrace in CI without ever running ensemble" survives.
+
+Dependency direction after the revision, verified acyclic:
+`runs → trace` · `rules → ∅` · `config → rules` · `httpguard → ∅` ·
+`capture → runs, proxy, trace, httpguard` · `pixel → config` ·
+`diff → runs, rules, config, pixel, trace` · `refs → diff, runs, pixel` ·
+`replay → runs, rules, diff, trace, httpguard` ·
 `serve → diff, refs, runs, config, httpguard` · `cmd/retrace → all`.
+Note `pixel → config` (for `RectsFrom`) and **not** the reverse: `config` is
+the leaf every engine reads, so it may not import an engine.
 On the TS side: `design-system → react` only, and both
 `ensemble-ui → design-system` and `retrace-ui → design-system` — the hook
 introduces no edge between the two apps, which is why it lives in the
 design system rather than in either one of them.
+
+**4. Cross-reference check (run after the revision round).** The plan refers
+to tasks by number in prose throughout, and an earlier insertion renumbered
+five of them, so every reference was re-resolved against the current
+numbering rather than assumed: **190 task references checked** (`Task N`,
+`Tasks N, M`, `# TN` File-Structure markers, and `TODO(task-N)`), across all
+18 tasks plus the header, File Structure, porting inventory, wrap-up and
+this self-review.
+
+Four were stale and are fixed:
+
+| Where | Said | Now |
+|---|---|---|
+| File Structure, `core/httpguard` | Task 13 | **T4** (R7 moved the extraction) |
+| Self-review coverage table, adapters rows (×2) | 16 | **17** |
+| Self-review coverage table, review-queue row | 13, 14 | **13 (REST), 15 (UI)** |
+| File Structure, `diff/deviations.go` | T11 | **T8 types, T11 ledger** (R2) |
+
+The rest resolve correctly. Two conventions make this checkable rather than
+a matter of trust: every `Produces` block names the task numbers that
+consume it, and every task that fills another's seam names the seam's
+owner in its own Files block.
