@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // forwardCtx copies trace headers the way a well-behaved service does —

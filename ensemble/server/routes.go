@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // routes registers every /api endpoint on mux. Mutating endpoints (POST/

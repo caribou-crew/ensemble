@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // SQLRunner implements orchestrator.SQLRunner (structurally — this package

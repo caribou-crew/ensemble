@@ -1,3 +1,3 @@
-module github.com/ensemble-dev/ensemble/core
+module github.com/caribou-crew/ensemble/core
 
 go 1.25

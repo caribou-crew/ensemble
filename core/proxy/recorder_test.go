@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 func TestRecorderAssignsSeqAndSnapshots(t *testing.T) {

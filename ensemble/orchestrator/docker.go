@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // dockerContainerName is the always-applied naming convention: every

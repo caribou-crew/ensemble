@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/core/trace"
-	"github.com/ensemble-dev/ensemble/ensemble/config"
-	"github.com/ensemble-dev/ensemble/ensemble/orchestrator"
-	"github.com/ensemble-dev/ensemble/ensemble/server"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server"
 )
 
 func freePort(t *testing.T) int {

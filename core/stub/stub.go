@@ -16,8 +16,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // Match selects requests for a route. An empty Method matches any method.

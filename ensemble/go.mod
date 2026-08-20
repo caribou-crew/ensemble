@@ -1,8 +1,8 @@
-module github.com/ensemble-dev/ensemble/ensemble
+module github.com/caribou-crew/ensemble/ensemble
 
 go 1.25.0
 
-require github.com/ensemble-dev/ensemble/core v0.0.0
+require github.com/caribou-crew/ensemble/core v0.0.0
 
 require (
 	github.com/go-sql-driver/mysql v1.10.0
@@ -21,4 +21,4 @@ require (
 	golang.org/x/text v0.29.0 // indirect
 )
 
-replace github.com/ensemble-dev/ensemble/core => ../core
+replace github.com/caribou-crew/ensemble/core => ../core

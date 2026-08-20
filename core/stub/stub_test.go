@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ensemble-dev/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/proxy"
 )
 
 func startStub(t *testing.T, rec *proxy.Recorder, routes []Route) string {

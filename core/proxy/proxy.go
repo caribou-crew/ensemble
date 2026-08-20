@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ensemble-dev/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // Target is one intercepted service: a listen address fronting an upstream.

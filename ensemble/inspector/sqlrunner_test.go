@@ -14,7 +14,7 @@ import (
 
 	gomysql "github.com/go-sql-driver/mysql"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // pgDatabaseFromDSN parses a "postgres://user:pass@host:port/db?..." DSN

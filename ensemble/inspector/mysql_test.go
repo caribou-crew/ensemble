@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ensemble-dev/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // Test: MySQLDSN applies the official mysql image's env var conventions —
