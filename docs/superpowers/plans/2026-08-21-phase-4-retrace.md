@@ -212,15 +212,28 @@ additive extension; none of them narrows or reinterprets a spec'd behaviour:
   Phase 4b can swap in per-key modes at one seam.
 - API-first parity: every verb the review UI offers is a REST call an agent
   can make identically, with the same effect.
-- **A Go zero value must never mean "fine".** This trap has now appeared
-  three times in this plan: `CountTolerance` (0 meant "no tolerance" where
-  unset was intended), `HopOptions.Collapse` (a bool documented "default
-  true", which a bool cannot express), and `CaptureTrust.Status` (an empty
-  verdict ranks equal to `ok`, so an unassessed run gates as clean). The
-  rule: for any field where absent and permissive are different meanings,
-  make the zero value the SAFE one — invert the boolean so `false` means
-  the protective behavior, or reject/normalize the empty value at the write
-  seam. Never rely on a comment saying what the default "is".
+- **A Go zero value must never mean "fine", and the rule must be pinned by
+  a test.** This trap has now appeared five times in this plan:
+  `CountTolerance` (0 meant "no tolerance" where unset was intended),
+  `HopOptions.Collapse` (a bool documented "default true", which a bool
+  cannot express), `CaptureTrust.Status` (an empty verdict ranks equal to
+  `ok`, so an unassessed run gates as clean), the zero `runs.Paths`
+  reaching `AppendGroupRecord` as an opaque directory string, and the zero
+  `rules.Matcher` — "no rule applies" — whose correct `Changed` behavior no
+  test required. The rule: for any field where absent and permissive are
+  different meanings, make the zero value the SAFE one — invert the boolean
+  so `false` means the protective behavior, or reject/normalize the empty
+  value at the write seam. Never rely on a comment saying what the default
+  "is".
+  **The fifth instance is why the second clause exists.** There the code was
+  already right and only the net was missing: mutating a zero `Matcher` to
+  classify as `Ignored` — literally "no rule means fine" — left the whole
+  suite green, and that mutation would make `retrace diff` exit 0 on a run
+  where every field changed. Correct-but-unpinned is how this trap survives
+  into the next task, so every task that has a zero value meaning "not set"
+  owes a test that FAILS when that value is treated as permissive. Write it
+  by mutating the behavior and watching the test fail, not by asserting
+  against code you just wrote.
 - **Never assert a CLI exit code through `go run`.** `go run` treats a
   non-zero child as its own failure: it prints `exit status N` to stderr and
   itself exits **1**. Measured, not assumed. This plan defines a 0/1/2/3 CI
