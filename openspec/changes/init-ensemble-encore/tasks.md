@@ -145,3 +145,10 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
       reference generated from schema, encore CI recipe; archive this
       openspec change (`openspec archive init-ensemble-encore`) syncing
       specs/ to openspec/specs/.
+
+## Stretch (post-v1)
+
+- [ ] S.1 APM latency plugin (Datadog first): `services.<name>.apm` config
+      mapping, token from user env, dashboard latency page offers provider
+      p50/p95/p99 over a lookback window as one-click (explicitly applied)
+      rule imports. First exercise of the plugin concept.
