@@ -38,14 +38,14 @@ const (
 
 // ServiceState is a snapshot of one supervised node (service or database).
 type ServiceState struct {
-	Name      string
-	Status    Status
-	Placement string // "native" | "docker"
-	PID       int    // native only; 0 for docker
-	ProxyPort int
-	Port      int
-	StartedAt time.Time
-	LastErr   string
+	Name      string    `json:"name"`
+	Status    Status    `json:"status"`
+	Placement string    `json:"placement"`     // "native" | "docker"
+	PID       int       `json:"pid,omitempty"` // native only; 0 for docker
+	ProxyPort int       `json:"proxyPort,omitempty"`
+	Port      int       `json:"port,omitempty"`
+	StartedAt time.Time `json:"startedAt,omitzero"`
+	LastErr   string    `json:"lastErr,omitempty"`
 }
 
 // Opts configures an Orchestrator.

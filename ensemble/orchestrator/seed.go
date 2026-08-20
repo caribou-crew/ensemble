@@ -22,11 +22,11 @@ type SQLRunner interface {
 
 // SeedStepResult is the outcome of one executed seed step.
 type SeedStepResult struct {
-	Kind       string // "sql" | "http"
-	Ref        string // SeedSQL.File (as declared) or SeedHTTP.URL
-	OK         bool
-	Err        string
-	DurationMs float64
+	Kind       string  `json:"kind"` // "sql" | "http"
+	Ref        string  `json:"ref"`  // SeedSQL.File (as declared) or SeedHTTP.URL
+	OK         bool    `json:"ok"`
+	Err        string  `json:"err,omitempty"`
+	DurationMs float64 `json:"durationMs"`
 }
 
 // seedHTTPTimeout bounds every HTTP seed step (brief: "plain http.Client
