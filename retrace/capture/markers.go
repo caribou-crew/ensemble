@@ -21,6 +21,17 @@ import (
 // value into, and a Paths is only obtainable from runs.PathsFor/runs.Create,
 // both of which validate app/flow/runID against traversal.
 func NewMarkerDoor(p runs.Paths, now func() time.Time) http.Handler {
+	return NewMarkerDoorCounted(p, now, nil)
+}
+
+// NewMarkerDoorCounted is NewMarkerDoor plus an onAdmitted hook, called once
+// per request that reaches the router — i.e. AFTER httpguard.Handler has
+// let it through, never for a request the guard rejected. A cross-site
+// POST, a nameless-marker 400, or a stray port probe must never count as
+// "traffic that reached retrace": Session.RequestsSeen()==0 is the signal
+// Task 6 keys "the app never routed through us" on, and Session.WatchProxy's
+// fallback leans on it too — counting rejected requests disarms both.
+func NewMarkerDoorCounted(p runs.Paths, now func() time.Time, onAdmitted func()) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
@@ -62,5 +73,15 @@ func NewMarkerDoor(p runs.Paths, now func() time.Time) http.Handler {
 	// tab, and the door is a state-changing POST endpoint on a predictable
 	// port, so it needs the Host (DNS-rebinding) and Origin checks too, not
 	// just the cross-site one. nil allowed-hosts = answer only as loopback.
-	return httpguard.Handler(nil, mux)
+	//
+	// onAdmitted, when set, runs INSIDE the guard — between it and mux — so
+	// it only fires for a request the guard actually let through.
+	var inner http.Handler = mux
+	if onAdmitted != nil {
+		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			onAdmitted()
+			mux.ServeHTTP(w, r)
+		})
+	}
+	return httpguard.Handler(nil, inner)
 }

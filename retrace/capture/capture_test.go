@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/png"
 	"net/http"
@@ -132,7 +133,12 @@ func TestGitInfoIsAZeroValueOutsideARepository(t *testing.T) {
 // StartStandalone to drop the check (proceed with Upstream: "") makes this
 // test fail.
 func TestStandaloneRefusesWithoutAnUpstream(t *testing.T) {
-	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"})
+	// cwd is hoisted into a variable and reused for both the call and the
+	// assertion below — t.TempDir() returns a NEW directory on every call,
+	// so checking a second, unrelated t.TempDir() can never fail regardless
+	// of what StartStandalone actually did. That was the bug in this test.
+	cwd := t.TempDir()
+	s, err := StartStandalone(Options{Cwd: cwd, App: "web", Flow: "checkout"})
 	if err == nil {
 		s.Close()
 		t.Fatal("StartStandalone with no upstream succeeded; an unset upstream must refuse, not capture into the void")
@@ -140,7 +146,7 @@ func TestStandaloneRefusesWithoutAnUpstream(t *testing.T) {
 	if !strings.Contains(err.Error(), "--upstream") {
 		t.Errorf("error = %q, want it to name --upstream", err)
 	}
-	if entries, _ := os.ReadDir(runs.RunsRoot(t.TempDir())); len(entries) != 0 {
+	if entries, _ := os.ReadDir(runs.RunsRoot(cwd)); len(entries) != 0 {
 		t.Errorf("a refused start left %d run directories behind", len(entries))
 	}
 }
@@ -195,11 +201,46 @@ func TestRequestsSeenCountsProxiedCallsAndMarkers(t *testing.T) {
 	}
 }
 
+// A request the guard rejects must NOT count as "traffic that reached
+// retrace" — Task 6 keys "the app never routed through us" on
+// RequestsSeen()==0, and the brief's own preflight probe posts a nameless
+// marker expecting a 400 refusal, which would make RequestsSeen() non-zero
+// on a run where nothing was actually routed through the proxy if rejected
+// requests counted.
+func TestRequestsSeenExcludesGuardRejectedTraffic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	req, err := http.NewRequest(http.MethodPost, s.MarkerURL+"/group", strings.NewReader(`{"name":"checkout"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("cross-site marker post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site marker post status = %d, want 403", resp.StatusCode)
+	}
+
+	if got := s.RequestsSeen(); got != 0 {
+		t.Fatalf("RequestsSeen after a guard-rejected request = %d, want 0", got)
+	}
+}
+
 // ProxyFailure's zero value is nil — "the interceptor never misbehaved" —
-// and ProxyDied is its only producer. WatchProxy must actually record one
-// when the client-edge listener stops answering, or Task 6 can never tell
-// "the flow made no calls" from "the flow's calls went nowhere".
-func TestWatchProxyRecordsAFailureWhenTheListenerStops(t *testing.T) {
+// and ProxyDied is its only producer. This test covers the accessor pair
+// (ProxyDied/ProxyFailure) directly, including first-failure-wins; it does
+// NOT call WatchProxy — see TestWatchProxyDetectsADeadListenerWithinASubTickWindow
+// below for the loop itself.
+func TestProxyDiedRecordsOnlyTheFirstFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()
 	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
@@ -221,5 +262,49 @@ func TestWatchProxyRecordsAFailureWhenTheListenerStops(t *testing.T) {
 	s.ProxyDied(os.ErrDeadlineExceeded)
 	if got := s.ProxyFailure().Message; got != os.ErrClosed.Error() {
 		t.Fatalf("ProxyFailure.Message = %q, want the first failure %q", got, os.ErrClosed.Error())
+	}
+}
+
+// The 500ms tick alone would never sample a flow shorter than one period —
+// runFlow starts WatchProxy and cancels it the instant the test command
+// returns. WatchProxy now samples once before entering the ticker loop and
+// once more on ctx.Done(), so a listener that dies inside a sub-tick window
+// is still caught by the teardown sample. This test kills the listener well
+// inside the 500ms period and cancels immediately, so only that teardown
+// sample — never the ticker — can be what catches it.
+func TestWatchProxyDetectsADeadListenerWithinASubTickWindow(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.WatchProxy(ctx)
+		close(done)
+	}()
+
+	// Let WatchProxy's initial probe complete against the still-healthy
+	// listener before killing it, so what catches the failure is
+	// unambiguously the teardown sample, not the startup one.
+	time.Sleep(20 * time.Millisecond)
+	if s.ProxyFailure() != nil {
+		t.Fatalf("ProxyFailure = %+v after the initial probe against a healthy listener, want nil", s.ProxyFailure())
+	}
+	s.stopProxy() // the listener stops answering entirely, well inside 500ms
+	cancel()      // and the flow "ends" immediately — far short of one tick
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchProxy did not return after ctx was canceled")
+	}
+	if f := s.ProxyFailure(); f == nil {
+		t.Fatal("ProxyFailure() = nil after the listener died inside a sub-tick window — " +
+			"WatchProxy's teardown sample did not catch it")
 	}
 }
