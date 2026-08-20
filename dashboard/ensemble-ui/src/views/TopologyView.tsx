@@ -80,6 +80,12 @@ function useTopologyPoll() {
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      // Bumping here retires every in-flight refresh() too. `cancelled` only stops the
+      // interval from STARTING another one; a request already awaiting Promise.all would
+      // still pass the :62 guard and set state after unmount. React 19 makes those setters
+      // no-ops rather than warnings, so this is hygiene, not a live bug — but it is the one
+      // clause of final review I3 the generation counter did not yet cover.
+      generationRef.current++;
     };
   }, [refresh]);
 

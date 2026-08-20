@@ -192,6 +192,20 @@ export default function InspectorView() {
     refreshRef.current = refresh;
   }, [refresh]);
 
+  // One pending un-flash timer per table, so a second change to the SAME table inside
+  // FLASH_MS restarts its flash instead of letting the first timer cut the second one
+  // short — and so nothing is left scheduled after unmount. Same shape as HopDetail's
+  // copy-idle timer (final review M7); this is the other place the pattern lives.
+  const flashTimersRef = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    const timers = flashTimersRef.current;
+    return () => {
+      for (const id of timers.values()) window.clearTimeout(id);
+      timers.clear();
+    };
+  }, []);
+
   useEffect(() => {
     if (unavailable) return;
     const unsubscribe = subscribeChanges((ev) => {
@@ -201,13 +215,18 @@ export default function InspectorView() {
         next.add(ev.table);
         return next;
       });
-      window.setTimeout(() => {
+      const timers = flashTimersRef.current;
+      const pending = timers.get(ev.table);
+      if (pending !== undefined) window.clearTimeout(pending);
+      const id = window.setTimeout(() => {
+        timers.delete(ev.table);
         setFlashed((cur) => {
           const next = new Set(cur);
           next.delete(ev.table);
           return next;
         });
       }, FLASH_MS);
+      timers.set(ev.table, id);
       if (ev.table === tableRef.current) refreshRef.current();
     });
     return unsubscribe;
