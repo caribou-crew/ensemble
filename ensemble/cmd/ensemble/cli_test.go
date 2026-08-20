@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -308,7 +307,11 @@ services:
 	}
 	t.Cleanup(func() {
 		if pid, ok := findPID(t, marker); ok {
-			syscall.Kill(pid, syscall.SIGKILL) // best-effort, in case the test itself failed the assertion below
+			// Portable stdlib kill (not syscall.Kill) so this file still
+			// vets on windows, where syscall.Kill doesn't exist.
+			if proc, err := os.FindProcess(pid); err == nil {
+				proc.Kill() // best-effort, in case the test itself failed the assertion below
+			}
 		}
 	})
 
