@@ -200,6 +200,15 @@ additive extension; none of them narrows or reinterprets a spec'd behaviour:
   Phase 4b can swap in per-key modes at one seam.
 - API-first parity: every verb the review UI offers is a REST call an agent
   can make identically, with the same effect.
+- **A Go zero value must never mean "fine".** This trap has now appeared
+  three times in this plan: `CountTolerance` (0 meant "no tolerance" where
+  unset was intended), `HopOptions.Collapse` (a bool documented "default
+  true", which a bool cannot express), and `CaptureTrust.Status` (an empty
+  verdict ranks equal to `ok`, so an unassessed run gates as clean). The
+  rule: for any field where absent and permissive are different meanings,
+  make the zero value the SAFE one — invert the boolean so `false` means
+  the protective behavior, or reject/normalize the empty value at the write
+  seam. Never rely on a comment saying what the default "is".
 - **Never assert a CLI exit code through `go run`.** `go run` treats a
   non-zero child as its own failure: it prints `exit status N` to stderr and
   itself exits **1**. Measured, not assumed. This plan defines a 0/1/2/3 CI
