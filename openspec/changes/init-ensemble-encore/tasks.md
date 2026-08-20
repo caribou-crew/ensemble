@@ -84,14 +84,14 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
 ## Phase 3 — dashboard (ensemble-ui)
 
-- [ ] 3.1 `dashboard/` workspace: Vite + React 19 + shared design-system
+- [x] 3.1 `dashboard/` workspace: Vite + React 19 + shared design-system
       package; go:embed wiring + single-origin serve from ensemble binary.
-- [ ] 3.2 Topology view (port layout/categories/heat from
+- [x] 3.2 Topology view (port layout/categories/heat from
       `local-stack/web/src/topology/*` with their tests) + trace-scoped causal
       layout + hop timing panel.
-- [ ] 3.3 Traffic view: live SSE tail, filters, hop detail, chain/flow
+- [x] 3.3 Traffic view: live SSE tail, filters, hop detail, chain/flow
       grouping, errors-only, follow, export (HAR/curl/raw via API).
-- [ ] 3.4 Latency view (rules CRUD, arm-all/reset, APM import w/ explicit
+- [x] 3.4 Latency view (rules CRUD, arm-all/reset, APM import w/ explicit
       apply) + Inspector view (schema/rows/change-stream) + generic entity
       pages from `entities:` config.
 
