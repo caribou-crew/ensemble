@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -206,6 +207,13 @@ func TestRunStandaloneRecordsAndWritesAManifest(t *testing.T) {
 	}
 	if m.Flow != "checkout" || m.App != "web" {
 		t.Errorf("app/flow = %q/%q", m.App, m.Flow)
+	}
+	// assessTrust is an unfilled seam (Task 6 owns the real rules) and must
+	// never default to a clean verdict: an unassessed capture has to gate
+	// as suspect, not OK, or a later "tidy up the placeholder" edit ships a
+	// capture that was never actually assessed.
+	if m.Capture.Status != trace.VerdictSuspect {
+		t.Errorf("capture.status = %q, want %q (assessTrust is an unfilled seam and must not gate clean)", m.Capture.Status, trace.VerdictSuspect)
 	}
 }
 
