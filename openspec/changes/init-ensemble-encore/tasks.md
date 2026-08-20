@@ -149,7 +149,7 @@ exists (see 6.0/6.1).
 
 ## Phase 6 — distribution + docs
 
-- [ ] 6.0 Release workflow (STARTED EARLY, user request): GoReleaser config
+- [x] 6.0 Release workflow (STARTED EARLY, user request): GoReleaser config
       + `.github/workflows/release.yml` triggered on version tag (`v*`) —
       build both binaries (darwin/linux/windows × arm64/x64), draft GitHub
       release. npm publish steps scaffolded but inert: registry/scope/repo
