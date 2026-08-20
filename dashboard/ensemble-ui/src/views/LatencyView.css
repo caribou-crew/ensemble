@@ -1,0 +1,156 @@
+.latency-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 0.75rem;
+}
+
+.latency-view--error,
+.latency-view--loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.latency-view__toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.latency-view__toolbar button {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.latency-view__toolbar button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+}
+
+.latency-view__toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.latency-view__danger:hover:not(:disabled) {
+  border-color: var(--status-red);
+  color: var(--status-red);
+}
+
+.latency-view__hint {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+}
+
+.latency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.latency-table thead th {
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline-strong);
+}
+
+.latency-table__row td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.latency-table__all {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.latency-table__toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.latency-table__actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  position: relative;
+}
+
+.latency-table__actions button {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.latency-table__actions button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-strong);
+}
+
+.latency-table__empty {
+  padding: 1.25rem;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.latency-table__row--edit {
+  background: var(--accent-dim);
+}
+
+.latency-table__input {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 0.25rem 0.4rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+.latency-table__input:disabled {
+  opacity: 0.6;
+}
+
+.latency-table__edit-delay {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.latency-table__input--num {
+  width: 4.5rem;
+}
+
+.latency-table__form-error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  white-space: nowrap;
+  color: var(--status-red);
+  font-size: 0.7rem;
+  padding-top: 0.15rem;
+}

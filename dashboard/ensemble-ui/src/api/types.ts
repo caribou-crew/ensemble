@@ -98,6 +98,22 @@ export interface ChangeEvent {
   at: string;
 }
 
+// Task 3.5 additions:
+
+export interface DatabaseInfo {
+  name: string;
+  type: string;
+}
+
+// One entry in GET /api/entities' discovery list. `id` is the CONFIGURED
+// ROW-ID FIELD NAME for this entity (ensemble.yaml's entities.<name>.id,
+// e.g. "id" or "uuid") — not any particular row's id value. A row's own
+// identifier is read off `row[info.id]` at render time.
+export interface EntityInfo {
+  name: string;
+  id: string;
+}
+
 // Not in the plan's contract block, but required to type POST
 // /api/seed/{name}'s response — mirrors
 // ensemble/orchestrator.SeedStepResult's JSON tags exactly

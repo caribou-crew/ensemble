@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { subscribeHops } from './sse';
-import type { Hop } from './types';
+import { subscribeChanges, subscribeHops } from './sse';
+import type { ChangeEvent, Hop } from './types';
 
 // Stubs the global EventSource the way a real browser would deliver it:
 // addEventListener('hop', ...) frames plus an assignable onerror. Every
@@ -29,8 +29,11 @@ class FakeEventSource {
   }
 
   emitHop(hop: Hop) {
-    const data = JSON.stringify(hop);
-    for (const cb of this.listeners.get('hop') ?? []) {
+    this.emit('hop', JSON.stringify(hop));
+  }
+
+  emit(type: string, data: string) {
+    for (const cb of this.listeners.get(type) ?? []) {
       cb({ data } as MessageEvent<string>);
     }
   }
@@ -123,5 +126,67 @@ describe('subscribeHops', () => {
 
     vi.advanceTimersByTime(5000);
     expect(FakeEventSource.instances.length).toBe(1);
+  });
+});
+
+describe('subscribeChanges', () => {
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function change(table: string): ChangeEvent {
+    return { db: 'primary', table, at: '2026-08-20T00:00:00.000Z' };
+  }
+
+  it('opens the inspector stream and delivers parsed change events in order', () => {
+    const received: ChangeEvent[] = [];
+    const unsubscribe = subscribeChanges((ev) => received.push(ev));
+
+    expect(FakeEventSource.instances[0].url).toBe('/api/inspector/stream');
+    const es = FakeEventSource.instances[0];
+    es.emit('change', JSON.stringify(change('users')));
+    es.emit('change', JSON.stringify(change('orders')));
+
+    expect(received.map((ev) => ev.table)).toEqual(['users', 'orders']);
+    unsubscribe();
+  });
+
+  it('reconnects to the same stream 1s after an error, with no cursor to carry', () => {
+    const unsubscribe = subscribeChanges(() => {});
+    const first = FakeEventSource.instances[0];
+    first.triggerError();
+    expect(FakeEventSource.instances.length).toBe(1);
+    expect(first.closed).toBe(true);
+
+    vi.advanceTimersByTime(1000);
+
+    expect(FakeEventSource.instances.length).toBe(2);
+    expect(FakeEventSource.instances[1].url).toBe('/api/inspector/stream');
+    unsubscribe();
+  });
+
+  it('unsubscribe closes the current connection', () => {
+    const unsubscribe = subscribeChanges(() => {});
+    const es = FakeEventSource.instances[0];
+    unsubscribe();
+    expect(es.closed).toBe(true);
+  });
+
+  it('a malformed frame is dropped rather than crashing the subscription', () => {
+    const received: ChangeEvent[] = [];
+    const unsubscribe = subscribeChanges((ev) => received.push(ev));
+    const es = FakeEventSource.instances[0];
+    es.emit('change', 'not json');
+    es.emit('change', JSON.stringify(change('users')));
+
+    expect(received.map((ev) => ev.table)).toEqual(['users']);
+    unsubscribe();
   });
 });
