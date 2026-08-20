@@ -166,6 +166,17 @@ func WriteManifest(p Paths, m *Manifest) error {
 // any caller that doesn't re-check. Rejecting it on read makes "a manifest
 // this package will hand back always has an assessed capture verdict" an
 // invariant of ReadManifest, not just of WriteManifest.
+//
+// path is a bare string, not a Paths, by ruling (round-3 re-review): the
+// guard from finding 2 lives at the construction seam — a function that
+// JOINS a caller-supplied component into a path must validate that
+// component; a function handed a fully-formed path the caller already
+// resolved does not re-litigate it. ReadManifest joins nothing. The caller
+// owns path and is responsible for having constructed it through PathsFor
+// (e.g. p.ManifestPath) — forcing a Paths parameter here would mean some
+// callers (Task 10's repro-bundle reader, Task 11's reference-bundle
+// reader under .retrace-ref/) fabricating a Paths that never came from
+// PathsFor, which is strictly worse than an honest string.
 func ReadManifest(path string) (Manifest, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -207,6 +218,12 @@ func ReadManifest(path string) (Manifest, error) {
 // line, is the cheapest correct signal: every hop this package's own
 // writers produce carries it (trace.Writer stamps it unconditionally), so
 // its absence is exactly "not actually a hop record".
+//
+// path is a bare string, not a Paths, for the same reason as ReadManifest
+// above (round-3 re-review ruling): ReadHops joins nothing, so there is no
+// construction seam here for finding 2's guard to sit at. The caller owns
+// path and is responsible for having constructed it through PathsFor (e.g.
+// p.HopsPath/p.WirePath).
 func ReadHops(path string) (hops []trace.Hop, skipped int, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
