@@ -94,6 +94,73 @@ func TestStubTemplating(t *testing.T) {
 	}
 }
 
+// TestStubRequestBodyCappedAtCaptureLimit guards final-review finding I5:
+// the stub capture path did a bare io.ReadAll(r.Body) and stored the whole
+// thing in the hop, with no cap — unlike core/proxy, which caps captured
+// bodies at proxy.CaptureLimit (256KB) regardless of Redactor config.
+// runUp disables the Redactor's own cap on the (proxy-only) assumption
+// that capping already happened upstream, so a >256KB POST to a stub would
+// retain the full body in the recorder ring, hops.jsonl, and every
+// /api/traffic response. The stub must cap independently, at the same
+// limit.
+func TestStubRequestBodyCappedAtCaptureLimit(t *testing.T) {
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	addr := startStub(t, rec, []Route{{
+		Match:   Match{Method: "POST", Path: "/encrypt"},
+		Respond: Respond{Status: 200, Body: `{"ok":true}`},
+	}})
+
+	big := strings.Repeat("a", proxy.CaptureLimit+1024)
+	resp, err := http.Post("http://"+addr+"/encrypt", "application/octet-stream", strings.NewReader(big))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("want 1 hop, got %d", len(hops))
+	}
+	h := hops[0]
+	if !h.Req.Truncated {
+		t.Fatalf("request body over CaptureLimit not marked Truncated: len=%d", len(h.Req.Body))
+	}
+	if len(h.Req.Body) > proxy.CaptureLimit {
+		t.Fatalf("captured request body len = %d, want <= %d", len(h.Req.Body), proxy.CaptureLimit)
+	}
+}
+
+// TestStubResponseBodyCappedAtCaptureLimit covers the other half of I5: a
+// stub's own *rendered* response body (from a config file or template) must
+// also be capped in the hop, independent of what's actually written to the
+// client.
+func TestStubResponseBodyCappedAtCaptureLimit(t *testing.T) {
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	bigBody := strings.Repeat("b", proxy.CaptureLimit+1024)
+	addr := startStub(t, rec, []Route{{
+		Match:   Match{Method: "GET", Path: "/big"},
+		Respond: Respond{Status: 200, Body: bigBody},
+	}})
+
+	status, body := get(t, "http://"+addr+"/big")
+	if status != 200 || len(body) != len(bigBody) {
+		t.Fatalf("client response must NOT be capped: status=%d len=%d, want %d", status, len(body), len(bigBody))
+	}
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("want 1 hop, got %d", len(hops))
+	}
+	h := hops[0]
+	if !h.Resp.Truncated {
+		t.Fatalf("response body over CaptureLimit not marked Truncated: len=%d", len(h.Resp.Body))
+	}
+	if len(h.Resp.Body) > proxy.CaptureLimit {
+		t.Fatalf("captured response body len = %d, want <= %d", len(h.Resp.Body), proxy.CaptureLimit)
+	}
+}
+
 func TestStubWildcardAndMethodMatching(t *testing.T) {
 	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
 	addr := startStub(t, rec, []Route{

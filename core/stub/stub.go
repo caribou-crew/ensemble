@@ -112,6 +112,13 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		hopCtx := ctx.Child()
 		hopCtx.EnsureCorrelationID()
+		// Cap what's *captured* into the hop at the same limit core/proxy
+		// caps at, independent of the Redactor's own (often-disabled) cap —
+		// runUp turns that off on the assumption capping already happened
+		// upstream, which was only true for the proxy path, never this one.
+		// What's actually sent to the client above is never touched.
+		reqBody, reqTruncated := capBody(string(body), proxy.CaptureLimit)
+		capturedResp, respTruncated := capBody(respBody, proxy.CaptureLimit)
 		hop := trace.Hop{
 			TraceID:       hopCtx.TraceID,
 			SpanID:        hopCtx.SpanID,
@@ -124,11 +131,21 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Path:          r.URL.RequestURI(),
 			Status:        status,
 			T:             trace.Timings{Start: start, DoneMs: float64(time.Since(start)) / float64(time.Millisecond)},
-			Req:           trace.Payload{Headers: flatHeaders(r.Header), Body: string(body)},
-			Resp:          trace.Payload{Headers: respHeaders, Body: respBody},
+			Req:           trace.Payload{Headers: flatHeaders(r.Header), Body: reqBody, Truncated: reqTruncated},
+			Resp:          trace.Payload{Headers: respHeaders, Body: capturedResp, Truncated: respTruncated},
 		}
 		s.rec.Record(hop)
 	}
+}
+
+// capBody truncates s to limit bytes, reporting whether it did. limit <= 0
+// disables the cap (kept for symmetry with trace.Redactor's maxBody, though
+// stub always passes proxy.CaptureLimit).
+func capBody(s string, limit int) (string, bool) {
+	if limit <= 0 || len(s) <= limit {
+		return s, false
+	}
+	return s[:limit], true
 }
 
 func (s *Stub) respond(r *http.Request, reqBody string) (int, map[string]string, string) {
