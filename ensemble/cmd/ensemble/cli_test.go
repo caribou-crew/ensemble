@@ -220,6 +220,15 @@ func TestUp_ClientRoundTripAndSIGINTShutdown(t *testing.T) {
 	if err := env.wait(t, 5*time.Second); err != nil {
 		t.Fatalf("runUp returned error after context cancel: %v", err)
 	}
+
+	// final-review I2: runUp never called proxy.Close(), so the intercept
+	// listener (env.proxyPort) outlived runUp's return. Confirm the port is
+	// actually freed now — a fresh listener must be able to bind it.
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", env.proxyPort))
+	if err != nil {
+		t.Fatalf("proxy intercept port %d still bound after runUp returned: %v", env.proxyPort, err)
+	}
+	ln.Close()
 }
 
 // findPID looks up the pid of a running process whose full command line
