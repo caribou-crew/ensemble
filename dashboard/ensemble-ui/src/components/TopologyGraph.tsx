@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CATEGORIES, colorVarOf } from '../topology/categories';
 import type { GraphEdge, GraphLayout, GraphNode, Health } from '../topology/types';
+import type { HeatTier } from '../topology/hopTimeline';
 import './TopologyGraph.css';
 
 export interface TopologyGraphProps {
@@ -15,6 +16,11 @@ export interface TopologyGraphProps {
       no such hook: it only tracked selection internally to drive the dim/highlight visuals,
       which this keeps doing regardless of whether a caller is listening. */
   onSelectNode?: (id: string | null) => void;
+  /** Recent-activity glow, keyed by node id: TopologyView derives this from a rolling count
+      of the last 60s of traffic per service, run through heatTier() — it has nothing to do
+      with a node's health (a perfectly healthy service can be red-hot busy) so it travels as
+      its own map rather than folding into GraphNode. Absent/'normal' draws no glow. */
+  nodeHeat?: Map<string, HeatTier>;
   /** Trace mode only: the hop ordinal selected in the hop list below, so its edge lights up
       even when that edge's badge carries several ordinals (repeated calls on one pair collapse
       onto a single edge — see traceLayout.ts). */
@@ -75,17 +81,19 @@ function NodeCard({
   node,
   selected,
   dimmed,
+  heat = 'normal',
   onClick,
 }: {
   node: GraphNode;
   selected: boolean;
   dimmed: boolean;
+  heat?: HeatTier;
   onClick: () => void;
 }) {
   return (
     <g
       transform={`translate(${node.x}, ${node.y})`}
-      className={`topo-node${selected ? ' topo-node-selected' : ''}${dimmed ? ' topo-node-dim' : ''}`}
+      className={`topo-node${selected ? ' topo-node-selected' : ''}${dimmed ? ' topo-node-dim' : ''}${heat !== 'normal' ? ` topo-node-heat-${heat}` : ''}`}
       onClick={onClick}
     >
       <title>{node.id}</title>
@@ -118,6 +126,7 @@ export default function TopologyGraph({
   onSelectEdge,
   onToggleBundle,
   onSelectNode,
+  nodeHeat,
   selectedHop = null,
   onSelectHop,
 }: TopologyGraphProps) {
@@ -355,6 +364,7 @@ export default function TopologyGraph({
                 node={n}
                 selected={selectedNodeId === n.id}
                 dimmed={isDimmedNode(n)}
+                heat={nodeHeat?.get(n.id)}
                 onClick={() => selectNode(n.id)}
               />
             ))}
