@@ -1,0 +1,333 @@
+package capture
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/runs"
+)
+
+// hop builds a minimal recorded hop. `to` is the callee; `from` defaults to
+// "" (the client edge) unless a test sets it — see isClientEdge.
+func hop(seq uint64, to string) trace.Hop {
+	return trace.Hop{
+		Schema: trace.SchemaVersion, Seq: seq, TraceID: "t1",
+		To: to, Method: "GET", Path: "/" + to, Status: 200,
+		T: trace.Timings{Start: time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)},
+	}
+}
+
+// attachedSessionFor starts an ensemble-attached session against c, rooted
+// in a per-test temp directory so nothing leaks between tests.
+func attachedSessionFor(t *testing.T, c EnsembleClient) *Session {
+	t.Helper()
+	s, err := StartAttached(Options{
+		Cwd: t.TempDir(), App: "web", Flow: "checkout",
+		Now: func() time.Time { return time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC) },
+	}, c, "bff")
+	if err != nil {
+		t.Fatalf("StartAttached: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// fakeEnsemble stands in for ensemble's control plane. It reproduces the
+// ordering this task exists to defend against — a hop that lands after the
+// test command exits — deterministically, by appending `late` during the
+// first SessionHops call rather than after a wall-clock delay.
+type fakeEnsemble struct {
+	mu        sync.Mutex
+	hops      []trace.Hop
+	late      *trace.Hop // injected on the first poll, then cleared
+	polls     int
+	endCalled bool
+	hopsAtEnd int // len(hops) when EndSession was called — the ordering assertion
+	// overreport, when > 0, is what EndSession claims it counted regardless
+	// of how many hops were ever served — the shape of a hop that landed
+	// after the drain window closed. A value, not a sleep.
+	overreport int
+}
+
+func (f *fakeEnsemble) push(h trace.Hop) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hops = append(f.hops, h)
+}
+
+func (f *fakeEnsemble) Health(context.Context) error { return nil }
+
+func (f *fakeEnsemble) StartSession(_ context.Context, id, entry string) (string, error) {
+	return "127.0.0.1:0", nil
+}
+
+// SessionHops takes the id the interface declares, and returns a COPY: the
+// caller keeps the slice past the lock, so handing out the backing array
+// would be a data race the -race gate catches on a good day and misses on
+// a bad one.
+func (f *fakeEnsemble) SessionHops(_ context.Context, id string) ([]trace.Hop, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.polls++
+	if f.polls == 1 && f.late != nil {
+		f.hops = append(f.hops, *f.late)
+		f.late = nil
+	}
+	return append([]trace.Hop(nil), f.hops...), nil
+}
+
+// EndSession records how many hops existed at teardown. Everything it
+// touches is under f.mu — writing f.endCalled lock-free while a goroutine
+// appends to f.hops under the lock is a data race in the one task gated on
+// -race.
+func (f *fakeEnsemble) EndSession(_ context.Context, id string) (EndReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.endCalled, f.hopsAtEnd = true, len(f.hops)
+	n := len(f.hops)
+	if f.overreport > 0 {
+		n = f.overreport
+	}
+	return EndReport{Hops: n, Verdict: trace.VerdictOK}, nil
+}
+
+func TestDrainWaitsForLateHopsBeforeEndingTheSession(t *testing.T) {
+	late := hop(2, "catalog")
+	f := &fakeEnsemble{late: &late}
+	f.push(hop(1, "edge"))
+
+	s := attachedSessionFor(t, f)
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	hops, _, _ := runs.ReadHops(s.Paths.HopsPath)
+	if len(hops) != 2 {
+		t.Fatalf("Drain must not end the session before late hops land: got %d, want 2", len(hops))
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// The ordering, asserted directly rather than inferred from the count:
+	// ensemble's SessionManager drops hops for a session it has already
+	// ended, so EndSession must observe the fully drained state.
+	if !f.endCalled || f.hopsAtEnd != 2 {
+		t.Fatalf("EndSession saw %d hop(s) (called=%v); it must run AFTER the drain", f.hopsAtEnd, f.endCalled)
+	}
+	// Stability needs two agreeing polls; one poll would mean the loop
+	// stopped at the first answer it got.
+	if f.polls < 2 {
+		t.Fatalf("polls = %d; the drain must confirm stability across two polls", f.polls)
+	}
+}
+
+// A fake whose EndReport.Hops is 3 while only 2 were ever served → the
+// shortfall is a value the fake returns, so there is no sleep and no
+// timing dependency anywhere in this test.
+func TestHopsArrivingAfterTheDrainWindowDegradeTheVerdict(t *testing.T) {
+	f := &fakeEnsemble{overreport: 3}
+	f.push(hop(1, "edge"))
+	f.push(hop(2, "catalog"))
+
+	s := attachedSessionFor(t, f)
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	notes := strings.Join(s.TrustNotes(), "\n")
+	if !strings.Contains(notes, "1 hop(s) arrived after the drain window") {
+		t.Fatalf("TrustNotes = %q, want it to name the 1-hop shortfall", notes)
+	}
+	// "At least suspect": ensemble said ok, but retrace knows the recording
+	// is short, and the recording's own verdict is what Task 6 gates on.
+	if got := s.EndVerdict(); got.Worse(trace.VerdictSuspect) != got {
+		t.Fatalf("EndVerdict = %q; a recording missing hops must rank at least suspect", got)
+	}
+}
+
+func TestWireJsonlIsTheClientEdgeSubsetOfHopsJsonl(t *testing.T) {
+	f := &fakeEnsemble{}
+	f.push(hop(1, "edge")) // From == "" — a client call
+	inner := hop(2, "bff")
+	inner.From = "edge" // a provider-to-provider call
+	f.push(inner)
+
+	s := attachedSessionFor(t, f)
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	full, _, err := runs.ReadHops(s.Paths.HopsPath)
+	if err != nil {
+		t.Fatalf("ReadHops(hops.jsonl): %v", err)
+	}
+	if len(full) != 2 {
+		t.Fatalf("hops.jsonl = %d hop(s), want the full chain of 2", len(full))
+	}
+	wire, _, err := runs.ReadHops(s.Paths.WirePath)
+	if err != nil {
+		t.Fatalf("ReadHops(wire.jsonl): %v", err)
+	}
+	if len(wire) != 1 || wire[0].To != "edge" || wire[0].From != "" {
+		t.Fatalf("wire.jsonl = %+v, want only the From==\"\" client-edge hop", wire)
+	}
+}
+
+// --- zero-value pins (global-constraints.md, both clauses) ---
+
+// failingEnsemble serves hops but refuses to end the session — the shape of
+// a control plane that died, restarted, or lost the session mid-run.
+type failingEnsemble struct{ fakeEnsemble }
+
+func (f *failingEnsemble) EndSession(context.Context, string) (EndReport, error) {
+	return EndReport{}, errors.New("connection refused")
+}
+
+// The zero EndReport has Verdict "" and Hops 0, and trace.Verdict("")
+// ranks EQUAL TO VerdictOK in verdictRank (a missing map key is 0). So
+// "ensemble never told us how the session went" and "ensemble said the
+// session was fine" would compare equal, and a run against a control plane
+// that fell over mid-flow would gate as clean. EndVerdict must resolve the
+// unconfirmed case to something strictly worse than ok.
+//
+// Mutating EndVerdict to `return s.endReport.Verdict` makes this fail.
+func TestEndVerdictOnASessionEnsembleNeverConfirmedIsNotOK(t *testing.T) {
+	f := &failingEnsemble{}
+	f.push(hop(1, "edge"))
+	s := attachedSessionFor(t, f)
+
+	// Before Close, nothing has been confirmed at all.
+	if got := s.EndVerdict(); got == trace.VerdictOK || got == "" {
+		t.Fatalf("EndVerdict before Close = %q; an unconfirmed session must not rank as ok", got)
+	}
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := s.EndVerdict(); got.Worse(trace.VerdictSuspect) != got {
+		t.Fatalf("EndVerdict after a failed EndSession = %q, want at least suspect", got)
+	}
+	if notes := strings.Join(s.TrustNotes(), "\n"); !strings.Contains(notes, "ending the ensemble session failed") {
+		t.Fatalf("TrustNotes = %q, want it to name the teardown failure", notes)
+	}
+	// The recording must survive a teardown error: it is already on disk
+	// by the time EndSession is called, and losing it would be strictly
+	// worse than recording it with a degraded verdict.
+	hops, _, err := runs.ReadHops(s.Paths.HopsPath)
+	if err != nil || len(hops) != 1 {
+		t.Fatalf("hops.jsonl after a failed EndSession = %v (%v), want the drained hop", hops, err)
+	}
+}
+
+// okButEmptyEnsemble answers DELETE with a 200 whose verdict field is
+// absent — the zero value arriving over the wire rather than from a Go
+// literal. It must be treated exactly like the unconfirmed case.
+type okButEmptyEnsemble struct{ fakeEnsemble }
+
+func (f *okButEmptyEnsemble) EndSession(context.Context, string) (EndReport, error) {
+	return EndReport{Hops: 1}, nil
+}
+
+func TestAnEmptyVerdictFromEnsembleDoesNotRankAsOK(t *testing.T) {
+	f := &okButEmptyEnsemble{}
+	f.push(hop(1, "edge"))
+	s := attachedSessionFor(t, f)
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := s.EndVerdict(); got.Worse(trace.VerdictSuspect) != got {
+		t.Fatalf("EndVerdict for an empty wire verdict = %q, want at least suspect", got)
+	}
+}
+
+// Drain is attached-only. A standalone session has no control plane to poll
+// and must neither error nor block runFlow.
+func TestDrainIsANoOpForAStandaloneSession(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain on a standalone session = %v, want nil", err)
+	}
+	if got := s.EndVerdict(); got != "" {
+		t.Fatalf("EndVerdict standalone = %q; there is no ensemble session to have an opinion", got)
+	}
+}
+
+// retrace does not own ensemble's edge listener, so it can never witness it
+// dying. Reporting one would put a broken/proxy-died verdict (Task 6's most
+// severe capture reason) on a run whose capture machinery was fine.
+func TestAttachedSessionsNeverReportAProxyFailure(t *testing.T) {
+	f := &fakeEnsemble{}
+	s := attachedSessionFor(t, f)
+	s.ProxyDied(errors.New("dial 127.0.0.1:0: connect: connection refused"))
+	if got := s.ProxyFailure(); got != nil {
+		t.Fatalf("ProxyFailure on an attached session = %+v, want nil", got)
+	}
+	// WatchProxy must return immediately rather than dial ensemble's edge.
+	done := make(chan struct{})
+	go func() { s.WatchProxy(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchProxy did not return immediately for an attached session")
+	}
+}
+
+// Redaction happens at capture on EVERY write path, including this one:
+// ensemble redacted with its own key list, but a recording is committed and
+// shared, so retrace re-applies the keys ITS config names.
+func TestAttachedWritesArePushedThroughRetracesOwnRedactor(t *testing.T) {
+	f := &fakeEnsemble{}
+	h := hop(1, "edge")
+	h.Resp = trace.Payload{Body: `{"ok":true,"token":"secret-value"}`}
+	f.push(h)
+
+	s, err := StartAttached(Options{
+		Cwd: t.TempDir(), App: "web", Flow: "checkout", Redact: []string{"token"},
+	}, f, "bff")
+	if err != nil {
+		t.Fatalf("StartAttached: %v", err)
+	}
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	for _, path := range []string{s.Paths.HopsPath, s.Paths.WirePath} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if strings.Contains(string(b), "secret-value") {
+			t.Fatalf("%s holds the plaintext secret; every write path redacts at capture", path)
+		}
+	}
+}
