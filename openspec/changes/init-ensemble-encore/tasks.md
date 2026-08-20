@@ -140,8 +140,21 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 - [ ] 5.4 Dog-food e2e in CI: encore records a web-app flow against the live
       sample, replays it stackless, diffs — zero unexplained deltas.
 
+## Phase-exit acceptance (user-set, 2026-08-20)
+
+Before this change is called done: web client AND Expo RN client build
+cleanly; at least one encore capture run recorded against the sample
+scenario; replay of that recording exercised and green; release automation
+exists (see 6.0/6.1).
+
 ## Phase 6 — distribution + docs
 
+- [ ] 6.0 Release workflow (STARTED EARLY, user request): GoReleaser config
+      + `.github/workflows/release.yml` triggered on version tag (`v*`) —
+      build both binaries (darwin/linux/windows × arm64/x64), draft GitHub
+      release. npm publish steps scaffolded but inert: registry/scope/repo
+      target land in a follow-up sync (user syncing on npm details + push
+      target). Nothing is pushed or published until that sync.
 - [ ] 6.1 GoReleaser: darwin/linux/windows × arm64/x64, GitHub releases,
       Homebrew tap, curl installer.
 - [ ] 6.2 npm wrappers (@ensemble-dev/{ensemble,encore} + platform pkgs,
