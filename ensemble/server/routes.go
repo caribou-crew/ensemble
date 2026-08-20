@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"sort"
@@ -390,9 +391,37 @@ func (s *server) handleTrace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"hops": hops, "logical": out})
 }
 
+// reachableHop rewrites a hop's Host header to the loopback intercept
+// address ensemble actually proxies for h.To, so exports reproduce a
+// request that can be replayed. `To` is a logical service name — never
+// resolvable on its own (see trace.HopURL) — and the recorded Host header
+// can likewise be a container-network name the exporting machine can't
+// reach. When `To` doesn't match a configured service with an assigned
+// proxy port (an unregistered stub, an external host, ...), the hop is
+// returned unchanged: that's the best information export already had.
+func (s *server) reachableHop(h trace.Hop) trace.Hop {
+	svc, ok := s.Cfg.Services[h.To]
+	if !ok || svc.Proxy <= 0 {
+		return h
+	}
+	headers := make(map[string]string, len(h.Req.Headers)+1)
+	maps.Copy(headers, h.Req.Headers)
+	headers["host"] = fmt.Sprintf("127.0.0.1:%d", svc.Proxy)
+	h.Req.Headers = headers
+	return h
+}
+
+func (s *server) reachableHops(hops []trace.Hop) []trace.Hop {
+	out := make([]trace.Hop, len(hops))
+	for i, h := range hops {
+		out[i] = s.reachableHop(h)
+	}
+	return out
+}
+
 func (s *server) handleTraceExport(w http.ResponseWriter, r *http.Request) {
 	traceID := r.PathValue("traceId")
-	hops := hopsForTrace(s.Rec.Snapshot(), traceID)
+	hops := s.reachableHops(hopsForTrace(s.Rec.Snapshot(), traceID))
 	format := r.URL.Query().Get("format")
 
 	switch format {
