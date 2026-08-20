@@ -124,12 +124,11 @@ func (s *Session) startMarkerDoor(now func() time.Time) error {
 	if err != nil {
 		return err
 	}
-	door := NewMarkerDoor(s.Paths, now)
-	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.requests.Add(1)
-		door.ServeHTTP(w, r)
-	})
-	s.markerSrv = &http.Server{Handler: counted}
+	// Counted INSIDE the guard (NewMarkerDoorCounted's onAdmitted), not
+	// outside it: a request the guard rejects (cross-site, DNS-rebinding)
+	// must never inflate RequestsSeen — see its doc comment.
+	door := NewMarkerDoorCounted(s.Paths, now, func() { s.requests.Add(1) })
+	s.markerSrv = &http.Server{Handler: door}
 	go s.markerSrv.Serve(ln)
 	s.MarkerURL = "http://" + ln.Addr().String()
 	return nil
@@ -213,22 +212,42 @@ func (s *Session) ProxyFailure() *ProxyFailure {
 // listener that stops accepting is the difference between "the flow made no
 // calls" and "the flow's calls went nowhere" — Task 6 must be able to tell
 // those apart, and only this loop can tell it.
+//
+// It samples once BEFORE entering the tick loop and once more on
+// ctx.Done(), rather than relying solely on the 500ms tick: runFlow starts
+// this goroutine and cancels it the instant the test command returns, so a
+// flow shorter than one tick period would otherwise never be sampled at
+// all, and a proxy that died inside a fast test would go unrecorded.
 func (s *Session) WatchProxy(ctx context.Context) {
+	if !s.probeProxy() {
+		return
+	}
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			s.probeProxy()
 			return
 		case <-t.C:
-			c, err := net.DialTimeout("tcp", strings.TrimPrefix(s.ProxyURL, "http://"), 200*time.Millisecond)
-			if err != nil {
-				s.ProxyDied(err)
+			if !s.probeProxy() {
 				return
 			}
-			c.Close()
 		}
 	}
+}
+
+// probeProxy dials the client-edge listener once. It records a
+// ProxyFailure (via ProxyDied) and reports false on a failed dial; true
+// means the listener answered.
+func (s *Session) probeProxy() bool {
+	c, err := net.DialTimeout("tcp", strings.TrimPrefix(s.ProxyURL, "http://"), 200*time.Millisecond)
+	if err != nil {
+		s.ProxyDied(err)
+		return false
+	}
+	c.Close()
+	return true
 }
 
 // Checkpoints reads shots/*.png and decodes each header for geometry. PNG
