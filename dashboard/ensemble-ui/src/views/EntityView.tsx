@@ -4,7 +4,7 @@
 // returned rows (see format.ts's unionKeys), and create/edit are raw-JSON
 // textareas. Navigation (?entity=&id=&new=1) is plain useUrlParam state —
 // no router — matching the rest of the dashboard.
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
 import { api, ApiError } from '../api/client';
 import type { EntityInfo } from '../api/types';
@@ -75,19 +75,27 @@ function EntityList({
   onCreate: () => void;
 }) {
   const [data, setData] = useState<unknown>(undefined);
+  // See EntityDetail: `undefined` alone cannot distinguish "not fetched yet" from
+  // "fetched, and the upstream sent an empty body".
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     setData(undefined);
     setError(null);
     api
       .entityList(name)
       .then((d) => {
-        if (!cancelled) setData(d);
+        if (cancelled) return;
+        setData(d);
+        setLoading(false);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(messageOf(err, `failed to load ${name}`));
+        if (cancelled) return;
+        setError(messageOf(err, `failed to load ${name}`));
+        setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -103,12 +111,16 @@ function EntityList({
     );
   }
 
-  if (data === undefined) {
+  if (loading) {
     return (
       <div className="entity-list__loading">
         <Spinner />
       </div>
     );
+  }
+
+  if (data === undefined) {
+    return <div className="entity-view__panel-empty">{name} returned an empty response body.</div>;
   }
 
   const rows = asRowArray(data);
@@ -180,27 +192,44 @@ function EntityDetail({
   onBack: () => void;
 }) {
   const [data, setData] = useState<unknown>(undefined);
+  // Tracked separately from `data`: a 200 with an empty body also yields undefined,
+  // and overloading one sentinel for "not fetched yet" and "fetched nothing" showed
+  // the user a permanent spinner with no error.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
+  // EntityDetail is NOT remounted when id changes (EntityView renders it without a
+  // key prop), so this effect re-fires on the same instance and a previous in-flight
+  // request would otherwise still be live. Without the cancelled guard a stale
+  // response overwrites both the rendered record and draftText — and save() PUTs
+  // draftText against the CURRENT id, so that writes one row's data onto another.
+  // Guarded here and pinned by EntityView.detail-race.test.ts.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
     setData(undefined);
     setError(null);
-    return api
+    api
       .entityGet(name, id)
       .then((d) => {
+        if (cancelled) return;
         setData(d);
-        setDraftText(JSON.stringify(d, null, 2));
+        setDraftText(JSON.stringify(d, null, 2) ?? '');
+        setLoading(false);
       })
-      .catch((err: unknown) => setError(messageOf(err, `failed to load ${name}/${id}`)));
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(messageOf(err, `failed to load ${name}/${id}`));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [name, id]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   async function save() {
     let parsed: unknown;
@@ -262,8 +291,12 @@ function EntityDetail({
           <Badge tone="red">error</Badge>
           <span>{error}</span>
         </div>
-      ) : data === undefined ? (
+      ) : loading ? (
         <Spinner />
+      ) : data === undefined ? (
+        <div className="entity-view__panel-empty">
+          {name}/{id} returned an empty response body.
+        </div>
       ) : editing ? (
         <div className="entity-detail__edit">
           {formError && <div className="entity-detail__form-error">{formError}</div>}
@@ -371,6 +404,19 @@ export default function EntityView() {
   const activeEntity =
     entityParam && entities?.some((e) => e.name === entityParam) ? entityParam : (entities?.[0]?.name ?? null);
   const activeInfo = entities?.find((e) => e.name === activeEntity) ?? null;
+
+  // An ?entity= that names nothing falls back to the first entity, but a leftover ?id=
+  // would then be read against that fallback — leaving the URL, the breadcrumb, and the
+  // rendered row disagreeing. Drop the whole stale selection, exactly as selectEntity
+  // does when the user switches tabs by hand. Self-terminating: clearing entityParam
+  // makes the guard below false on the next pass.
+  useEffect(() => {
+    if (!entities || !entityParam) return;
+    if (entities.some((e) => e.name === entityParam)) return;
+    setEntityParam(null);
+    setId(null);
+    setNew(null);
+  }, [entities, entityParam, setEntityParam, setId, setNew]);
 
   function selectEntity(nextName: string) {
     setEntityParam(nextName);
