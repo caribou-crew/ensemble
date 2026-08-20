@@ -136,6 +136,13 @@ p50/p95/p99 distribution; arm-all/reset; settable live from dashboard, CLI,
 REST. The prototype's Datadog percentile-pull becomes a pluggable
 "latency profile import" (Datadog first) — pull never auto-arms.
 
+Stretch (post-v1, first "plugin" concept): per-service APM mapping in config
+(`services.<name>.apm: { provider: datadog, query/url: ... }`) with the API
+token supplied via the user's env (never in config or repo). The dashboard's
+latency page then offers real p50/p95/p99 from the provider over a chosen
+lookback window (e.g. past X days) as one-click rule imports — pulled into
+the cache, applied only on explicit user action.
+
 ### 4.5 Generic inspector + entity plugin slots
 
 Kept generic (decision: "generic inspector + plugin slots"): schema browse,
