@@ -536,6 +536,78 @@ func TestCLI_TrafficJSON(t *testing.T) {
 	}
 }
 
+// TestCLI_TraceJSONAndExportCurl guards final-review promoted-minor #27:
+// cmdTrace (cmd_trace.go) was the one CLI command with zero tests, and it's
+// the one that formats three distinct server responses (plain table, JSON,
+// and export). Drives the actual `run()` entrypoint for both the
+// happy-path JSON view and --export=curl, against the same live runUp test
+// env the rest of this file uses.
+func TestCLI_TraceJSONAndExportCurl(t *testing.T) {
+	env := startEnsemble(t)
+	c := NewClient(env.apiURL)
+	ctx := context.Background()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/hello", env.proxyPort))
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	resp.Body.Close()
+
+	var traceID string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tr, err := c.Traffic(ctx, 0, 0, false)
+		if err != nil {
+			t.Fatalf("traffic: %v", err)
+		}
+		for _, h := range tr.Hops {
+			if h.To == "svc" && h.TraceID != "" {
+				traceID = h.TraceID
+				break
+			}
+		}
+		if traceID != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if traceID == "" {
+		t.Fatal("no traced svc hop found")
+	}
+
+	// flags before the positional traceId: flag.FlagSet.Parse (like the
+	// stdlib generally) stops parsing at the first non-flag argument, so
+	// unlike most of this file's other subcommands trace's positional arg
+	// must come last, not first.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"trace", "--api-url", env.apiURL, "--json", traceID}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("trace --json exit = %d, stderr = %s", code, stderr.String())
+	}
+	var got TraceResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode stdout: %v; stdout = %s", err, stdout.String())
+	}
+	if len(got.Hops) == 0 {
+		t.Fatalf("expected at least one hop in trace %s", traceID)
+	}
+	for _, h := range got.Hops {
+		if h.TraceID != traceID {
+			t.Fatalf("hop with wrong traceId %q in trace %s response", h.TraceID, traceID)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"trace", "--export", "curl", "--api-url", env.apiURL, traceID}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("trace --export=curl exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "curl ") {
+		t.Fatalf("--export=curl output does not look like curl commands: %q", stdout.String())
+	}
+}
+
 // TestCLI_SeedUnknownFails exercises the `seed` command's error path (exit
 // code gates CI): a seed name the config doesn't define.
 func TestCLI_SeedUnknownFails(t *testing.T) {
