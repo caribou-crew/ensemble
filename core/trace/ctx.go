@@ -11,11 +11,11 @@ import (
 )
 
 // Well-known baggage keys. correlationId is the human-facing join key
-// (pairs with the W3C traceId); encore-run partitions hops into recording
+// (pairs with the W3C traceId); retrace-run partitions hops into recording
 // sessions.
 const (
 	BaggageCorrelationID = "correlationId"
-	BaggageSession       = "encore-run"
+	BaggageSession       = "retrace-run"
 )
 
 var traceparentPattern = regexp.MustCompile(`^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)
@@ -88,7 +88,7 @@ func (c Ctx) BaggageHeader() string {
 // CorrelationID returns the correlation join key, if present.
 func (c Ctx) CorrelationID() string { return c.Baggage[BaggageCorrelationID] }
 
-// Session returns the encore-run session id; "" means ambient traffic.
+// Session returns the retrace-run session id; "" means ambient traffic.
 func (c Ctx) Session() string { return c.Baggage[BaggageSession] }
 
 // EnsureCorrelationID returns the existing correlation id or mints and

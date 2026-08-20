@@ -7,7 +7,7 @@ build past it.
 ## 1. Datadog → LLM incident replication loop (Steven's idea)
 
 Goal: an LLM maps a real DD issue onto the local ensemble stack, replicates
-the conditions, diagnoses, and attempts a fix — locally, with encore as the
+the conditions, diagnoses, and attempts a fix — locally, with retrace as the
 verification harness.
 
 Building blocks (roughly in dependency order):
@@ -34,7 +34,7 @@ Building blocks (roughly in dependency order):
   existing endpoints — low cost, high demo value.
 - **f. The loop**: LLM reads DD issue → replicates via (c)/(d) → observes
   local hops + inspector DB state → hypothesizes → edits code → ensemble
-  restart → encore diff pre/post fix proves behavior change. encore's
+  restart → retrace diff pre/post fix proves behavior change. retrace's
   wire/hop diffs are the objective "did the fix change what we thought"
   check — that's the differentiator vs. generic agent debugging.
 
@@ -43,18 +43,18 @@ Open questions for tomorrow:
 - DD API surface: APM metrics + traces need different endpoints/permissions;
   which token scopes are acceptable to require?
 - Should replication profiles be shareable artifacts (checked in like
-  encore recordings) so a teammate can replay an incident?
+  retrace recordings) so a teammate can replay an incident?
 
 ## 2. Passthrough mode — proxy in front of real prod/QA (Steven's idea)
 
 Goal: an app (or test) points at the ensemble proxy, which forwards to a
 real remote env (QA/staging/prod) instead of a local process — full network
-capture, latency injection, sessions, encore recording, no local stack.
+capture, latency injection, sessions, retrace recording, no local stack.
 
 - Config shape: `services.<name>.upstream: https://qa.example.com` (mutually
   exclusive with run/docker). Proxy already reverse-proxies; needs https
   upstream + SNI/Host handling + streaming for large bodies.
-- Trace headers: remote envs won't propagate `encore-run` baggage back in
+- Trace headers: remote envs won't propagate `retrace-run` baggage back in
   sub-calls we can't see — capture is client-edge only, verdict machinery
   already handles "reduced scope" honestly (standalone-capture path).
 - **Safety rails (important for prod):** default read-only guard —
@@ -62,9 +62,9 @@ capture, latency injection, sessions, encore recording, no local stack.
   `allow_writes: true`. Redaction becomes load-bearing (real PII in
   hops) — maybe force encrypt-all or destroy-mode defaults for passthrough
   targets. Also: never inject faults into prod by default (arm gate).
-- Killer workflow: point at QA → click through a flow → encore records it →
+- Killer workflow: point at QA → click through a flow → retrace records it →
   that recording becomes the CI mock. "Record from QA, replay stackless
-  forever, revalidate weekly." Pairs with a scheduled `encore revalidate`
+  forever, revalidate weekly." Pairs with a scheduled `retrace revalidate`
   drift-bot that flags when QA's API shape drifts from the recordings.
 - Auth: passthrough needs real auth headers to QA; those must be
   redact-encrypted in recordings but replayed... destroy-mode placeholders
@@ -84,7 +84,7 @@ capture, latency injection, sessions, encore recording, no local stack.
   (before/after fingerprints already exist in the poller) so "what did the
   DB look like at hop 14" is answerable. Cheap tier: snapshot at session
   start/end only.
-- **encore drift-bot**: scheduled `encore revalidate` in CI against QA;
+- **retrace drift-bot**: scheduled `retrace revalidate` in CI against QA;
   opens a PR/issue with the wire-diff when the backend drifts. Turns
   recordings from fixtures into a living contract.
 

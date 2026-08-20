@@ -1,4 +1,4 @@
-# Tasks: init-ensemble-encore
+# Tasks: init-ensemble-retrace
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development
 > (or superpowers:executing-plans inline). Work phase by phase; before starting a
@@ -7,16 +7,16 @@
 > `docs/superpowers/plans/`, and execute that. TDD throughout. Each numbered task
 > below ends in an independently testable, committed deliverable.
 
-**Goal:** Ship the ensemble + encore monorepo per `design.md`.
+**Goal:** Ship the ensemble + retrace monorepo per `design.md`.
 
-**Architecture:** Go workspace (`core/`, `ensemble/`, `encore/`) + pnpm workspace
+**Architecture:** Go workspace (`core/`, `ensemble/`, `retrace/`) + pnpm workspace
 (`dashboard/`, `adapters/`) + `sample/`. One trace schema in `core/trace`
 consumed by everything.
 
 **Tech stack:** Go ≥1.23 (stdlib-first: net/http, httputil, image/png, embed),
 React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
-**Spec:** `openspec/changes/init-ensemble-encore/{proposal,design}.md` + `specs/`
+**Spec:** `openspec/changes/init-ensemble-retrace/{proposal,design}.md` + `specs/`
 
 ## Global constraints
 
@@ -38,7 +38,7 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 ## Phase 1 — core: trace model + proxy (the load-bearing phase)
 
 - [x] 1.1 `core/trace`: Hop struct + NDJSON codec + schema version; W3C
-      traceparent/baggage parse+stamp helpers (`correlationId`, `encore-run`
+      traceparent/baggage parse+stamp helpers (`correlationId`, `retrace-run`
       keys). Golden tests from the JS prototype `hops` fixtures.
       Produces: `trace.Hop`, `trace.ParseCtx(header) Ctx`, `trace.Ctx.Child()`.
 - [x] 1.2 `core/trace`: redaction (default header set + user list, applied at
@@ -57,7 +57,7 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 - [x] 1.7 `core/stub`: config-defined match→respond engine (method/path,
       status/headers/body_file, Go template option); stub hits emit hops.
 - [x] 1.8 `core/proxy`: sessions — registry, ephemeral client-edge listener
-      stamping `encore-run` baggage, hop partitioning (session vs ambient),
+      stamping `retrace-run` baggage, hop partitioning (session vs ambient),
       propagation-gap detector → capture-trust verdict. Test: two concurrent
       sessions + ambient traffic, zero cross-contamination.
 
@@ -95,35 +95,35 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
       apply) + Inspector view (schema/rows/change-stream) + generic entity
       pages from `entities:` config.
 
-## Phase 4 — encore: capture/replay/diff/review
+## Phase 4 — retrace: capture/replay/diff/review
 
-- [ ] 4.1 `encore/run`: `encore run --flow -- <cmd>` — session registration
+- [ ] 4.1 `retrace/run`: `retrace run --flow -- <cmd>` — session registration
       w/ ensemble (or standalone capture proxy), env handshake
-      (ENCORE_RUN_DIR/ENCORE_PROXY_URL), run-dir writer (manifest, wire.jsonl,
+      (RETRACE_RUN_DIR/RETRACE_PROXY_URL), run-dir writer (manifest, wire.jsonl,
       hops.jsonl, groups.jsonl), capture-trust computation.
-- [ ] 4.2 `encore/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
+- [ ] 4.2 `retrace/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
       integer/semver/custom/ignore/exact). Golden tests from the JS prototype
       `wire-rules`/`matchers` fixtures.
-- [ ] 4.3 `encore/replay`: strict mock server from a reference bundle
-      (match via rules; unmatched → fail + miss report); `encore revalidate`
+- [ ] 4.3 `retrace/replay`: strict mock server from a reference bundle
+      (match via rules; unmatched → fail + miss report); `retrace revalidate`
       against a live stack.
-- [ ] 4.4 `encore/diff`: pixel (pixelmatch port: thresholds, masks, border
+- [ ] 4.4 `retrace/diff`: pixel (pixelmatch port: thresholds, masks, border
       trim, A/B/overlay/diff PNGs — golden images from the JS prototype), wire
       (pairing, field-level, LIS reorder), hop (added/removed calls,
       hopRequire), unexpected-status, perf budgets, OpenAPI conformance;
       unified summary + `--json` + exit codes.
-- [ ] 4.5 `encore/refs`: compact reference bundles, accept/reject/rule
+- [ ] 4.5 `retrace/refs`: compact reference bundles, accept/reject/rule
       mutations, opt-in deviations ledger.
-- [ ] 4.6 `encore/serve` + `dashboard/encore-ui`: review queue (worst-first,
+- [ ] 4.6 `retrace/serve` + `dashboard/retrace-ui`: review queue (worst-first,
       keyboard-driven item screen, three verbs) + identical REST verbs;
-      `encore export` static report.
-- [ ] 4.7 `adapters/`: encore-js (groups/markers), encore-playwright
-      (fixture: checkpoint shots + groups), encore-maestro (HTTP markers);
+      `retrace export` static report.
+- [ ] 4.7 `adapters/`: retrace-js (groups/markers), retrace-playwright
+      (fixture: checkpoint shots + groups), retrace-maestro (HTTP markers);
       strict-mode env handshake failure message.
 - [ ] 4.8 Redaction modes + recording encryption: extend `core/trace`
       Redactor with display/encrypt/destroy per-key modes (AES-256-GCM
       `$enc:v1` markers, deterministic `red-<hash>` placeholders); envelope
-      key wrapping w/ team key (env/keyfile), `encore rekey`; replay-time
+      key wrapping w/ team key (env/keyfile), `retrace rekey`; replay-time
       decryption; encrypt-all option; reveal-eyeball + add-rule actions in
       traffic and review UIs (ties into 3.3/4.6).
 
@@ -137,13 +137,13 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 - [ ] 5.3 `sample/ensemble.yaml` (the reference config: dbs incl. dynamodb +
       localstack, stubs payment/analytics/kms, entities, profiles) + seeds
       (baseline/empty/bulk/outage).
-- [ ] 5.4 Dog-food e2e in CI: encore records a web-app flow against the live
+- [ ] 5.4 Dog-food e2e in CI: retrace records a web-app flow against the live
       sample, replays it stackless, diffs — zero unexplained deltas.
 
 ## Phase-exit acceptance (user-set, 2026-08-20)
 
 Before this change is called done: web client AND Expo RN client build
-cleanly; at least one encore capture run recorded against the sample
+cleanly; at least one retrace capture run recorded against the sample
 scenario; replay of that recording exercised and green; release automation
 exists (see 6.0/6.1).
 
@@ -157,12 +157,12 @@ exists (see 6.0/6.1).
       target). Nothing is pushed or published until that sync.
 - [ ] 6.1 GoReleaser: darwin/linux/windows × arm64/x64, GitHub releases,
       Homebrew tap, curl installer.
-- [ ] 6.2 npm wrappers (@ensemble-dev/{ensemble,encore} + platform pkgs,
-      bin shims, lockstep versions); adapters depend on encore wrapper.
+- [ ] 6.2 npm wrappers (@caribou-crew/{ensemble,retrace} + platform pkgs,
+      bin shims, lockstep versions); adapters depend on retrace wrapper.
       Verify in a clean Docker node image with network limited to registry.
 - [ ] 6.3 Docs: getting-started (bring-your-own-stack walkthrough), config
-      reference generated from schema, encore CI recipe; archive this
-      openspec change (`openspec archive init-ensemble-encore`) syncing
+      reference generated from schema, retrace CI recipe; archive this
+      openspec change (`openspec archive init-ensemble-retrace`) syncing
       specs/ to openspec/specs/.
 
 ## Follow-ups (opened during Phase 3, tracked so they are not lost)

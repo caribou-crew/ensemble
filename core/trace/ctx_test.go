@@ -44,7 +44,7 @@ func TestChildKeepsTraceNewSpan(t *testing.T) {
 }
 
 func TestBaggageRoundTripAndWellKnownKeys(t *testing.T) {
-	ctx := ParseCtx("", "correlationId=corr-9,encore-run=run-7,other=x%20y")
+	ctx := ParseCtx("", "correlationId=corr-9,retrace-run=run-7,other=x%20y")
 	if got := ctx.Baggage["correlationId"]; got != "corr-9" {
 		t.Fatalf("correlationId: %q", got)
 	}
@@ -74,7 +74,7 @@ func TestEnsureCorrelationIDStableAndAdditive(t *testing.T) {
 	if id2 := ctx.EnsureCorrelationID(); id2 != id1 {
 		t.Fatalf("not stable: %q vs %q", id1, id2)
 	}
-	ctx.Baggage["encore-run"] = "run-1"
+	ctx.Baggage["retrace-run"] = "run-1"
 	if ctx.CorrelationID() != id1 {
 		t.Fatal("adding baggage clobbered correlation id")
 	}

@@ -1,6 +1,6 @@
 # goreleaser configuration (v2 schema)
 #
-# Builds and packages the two ensemble binaries (ensemble, encore) for tagged
+# Builds and packages the two ensemble binaries (ensemble, retrace) for tagged
 # releases. Triggered by .github/workflows/release.yml on `v*` tag pushes.
 #
 # Release publishing is intentionally draft-only right now (see `release:`
@@ -34,10 +34,10 @@ builds:
       - -s -w
       - -X main.version={{.Version}}
 
-  - id: encore
-    dir: encore
-    main: ./cmd/encore
-    binary: encore
+  - id: retrace
+    dir: retrace
+    main: ./cmd/retrace
+    binary: retrace
     env:
       - CGO_ENABLED=0
     goos:
@@ -61,10 +61,10 @@ archives:
       - goos: windows
         formats: [zip]
 
-  - id: encore
-    ids: [encore]
+  - id: retrace
+    ids: [retrace]
     name_template: >-
-      encore_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+      retrace_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats: [tar.gz]
     format_overrides:
       - goos: windows

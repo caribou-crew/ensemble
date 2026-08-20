@@ -7,30 +7,30 @@ Run your entire backend stack locally — observed. Two products, one core:
   each with a lightweight Go proxy that captures hop-by-hop telemetry (trace
   ids, correlation ids, timings), injects latency on demand, stubs the
   dependencies you can't run locally, and serves a dashboard + REST API.
-- **encore** — record a test run's screenshots and full network hop chain,
+- **retrace** — record a test run's screenshots and full network hop chain,
   replay blessed recordings as strict mocks in CI (one static binary, no
   stack), and diff runs — pixel, wire, and hop — against references, with a
-  PR-style review queue. Play it again.
+  PR-style review queue. Retrace the run, see what moved.
 
 Successor to [mezzo](https://github.com/caribou-crew/mezzo): mocks that are
 actual recorded dataflow instead of hand-maintained fixtures.
 
 ## Status
 
-**Greenfield, in active build. `ensemble` runs; `encore` is not written yet.**
+**Greenfield, in active build. `ensemble` runs; `retrace` is not written yet.**
 
 | Area | State |
 | --- | --- |
 | trace model + capturing proxy + stub engine (`core/`) | working |
 | orchestrator, REST/SSE API, CLI (`ensemble/`) | working |
 | dashboard — topology, traffic, latency, inspector, entities | working |
-| `encore` record/replay/diff/review | **not started** — CLI is a stub |
+| `retrace` record/replay/diff/review | **not started** — CLI is a stub |
 | sample stack, test-runner adapters | **not started** |
 | published npm / brew packages | not yet released |
 
 Specs live in [`openspec/`](openspec/) — start with
-`openspec/changes/init-ensemble-encore/design.md`. The roadmap and its current
-state are in `openspec/changes/init-ensemble-encore/tasks.md`.
+`openspec/changes/init-ensemble-retrace/design.md`. The roadmap and its current
+state are in `openspec/changes/init-ensemble-retrace/tasks.md`.
 
 ## Try it
 
@@ -119,7 +119,7 @@ sets the default endpoint. The control plane binds loopback only.
 | --- | --- |
 | `core/` | Go shared module: trace model, proxy, stub engine |
 | `ensemble/` | the runner: orchestrator, REST/SSE server, inspector, CLI |
-| `encore/` | record/replay/diff: engines, review server, CLI (not yet built) |
+| `retrace/` | record/replay/diff: engines, review server, CLI (not yet built) |
 | `dashboard/` | React UIs, embedded into the binaries |
 | `openspec/` | specs and roadmap |
 

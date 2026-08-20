@@ -2,10 +2,10 @@ node_modules/
 dist/
 *.log
 .DS_Store
-.encore/runs/
-# The recording team key is a secret: env ENCORE_RECORDING_KEY or this file,
+.retrace/runs/
+# The recording team key is a secret: env RETRACE_RECORDING_KEY or this file,
 # never a commit.
-.encore/recording.key
+.retrace/recording.key
 coverage/
 bin/
 

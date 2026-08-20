@@ -1,5 +1,5 @@
 // Package trace defines the single hop/trace data model shared by ensemble
-// (live telemetry) and encore (recordings), plus W3C trace-context helpers.
+// (live telemetry) and retrace (recordings), plus W3C trace-context helpers.
 // One schema, two consumers — recordings ARE the telemetry format.
 package trace
 
@@ -24,7 +24,7 @@ type Hop struct {
 	SpanID        string  `json:"spanId,omitempty"`
 	ParentSpanID  string  `json:"parentSpanId,omitempty"`
 	CorrelationID string  `json:"correlationId,omitempty"`
-	Session       string  `json:"session,omitempty"` // encore-run id; "" = ambient traffic
+	Session       string  `json:"session,omitempty"` // retrace-run id; "" = ambient traffic
 	From          string  `json:"from,omitempty"`
 	To            string  `json:"to"`
 	Method        string  `json:"method,omitempty"`
