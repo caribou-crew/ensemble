@@ -142,6 +142,28 @@ func TestReadManifestRejectsSchemaMismatch(t *testing.T) {
 	}
 }
 
+// TestReadManifestRejectsZeroValueCaptureStatus — re-review residual on
+// finding 1. WriteManifest already rejects a zero Capture.Status at write
+// time; this pins the same rule at read time, for a manifest this build
+// did not write (an older build, or a hand-edited reference bundle —
+// reference bundles are committed to git and therefore hand-editable).
+// Without this, `{"schema":"retrace/1","capture":{"status":""}}` reads
+// back cleanly and, via trace.Verdict.Worse's zero-value trap, gates as
+// clean.
+func TestReadManifestRejectsZeroValueCaptureStatus(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	body := `{"schema":"retrace/1","capture":{"status":""}}` + "\n"
+	if err := os.WriteFile(p.ManifestPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := ReadManifest(p.ManifestPath); err == nil {
+		t.Fatal("ReadManifest must reject a zero-value Capture.Status, the same as WriteManifest does")
+	}
+}
+
 func TestReadHopsSkipsBlankLinesAndMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/hops.jsonl"
@@ -187,5 +209,34 @@ func TestReadHopsToleratesCorruptLinesAndKeepsGoodOnes(t *testing.T) {
 	}
 	if len(hops) != 2 || hops[0].To != "bff" || hops[1].To != "cart" {
 		t.Fatalf("intact hops on both sides of the corrupt line must be kept: %+v", hops)
+	}
+}
+
+// TestReadHopsCountsValidJSONNonHopAsSkipped — re-review residual on
+// finding 4. "{}" is valid JSON and unmarshals cleanly into a zero-value
+// trace.Hop (json.Unmarshal doesn't complain about missing fields), so
+// unlike "{not json" it was NOT caught by the existing corrupt-line check
+// and was silently counted as a real hop, inflating the count. Every hop
+// this package's writers produce carries trace.SchemaVersion (trace.Writer
+// stamps it unconditionally), so its absence is what distinguishes "not
+// actually a hop record" from a genuine hop.
+func TestReadHopsCountsValidJSONNonHopAsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/hops.jsonl"
+	body := "{\"schema\":\"ensemble/1\",\"seq\":1,\"to\":\"bff\"}\n" +
+		"{}\n" +
+		"{\"schema\":\"ensemble/1\",\"seq\":2,\"to\":\"cart\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	hops, skipped, err := ReadHops(path)
+	if err != nil {
+		t.Fatalf("ReadHops: %v", err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 — a valid-JSON-but-not-a-hop line must count as skipped", skipped)
+	}
+	if len(hops) != 2 || hops[0].To != "bff" || hops[1].To != "cart" {
+		t.Fatalf("the empty object must not be returned as a phantom zero-value hop: %+v", hops)
 	}
 }
