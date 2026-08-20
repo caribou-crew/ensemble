@@ -164,6 +164,50 @@ func TestReadManifestRejectsZeroValueCaptureStatus(t *testing.T) {
 	}
 }
 
+// TestCountsMissingAndReasonRoundTripThroughRealJson is the item-5 text
+// test: parses real JSON text (not a struct literal) and asserts Missing
+// and Reason arrive with the exact key spelling, and that Missing false
+// with Calls 0 ("recorded, none happened") is distinguishable on the wire
+// from Missing true with a Reason ("not recorded, and why").
+func TestCountsMissingAndReasonRoundTripThroughRealJson(t *testing.T) {
+	var recorded Counts
+	if err := json.Unmarshal([]byte(`{"calls":0,"missing":false}`), &recorded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if recorded.Missing || recorded.Calls != 0 {
+		t.Fatalf("recorded-and-empty must be Missing=false Calls=0, got %+v", recorded)
+	}
+
+	var absent Counts
+	if err := json.Unmarshal([]byte(`{"calls":0,"missing":true,"reason":"wire capture disabled"}`), &absent); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !absent.Missing || absent.Reason != "wire capture disabled" {
+		t.Fatalf("absent must be Missing=true with Reason set, got %+v", absent)
+	}
+
+	// Marshal side: Missing must never be omitted (never omitempty), Reason
+	// must be omitted when blank.
+	b, err := json.Marshal(Counts{Calls: 3})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"missing":false`) {
+		t.Fatalf(`Counts{Calls:3} must serialize "missing":false explicitly, got %s`, b)
+	}
+	if strings.Contains(string(b), "reason") {
+		t.Fatalf("a blank Reason must be omitted (omitempty), got %s", b)
+	}
+
+	b2, err := json.Marshal(Counts{Missing: true, Reason: "standalone mode"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b2), `"missing":true`) || !strings.Contains(string(b2), `"reason":"standalone mode"`) {
+		t.Fatalf("Counts with Missing+Reason set must serialize both, got %s", b2)
+	}
+}
+
 func TestReadHopsSkipsBlankLinesAndMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/hops.jsonl"
