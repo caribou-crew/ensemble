@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -55,6 +58,19 @@ func TestHelperFetchesThroughProxyNoisy(t *testing.T) {
 		os.Exit(9)
 	}
 	resp.Body.Close()
+	os.Exit(0)
+}
+
+// TestHelperSleepsBriefly is the test command for the dead-proxy regression
+// below. It never touches RETRACE_PROXY_URL — that test replaces the
+// session's ProxyURL with a listener the test itself controls, so the
+// helper only needs to occupy wall-clock time while that listener is
+// closed out from under the run.
+func TestHelperSleepsBriefly(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "sleep" {
+		return
+	}
+	time.Sleep(300 * time.Millisecond)
 	os.Exit(0)
 }
 
@@ -422,5 +438,103 @@ func TestRunJSONEmitsOnlyTheManifestOnStdout(t *testing.T) {
 	// The noise didn't vanish — it went to stderr instead of stdout.
 	if !strings.Contains(res.stderr, "is the test runner's stdout") {
 		t.Errorf("the test command's stdout chatter did not reach stderr:\n%s", res.stderr)
+	}
+}
+
+// --- Fix round 3: runFlow must join WatchProxy before Close ------------
+//
+// runFlow used to `go s.WatchProxy(ctx)` and never wait for it: cancel()
+// fired, then s.Close() tore the proxy listener down, then assessTrust ran
+// — all while the watcher goroutine could still be mid-flight. WatchProxy's
+// own ctx.Done() branch re-probes the listener on the way out, so an
+// unjoined watcher's teardown probe would race Close() and dial a listener
+// Close() had already killed, fabricating a ProxyFailure on a healthy run;
+// the same lack of a happens-before edge let a genuinely dead proxy's
+// failure go unobserved if the read raced the write the other way.
+//
+// Both tests below call runFlow directly — never WatchProxy in isolation —
+// because the defect is in how runFlow sequences cancel/join/close, not in
+// WatchProxy's own detection logic (which already has a passing unit test
+// in retrace/capture). Run with -count=20: this is a race, and a single
+// green run proves nothing about it.
+
+// TestRunFlowHealthyProxyNeverFabricatesAFailure is the 17/20 fabrication
+// case: a completely healthy standalone run must never record a
+// ProxyFailure, no matter how the teardown probe's timing lands relative to
+// Close().
+func TestRunFlowHealthyProxyNeverFabricatesAFailure(t *testing.T) {
+	t.Setenv("RETRACE_TEST_HELPER", "fetch")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	s, err := capture.StartStandalone(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	_, err = runFlow(s, runOptions{
+		Cwd:     t.TempDir(),
+		App:     "web",
+		Flow:    "checkout",
+		TestCmd: selfCmd(t, "TestHelperFetchesThroughProxy")[1:], // drop the leading "--"
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("runFlow: %v", err)
+	}
+	if f := s.ProxyFailure(); f != nil {
+		t.Fatalf("ProxyFailure = %+v, want nil on a healthy run — the teardown probe raced Close()", f)
+	}
+}
+
+// TestRunFlowDeadProxyIsAlwaysRecorded is the missed-detection half: a
+// listener that genuinely dies while the test command is running must be
+// recorded every time runFlow returns, never lost to a read racing the
+// watcher goroutine's write. It stands in its own listener for WatchProxy
+// to monitor (by overwriting the exported Session.ProxyURL field) so the
+// death can be triggered from this package without reaching into capture's
+// unexported stopProxy — retrace/capture is not touched by this fix.
+func TestRunFlowDeadProxyIsAlwaysRecorded(t *testing.T) {
+	t.Setenv("RETRACE_TEST_HELPER", "sleep")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	s, err := capture.StartStandalone(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	fakeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	s.ProxyURL = "http://" + fakeLn.Addr().String()
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		fakeLn.Close() // the proxy "dies" long before the 300ms helper exits
+	}()
+
+	_, err = runFlow(s, runOptions{
+		Cwd:     t.TempDir(),
+		App:     "web",
+		Flow:    "checkout",
+		TestCmd: selfCmd(t, "TestHelperSleepsBriefly")[1:], // drop the leading "--"
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("runFlow: %v", err)
+	}
+	if f := s.ProxyFailure(); f == nil {
+		t.Fatal("ProxyFailure = nil, want recorded — the watcher must be joined before the read")
 	}
 }

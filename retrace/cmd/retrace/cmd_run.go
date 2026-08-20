@@ -224,7 +224,18 @@ type runOptions struct {
 // field has no assignment in this function it has no writer at all.
 func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	go s.WatchProxy(ctx) // the only producer of a ProxyFailure
+	// watchDone closes when WatchProxy returns. runFlow joins it right after
+	// cancel() and strictly before s.Close(): WatchProxy's ctx.Done() branch
+	// re-probes the client-edge listener on the way out, and if that probe
+	// races Close() tearing the listener down, the dial failure is recorded
+	// as a fabricated ProxyFailure on a perfectly healthy run. Joining first
+	// guarantees the watcher has finished observing before anything closes
+	// what it's observing.
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		s.WatchProxy(ctx) // the only producer of a ProxyFailure
+	}()
 
 	started := o.Now()
 	cmd := exec.CommandContext(ctx, o.TestCmd[0], o.TestCmd[1:]...)
@@ -232,6 +243,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	cmd.Stdout, cmd.Stderr, cmd.Dir = o.Stdout, o.Stderr, o.Cwd
 	runErr := cmd.Run()
 	cancel()
+	<-watchDone
 	elapsed := o.Now().Sub(started)
 
 	exitCode := 0
