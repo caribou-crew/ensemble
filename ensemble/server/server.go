@@ -14,6 +14,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/inspector"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 	"github.com/caribou-crew/ensemble/ensemble/server/ui"
 )
@@ -28,6 +29,17 @@ type Deps struct {
 	Lat      *proxy.LatencyStore
 	Sessions *proxy.SessionManager
 	Version  string
+	// Insp, when set, backs the GET /api/databases*, GET
+	// /api/databases/{name}/schema|rows, and GET /api/inspector/stream
+	// endpoints. Nil disables them (501) — entity passthrough (GET
+	// /api/entities, ANY /api/entities/{name}/{path...}) does not depend on
+	// it and keeps working regardless.
+	Insp *inspector.Inspector
+	// InspectPollInterval overrides how often the inspector change-stream
+	// poller (GET /api/inspector/stream) checks every registered driver.
+	// Zero uses the production default (2s) — exposed mainly so tests don't
+	// have to wait out that real interval to observe an event.
+	InspectPollInterval time.Duration
 	// Shutdown, when set, is invoked (in a new goroutine, after the
 	// response is written) by POST /api/shutdown — typically the
 	// context.CancelFunc a caller (e.g. cmd/ensemble's `up`) uses to stop
@@ -43,10 +55,12 @@ type Deps struct {
 	AllowedHosts []string
 }
 
-// server holds Deps plus nothing else — handlers are methods on it so they
-// can share Deps without a global.
+// server holds Deps plus the inspector change-stream fan-out hub (see
+// inspect.go) — handlers are methods on it so they can share Deps without a
+// global.
 type server struct {
 	Deps
+	hub *inspectHub
 }
 
 // New builds ensemble's single-origin HTTP surface: the /api control plane
@@ -62,6 +76,13 @@ type server struct {
 // CSRF/DNS-rebinding protection as /api/*.
 func New(d Deps) http.Handler {
 	s := &server{Deps: d}
+	if d.Insp != nil {
+		interval := d.InspectPollInterval
+		if interval <= 0 {
+			interval = inspectPollInterval
+		}
+		s.hub = newInspectHub(d.Insp, interval)
+	}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	mux.Handle("GET /", ui.Handler())

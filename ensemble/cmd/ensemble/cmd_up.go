@@ -133,11 +133,14 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	sessions := proxy.NewSessionManager(px, rec, entries)
 	defer sessions.Close()
 
+	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
+
 	orch := orchestrator.New(cfg, px, orchestrator.Opts{
 		Profiles: opts.Profiles,
-		Logf:     func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) },
+		Logf:     logf,
 	})
 	orch.SQLRunner = inspector.NewSQLRunner(cfg.Databases)
+	insp := buildInspector(cfg, logf)
 
 	stubs, err := startStubs(cfg, rec)
 	if err != nil {
@@ -172,7 +175,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	allowedHosts, exposureWarning := apiHostPolicy(opts.Addr)
 	handler := server.New(server.Deps{
 		Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: version,
-		Shutdown: cancelShutdown, AllowedHosts: allowedHosts,
+		Shutdown: cancelShutdown, AllowedHosts: allowedHosts, Insp: insp,
 	})
 
 	// "starting", not "serving": server.Serve binds inside the goroutine
@@ -209,6 +212,45 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return serveErr
 	}
 	return downErr
+}
+
+// buildInspector constructs an inspector.Inspector and registers a Driver
+// for every cfg.Databases entry whose type ensemble knows how to inspect
+// (postgres, mysql, dynamodb — reusing the same DSN-building conventions
+// as inspector.NewSQLRunner's seed-SQL path so a database's connection
+// details are computed exactly one way). redis/localstack are provisioned
+// but have no inspector.Driver yet, so they're silently left unregistered
+// — GET /api/databases only ever lists cfg.Databases ∩ registered drivers,
+// so an unregistered database just doesn't show up there rather than
+// erroring.
+//
+// All three constructors connect lazily (database/sql pools and dials on
+// first query; NewDynamoDriver is a plain http.Client wrapper) — this never
+// blocks on or requires a live database, so it's safe to call unconditionally
+// during startup even before the database's container is healthy.
+func buildInspector(cfg *config.Config, logf func(string, ...any)) *inspector.Inspector {
+	insp := inspector.New()
+	for name, db := range cfg.Databases {
+		switch db.Type {
+		case "postgres":
+			drv, err := inspector.NewPostgresDriver(inspector.PostgresDSN(db))
+			if err != nil {
+				logf("ensemble: inspector: %s: %v", name, err)
+				continue
+			}
+			insp.Register(name, drv)
+		case "mysql":
+			drv, err := inspector.NewMySQLDriver(inspector.MySQLDSN(db))
+			if err != nil {
+				logf("ensemble: inspector: %s: %v", name, err)
+				continue
+			}
+			insp.Register(name, drv)
+		case "dynamodb":
+			insp.Register(name, inspector.NewDynamoDriver(fmt.Sprintf("http://127.0.0.1:%d", db.Port)))
+		}
+	}
+	return insp
 }
 
 // apiHostPolicy translates a --api bind address into the browser guard's
