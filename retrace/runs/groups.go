@@ -47,6 +47,15 @@ func AppendGroupRecord(runDir string, r GroupRecord) error {
 
 // ReadGroupRecords tolerates corrupt lines: a half-written marker from a
 // killed test process must not make the whole run unreadable.
+//
+// Fail-open policy, shared with ReadHops (manifest.go) — one rule for
+// every NDJSON reader in this package, not two behaviors: skip and
+// continue past a corrupt record rather than erroring the whole file,
+// and never discard records already parsed on either side of it (see the
+// `return out, s.Err()` below — a real scanner error still surfaces
+// alongside whatever was already collected). Unlike ReadHops this
+// function does not count drops (review finding 12, parked as an
+// acceptable Minor for this task).
 func ReadGroupRecords(runDir string) ([]GroupRecord, error) {
 	f, err := os.Open(filepath.Join(runDir, "groups.jsonl"))
 	if os.IsNotExist(err) {

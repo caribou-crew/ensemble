@@ -1,8 +1,11 @@
 package runs
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -32,7 +35,15 @@ type Manifest struct {
 	// Task 4's run body at manifest time. Task 10 loads it from BOTH
 	// manifests and feeds diff.Options.GroupsA/GroupsB, which is what
 	// gives the wire diff its named sections.
-	Groups []Group `json:"groups,omitempty"`
+	//
+	// Never omitempty, and always defaulted to []Group{} by WriteManifest
+	// when nil: DeriveGroups cannot produce an empty-but-meaningfully-
+	// different result from "no markers were ever placed" (zero records in
+	// means zero groups out, always), so unlike Capture there is nothing to
+	// gain from a third "key absent" state. Matching Checkpoints' shape
+	// gives every sibling "list of things" field on Manifest one encoding
+	// of empty instead of three.
+	Groups []Group `json:"groups"`
 	// Capture is never omitted: "no verdict recorded" and "verdict ok" must
 	// not serialize the same way, or a broken capture reads as a clean one.
 	Capture CaptureTrust `json:"capture"`
@@ -107,8 +118,32 @@ type Gap struct {
 	Seconds int       `json:"seconds"`
 }
 
-func WriteManifest(p Paths, m Manifest) error {
+// WriteManifest stamps and normalizes m before writing manifest.json:
+//
+//   - Schema is always overwritten with the current constant.
+//   - Capture.Status must not be the zero value: an empty trace.Verdict
+//     ranks equal to trace.VerdictOK in Verdict.Worse (verdictRank has no
+//     entry for "", so the map lookup yields 0 — same as VerdictOK), which
+//     would make an unassessed capture gate as clean. A caller that hasn't
+//     run trust assessment yet must pass an explicit verdict (e.g.
+//     trace.VerdictFailed), not a zero CaptureTrust.
+//   - Checkpoints and Groups are defaulted from nil to an empty slice, so
+//     "no items" always serializes as [] and never as null.
+//
+// m is a pointer so the caller's own copy also carries the stamped Schema
+// and defaulted slices after a successful write, not just the file on
+// disk.
+func WriteManifest(p Paths, m *Manifest) error {
 	m.Schema = Schema
+	if m.Capture.Status == "" {
+		return fmt.Errorf("runs: manifest capture status must not be empty — pass an explicit trace.Verdict")
+	}
+	if m.Checkpoints == nil {
+		m.Checkpoints = []Checkpoint{}
+	}
+	if m.Groups == nil {
+		m.Groups = []Group{}
+	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
@@ -116,6 +151,11 @@ func WriteManifest(p Paths, m Manifest) error {
 	return os.WriteFile(p.ManifestPath, append(b, '\n'), 0o644)
 }
 
+// ReadManifest reads and validates a manifest.json. A schema mismatch is
+// rejected rather than silently unmarshalled: encoding/json zeroes fields
+// it doesn't recognize, and a zeroed CaptureTrust would gate as clean (see
+// WriteManifest) — a version check that is written but never read implies
+// a safety that doesn't exist.
 func ReadManifest(path string) (Manifest, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -125,32 +165,47 @@ func ReadManifest(path string) (Manifest, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return Manifest{}, err
 	}
+	if m.Schema != Schema {
+		return Manifest{}, fmt.Errorf("runs: manifest schema %q, want %q", m.Schema, Schema)
+	}
 	return m, nil
 }
 
-// ReadHops loads an NDJSON hop file through core/trace's reader, so retrace
-// never re-implements the schema's parsing. A missing file is (nil, nil):
-// a standalone run legitimately has no hops.jsonl.
-func ReadHops(path string) ([]trace.Hop, error) {
+// ReadHops loads an NDJSON hop file, unmarshalling each line into
+// core/trace's Hop type — retrace never defines a parallel record type for
+// captured traffic (see global-constraints.md: "one hop schema"). A
+// missing file is (nil, 0, nil): a standalone run legitimately has no
+// hops.jsonl.
+//
+// Fail-open policy, shared with ReadGroupRecords (groups.go) — write it
+// once, here, so the next reader sees one rule instead of two behaviors: a
+// corrupt line (a half-written record from a killed test process) is
+// skipped and counted, never discarding hops already parsed on either side
+// of it. A real I/O error reading the file is still surfaced, alongside
+// whatever was already parsed.
+func ReadHops(path string) (hops []trace.Hop, skipped int, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
-	r := trace.NewReader(f)
-	var out []trace.Hop
-	for {
-		h, err := r.Next()
-		if errors.Is(err, trace.ErrEOF) {
-			return out, nil
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for s.Scan() {
+		line := bytes.TrimSpace(s.Bytes())
+		if len(line) == 0 {
+			continue
 		}
-		if err != nil {
-			return nil, err
+		var h trace.Hop
+		if uerr := json.Unmarshal(line, &h); uerr != nil {
+			skipped++
+			continue
 		}
-		out = append(out, h)
+		hops = append(hops, h)
 	}
+	return hops, skipped, s.Err()
 }
