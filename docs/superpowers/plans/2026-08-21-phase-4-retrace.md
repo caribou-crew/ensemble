@@ -3500,7 +3500,7 @@ git commit -m "feat(retrace): wire diff with similarity pairing, field-level rul
   // hop.go
   const DefaultCountTolerance = 0.5
   type ServiceCount struct { Service string; A, B int; Deviates bool }
-  type Route struct { To, Method, Path string }
+  type Route struct { To, Method, Path string; Via []string }
   type RouteFailure struct { Method, Path string; ExpectedStatus int; ActualStatus int; Reason string } // "missing" | "wrong-status"
   type HopDiff struct {
       ServiceCounts         []ServiceCount
@@ -3509,8 +3509,9 @@ git commit -m "feat(retrace): wire diff with similarity pairing, field-level rul
       RequiredRouteFailures []RouteFailure
       HopRequireConfigured  bool
   }
-  type HopOptions struct { Normalize func(string) string; Expected []config.StatusRule; Require []config.RequiredRoute; CountTolerance float64 }
+  type HopOptions struct { Normalize func(string) string; Expected []config.StatusRule; Require []config.RequiredRoute; CountTolerance float64; Collapse bool }
   func DiffHops(a, b []trace.Hop, o HopOptions) HopDiff
+  func CollapsedRoutes(hops []trace.Hop, normalize func(string) string) []Route  // relay-folded, with Via
   func RequiredRouteFailures(hops []trace.Hop, require []config.RequiredRoute) []RouteFailure
 
   // perf.go
@@ -3540,10 +3541,41 @@ func TestAHopWithNoStatusIsNotAFinding(t *testing.T)  // a transport error carri
 Implement: strip `?`/`#` before splitting on `/`; `**` backtracks over any
 span including zero.
 
+**Ruling: this task is where `trace.CollapseRelays` gets its consumer.**
+`GET /api/traces/{id}` has returned a `logical` half since Phase 2, and
+nothing has ever read it — `TopologyView` uses only `r.hops`, and task 3.3's
+review accepted that. So `trace.CollapseRelays` and `trace.LogicalHop` are
+tested, shipped, and unused in the product. **Do not delete them: hop
+diffing is the consumer they were waiting for.** A transparent relay hop
+(an edge gateway that forwards unchanged) is not a downstream call anyone
+made a decision about, so counting it as one means every relay topology
+change reads as "this flow grew an extra API call" — the exact false
+positive that gets a regression signal switched off.
+
+`DiffHops` therefore folds both sides with `trace.CollapseRelays(hops, o.Collapse)`
+(default `true`) before deriving service counts and routes, and each `Route`
+carries the folded relays in `Via` so the report can say *how* the call got
+there. `RequiredRouteFailures` and error signatures run against the **raw**
+hops — a hopRequire assertion names a real route and a 500 is a 500 no
+matter who relayed it. Task 15's `HopDeltaList` renders `Via` as a chain of
+small badges, which is the first time a user sees relay collapse at all.
+
 - [ ] **Step 2: hop.go, test first**
 
 ```go
 func TestAnAddedDownstreamCallIsListedAsANewRoute(t *testing.T)  // the spec's headline scenario
+func TestATransparentRelayHopIsFoldedAndNotCountedAsANewRoute(t *testing.T) {
+	// run A: client -> bff.            run B: client -> edge -> bff, where
+	// edge forwards unchanged. Collapsed, both runs made ONE logical call:
+	// NewRoutes is empty and the folded hop's Via is ["edge"].
+	// With Collapse:false the same input DOES report a new route — that is
+	// what proves the folding is doing the work.
+}
+func TestCollapseIsAppliedToServiceCountsToo(t *testing.T)
+func TestHopRequireAndErrorSignaturesRunAgainstRawHops(t *testing.T) {
+	// a 500 returned BY a relay is still an error signature, and a
+	// hopRequire route satisfied only on the raw leg still passes.
+}
 func TestServiceCountDriftUnderToleranceIsNotFlagged(t *testing.T) // 4 vs 5 calls → not deviating
 func TestServiceCountDriftOverToleranceIsFlagged(t *testing.T)     // 2 vs 8 → deviating
 func TestErrorSignaturesAreDedupedToOnePerRouteAndStatus(t *testing.T)
@@ -4274,6 +4306,288 @@ git commit -m "feat(retrace): review queue and retrace serve REST verbs behind t
 
 ---
 
+### Task 14: `useAsync` — the shared async-load hook both dashboards use
+
+**Files:**
+- Create: `dashboard/design-system/useAsync.ts`, `dashboard/design-system/useAsync.test.ts`
+- Create: `dashboard/design-system/vite.config.ts` (vitest config only — happy-dom env)
+- Modify: `dashboard/design-system/package.json` (add the `./useAsync` export, a `test` script, and dev deps)
+
+**Why this is a task and not a footnote.** Phase 3's whole-phase review swept
+all five shipped views and found the same fetch-on-mount block copied ten
+times. Every Important finding in that review except one was a place where
+one copy had drifted from the other nine — including the phase's **third**
+instance of the same async-race bug class, after two had already been found
+and fixed individually. Task 15 builds a *second* dashboard that would
+otherwise repeat the pattern from scratch. A ~15-line hook makes the whole
+bug class structurally impossible, so it lands before the first view that
+would need it.
+
+**Where it lives.** `@ensemble/design-system`. The package is already the
+shared dependency of every dashboard app, it is already source-exported
+(`main: ./primitives.tsx`, consumed by Vite, not pre-built), and a hook is
+exactly the kind of cross-app convention it exists to hold. It ships as a
+separate entry point (`@ensemble/design-system/useAsync`) rather than from
+`primitives.tsx`, because that file is the visual primitives and importing
+it should not pull React state machinery into a component that only wants a
+`Badge`.
+
+**Interfaces:**
+- Consumes: `react` (peer dependency, already declared).
+- Produces (used by Tasks 15 and 18):
+  ```ts
+  export interface AsyncState<T> {
+    data: T | null;
+    error: Error | null;
+    loading: boolean;
+  }
+  export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]): AsyncState<T>;
+  ```
+  Contract, in words, because every consumer depends on all four clauses:
+  1. On mount and on every `deps` change it calls `fn()` and reports
+     `{data: null, error: null, loading: true}` **synchronously**, before the
+     new promise settles. Stale data from the previous deps is never
+     rendered against the new deps.
+  2. Exactly one resolution wins: the most recent load. Any earlier load
+     that settles later is discarded.
+  3. A rejection produces `{data: null, error, loading: false}`. A non-Error
+     rejection is wrapped in an `Error` so consumers can always read
+     `.message`.
+  4. After unmount, nothing is set.
+
+- [ ] **Step 1: Write the failing test**
+
+`dashboard/design-system/useAsync.test.ts` — React 19 exports `act` from the
+`react` package itself, so this needs no testing-library dependency:
+
+```ts
+import { act } from 'react';
+import { createElement, type ReactNode } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { useAsync, type AsyncState } from './useAsync';
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
+
+/** Renders useAsync and exposes every state it has been through. */
+function renderHook<T>(fn: () => Promise<T>, deps: readonly unknown[]) {
+  const states: AsyncState<T>[] = [];
+  function Probe({ f, d }: { f: () => Promise<T>; d: readonly unknown[] }): ReactNode {
+    states.push(useAsync(f, d));
+    return null;
+  }
+  const render = (f: () => Promise<T>, d: readonly unknown[]) =>
+    act(() => root.render(createElement(Probe, { f, d })));
+  render(fn, deps);
+  return { states, render, last: () => states[states.length - 1] };
+}
+
+/** A promise whose settlement this test controls. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+describe('useAsync', () => {
+  it('reports loading synchronously, then the resolved data', async () => {
+    const d = deferred<string>();
+    const h = renderHook(() => d.promise, ['a']);
+    expect(h.last()).toEqual({ data: null, error: null, loading: true });
+    await act(async () => { d.resolve('hello'); });
+    expect(h.last()).toEqual({ data: 'hello', error: null, loading: false });
+  });
+
+  it('reports a rejection as an Error and never as data', async () => {
+    const d = deferred<string>();
+    const h = renderHook(() => d.promise, ['a']);
+    await act(async () => { d.reject(new Error('boom')); });
+    expect(h.last().data).toBeNull();
+    expect(h.last().error?.message).toBe('boom');
+    expect(h.last().loading).toBe(false);
+  });
+
+  it('wraps a non-Error rejection so consumers can always read .message', async () => {
+    const d = deferred<string>();
+    const h = renderHook(() => d.promise, ['a']);
+    await act(async () => { d.reject('just a string'); });
+    expect(h.last().error).toBeInstanceOf(Error);
+    expect(h.last().error?.message).toBe('just a string');
+  });
+
+  it('clears stale data the instant deps change, before the new load settles', async () => {
+    const first = deferred<string>();
+    const h = renderHook(() => first.promise, ['a']);
+    await act(async () => { first.resolve('page A'); });
+    expect(h.last().data).toBe('page A');
+
+    const second = deferred<string>();
+    h.render(() => second.promise, ['b']);
+    // This is the EntityDetail bug: the previous entity's body rendered
+    // under the new entity's heading until the new fetch landed.
+    expect(h.last()).toEqual({ data: null, error: null, loading: true });
+    await act(async () => { second.resolve('page B'); });
+    expect(h.last().data).toBe('page B');
+  });
+
+  it('discards a slow earlier load that settles after a newer one', async () => {
+    const slow = deferred<string>();
+    const h = renderHook(() => slow.promise, ['a']);
+    const fast = deferred<string>();
+    h.render(() => fast.promise, ['b']);
+
+    await act(async () => { fast.resolve('newest'); });
+    await act(async () => { slow.resolve('stale'); });   // arrives last, must lose
+    expect(h.last().data).toBe('newest');
+  });
+
+  it('sets nothing after unmount', async () => {
+    const d = deferred<string>();
+    const h = renderHook(() => d.promise, ['a']);
+    const before = h.states.length;
+    act(() => root.unmount());
+    await act(async () => { d.resolve('too late'); });
+    expect(h.states.length).toBe(before);
+  });
+});
+```
+
+- [ ] **Step 2: Run it — expect FAIL**
+
+Run: `pnpm --filter @ensemble/design-system test`
+Expected: FAIL — `Cannot find module './useAsync'`.
+
+- [ ] **Step 3: Implement `dashboard/design-system/useAsync.ts`**
+
+```ts
+import { useEffect, useRef, useState } from 'react';
+
+export interface AsyncState<T> {
+  data: T | null;
+  error: Error | null;
+  loading: boolean;
+}
+
+/**
+ * Loads `fn()` on mount and whenever `deps` change, reporting
+ * `{data, error, loading}`.
+ *
+ * This exists because the hand-rolled version of it —
+ * `let cancelled = false; … .then(d => { if (cancelled) return; … })` —
+ * was written ten times across Phase 3's five views and drifted nine ways.
+ * Three separate race bugs came out of that drift.
+ *
+ * Two details are load-bearing:
+ *
+ *   - **The guard is a generation counter, not a boolean.** A boolean is
+ *     scoped to the effect closure that created it, so it can only guard
+ *     that one effect's resolution. The counter lives on the hook, so every
+ *     path that can ever start a load — a deps change, StrictMode's
+ *     deliberate double-invoke in development, and any refetch a future
+ *     caller adds by bumping a dep — is guarded by construction rather than
+ *     by each call site remembering to.
+ *   - **State is cleared synchronously when deps change.** Leaving the
+ *     previous deps' data on screen while the new load is in flight is not
+ *     a cosmetic nicety: it renders one record's body under another
+ *     record's heading, which is exactly the bug the Phase 3 review found
+ *     in EntityDetail.
+ *
+ * `fn` is intentionally NOT in the dependency list: callers pass an inline
+ * arrow, which is a new function identity every render, and depending on it
+ * would re-fetch forever. `deps` is the caller's explicit statement of what
+ * the load actually depends on.
+ */
+export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]): AsyncState<T> {
+  const [state, setState] = useState<AsyncState<T>>({ data: null, error: null, loading: true });
+  const generation = useRef(0);
+
+  useEffect(() => {
+    const mine = ++generation.current;
+    setState({ data: null, error: null, loading: true });
+    fn().then(
+      (data) => {
+        if (generation.current === mine) setState({ data, error: null, loading: false });
+      },
+      (cause: unknown) => {
+        if (generation.current !== mine) return;
+        setState({
+          data: null,
+          error: cause instanceof Error ? cause : new Error(String(cause)),
+          loading: false,
+        });
+      },
+    );
+    // Bumping the generation on cleanup is what makes clause 4 hold: after
+    // unmount (or before the next load starts) no in-flight promise can
+    // still match `mine`.
+    return () => { generation.current++; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deps is the caller's contract; see the doc comment
+  }, deps);
+
+  return state;
+}
+```
+
+- [ ] **Step 4: Wire the package**
+
+`dashboard/design-system/package.json` gains:
+```json
+{
+  "scripts": { "test": "vitest run" },
+  "exports": {
+    ".": "./primitives.tsx",
+    "./tokens.css": "./tokens.css",
+    "./useAsync": "./useAsync.ts"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "happy-dom": "^20.11.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vitest": "^4.1.11"
+  }
+}
+```
+and `vite.config.ts`:
+```ts
+/// <reference types="vitest/config" />
+import { defineConfig } from 'vite';
+
+// The design system ships source, not a build — this config exists only so
+// vitest has a happy-dom environment for the hook test.
+export default defineConfig({ test: { environment: 'happy-dom' } });
+```
+No new third-party surface: `vitest`, `happy-dom`, `react` and `react-dom`
+are already in the lockfile from `ensemble-ui`.
+
+- [ ] **Step 5: Run — expect PASS**
+
+Run: `pnpm install && pnpm --filter @ensemble/design-system test`
+Expected: PASS (6 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+pnpm -r test
+git add dashboard/design-system
+git commit -m "feat(design-system): useAsync — one guarded async-load hook for both dashboards"
+```
+
+---
+
 ### Task 15: `dashboard/retrace-ui` — the keyboard-driven review screen
 
 **Files:**
@@ -4318,6 +4632,12 @@ git commit -m "feat(retrace): review queue and retrace serve REST verbs behind t
     sections: Section[]; hops: HopDiff; unexpectedStatuses: StatusFinding[]; perf: PerfResult;
     conformance: ConformanceFinding[]; capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts; gates: string[] }
   ```
+- Consumes: `useAsync(fn, deps)` from `@ensemble/design-system/useAsync`
+  (Task 14). **Every fetch in this app goes through it** — the queue load,
+  the item load, and the post-mutation refetch (which is a `useAsync` whose
+  deps include a `version` counter the three verbs bump). No view in this
+  task may contain the string `let cancelled`; a grep for it is part of
+  Step 7.
 - Produces: `retrace/serve/ui.Handler() http.Handler` — the embedded SPA,
   identical in shape to `ensemble/server/ui.Handler()` (real files served as
   themselves; `/assets/*` misses 404; everything else falls back to
@@ -4466,6 +4786,8 @@ git restore retrace/serve/ui/dist/index.html               # NEVER commit the bu
 - [ ] **Step 7: Full suites + commit**
 
 ```bash
+# The constraint, enforced rather than remembered:
+! grep -rn "let cancelled" dashboard/retrace-ui/src
 pnpm -r test && go test -race ./core/... ./ensemble/... ./retrace/...
 git add dashboard/retrace-ui retrace/serve/ui .gitignore
 git commit -m "feat(dashboard): retrace review UI — worst-first queue, keyboard item screen, three verbs"
@@ -4688,6 +5010,135 @@ git commit -m "feat(adapters): retrace-js, retrace-playwright and retrace-maestr
 
 ---
 
+### Task 18: Migrate the Phase 3 ensemble-ui views onto `useAsync`
+
+**Recommendation, stated so nobody has to re-decide it: migrate them, here,
+after Task 15 — not "left as-is", and not earlier.**
+
+- *Why migrate at all:* leaving ten hand-rolled copies in `ensemble-ui`
+  while `retrace-ui` uses the hook means the bug class is only half
+  eliminated, and the next reviewer finds the fourth instance in the half
+  that was skipped. Three race bugs have already come out of this pattern.
+- *Why not in Phase 3's closing fix round:* refactoring five shipped views is
+  riskier than four localized fixes, and that round was for landing fixes,
+  not restructuring.
+- *Why after Task 15 and not before:* Task 15 is the hook's first real
+  consumer across a queue view, a detail view, and a post-mutation refetch.
+  If the API is wrong, that is where it shows — and changing a hook with one
+  consumer is cheap while changing it with eleven is not. Migrating first
+  would be committing to an unexercised interface.
+
+**Files:**
+- Modify: `dashboard/ensemble-ui/src/App.tsx`
+- Modify: `dashboard/ensemble-ui/src/views/TopologyView.tsx`
+- Modify: `dashboard/ensemble-ui/src/views/TrafficView.tsx`
+- Modify: `dashboard/ensemble-ui/src/views/InspectorView.tsx`
+- Modify: `dashboard/ensemble-ui/src/views/EntityView.tsx`
+- Modify: `dashboard/ensemble-ui/package.json` if the design-system export
+  needs no change — it does not; `@ensemble/design-system` is already a
+  `workspace:*` dependency, so only the import line changes.
+- Do NOT modify: any `*.test.ts` under `dashboard/ensemble-ui/src/views/`.
+  The existing race regression tests (`TopologyView.poll-race.test.ts`,
+  `TopologyView.trace-race.test.ts`, `EntityView.detail-race.test.ts`,
+  `InspectorView.stale-rows.test.ts`, `EntityView.url-clear.test.ts`,
+  `InspectorView.url-clear.test.ts`, `EntityView.empty-body.test.ts`) are
+  the regression net for this refactor. **If a migration makes one of them
+  fail, the hook or the migration is wrong — never the test.**
+
+**Interfaces:**
+- Consumes: `useAsync(fn: () => Promise<T>, deps: readonly unknown[]): AsyncState<T>`
+  from `@ensemble/design-system/useAsync` (Task 14).
+- Produces: no new exports. This task's deliverable is a deletion.
+
+- [ ] **Step 1: Get the authoritative list, don't trust a count**
+
+Run: `grep -rn "let cancelled" dashboard/ensemble-ui/src --include='*.tsx'`
+Expected today: **ten** sites — `App.tsx` ×1, `TopologyView.tsx` ×2,
+`TrafficView.tsx` ×1, `InspectorView.tsx` ×3, `EntityView.tsx` ×3.
+(`LatencyView.tsx` loads differently and is not in scope.) Write the list
+down; it is this task's checklist and its definition of done.
+
+- [ ] **Step 2: Confirm the net is green before touching anything**
+
+Run: `pnpm --filter ensemble-ui test`
+Expected: PASS. A refactor that starts from an unknown baseline cannot prove
+it preserved anything.
+
+- [ ] **Step 3: Migrate one file, run the suite, commit. Repeat.**
+
+One file per commit, in this order — cheapest first, so the pattern is
+established before the hard one:
+`App.tsx` → `TrafficView.tsx` → `TopologyView.tsx` → `InspectorView.tsx` →
+`EntityView.tsx`.
+
+The mechanical shape of each replacement:
+
+```tsx
+// BEFORE — one of ten near-identical copies
+const [topology, setTopology] = useState<Topology | null>(null);
+const [error, setError] = useState<string | null>(null);
+useEffect(() => {
+  let cancelled = false;
+  api.topology().then(
+    (t) => { if (!cancelled) setTopology(t); },
+    (e) => { if (!cancelled) setError(String(e)); },
+  );
+  return () => { cancelled = true; };
+}, []);
+
+// AFTER
+const { data: topology, error, loading } = useAsync(() => api.topology(), []);
+```
+
+Three things to watch, because they are where a mechanical rewrite goes
+wrong:
+1. **A polling view is not a one-shot load.** `TopologyView`'s 5s status
+   poll keeps its `setInterval`; only the load it triggers moves into
+   `useAsync`, with a `tick` counter in `deps`. Do not turn a poll into a
+   mount-only fetch.
+2. **`error` changes type.** It was `string | null` in most views and is now
+   `Error | null`. Render `error.message`, and update the local prop types —
+   do not stringify the Error back into the old shape just to avoid touching
+   a component signature.
+3. **Some copies swallowed their rejection** (a bare `.then(d => ...)` with
+   no second argument). After migration those views suddenly *have* an
+   error state. Render it; an error that was previously invisible is a bug
+   the migration exposes, not one it introduces. Add a test in the affected
+   view's existing spec file if the exposed path has no coverage.
+
+Per file:
+```bash
+pnpm --filter ensemble-ui test
+git add dashboard/ensemble-ui/src/<file>
+git commit -m "refactor(dashboard): migrate <file> onto useAsync"
+```
+
+- [ ] **Step 4: Verify the pattern is gone**
+
+```bash
+! grep -rn "let cancelled" dashboard/ensemble-ui/src --include='*.tsx'
+pnpm -r test && go test -race ./core/... ./ensemble/... ./retrace/...
+```
+Expected: the grep finds nothing in `.tsx` sources (the `*.test.ts` files may
+still mention it in a comment describing the old bug — that is fine and
+worth keeping as history), and both suites are green.
+
+- [ ] **Step 5: Close the loop in the docs**
+
+Add one line to `docs/phase-3-porting-inventory.md` under its "Rewrite
+decisions" section recording that the hand-rolled fetch effect was replaced
+by `@ensemble/design-system/useAsync` in Phase 4, so a future reader of that
+inventory does not reintroduce the pattern from the old prototype.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/phase-3-porting-inventory.md
+git commit -m "docs: record the useAsync migration in the phase-3 inventory"
+```
+
+---
+
 ## Wrap-up: update the roadmap
 
 - [ ] Tick boxes 4.1–4.7 in
@@ -4699,6 +5150,14 @@ git commit -m "feat(adapters): retrace-js, retrace-playwright and retrace-maestr
 - [ ] Record the `RETRACE_MARKER_URL` handshake extension in the
   `adapters` spec, or raise it with the spec owner if the two-variable list
   is meant to be exhaustive.
+- [ ] Note in the `ensemble-api-dashboard` spec that the `logical` half of
+  `GET /api/traces/{id}` now has a product consumer (Task 9's relay-folded
+  hop diff), so the next reviewer who finds it unused in `ensemble-ui`
+  does not propose deleting `trace.CollapseRelays`.
+- [ ] Tasks 14 and 18 are dashboard infrastructure, not roadmap boxes —
+  they have no `tasks.md` line to tick. Record them in the Phase 4
+  completion note so the `useAsync` decision is traceable to the Phase 3
+  review that motivated it.
 
 ---
 
@@ -4727,10 +5186,26 @@ Run against the four specs with fresh eyes. Findings and their resolutions:
 | adapters · Env-based handshake + loud strict failure | 4, 16 |
 | core-trace-model · Unified hop schema used identically by both | 1, 4, 5 (`wire.jsonl`/`hops.jsonl` ARE `trace.Hop`) |
 | core-trace-model · W3C propagation, baggage join key | reused from shipped `core/proxy` + `core/trace`; asserted end-to-end in 5 |
-| core-trace-model · Relay collapse | already shipped (`core/trace/collapse.go`) |
+| core-trace-model · Relay collapse | already shipped (`core/trace/collapse.go`) — **and given its first product consumer in Task 9** |
 | core-trace-model · Redaction at capture | 4, 5 (every disk write goes through `trace.Redactor`) |
 | core-trace-model · Per-key redaction modes | **Part 2** |
 | core-trace-model · Export formats (HAR/curl/raw) | already shipped (`core/trace/export.go`); the review UI links to ensemble's export endpoints rather than duplicating them |
+
+Two additions came from the Phase 3 whole-phase review rather than from a
+spec, and are tracked here so they are not read as scope creep: **Task 14**
+(`useAsync`, the shared async-load hook, plus a Global Constraint binding
+every new view to it) and **Task 18** (migrating Phase 3's ten hand-rolled
+fetch effects onto it, recommended explicitly rather than left open). Both
+are infrastructure the Phase 3 review identified as "the one piece of shared
+infrastructure this phase should have had and does not"; neither changes
+what Phase 4 delivers.
+
+The same review's second input — the unconsumed `logical` half of
+`GET /api/traces/{id}` — is **decided, not deferred**: Task 9 makes
+relay-folded hops the basis of route and service-count diffing, with a test
+(`TestATransparentRelayHopIsFoldedAndNotCountedAsANewRoute`) that fails if
+the folding is switched off. `trace.CollapseRelays` and `trace.LogicalHop`
+stay, with a consumer.
 
 Two gaps found and fixed inline while reviewing: (a) the a11y requirement
 had no task and was silently missing — it now has an explicit deferral in
@@ -4755,7 +5230,10 @@ question for the spec owner rather than left as a silent choice.
 `config.Config.NormalizePath`, `config.AppendWireRule`, `pixel.Compare`,
 `pixel.ApplyMasks`, `pixel.Rect`, `diff.Options`, `diff.Entry`,
 `diff.Summary`, `diff.ExitCode`, `refs.Resolve`, `refs.Accept`,
-`replay.Bundle.Match`, `serve.Item`, `serve.ScoreOf`, `httpguard.Handler`.
+`replay.Bundle.Match`, `serve.Item`, `serve.ScoreOf`, `httpguard.Handler`,
+`useAsync`/`AsyncState<T>` (Task 14, consumed unchanged by Tasks 15 and 18),
+`HopOptions.Collapse` and `Route.Via` (Task 9, rendered by Task 15's
+`HopDeltaList`).
 Three inconsistencies were found and fixed inline:
 - `config.Rect` vs `pixel.Rect` — the config package's `Rect` is the YAML
   shape; Task 11 and Task 10 both convert explicitly (`AcceptOptions.Masks
@@ -4776,3 +5254,7 @@ Dependency direction after the fix, verified acyclic:
 trace` · `pixel → ∅` · `diff → runs, rules, config, pixel, trace` ·
 `refs → diff, runs, pixel` · `replay → runs, rules, diff, trace` ·
 `serve → diff, refs, runs, config, httpguard` · `cmd/retrace → all`.
+On the TS side: `design-system → react` only, and both
+`ensemble-ui → design-system` and `retrace-ui → design-system` — the hook
+introduces no edge between the two apps, which is why it lives in the
+design system rather than in either one of them.
