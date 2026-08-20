@@ -172,6 +172,24 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// TestUIRootServesHTML proves the embedded dashboard is actually mounted:
+// GET / must reach ui.Handler, not 404 via the mux's default behavior, and
+// it must still be reachable through guard (same-origin request, no
+// Origin header, Host = the httptest server's own loopback address).
+func TestUIRootServesHTML(t *testing.T) {
+	e := newTestEnv(t)
+	resp, body := e.get(t, "/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status = %d, body = %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(string(body), "<html") {
+		t.Fatalf("GET / body doesn't look like HTML: %q", body)
+	}
+}
+
 func TestStatusShape(t *testing.T) {
 	e := newTestEnv(t)
 	resp, body := e.get(t, "/api/status")

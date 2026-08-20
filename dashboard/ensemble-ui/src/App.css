@@ -1,0 +1,112 @@
+/* Global reset + app shell. Everything else (per-view CSS) lands in later
+   tasks as one file per view/component, per the plan's "no 2,800-line
+   global CSS" ruling. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 15.5px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+  background-color: var(--bg-base);
+  background-image: radial-gradient(120% 60% at 50% -10%, rgba(124, 92, 255, 0.06), transparent 60%);
+  background-attachment: fixed;
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hairline-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-hairline-strong);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* App shell */
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+}
+
+.app-header__brand {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent-strong);
+  padding: 0.75rem 0;
+}
+
+.app-header .ds-tabs {
+  flex: 1;
+  border-bottom: none;
+}
+
+.app-main {
+  flex: 1;
+  padding: 1.5rem;
+}
+
+.health-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.health-strip--error {
+  color: var(--status-red);
+}
+
+.view-placeholder {
+  color: var(--text-secondary);
+}
+
+.view-placeholder h2 {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}

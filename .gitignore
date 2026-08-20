@@ -5,3 +5,14 @@ dist/
 .encore/runs/
 coverage/
 bin/
+
+# Dashboard build output is embedded via go:embed (ensemble/server/ui/ui.go).
+# Only the placeholder ensemble/server/ui/dist/index.html is committed — the
+# blanket `dist/` rule above would otherwise swallow it too, so unignore
+# this dist/ specifically and its index.html, then re-ignore the built
+# assets/ subtree. `pnpm -r build` overwrites index.html locally with the
+# real bundle, which must never land in a commit — `git restore
+# ensemble/server/ui/dist/index.html` after building, before committing.
+!ensemble/server/ui/dist/
+!ensemble/server/ui/dist/index.html
+ensemble/server/ui/dist/assets/
