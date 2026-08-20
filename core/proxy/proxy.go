@@ -20,7 +20,7 @@ type Target struct {
 	Upstream string // base URL of the real service, e.g. "http://localhost:8003"
 	// InjectBaggage entries are forced into the trace context of every
 	// request through this listener — how a session's client-edge port
-	// stamps encore-run without the client knowing anything about it.
+	// stamps retrace-run without the client knowing anything about it.
 	InjectBaggage map[string]string
 }
 

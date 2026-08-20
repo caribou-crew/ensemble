@@ -3,14 +3,14 @@
 ## ADDED Requirements
 
 ### Requirement: npm-wrapped binaries
-`@ensemble-dev/encore` and `@ensemble-dev/ensemble` SHALL install prebuilt
+`@caribou-crew/retrace` and `@caribou-crew/ensemble` SHALL install prebuilt
 platform binaries via per-platform optionalDependencies with a bin shim (no
 postinstall downloads), so `npm i -D` + `npx` is the complete setup for node
 projects; adapters SHALL depend on the wrapper.
 
 #### Scenario: Locked registry CI
 - **WHEN** CI installs from a mirrored registry with no external network
-- **THEN** `npx encore replay` works with no additional downloads
+- **THEN** `npx retrace replay` works with no additional downloads
 
 ### Requirement: Native installs
 Releases SHALL also publish GitHub release archives, a Homebrew tap, and a

@@ -28,7 +28,7 @@ The sample SHALL define seed targets `baseline`, `empty`, `bulk`, and
 - **THEN** products, users, and a few orders exist and the clients render them
 
 ### Requirement: Dog-food e2e
-CI SHALL run encore against the sample stack (record → replay → diff) so both
+CI SHALL run retrace against the sample stack (record → replay → diff) so both
 products are exercised end-to-end on every commit.
 
 #### Scenario: CI loop

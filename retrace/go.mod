@@ -1,4 +1,4 @@
-module github.com/caribou-crew/ensemble/encore
+module github.com/caribou-crew/ensemble/retrace
 
 go 1.25
 

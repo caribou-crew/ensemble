@@ -1,9 +1,9 @@
-# encore-diff-review
+# retrace-diff-review
 
 ## ADDED Requirements
 
 ### Requirement: Pixel diff
-Encore SHALL diff screenshots between two runs (pixelmatch algorithm; coarse
+Retrace SHALL diff screenshots between two runs (pixelmatch algorithm; coarse
 and fine thresholds; masks; uniform-border trim) producing per-checkpoint
 verdicts and A/B/overlay/diff images.
 
@@ -12,7 +12,7 @@ verdicts and A/B/overlay/diff images.
 - **THEN** pixel changes inside the mask do not affect the verdict
 
 ### Requirement: Wire diff
-Encore SHALL pair calls between two runs on normalized method+path and diff at
+Retrace SHALL pair calls between two runs on normalized method+path and diff at
 field and header level (changed/only-A/only-B, reorder detection via LIS),
 honoring wireIgnore and wireRules shape matchers
 (uuid/iso8601/http-date/etag/integer/semver/custom/ignore/exact); rule
@@ -23,7 +23,7 @@ violations SHALL exit non-zero.
 - **THEN** differing timestamps in that field produce no diff entry
 
 ### Requirement: Hop diff
-Encore SHALL diff the provider-chain hop sets of two runs, reporting added or
+Retrace SHALL diff the provider-chain hop sets of two runs, reporting added or
 removed downstream calls and hopRequire violations as hard gates.
 
 #### Scenario: Extra downstream call flagged
@@ -36,11 +36,11 @@ CI-gating exit codes, sufficient for an LLM to judge a change without parsing
 human output.
 
 #### Scenario: Agent gate
-- **WHEN** an agent runs `encore diff --json` after a change
+- **WHEN** an agent runs `retrace diff --json` after a change
 - **THEN** it can read verdicts per checkpoint, wire pairs, and hop deltas from one JSON document
 
 ### Requirement: Review queue
-`encore serve` SHALL present a single review queue of flows-with-differences
+`retrace serve` SHALL present a single review queue of flows-with-differences
 (worst first, passing collapsed), each item a keyboard-driven screen offering
 exactly three verbs: accept (re-bless reference), reject (emit repro bundle),
 rule (append a wire-rule from the selected field). The same queue and verbs
@@ -55,7 +55,7 @@ SHALL be exposed over REST.
 - **THEN** the reference updates exactly as if accepted in the UI
 
 ### Requirement: Auxiliary checks retained
-Encore SHALL retain: unexpected ≥400 detection with expectedStatuses,
+Retrace SHALL retain: unexpected ≥400 detection with expectedStatuses,
 OpenAPI conformance checking against a provided spec, perf budgets, and
 a11y-tree diff (flagged experimental until device-verified).
 

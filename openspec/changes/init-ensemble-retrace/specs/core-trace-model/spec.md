@@ -7,15 +7,15 @@ The core module SHALL define a single versioned schema for a network hop
 (trace id, correlation id, parent linkage, service names, method, path,
 status, timings [proxy-in, upstream-first-byte, upstream-done], headers,
 size-capped bodies, redaction markers) used identically by ensemble live
-telemetry and encore recordings.
+telemetry and retrace recordings.
 
 #### Scenario: One schema, two consumers
-- **WHEN** ensemble captures a live hop and encore writes the same hop into a recording
+- **WHEN** ensemble captures a live hop and retrace writes the same hop into a recording
 - **THEN** both serialize to the identical NDJSON record shape and schema version
 
 ### Requirement: W3C trace context propagation
 Proxies SHALL stamp `traceparent` when absent, propagate it when present, and
-carry `correlationId` and `encore-run` as W3C baggage entries.
+carry `correlationId` and `retrace-run` as W3C baggage entries.
 
 #### Scenario: Join key survives the chain
 - **WHEN** a request traverses client → edge → bff → service proxies

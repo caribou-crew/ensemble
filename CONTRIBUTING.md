@@ -11,6 +11,6 @@ Ground rules (from the init design):
 - API-first parity: anything the dashboard or TUI can do must be a REST/SSE
   JSON call first.
 - Redaction happens at capture, never post-hoc.
-- `go test -race ./core/... ./ensemble/... ./encore/...` and `pnpm -r test`
+- `go test -race ./core/... ./ensemble/... ./retrace/...` and `pnpm -r test`
   must be green at every commit (run from repo root; bare `./...` does not
   resolve from the workspace root).

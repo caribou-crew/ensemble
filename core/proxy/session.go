@@ -8,7 +8,7 @@ import (
 )
 
 // Session is one recording run: an ephemeral client-edge listener that
-// stamps every entering request with encore-run baggage, plus the hops
+// stamps every entering request with retrace-run baggage, plus the hops
 // partitioned to it and a capture-trust verdict.
 type Session struct {
 	ID       string
@@ -57,7 +57,7 @@ func (s *Session) degrade(v trace.Verdict, reason string) {
 // detects propagation gaps. One subscription goroutine sees every hop in
 // sequence order:
 //
-//   - a hop carrying encore-run baggage goes to its session (and the
+//   - a hop carrying retrace-run baggage goes to its session (and the
 //     session learns the hop's trace id);
 //   - a hop WITHOUT session baggage whose trace id belongs to a session is
 //     a proven gap — some service forwarded traceparent but dropped
@@ -199,7 +199,7 @@ func (m *SessionManager) route(h trace.Hop) {
 }
 
 // Start registers a session and opens its client-edge listener: an extra
-// intercept port fronting entryUpstream that stamps encore-run baggage on
+// intercept port fronting entryUpstream that stamps retrace-run baggage on
 // everything entering it.
 func (m *SessionManager) Start(id, entryName, entryUpstream string) (*Session, error) {
 	ses := &Session{

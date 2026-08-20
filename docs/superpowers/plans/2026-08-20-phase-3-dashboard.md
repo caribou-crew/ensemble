@@ -24,9 +24,9 @@ rewrite, budget migration friction, not a drop-in bump). Plain CSS with
 custom-property tokens (no component/router/query libraries — deliberate,
 carried from the prototype), @fontsource IBM Plex Sans/Mono. Go: stdlib only.
 
-**Spec:** `openspec/changes/init-ensemble-encore/specs/ensemble-api-dashboard/spec.md`
+**Spec:** `openspec/changes/init-ensemble-retrace/specs/ensemble-api-dashboard/spec.md`
 (+ design.md §4.5, §4.6). Roadmap boxes 3.1–3.4 in
-`openspec/changes/init-ensemble-encore/tasks.md`.
+`openspec/changes/init-ensemble-retrace/tasks.md`.
 
 ## Global Constraints
 
@@ -36,7 +36,7 @@ carried from the prototype), @fontsource IBM Plex Sans/Mono. Go: stdlib only.
 - Go stdlib-first; no new Go deps. TS deps limited to: react, react-dom,
   vite, @vitejs/plugin-react, typescript, vitest, happy-dom,
   @fontsource/ibm-plex-sans, @fontsource/ibm-plex-mono. Justify anything else.
-- `go test -race ./core/... ./ensemble/... ./encore/...` AND `pnpm -r test`
+- `go test -race ./core/... ./ensemble/... ./retrace/...` AND `pnpm -r test`
   green at every commit (repo root; bare `./...` does not resolve there).
   gofmt/go vet clean.
 - TDD: ported algorithm tests land BEFORE the ported implementation

@@ -5,7 +5,7 @@
   "scripts": {
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
-    "test:go": "go test -race ./core/... ./ensemble/... ./encore/..."
+    "test:go": "go test -race ./core/... ./ensemble/... ./retrace/..."
   },
   "packageManager": "pnpm@10.11.0",
   "pnpm": {

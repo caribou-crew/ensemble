@@ -1,4 +1,4 @@
-# Proposal: init-ensemble-encore
+# Proposal: init-ensemble-retrace
 
 ## What
 
@@ -14,7 +14,7 @@ sharing one core:
   third-party/analytics calls). Controlled via CLI, REST API (LLM-first), and
   a web dashboard (topology graph, traffic viewer, latency controls, DB
   inspector, generic entity pages).
-- **encore** — test-automation integration: record a test run's screenshots +
+- **retrace** — test-automation integration: record a test run's screenshots +
   full network hop chain as a recording, replay blessed recordings as strict
   CI mocks (no stack needed in CI), and diff runs (pixel, wire, hop) against
   references, with a keyboard-driven review queue for accepting, rejecting, or
@@ -41,7 +41,7 @@ contract and dog-foods both products in CI.
 ## Capabilities touched (all ADDED — greenfield)
 
 `core-trace-model`, `ensemble-proxy`, `ensemble-orchestrator`,
-`ensemble-api-dashboard`, `encore-capture-replay`, `encore-diff-review`,
+`ensemble-api-dashboard`, `retrace-capture-replay`, `retrace-diff-review`,
 `adapters`, `sample-stack`, `distribution`.
 
 ## Out of scope (explicitly deferred)
@@ -51,6 +51,6 @@ contract and dog-foods both products in CI.
 - Dashboard React plugin tabs loaded from user code (config-declared entity
   pages only).
 - gRPC/WebSocket interception (HTTP/1.1 + JSON first; design leaves room).
-- `encore compare --refs A B` orchestrated two-commit checkout/build/run.
+- `retrace compare --refs A B` orchestrated two-commit checkout/build/run.
 - Windows-native process supervision niceties (binaries build for Windows;
   first-class support is macOS/Linux).

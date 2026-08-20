@@ -4,11 +4,11 @@
 
 **Goal:** Build the `ensemble` product: read `ensemble.yaml`, run/supervise the user's services and databases, front them with the Phase 1 proxy, and expose everything over REST/SSE + a CLI.
 
-**Architecture:** `ensemble/` Go module consuming `core/` (module `github.com/ensemble-dev/ensemble/core`, already implemented and tested). One process: orchestrator supervises children, proxy listeners intercept, HTTP server serves `/api/*`. CLI is a thin REST client.
+**Architecture:** `ensemble/` Go module consuming `core/` (module `github.com/caribou-crew/ensemble/core`, already implemented and tested). One process: orchestrator supervises children, proxy listeners intercept, HTTP server serves `/api/*`. CLI is a thin REST client.
 
 **Tech Stack:** Go 1.25 stdlib-first. Allowed third-party deps (each justified): `gopkg.in/yaml.v3` (config), `github.com/mysql & pgx` drivers and dynamo SDK ONLY in task 2.5 as listed there. NO web framework — `net/http.ServeMux` (Go 1.22+ patterns: `mux.HandleFunc("GET /api/status", ...)`).
 
-**Spec:** `openspec/changes/init-ensemble-encore/design.md` §4 (runtime architecture, config contract), `specs/ensemble-orchestrator/spec.md`, `specs/ensemble-proxy/spec.md`, `specs/ensemble-api-dashboard/spec.md`. The spec is the binding authority.
+**Spec:** `openspec/changes/init-ensemble-retrace/design.md` §4 (runtime architecture, config contract), `specs/ensemble-orchestrator/spec.md`, `specs/ensemble-proxy/spec.md`, `specs/ensemble-api-dashboard/spec.md`. The spec is the binding authority.
 
 ## Global Constraints
 
@@ -16,7 +16,7 @@
 - One hop schema: `core/trace` types only — never redefine hop/trace shapes.
 - API-first parity: every capability is a REST/SSE JSON endpoint first; CLI consumes the API.
 - Redaction at capture (already in core); the server never adds secrets to responses; DB DSNs/creds never appear in `/api/*` output.
-- `go test -race ./core/... ./ensemble/... ./encore/...` green at every commit;
+- `go test -race ./core/... ./ensemble/... ./retrace/...` green at every commit;
   same pattern for `go vet` (bare `./...` cannot work from the workspace root —
   it is not a module directory).
 - Repo root is a Go workspace (`go.work`) — run commands from repo root; the ensemble module lives at `ensemble/`.

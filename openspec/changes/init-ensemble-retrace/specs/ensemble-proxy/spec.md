@@ -48,12 +48,12 @@ that cannot run locally.
 
 ### Requirement: Session partitioning
 Ensemble SHALL register recording sessions, allocate an ephemeral client-edge
-port per session that stamps `encore-run` baggage, partition hops by that
+port per session that stamps `retrace-run` baggage, partition hops by that
 baggage into per-session streams, and route unstamped traffic to the ambient
 stream.
 
 #### Scenario: Two suites in parallel
-- **WHEN** two encore runs execute concurrently against one ensemble
+- **WHEN** two retrace runs execute concurrently against one ensemble
 - **THEN** each recording contains only its own hops and the ambient stream contains neither
 
 #### Scenario: Propagation gap detected

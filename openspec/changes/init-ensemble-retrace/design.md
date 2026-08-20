@@ -1,4 +1,4 @@
-# Design: ensemble + encore
+# Design: ensemble + retrace
 
 Date: 2026-08-19. Status: approved in brainstorming session; this document is
 the written record.
@@ -9,13 +9,16 @@ Monorepo `ensemble` publishes **two products with a shared core**:
 
 - **ensemble** — the local-stack runner/observer (successor to the
   `local-stack` prototype). CLI: `ensemble`.
-- **encore** — record/replay/diff test integration (successor to `flowlens`).
-  CLI: `encore`. Named for "play it again": capture a performance, replay it
-  in CI, compare renditions.
+- **retrace** — record/replay/diff test integration (successor to `flowlens`).
+  CLI: `retrace`. Named for what it does to a test run: walk the same path
+  again — same hops, same screens — and report where it diverged.
 
-Naming continues the music lineage from the author's earlier `mezzo` project.
+`ensemble` keeps the music lineage of the author's earlier `mezzo` project;
+`retrace` is named for the act, not the metaphor, because its job (diff and
+replay) is not a musical one. `encore` was the working name and was dropped:
+encore.dev ships an active `encore` CLI, so the binary would collide.
 "Two products, shared core" was chosen over "one product, two modes" so teams
-can adopt encore in CI without ever running ensemble; and over "two independent
+can adopt retrace in CI without ever running ensemble; and over "two independent
 apps" because a shared trace/recording schema is the whole point.
 
 ## 2. Language decisions
@@ -31,7 +34,7 @@ apps" because a shared trace/recording schema is the whole point.
   pixel math) are irrelevant for a localhost tool; its costs (async ecosystem
   assembly, slower iteration, worse LLM-codegen reliability for async code)
   are real. Go is the better language for this program.
-- encore is a **full Go core**, not a port of the Node prototype. Decided
+- retrace is a **full Go core**, not a port of the Node prototype. Decided
   because: the prototype is a week old and not battle-tested; its review
   UIs/bless flow are being redesigned anyway; CI speed and zero-dependency
   install are top priorities. The prototype's test *fixtures and scenarios*
@@ -53,12 +56,12 @@ ensemble/
 │   ├── orchestrator/          #   process+container lifecycle, health, deps
 │   ├── server/                #   REST + SSE + serves dashboard
 │   └── inspector/             #   DB inspector: postgres, mysql, dynamodb
-├── encore/                    # product 2
-│   ├── cmd/encore/
+├── retrace/                   # product 2
+│   ├── cmd/retrace/
 │   └── (capture, replay, diff engines, refs, review server)
 ├── dashboard/                 # React/TS: one design system, two apps
 │   ├── ensemble-ui/
-│   └── encore-ui/
+│   └── retrace-ui/
 ├── adapters/                  # npm: playwright/, maestro/, js/
 ├── sample/                    # the demo stack (see §8)
 └── docs/
@@ -82,7 +85,7 @@ entry (join key preserved from the prototype). Per hop it records: timings
 (proxy-in, upstream-first-byte, upstream-done), status, headers, bodies
 (size-capped; redaction rules applied at capture time). Hops stream over SSE
 to dashboard/CLI and append to an on-disk NDJSON ring — the **same format
-encore recordings use**. Relay-collapse (folding transparent edge hops) lives
+retrace recordings use**. Relay-collapse (folding transparent edge hops) lives
 in `core/trace`, ported from the prototype's tested web code.
 
 ### 4.3 Config contract: `ensemble.yaml`
@@ -161,9 +164,9 @@ carried over from the prototype's `lcs.mjs --json` design).
 
 ## 5. Session isolation (concurrent suites / interactive use)
 
-- Every `encore run` mints a `runId` and registers a session
+- Every `retrace run` mints a `runId` and registers a session
   (`POST /api/sessions`). Each run gets its own ephemeral client-edge proxy
-  port; all traffic entering it is stamped `baggage: encore-run=<runId>`.
+  port; all traffic entering it is stamped `baggage: retrace-run=<runId>`.
 - Downstream proxies propagate traceparent+baggage, so hops are partitioned by
   runId into per-run recordings. Parallel suites don't collide; run dirs are
   per-runId so files don't either.
@@ -175,17 +178,17 @@ carried over from the prototype's `lcs.mjs --json` design).
   verdict `degraded: propagation gap at <service>` — actionable, names the
   service to fix. Timing/connection inference is explicitly deferred.
 
-## 6. encore architecture
+## 6. retrace architecture
 
 ### 6.1 Capture
 
-`encore run --flow checkout -- <your test command>` shells out to the user's
+`retrace run --flow checkout -- <your test command>` shells out to the user's
 existing runner (contract is the directory, not the tool — preserved from the
 prototype). With ensemble live: full multi-hop chain recorded. Standalone:
-encore's own proxy records the client edge. Same artifact either way:
+retrace's own proxy records the client edge. Same artifact either way:
 
 ```
-.encore/runs/<app>/<flow>/<runId>/
+.retrace/runs/<app>/<flow>/<runId>/
   manifest.json      # schema version, git sha, device geometry, capture-trust
   shots/<checkpoint>.png
   wire.jsonl         # client-edge requests
@@ -193,7 +196,7 @@ encore's own proxy records the client edge. Same artifact either way:
   groups.jsonl       # flow-part markers from adapters
 ```
 
-References are compact committed bundles under `.encore-ref/`.
+References are compact committed bundles under `.retrace-ref/`.
 
 ### 6.1.1 Redaction modes and recording encryption
 
@@ -216,13 +219,13 @@ All modes apply at capture; plaintext never hits disk for encrypt/destroy.
   still pairs. Default for auth-bearing headers
   (authorization/cookie/set-cookie/dpop) — replay never needs them.
 - `recordings: encrypt-all` option: encrypt entire wire/hop bodies (opaque
-  without encore's UI/CLI + key). Not the default — field-level keeps
+  without retrace's UI/CLI + key). Not the default — field-level keeps
   recordings human-diffable in PRs.
 
-Key model: **team key via env/keyfile** (`ENCORE_RECORDING_KEY` or
-gitignored `.encore/recording.key`), shared through the team's normal
+Key model: **team key via env/keyfile** (`RETRACE_RECORDING_KEY` or
+gitignored `.retrace/recording.key`), shared through the team's normal
 secrets channel; trivial in CI. Envelope encryption underneath — each
-recording gets a random data key wrapped by the team key — so `encore
+recording gets a random data key wrapped by the team key — so `retrace
 rekey` rotates cheaply and a public-key recipients model (age/SOPS style)
 can be added later without re-recording.
 
@@ -233,11 +236,11 @@ only — nothing retroactively unredacts a destroyed value.
 
 ### 6.2 Replay (CI)
 
-`encore replay --ref <flow>` serves the blessed recording as mocks from the
+`retrace replay --ref <flow>` serves the blessed recording as mocks from the
 single static binary — no stack in CI. Strict by default: unmatched requests
 fail the run (the "client deviated" flag). Wire-rules matchers
 (uuid/iso8601/http-date/etag/integer/semver/custom/ignore/exact) decide match
-equivalence. `encore revalidate` re-runs old recordings against a live stack
+equivalence. `retrace revalidate` re-runs old recordings against a live stack
 to catch server-side drift.
 
 ### 6.3 Diff
@@ -255,7 +258,7 @@ to catch server-side drift.
 
 ### 6.4 Review queue (redesign — replaces bless flow + board)
 
-One concept: a PR-style review queue. `encore serve` opens a queue of
+One concept: a PR-style review queue. `retrace serve` opens a queue of
 flows-with-differences, worst first; passing flows collapsed. Each item is one
 keyboard-driven screen (shots A/B/overlay slider, wire+hop diff beneath) with
 three verbs:
@@ -273,8 +276,8 @@ hop diffs vs reference or earlier commit → accepts or investigates.
 
 ## 7. Adapters (npm, in-test-process only)
 
-`@ensemble-dev/encore-playwright` (fixture: checkpoints, groups),
-`@ensemble-dev/encore-maestro` (HTTP markers), `@ensemble-dev/encore-js`
+`@caribou-crew/retrace-playwright` (fixture: checkpoints, groups),
+`@caribou-crew/retrace-maestro` (HTTP markers), `@caribou-crew/retrace-js`
 (grouping/marker API). Thin: they only mark flow parts and capture
 screenshots; all heavy lifting is the binary.
 
@@ -301,7 +304,7 @@ stubs     payment-gw, analytics, kms (ensemble stub engine)
   propagation contract, ~5 lines each), has `/healthz`, real CRUD.
 - `ensemble seed` named targets: baseline, empty, bulk, outage.
 - Java service behind `profiles: [full]` so first run needs no JDK.
-- The sample is the e2e bed: encore records/replays/diffs against it in CI —
+- The sample is the e2e bed: retrace records/replays/diffs against it in CI —
   the products dog-food each other every commit.
 
 ## 9. Testing strategy
@@ -314,12 +317,12 @@ stubs     payment-gw, analytics, kms (ensemble stub engine)
 
 ## 10. Distribution & release
 
-- **npm-first for node shops**: `npm i -D @ensemble-dev/encore` installs a JS
+- **npm-first for node shops**: `npm i -D @caribou-crew/retrace` installs a JS
   wrapper with per-platform `optionalDependencies`
-  (`@ensemble-dev/encore-darwin-arm64`, …) each containing the prebuilt
+  (`@caribou-crew/retrace-darwin-arm64`, …) each containing the prebuilt
   binary; `bin` shim execs it. No postinstall downloads (locked-registry
   safe). Same pattern as esbuild/turbo/biome. Adapters depend on the wrapper.
-  `@ensemble-dev/ensemble` likewise.
+  `@caribou-crew/ensemble` likewise.
 - Also GoReleaser → GitHub releases + Homebrew tap + curl script, for
   machine-level installs. darwin/linux/windows, arm64+x64.
 - One version number per release across binaries and npm packages.
@@ -327,6 +330,6 @@ stubs     payment-gw, analytics, kms (ensemble stub engine)
 ## 11. Workflow
 
 openspec is the source of truth for specs; future work goes through openspec
-change proposals. This change (`init-ensemble-encore`) carries the initial
+change proposals. This change (`init-ensemble-retrace`) carries the initial
 capability specs; `tasks.md` will sequence implementation:
-core schema + proxy → ensemble runner → dashboard → encore → sample stack.
+core schema + proxy → ensemble runner → dashboard → retrace → sample stack.
