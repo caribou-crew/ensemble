@@ -52,6 +52,51 @@ func TestValidateDuplicateProxyPort(t *testing.T) {
 	}
 }
 
+// TestValidateDuplicateServicePort guards final-review finding I11:
+// validation only checked intercept-port (Service.Proxy/Stub.Port)
+// collisions, so two services declaring the same real Service.Port
+// validated clean — then the health gate (which polls the real port) would
+// see the FIRST service's listener and report the second healthy too,
+// while wireProxy silently misroutes its intercept port. Two services with
+// the same real port must fail validation, naming both.
+func TestValidateDuplicateServicePort(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"svc-a": {Run: "node a.js", Port: 8080, Proxy: 7001},
+			"svc-b": {Run: "node b.js", Port: 8080, Proxy: 7002},
+		},
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "svc-a") || !strings.Contains(err.Error(), "svc-b") {
+		t.Errorf("error does not list both names: %v", err)
+	}
+}
+
+// TestValidateServicePortCollidesWithDatabasePort pins the other half of
+// I11: Service.Port and Database.Port share one real address space
+// (127.0.0.1) and must be checked against each other, not just within
+// their own kind.
+func TestValidateServicePortCollidesWithDatabasePort(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"svc-a": {Run: "node a.js", Port: 5432, Proxy: 7001},
+		},
+		Databases: map[string]Database{
+			"pg": {Image: "postgres:16", Port: 5432},
+		},
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "svc-a") || !strings.Contains(err.Error(), "pg") {
+		t.Errorf("error does not list both names: %v", err)
+	}
+}
+
 func TestValidateDependsOnUnknownReference(t *testing.T) {
 	c := &Config{Services: map[string]Service{
 		"bff": {Run: "node dist/main.js", Port: 8003, DependsOn: []string{"ghost"}},

@@ -21,6 +21,19 @@ var validDatabaseTypes = map[string]bool{
 func (c *Config) Validate() error {
 	var errs []error
 
+	// usedPorts tracks every port ensemble or a supervised process binds on
+	// 127.0.0.1 — Service.Port (the real process), Service.Proxy (the
+	// intercept listener), Database.Port, and Stub.Port (a stub IS its own
+	// real backend, so its bind port lives in the same space as a
+	// service's) — one shared address space, so any two of these
+	// colliding is a defect regardless of which kind either one is. Without
+	// this, e.g. two services declaring the same real Port validated
+	// clean, and the health gate (which polls the real port) then saw
+	// whichever service's process happened to be listening and reported
+	// BOTH healthy, while wireProxy silently misrouted one service's
+	// intercept port at the other's process.
+	usedPorts := make(map[int][]string)
+
 	for name, db := range c.Databases {
 		if db.Type == "" {
 			db.Type = inferDatabaseType(db.Image)
@@ -28,10 +41,11 @@ func (c *Config) Validate() error {
 		if !validDatabaseTypes[db.Type] {
 			errs = append(errs, fmt.Errorf("database %q: invalid type %q (image %q)", name, db.Type, db.Image))
 		}
+		if db.Port != 0 {
+			usedPorts[db.Port] = append(usedPorts[db.Port], "database "+name)
+		}
 		c.Databases[name] = db
 	}
-
-	proxyPorts := make(map[int][]string)
 
 	for name, svc := range c.Services {
 		if svc.Run == "" && svc.Docker == nil {
@@ -40,8 +54,11 @@ func (c *Config) Validate() error {
 		if svc.Run != "" && svc.Port == 0 {
 			errs = append(errs, fmt.Errorf("service %q: run is set but port is 0", name))
 		}
+		if svc.Port != 0 {
+			usedPorts[svc.Port] = append(usedPorts[svc.Port], "service "+name)
+		}
 		if svc.Proxy != 0 {
-			proxyPorts[svc.Proxy] = append(proxyPorts[svc.Proxy], "service "+name)
+			usedPorts[svc.Proxy] = append(usedPorts[svc.Proxy], "service "+name)
 		}
 		for _, dep := range svc.DependsOn {
 			if !c.hasServiceOrDatabase(dep) {
@@ -52,7 +69,7 @@ func (c *Config) Validate() error {
 
 	for name, stub := range c.Stubs {
 		if stub.Port != 0 {
-			proxyPorts[stub.Port] = append(proxyPorts[stub.Port], "stub "+name)
+			usedPorts[stub.Port] = append(usedPorts[stub.Port], "stub "+name)
 		}
 		for i, route := range stub.Routes {
 			if route.Match.Path == "" {
@@ -61,9 +78,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	for port, names := range proxyPorts {
+	for port, names := range usedPorts {
 		if len(names) > 1 {
-			errs = append(errs, fmt.Errorf("duplicate proxy port %d: %s", port, strings.Join(names, ", ")))
+			errs = append(errs, fmt.Errorf("duplicate port %d: %s", port, strings.Join(names, ", ")))
 		}
 	}
 
