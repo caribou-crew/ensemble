@@ -414,6 +414,85 @@ func TestTrafficStreamSSEReadsTwoEventsThenDisconnects(t *testing.T) {
 	}
 }
 
+// TestTrafficSinceLimitPagesOldestFirstWithoutGaps guards final-review
+// finding I9: with `since` set, GET /api/traffic?since=&limit= used to
+// keep the newest `limit` of the filtered set (`out[len(out)-limit:]`),
+// which breaks cursor paging — a client polling since=<lastSeq>&limit=100
+// against a burst of 500 got hops 401-500, advanced its cursor to 500, and
+// silently lost hops 1-400 forever. With `since` set the endpoint must
+// return the OLDEST `limit` hops after since instead, so paging through
+// with an advancing cursor covers the whole burst with no gaps or dupes.
+func TestTrafficSinceLimitPagesOldestFirstWithoutGaps(t *testing.T) {
+	e := newTestEnv(t)
+
+	const total = 250
+	const pageLimit = 37
+	for i := 0; i < total; i++ {
+		e.rec.Record(trace.Hop{To: "x"})
+	}
+
+	var all []trace.Hop
+	since := uint64(0)
+	for pages := 0; ; pages++ {
+		if pages > total { // guard against an infinite loop if paging never progresses
+			t.Fatalf("paging did not terminate: collected %d of %d so far", len(all), total)
+		}
+		_, body := e.get(t, fmt.Sprintf("/api/traffic?since=%d&limit=%d", since, pageLimit))
+		var got struct {
+			Hops []trace.Hop `json:"hops"`
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(got.Hops) == 0 {
+			break
+		}
+		if len(got.Hops) > pageLimit {
+			t.Fatalf("page returned %d hops, want <= limit %d", len(got.Hops), pageLimit)
+		}
+		all = append(all, got.Hops...)
+		since = got.Hops[len(got.Hops)-1].Seq
+	}
+
+	if len(all) != total {
+		t.Fatalf("paged %d hops total, want %d (gaps or dupes in cursor paging)", len(all), total)
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].Seq != all[i-1].Seq+1 {
+			t.Fatalf("gap between page results at index %d: seq %d -> %d", i, all[i-1].Seq, all[i].Seq)
+		}
+	}
+}
+
+// TestTrafficLimitWithoutSinceReturnsNewest pins the other half of I9's
+// contract: with no `since`, `limit` alone still means "the most recent N"
+// (a simple tail view), which is the right behavior for a client that
+// isn't paging.
+func TestTrafficLimitWithoutSinceReturnsNewest(t *testing.T) {
+	e := newTestEnv(t)
+
+	const total = 20
+	const limit = 5
+	var last trace.Hop
+	for i := 0; i < total; i++ {
+		last = e.rec.Record(trace.Hop{To: "x"})
+	}
+
+	_, body := e.get(t, fmt.Sprintf("/api/traffic?limit=%d", limit))
+	var got struct {
+		Hops []trace.Hop `json:"hops"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Hops) != limit {
+		t.Fatalf("got %d hops, want %d", len(got.Hops), limit)
+	}
+	if newest := got.Hops[len(got.Hops)-1]; newest.Seq != last.Seq {
+		t.Fatalf("last hop.Seq = %d, want the most recent (%d)", newest.Seq, last.Seq)
+	}
+}
+
 func TestSessionsStartEndRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
 
