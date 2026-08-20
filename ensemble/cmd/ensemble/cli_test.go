@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -335,6 +336,88 @@ services:
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("service process matching %q still alive after runUp returned — orch.Down was not called on bind failure", marker)
+}
+
+// TestStubBodyFileResolvesAgainstConfigDirNotCWD guards final-review
+// finding I10: stub.Respond.BodyFile was passed through to core/stub
+// verbatim and read with os.ReadFile, i.e. relative to the ensemble
+// process's CWD — while SeedSQL.File (orchestrator/seed.go) correctly
+// resolves against Config.Dir. `ensemble up -c ../stack/ensemble.yaml`
+// with a relative body_file broke at request time even though the config
+// loaded and the service started fine. This test puts the config in a
+// subdirectory, points body_file at a fixture relative to THAT directory,
+// then runs with the process CWD set somewhere else entirely — the stub
+// must still find the file.
+func TestStubBodyFileResolvesAgainstConfigDirNotCWD(t *testing.T) {
+	root := t.TempDir()
+	cfgDir := filepath.Join(root, "stack")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir cfgDir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfgDir, "fixtures"), 0o755); err != nil {
+		t.Fatalf("mkdir fixtures: %v", err)
+	}
+	fixture := filepath.Join(cfgDir, "fixtures", "payment.json")
+	const want = `{"fromFile":true}`
+	if err := os.WriteFile(fixture, []byte(want), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	stubPort := freePort(t)
+	apiPort := freePort(t)
+	cfgPath := filepath.Join(cfgDir, "ensemble.yaml")
+	yaml := fmt.Sprintf(`
+stubs:
+  aws-kms:
+    port: %d
+    routes:
+      - match: {method: GET, path: /f}
+        respond: {status: 200, body_file: fixtures/payment.json}
+`, stubPort)
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Run with the process CWD somewhere else entirely — a body_file bug
+	// resolving against CWD instead of Config.Dir must NOT accidentally
+	// pass just because the test happens to run from the repo root.
+	elsewhere := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(elsewhere); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(origWD) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	opts := upOptions{ConfigPath: cfgPath, Addr: fmt.Sprintf("127.0.0.1:%d", apiPort)}
+	result := make(chan error, 1)
+	go func() { result <- runUp(ctx, opts, stdout, stderr) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-result:
+		case <-time.After(5 * time.Second):
+			t.Error("runUp did not return during cleanup")
+		}
+	})
+	waitHealthy(t, "http://127.0.0.1:"+strconv.Itoa(apiPort))
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/f", stubPort))
+	if err != nil {
+		t.Fatalf("GET stub: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("stub returned %d: %s (body_file not resolved against Config.Dir)", resp.StatusCode, body)
+	}
+	if string(body) != want {
+		t.Fatalf("stub body = %q, want %q", body, want)
+	}
 }
 
 // TestCLI_StatusJSON drives the actual `run()` entrypoint (subcommand
