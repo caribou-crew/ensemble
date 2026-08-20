@@ -16,7 +16,7 @@ var version = "dev"
 const usage = `retrace — record / replay / diff / review flows
 
 Usage:
-  retrace run --flow NAME [--app NAME] [--ensemble URL] [--upstream URL] [--json] [--no-config] -- <test command>
+  retrace run --flow NAME [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--json] [--no-config] -- <test command>
   retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
@@ -33,6 +33,7 @@ Env:
   RETRACE_PROXY_URL   set by ` + "`retrace run`" + `; point the app under test at it
   RETRACE_MARKER_URL  set by ` + "`retrace run`" + `; HTTP-only runners post markers here
   RETRACE_STRICT      1 = adapters fail loudly when the handshake env is absent
+  ENSEMBLE_API        default for --ensemble (http://127.0.0.1:4700)
 `
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

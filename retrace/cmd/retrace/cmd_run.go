@@ -19,6 +19,22 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
+// ensembleHealthTimeout bounds the attach probe. It is short on purpose:
+// the common case for a missing control plane is a refused connection
+// (instant), and the point of the probe is to decide a mode, not to wait
+// for a slow one.
+const ensembleHealthTimeout = 3 * time.Second
+
+// envOr reads key, falling back to def when it is unset OR empty. An empty
+// environment variable is "not configured", not "configure the URL to the
+// empty string" — the latter would produce requests to a bare path.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 // splitDoubleDash cuts args at the first bare "--": everything before it is
 // flags, everything after is the test command. The separator itself belongs
 // to neither. A missing "--" means no test command was given.
@@ -31,15 +47,9 @@ func splitDoubleDash(args []string) (flagArgs, testCmd []string) {
 	return args, nil
 }
 
-// cmdRun records one flow: it stands a recording proxy in front of the
-// client edge, hands the test command an environment pointing at it, and
-// writes a run directory.
-//
-// --ensemble and --no-ensemble are deliberately NOT declared here. They
-// belong to the attach decision, and every line that could read them is
-// Task 5's code; a flag result assigned to a local and never read is a
-// compile error in Go, so declaring them early would break this task's own
-// build gate. Task 5 adds both flags and their readers in one edit.
+// cmdRun records one flow: it points the test command at a recording edge
+// — retrace's own proxy standalone, ensemble's session edge when attached —
+// and writes a run directory.
 func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -49,6 +59,11 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		upstream = fs.String("upstream", "", "standalone: base URL clients would call")
 		asJSON   = fs.Bool("json", false, "emit the manifest as JSON on stdout")
 		noConfig = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
+		// Declared here rather than in Task 4 because every line that reads
+		// them is below: a flag result bound to a local and never read is
+		// `declared and not used`, a compile error.
+		ensembleURL = fs.String("ensemble", envOr("ENSEMBLE_API", "http://127.0.0.1:4700"), "ensemble control-plane URL")
+		noEnsemble  = fs.Bool("no-ensemble", false, "force standalone capture even if ensemble is up")
 	)
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -104,18 +119,53 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		up = cfg.Upstream
 	}
 
-	// This task records the client edge only, so Mode is always standalone
-	// and there is no attach decision to make yet.
-	sess, err := capture.StartStandalone(capture.Options{
+	opts := capture.Options{
 		Cwd:      cwd,
 		App:      appName,
 		Flow:     *flow,
 		Upstream: up,
 		Redact:   cfg.Redact,
 		Now:      time.Now,
-	})
-	if err != nil {
-		return fail(stderr, "run: %v", err)
+	}
+
+	// Attach when ensemble answers AND the config names an entry service.
+	// Anything else falls back to standalone with an explicit stderr note —
+	// silently recording less than the user asked for is how a "the app
+	// made no calls" report gets believed.
+	//
+	// sess stays nil until an attach actually succeeds, and Mode comes from
+	// whichever constructor ran. A local `mode` variable set optimistically
+	// beside the StartAttached call would record `ensemble` on a run whose
+	// attach failed — a manifest claiming a full-chain recording that was
+	// never made, which is exactly the "unreachable and fine compare equal"
+	// trap the zero-value constraint is about.
+	var sess *capture.Session
+	if !*noEnsemble && cfg.Entry != "" {
+		c := NewClient(*ensembleURL)
+		hctx, cancel := context.WithTimeout(context.Background(), ensembleHealthTimeout)
+		healthErr := c.Health(hctx)
+		cancel()
+		switch {
+		case healthErr != nil:
+			fmt.Fprintf(stderr, "retrace: ensemble at %s is not answering (%v) — recording the client edge only\n", *ensembleURL, healthErr)
+		default:
+			attached, attachErr := capture.StartAttached(opts, c, cfg.Entry)
+			if attachErr != nil {
+				// Health passed but the session did not start (404 unknown
+				// entry, 409 active id, 400 no proxy port). A live control
+				// plane is not proof of an attached capture.
+				fmt.Fprintf(stderr, "retrace: ensemble at %s refused the session (%v) — recording the client edge only\n", *ensembleURL, attachErr)
+			} else {
+				sess = attached
+			}
+		}
+	}
+	if sess == nil {
+		standalone, serr := capture.StartStandalone(opts)
+		if serr != nil {
+			return fail(stderr, "run: %v", serr)
+		}
+		sess = standalone
 	}
 	// Idempotent: runFlow closes the session as soon as the test command
 	// exits, before reading anything back off disk.
@@ -203,8 +253,19 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		}
 	}
 
-	// Close BEFORE reading anything off disk: it flushes wire.jsonl (and,
-	// in attached mode, drains and writes hops.jsonl — see Task 5).
+	// Drain BEFORE Close, and Close before reading anything off disk.
+	//
+	// The order is the whole point of the attached path: hops are recorded
+	// at completion and ensemble drops a hop whose session has already
+	// ended, so every downstream call still in flight when the test command
+	// exited is lost unless we wait for the count to settle first. Drain is
+	// a no-op standalone. A drain error is a note, never a lost recording —
+	// whatever did arrive is still written by Close.
+	if err := s.Drain(context.Background()); err != nil {
+		fmt.Fprintf(o.Stderr, "retrace: draining ensemble hops failed (%v) — the recording may be truncated\n", err)
+	}
+	// Close flushes wire.jsonl and, in attached mode, writes hops.jsonl and
+	// wire.jsonl and then ends the ensemble session.
 	if err := s.Close(); err != nil {
 		return runs.Manifest{}, err
 	}
