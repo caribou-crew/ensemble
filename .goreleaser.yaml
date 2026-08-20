@@ -1,0 +1,84 @@
+# goreleaser configuration (v2 schema)
+#
+# Builds and packages the two ensemble binaries (ensemble, encore) for tagged
+# releases. Triggered by .github/workflows/release.yml on `v*` tag pushes.
+#
+# Release publishing is intentionally draft-only right now (see `release:`
+# below) — nothing goes out automatically until this is reviewed.
+#
+# Homebrew tap + npm package publishing are intentionally ABSENT from this
+# config for now. They depend on decisions not yet made (npm scope, registry
+# ownership, tap repo location) that are blocked on the project's GitHub repo
+# existing and being synced. Add `brews:` and an npm-publish step (see the
+# `npm-publish` job stub in .github/workflows/release.yml) once those land.
+
+version: 2
+
+project_name: ensemble
+
+builds:
+  - id: ensemble
+    dir: ensemble
+    main: ./cmd/ensemble
+    binary: ensemble
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+  - id: encore
+    dir: encore
+    main: ./cmd/encore
+    binary: encore
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: ensemble
+    ids: [ensemble]
+    name_template: >-
+      ensemble_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+  - id: encore
+    ids: [encore]
+    name_template: >-
+      encore_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+
+release:
+  draft: true
