@@ -1,0 +1,206 @@
+package proxy
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ensemble-dev/ensemble/core/trace"
+)
+
+// Target is one intercepted service: a listen address fronting an upstream.
+type Target struct {
+	Name     string // logical service name, becomes Hop.To
+	Listen   string // e.g. "127.0.0.1:7003"; ":0" picks an ephemeral port
+	Upstream string // base URL of the real service, e.g. "http://localhost:8003"
+}
+
+// captureLimit caps how much request/response body is *captured* (never how
+// much is forwarded).
+const captureLimit = 256 * 1024
+
+// Proxy runs any number of intercept listeners inside one process. Each
+// listener is a goroutine and a socket — per-service cost is kilobytes.
+type Proxy struct {
+	rec       *Recorder
+	transport *http.Transport
+
+	mu      sync.Mutex
+	servers []*http.Server
+}
+
+func New(rec *Recorder) *Proxy {
+	return &Proxy{
+		rec: rec,
+		transport: &http.Transport{
+			MaxIdleConnsPerHost: 32,
+			IdleConnTimeout:     90 * time.Second,
+			// Local dev: no proxies, no TLS between local services.
+		},
+	}
+}
+
+// Serve opens the target's listener and starts intercepting immediately.
+// It returns the bound address (useful with ":0").
+func (p *Proxy) Serve(t Target) (string, error) {
+	ln, err := net.Listen("tcp", t.Listen)
+	if err != nil {
+		return "", fmt.Errorf("proxy %s: %w", t.Name, err)
+	}
+	srv := &http.Server{Handler: p.handler(t)}
+	p.mu.Lock()
+	p.servers = append(p.servers, srv)
+	p.mu.Unlock()
+	go srv.Serve(ln)
+	return ln.Addr().String(), nil
+}
+
+// Close shuts every listener down.
+func (p *Proxy) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, srv := range p.servers {
+		srv.Close()
+	}
+	p.servers = nil
+}
+
+// cappedBuffer captures up to limit bytes and counts the rest as truncated.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (c *cappedBuffer) Write(b []byte) (int, error) {
+	room := c.limit - c.buf.Len()
+	if room > 0 {
+		if len(b) <= room {
+			c.buf.Write(b)
+		} else {
+			c.buf.Write(b[:room])
+			c.truncated = true
+		}
+	} else if len(b) > 0 {
+		c.truncated = true
+	}
+	return len(b), nil
+}
+
+// hopByHopHeaders must not be forwarded (RFC 9110 §7.6.1).
+var hopByHopHeaders = []string{
+	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+	"Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+	for _, k := range hopByHopHeaders {
+		dst.Del(k)
+	}
+}
+
+func flatHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vs := range h {
+		out[strings.ToLower(k)] = strings.Join(vs, ", ")
+	}
+	return out
+}
+
+func (p *Proxy) handler(t Target) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Trace context: parse (or mint), then advance one span for this hop.
+		ctx := trace.ParseCtx(r.Header.Get("traceparent"), r.Header.Get("baggage"))
+		incomingSpan := ""
+		if r.Header.Get("traceparent") != "" {
+			incomingSpan = ctx.SpanID
+		}
+		hopCtx := ctx.Child()
+		hopCtx.EnsureCorrelationID()
+		// Downstream calls made by this service will carry hopCtx's span as
+		// parent — claim it so the next hop can name this service as caller.
+		p.rec.ClaimSpan(hopCtx.SpanID, t.Name)
+
+		hop := trace.Hop{
+			TraceID:       hopCtx.TraceID,
+			SpanID:        hopCtx.SpanID,
+			ParentSpanID:  hopCtx.ParentSpanID,
+			CorrelationID: hopCtx.CorrelationID(),
+			Session:       hopCtx.Session(),
+			From:          p.rec.SpanOwner(incomingSpan),
+			To:            t.Name,
+			Method:        r.Method,
+			Path:          r.URL.RequestURI(),
+			T:             trace.Timings{Start: start},
+		}
+
+		// Capture the request body without buffering the full stream.
+		reqCap := &cappedBuffer{limit: captureLimit}
+		var reqBody io.Reader = http.NoBody
+		if r.Body != nil {
+			reqBody = io.TeeReader(r.Body, reqCap)
+		}
+
+		upReq, err := http.NewRequestWithContext(r.Context(), r.Method, t.Upstream+r.URL.RequestURI(), reqBody)
+		if err != nil {
+			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
+			hop.T.DoneMs = msSince(start)
+			p.rec.Record(hop)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		copyHeaders(upReq.Header, r.Header)
+		upReq.Header.Set("traceparent", hopCtx.Traceparent())
+		if bh := hopCtx.BaggageHeader(); bh != "" {
+			upReq.Header.Set("baggage", bh)
+		}
+		upReq.ContentLength = r.ContentLength
+		upReq.Host = r.Host
+
+		resp, err := p.transport.RoundTrip(upReq)
+		if err != nil {
+			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
+			hop.Req.Headers = flatHeaders(r.Header)
+			hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
+			hop.T.DoneMs = msSince(start)
+			p.rec.Record(hop)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		hop.T.FirstByteMs = msSince(start)
+
+		// Relay the response while capturing a capped copy.
+		copyHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		respCap := &cappedBuffer{limit: captureLimit}
+		_, copyErr := io.Copy(w, io.TeeReader(resp.Body, respCap))
+
+		hop.Status = resp.StatusCode
+		hop.Req.Headers = flatHeaders(r.Header)
+		hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
+		hop.Resp.Headers = flatHeaders(resp.Header)
+		hop.Resp.Body, hop.Resp.Truncated = respCap.buf.String(), respCap.truncated
+		hop.T.DoneMs = msSince(start)
+		if copyErr != nil {
+			hop.Err = copyErr.Error()
+		}
+		p.rec.Record(hop)
+	})
+}
+
+func msSince(t time.Time) float64 {
+	return float64(time.Since(t)) / float64(time.Millisecond)
+}
