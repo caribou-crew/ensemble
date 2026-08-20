@@ -2,6 +2,7 @@ package trace
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 )
 
@@ -53,11 +54,49 @@ func (r *Redactor) Payload(p Payload) Payload {
 	return p
 }
 
-// Hop returns a copy with both payloads scrubbed.
+// Hop returns a copy with both payloads scrubbed and query-string secrets
+// in Path redacted.
 func (r *Redactor) Hop(h Hop) Hop {
 	h.Req = r.Payload(h.Req)
 	h.Resp = r.Payload(h.Resp)
+	h.Path = r.redactPath(h.Path)
 	return h
+}
+
+// redactPath scrubs the VALUES of query parameters whose key matches the
+// redactor's key set (same defaults + user list used for headers/body
+// fields) — Path is captured as method+path+raw-query
+// (r.URL.RequestURI()), and unlike headers/JSON bodies it was never
+// touched by redaction, so signed URLs and API-key query params (e.g.
+// "?api_key=..." or "?access_token=...") landed in the ring, the hops
+// file, and every export verbatim. The path segment and non-matching
+// params pass through untouched; a query string that fails to parse is
+// left as-is rather than dropped.
+func (r *Redactor) redactPath(path string) string {
+	i := strings.IndexByte(path, '?')
+	if i < 0 {
+		return path
+	}
+	base, rawQuery := path[:i], path[i+1:]
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return path
+	}
+	redacted := false
+	for k, vals := range q {
+		if !r.keys[strings.ToLower(k)] {
+			continue
+		}
+		for i := range vals {
+			vals[i] = Redacted
+		}
+		q[k] = vals
+		redacted = true
+	}
+	if !redacted {
+		return path
+	}
+	return base + "?" + q.Encode()
 }
 
 // redactBody rewrites matching field values in a JSON body. Non-JSON
