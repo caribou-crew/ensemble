@@ -16,7 +16,7 @@ var version = "dev"
 const usage = `retrace — record / replay / diff / review flows
 
 Usage:
-  retrace run --flow NAME [--app NAME] [--ensemble URL] [--upstream URL] -- <test command>
+  retrace run --flow NAME [--app NAME] [--ensemble URL] [--upstream URL] [--json] [--no-config] -- <test command>
   retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
@@ -52,6 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "--version", "-version":
 		fmt.Fprintln(stdout, version)
 		return exitOK
+	case "run":
+		return cmdRun(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}
