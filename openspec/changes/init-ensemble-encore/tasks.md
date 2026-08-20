@@ -63,22 +63,22 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
 ## Phase 2 — ensemble: orchestrator + API server + CLI
 
-- [ ] 2.1 `ensemble/config`: ensemble.yaml schema + validation + defaults
+- [x] 2.1 `ensemble/config`: ensemble.yaml schema + validation + defaults
       (services dir/build/watch/run/port/proxy/env/health/depends_on/docker,
       databases incl. dynamodb + localstack types, stubs, entities, latency,
       seeds, profiles). Table tests over good/bad fixtures.
-- [ ] 2.2 `ensemble/orchestrator`: native process supervisor (start in dir,
+- [x] 2.2 `ensemble/orchestrator`: native process supervisor (start in dir,
       env injection, health gate, dependency order, restart, build-if-stale
       via watch globs) + Docker driver (containers for services + databases).
-- [ ] 2.3 `ensemble/orchestrator`: live placement flip (run↔docker) keeping
+- [x] 2.3 `ensemble/orchestrator`: live placement flip (run↔docker) keeping
       intercept ports stable; named seeds executor (sql via db drivers, http).
-- [ ] 2.4 `ensemble/server`: REST+SSE surface — status/topology/traffic/
+- [x] 2.4 `ensemble/server`: REST+SSE surface — status/topology/traffic/
       latency/sessions/seed/restart/placement; OpenAPI json served at
       /api/openapi.json. Every mutation also logged as an annotation event.
-- [ ] 2.5 `ensemble/inspector`: postgres + mysql drivers (schema, rows,
+- [x] 2.5 `ensemble/inspector`: postgres + mysql drivers (schema, rows,
       change-stream: snapshot-diff + poller); dynamodb driver (tables, scan,
       DynamoDB Streams change-stream) against DynamoDB Local in CI.
-- [ ] 2.6 `ensemble/cmd/ensemble`: CLI (`up/down/status/seed/latency/traffic
+- [x] 2.6 `ensemble/cmd/ensemble`: CLI (`up/down/status/seed/latency/traffic
       --json`) as thin REST client + TUI cockpit (bubbletea: services,
       traffic tail w/ filter + yank-as-curl, seeds).
 
