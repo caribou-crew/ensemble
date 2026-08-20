@@ -22,7 +22,7 @@ func (s *server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	since := parseUint(r.URL.Query().Get("since"))
-	ch, cancel := s.Rec.Subscribe(since)
+	ch, _, cancel := s.Rec.Subscribe(since)
 	defer cancel()
 
 	w.Header().Set("Content-Type", "text/event-stream")

@@ -29,9 +29,9 @@ type Recorder struct {
 	opts     RecorderOpts
 	ring     []trace.Hop
 	nextSeq  uint64
-	subs     map[chan trace.Hop]uint64 // value: seq already delivered through
-	owners   map[string]string         // span id -> service name that opened it
-	ownerQ   []string                  // FIFO for owner eviction
+	subs     map[chan trace.Hop]*subState
+	owners   map[string]string // span id -> service name that opened it
+	ownerQ   []string          // FIFO for owner eviction
 	ownerCap int
 	// traceSes maps trace id -> session id, claimed at request START so
 	// causal order holds even though hops are recorded at completion
@@ -41,13 +41,22 @@ type Recorder struct {
 	traceCap int
 }
 
+// subState tracks one subscriber's replay cursor and how many hops the
+// non-blocking fan-out in Record has had to drop for it (buffer full — a
+// slow consumer). The counter is read-only from the subscriber's side via
+// the Dropped func Subscribe returns.
+type subState struct {
+	delivered uint64
+	dropped   uint64
+}
+
 func NewRecorder(opts RecorderOpts) *Recorder {
 	if opts.Ring <= 0 {
 		opts.Ring = 1024
 	}
 	return &Recorder{
 		opts:     opts,
-		subs:     map[chan trace.Hop]uint64{},
+		subs:     map[chan trace.Hop]*subState{},
 		owners:   map[string]string{},
 		ownerCap: 65536,
 		traceSes: map[string]string{},
@@ -75,15 +84,18 @@ func (r *Recorder) Record(h trace.Hop) trace.Hop {
 		// Best-effort: a full disk must not take the proxy down with it.
 		_ = r.opts.Writer.Write(h)
 	}
-	for ch, seen := range r.subs {
-		if h.Seq <= seen {
+	for ch, st := range r.subs {
+		if h.Seq <= st.delivered {
 			continue
 		}
 		select {
 		case ch <- h:
-			r.subs[ch] = h.Seq
+			st.delivered = h.Seq
 		default:
 			// Slow subscriber: drop rather than block the capture path.
+			// Counted so a subscriber (e.g. SessionManager) can detect and
+			// surface the loss instead of silently under-reporting.
+			st.dropped++
 		}
 	}
 	r.mu.Unlock()
@@ -100,31 +112,40 @@ func (r *Recorder) Snapshot() []trace.Hop {
 }
 
 // Subscribe replays retained hops with Seq > cursor, then delivers live.
-// The returned cancel must be called to release the subscription.
-func (r *Recorder) Subscribe(cursor uint64) (<-chan trace.Hop, func()) {
+// The returned dropped func reports how many hops Record has had to drop
+// for this subscription because its buffer was full (a slow consumer) —
+// callers that need to know their capture may be incomplete (e.g.
+// SessionManager, for verdict purposes) should poll it. The returned
+// cancel must be called to release the subscription.
+func (r *Recorder) Subscribe(cursor uint64) (ch <-chan trace.Hop, dropped func() uint64, cancel func()) {
 	r.mu.Lock()
 	// Buffer must hold the full replay: it is filled under the lock, so a
 	// reader cannot drain it concurrently and a tight buffer would deadlock.
-	ch := make(chan trace.Hop, len(r.ring)+256)
-	delivered := cursor
+	c := make(chan trace.Hop, len(r.ring)+256)
+	st := &subState{delivered: cursor}
 	for _, h := range r.ring {
 		if h.Seq > cursor {
-			ch <- h
-			delivered = h.Seq
+			c <- h
+			st.delivered = h.Seq
 		}
 	}
-	r.subs[ch] = delivered
+	r.subs[c] = st
 	r.mu.Unlock()
 
-	cancel := func() {
+	dropped = func() uint64 {
 		r.mu.Lock()
-		if _, ok := r.subs[ch]; ok {
-			delete(r.subs, ch)
-			close(ch)
+		defer r.mu.Unlock()
+		return st.dropped
+	}
+	cancel = func() {
+		r.mu.Lock()
+		if _, ok := r.subs[c]; ok {
+			delete(r.subs, c)
+			close(c)
 		}
 		r.mu.Unlock()
 	}
-	return ch, cancel
+	return c, dropped, cancel
 }
 
 // ClaimSpan registers which service opened a span, so the hop that carries
