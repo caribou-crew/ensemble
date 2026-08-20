@@ -200,6 +200,13 @@ additive extension; none of them narrows or reinterprets a spec'd behaviour:
   Phase 4b can swap in per-key modes at one seam.
 - API-first parity: every verb the review UI offers is a REST call an agent
   can make identically, with the same effect.
+- **Never assert a CLI exit code through `go run`.** `go run` treats a
+  non-zero child as its own failure: it prints `exit status N` to stderr and
+  itself exits **1**. Measured, not assumed. This plan defines a 0/1/2/3 CI
+  contract (Task 10), so an assertion written against `go run` checks the
+  wrong number in every case that matters — it passes only for 1. Build a
+  binary and run that, or use `exec.Command` + `exec.ExitError.ExitCode()`
+  inside a Go test.
 
 ---
 
@@ -1201,8 +1208,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 - [ ] **Step 14: Verify the CLI builds and prints usage**
 
-Run: `go build ./retrace/... && go run ./retrace/cmd/retrace --version && go run ./retrace/cmd/retrace bogus; echo "exit=$?"`
+Run: `go build -o /tmp/retrace-check ./retrace/cmd/retrace && /tmp/retrace-check --version && /tmp/retrace-check bogus; echo "exit=$?"`
 Expected: prints `dev`, then `retrace: unknown command "bogus"` plus usage, `exit=3`.
+
+**Build a binary; do not use `go run` to check an exit code.** `go run`
+reports a non-zero child as its own failure: it prints `exit status 3` to
+stderr and itself exits **1**. Verified. Any exit-code assertion written
+against `go run` silently checks the wrong number — it passes for 1 and
+fails for every code the CLI actually defines.
 
 - [ ] **Step 15: Full suites + commit**
 
