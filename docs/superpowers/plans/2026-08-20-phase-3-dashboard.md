@@ -14,7 +14,7 @@ consuming the Phase 2 REST/SSE API.
 primitives). Vite builds straight into `ensemble/server/ui/dist`, which the
 server embeds via `go:embed` and serves at `/` with SPA fallback. Pure
 layout/timeline algorithms port from `local-stack/web` with their tests
-(inventory: `.superpowers/phase-3-porting-inventory.md`). One Go task adds
+(inventory: `docs/phase-3-porting-inventory.md`). One Go task adds
 the inspector + entity-passthrough endpoints the UI needs (API-first).
 
 **Tech Stack:** React 19, Vite 8, TypeScript 7, vitest 4 (+ happy-dom for
@@ -190,7 +190,7 @@ built version — verify with `git diff --stat` before commit).
 
 **Interfaces:**
 - Consumes: `Topology`, `ServiceState`, `Hop` from api/types; old-code
-  inventory in `.superpowers/phase-3-porting-inventory.md`.
+  inventory in `docs/phase-3-porting-inventory.md`.
 - Produces: `layoutClustered(topology: Topology, statuses: Map<string, ServiceState>, expanded: Set<string>): GraphLayout`;
   `hopTimeline(hops: Hop[]): HopTiming[]`; `heatTier(n: number): 'normal'|'warm'|'hot'`;
   `layoutTrace(hops: Hop[]): GraphLayout`; `causalHopOrder(hops: Hop[]): Hop[]`.
