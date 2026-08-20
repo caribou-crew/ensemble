@@ -1910,7 +1910,7 @@ splits the user-facing story for no gain.
       Flows            map[string]Flow
       Entry            string          // ensemble service name clients call
       Upstream         string          // standalone-mode upstream base URL
-      WireIgnore       []string
+      WireIgnore       []WireIgnoreEntry   // {Path, Why}; see WireIgnorePaths()
       WireRules        []rules.Raw
       PathNormalize    []Normalize
       ExpectedStatuses []StatusRule
@@ -2049,7 +2049,7 @@ type Config struct {
 	Flows            map[string]Flow        `yaml:"flows"`
 	Entry            string                 `yaml:"entry"`
 	Upstream         string                 `yaml:"upstream"`
-	WireIgnore       []string               `yaml:"wire_ignore"`
+	WireIgnore       []WireIgnoreEntry      `yaml:"wire_ignore"`
 	WireRules        []rules.Raw            `yaml:"wire_rules"`
 	PathNormalize    []Normalize            `yaml:"path_normalize"`
 	ExpectedStatuses []StatusRule           `yaml:"expected_statuses"`
@@ -5592,7 +5592,14 @@ func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
 		return Options{}, err
 	}
 	o := Options{
-		WireIgnore: cfg.WireIgnore,
+		// cfg.WireIgnore is []config.WireIgnoreEntry ({Path, Why}), not
+		// []string: an un-explained ignore is indistinguishable from one
+		// added to silence a real regression, so the config carries the
+		// reason. The diff engine has no use for Why — it is documentation
+		// for the human reading the config later — so config owns the
+		// conversion and hands down plain paths, the same way pixel.RectsFrom
+		// converts config.Rect at one seam instead of at every call site.
+		WireIgnore: cfg.WireIgnorePaths(),
 		Rules:      rs,
 		Normalize:  cfg.NormalizePath,
 		GroupsA:    a.Groups,
