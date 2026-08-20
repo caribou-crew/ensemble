@@ -1,7 +1,7 @@
-/* Ported from local-stack-console's App.css .topo-* rules (a 2821-line global stylesheet —
-   this is its topology slice, scoped to this component per Task 3.2's "plain CSS per
-   component" constraint). Token names are unchanged: tokens.css carried the same
-   --bg-*/--text-*/--accent*/--status-*/--topo-cat-* custom properties over verbatim. */
+/* Ported from local-stack-console's App.css topo-prefixed rules (a 2821-line global
+   stylesheet — this is its topology slice, scoped to this component per Task 3.2's "plain
+   CSS per component" constraint). Token names are unchanged: tokens.css carries the same
+   bg/text/accent/status/topo-cat custom properties over verbatim. */
 
 .topo-graph {
   display: flex;

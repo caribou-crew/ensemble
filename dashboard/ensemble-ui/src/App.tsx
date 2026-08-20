@@ -3,9 +3,10 @@ import { Badge, Spinner, Tabs, type TabItem } from '@ensemble/design-system';
 import { api, ApiError } from './api/client';
 import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
+import TopologyView from './views/TopologyView';
 import './App.css';
 
-// Task 3.2/3.3/3.5 replace these placeholders with the real views; the
+// Task 3.3/3.5 replace the remaining placeholders with the real views; the
 // shell, tab wiring, and ?view= deep link are this task's job.
 const VIEWS: TabItem[] = [
   { id: 'topology', label: 'Topology' },
@@ -102,7 +103,7 @@ export default function App() {
         <HealthStrip />
       </header>
       <main className="app-main">
-        <PlaceholderView id={activeView} />
+        {activeView === 'topology' ? <TopologyView /> : <PlaceholderView id={activeView} />}
       </main>
     </div>
   );
