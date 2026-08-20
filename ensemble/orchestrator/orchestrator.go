@@ -87,6 +87,11 @@ type Orchestrator struct {
 	// implementations in New.
 	killGroup             func(pid int, sig syscall.Signal) error
 	removeDockerContainer func(name string) error
+
+	// SQLRunner executes seed SQL files against a database; Task 2.5 owns
+	// the concrete drivers. Nil until the caller sets it, in which case
+	// Seed's SQL steps fail cleanly rather than panicking.
+	SQLRunner SQLRunner
 }
 
 // New builds an Orchestrator over cfg, wiring active services' proxy
@@ -211,6 +216,19 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	isDocker := o.dockerNodes[name]
 	o.mu.Unlock()
 
+	// Restart must preserve whichever placement is currently running (it
+	// may have been flipped since Up), not recompute the config default —
+	// otherwise a Restart after Flip would silently flip the service back.
+	// With neither tracked (first Restart before any Up), fall back to the
+	// config default.
+	placement := defaultPlacement(svc)
+	switch {
+	case isDocker:
+		placement = "docker"
+	case hasProc:
+		placement = "native"
+	}
+
 	if hasProc && cmd.Process != nil {
 		if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			wrapped := fmt.Errorf("kill previous instance (pid %d): %w", cmd.Process.Pid, err)
@@ -232,7 +250,7 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 		o.mu.Unlock()
 	}
 
-	return o.startService(ctx, name, svc)
+	return o.startServiceAs(ctx, name, svc, placement)
 }
 
 // States returns a snapshot of every known node, sorted by name.
@@ -260,14 +278,34 @@ func (o *Orchestrator) Service(name string) (ServiceState, bool) {
 
 // --- node startup ---
 
+// startService starts svc in its default placement: native when it
+// declares run (docker, if also declared, is the flippable alternate —
+// see defaultPlacement), else docker.
 func (o *Orchestrator) startService(ctx context.Context, name string, svc config.Service) error {
-	placement := "native"
-	if svc.Docker != nil {
-		placement = "docker"
+	return o.startServiceAs(ctx, name, svc, defaultPlacement(svc))
+}
+
+// defaultPlacement is the placement a service starts in until explicitly
+// flipped (Flip): native whenever `run` is configured — matching the spec
+// scenario "flips a native service to container placement" — and docker
+// only when `run` is absent (docker-only services, unchanged from before
+// Flip existed).
+func defaultPlacement(svc config.Service) string {
+	if svc.Run != "" {
+		return "native"
 	}
+	return "docker"
+}
+
+// startServiceAs starts svc under the given placement ("native" or
+// "docker"), regardless of which placement(s) svc declares — the caller
+// (startService, Restart, Flip) is responsible for picking a placement svc
+// actually supports.
+func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc config.Service, placement string) error {
 	o.setState(name, func(s *ServiceState) {
 		s.Placement = placement
 		s.ProxyPort = svc.Proxy
+		s.PID = 0 // stale from a previous placement until the native branch below sets it
 	})
 
 	workDir := resolveDir(o.cfg.Dir, svc.Dir)
@@ -294,7 +332,12 @@ func (o *Orchestrator) startService(ctx context.Context, name string, svc config
 
 	o.setStatus(name, StatusStarting, "")
 
-	if svc.Docker != nil {
+	if placement == "docker" {
+		if svc.Docker == nil {
+			err := fmt.Errorf("no docker placement configured")
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
 		if err := dockerRunService(name, svc.Docker); err != nil {
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)
@@ -303,6 +346,11 @@ func (o *Orchestrator) startService(ctx context.Context, name string, svc config
 		o.dockerNodes[name] = true
 		o.mu.Unlock()
 	} else {
+		if svc.Run == "" {
+			err := fmt.Errorf("no native run command configured")
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
 		logPath := filepath.Join(o.opts.LogDir, name+".log")
 		cmd, err := startNativeProcess(svc.Run, workDir, svc.Env, logPath)
 		if err != nil {
@@ -317,7 +365,7 @@ func (o *Orchestrator) startService(ctx context.Context, name string, svc config
 
 	o.setState(name, func(s *ServiceState) { s.Port = svc.Port })
 
-	if err := o.gateHealth(ctx, name, svc.Health, svc.Port, svc.Docker != nil); err != nil {
+	if err := o.gateHealth(ctx, name, svc.Health, svc.Port, placement == "docker"); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: %w", name, err)
 	}
