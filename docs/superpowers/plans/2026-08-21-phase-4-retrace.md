@@ -5696,6 +5696,28 @@ queue's `rule` verb uses, so the CLI and the UI cannot drift.
 Tests: `TestRefAcceptThenDiffAgainstReferenceExitsZero` (the round trip that
 proves the whole chain), `TestRefRuleAppendsToTheOverlayAndSilencesTheDiff`.
 
+**This task introduces the SECOND process on the overlay, and owes it a
+cross-process lock.** Task 3 made `AppendWireRule` safe within one process
+(a mutex plus a same-directory temp-file/rename) and its doc scopes the
+no-loss guarantee to exactly that. Readers are already safe across
+processes — 4000 concurrent `Discover` calls against 6 writer processes
+produced zero errors, because the rename is atomic. **Writers are not:**
+measured, 3 processes × 12 appends landed 12, 12 and 14 of 36, and every
+lost call returned a nil error. Silent loss with a nil error is the same
+failure shape the atomicity fix was written to eliminate; it simply moves
+up a level when a second process appears.
+
+`ref rule` is that second process, and it is the normal case rather than
+an exotic one: a developer runs `retrace ref rule` in a terminal while the
+review server (Task 13) is open in a browser, or while a capture run is
+in flight. So this task adds a lock around the read-modify-write — an
+`O_EXCL` lockfile beside the overlay, or `flock` on a sidecar — held
+across the read, the merge and the rename, with a bounded wait and a clear
+error rather than an unbounded block. Whichever you choose, state why in
+the code, and widen `AppendWireRule`'s doc clause to match the guarantee
+it can then actually make. The test is the one Task 3 could not write:
+N separate processes appending concurrently must land N rules.
+
 **Step 7b: remove Task 10's stub.** `cmd_diff.go` currently carries a
 `TODO(task-11)` where `--a reference` — the DEFAULT selector — errors out.
 Replace it with `refs.Resolve`, mapping the returned `Reference` onto a
