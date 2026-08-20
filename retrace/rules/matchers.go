@@ -239,6 +239,11 @@ func Classify(m Matcher, a, b any, bothPresent bool) Outcome {
 		return Changed
 	}
 	if !bothPresent {
+		// Short-circuits before ready() runs, so a broken matcher (bad
+		// pattern, unknown name) on a one-sided field reports Changed here
+		// rather than Violation. Both outcomes are non-permissive — neither
+		// is Ignored/Tolerated — so this is deliberate, not a gap; it's
+		// subtle enough to call out for the next reader.
 		return Changed
 	}
 	ready, ok := m.ready()
