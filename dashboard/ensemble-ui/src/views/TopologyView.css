@@ -1,0 +1,249 @@
+.topo-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.topo-view--error,
+.topo-view--loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.topo-view__trace-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+}
+
+.topo-view__trace-bar button {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.topo-view__trace-bar button:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-strong);
+}
+
+.topo-view__trace-error {
+  color: var(--status-red);
+  font-size: 0.75rem;
+}
+
+.topo-view__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* --- service detail side panel --- */
+
+.topo-panel {
+  flex-shrink: 0;
+  width: 260px;
+  border-left: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+  padding: 0.9rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.topo-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topo-panel__header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.topo-panel__close {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+
+.topo-panel__close:hover {
+  color: var(--text-primary);
+}
+
+.topo-panel__row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.topo-panel__meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.6rem;
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.topo-panel__meta dt {
+  color: var(--text-tertiary);
+}
+
+.topo-panel__meta dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.topo-panel__err {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  background: var(--status-red-bg);
+  color: var(--status-red);
+  font-size: 0.75rem;
+  word-break: break-word;
+}
+
+.topo-panel__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: auto;
+}
+
+.topo-panel__actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.topo-panel__actions button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+}
+
+.topo-panel__actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- trace-mode hop timing waterfall --- */
+
+.topo-hop-panel {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.topo-hop-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40%;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border-hairline);
+  background: transparent;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.topo-hop-row:hover {
+  background: var(--bg-raised);
+}
+
+.topo-hop-row-selected {
+  background: var(--accent-dim);
+}
+
+.topo-hop-meta {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topo-hop-method {
+  color: var(--status-blue);
+}
+
+.topo-hop-status {
+  color: var(--text-tertiary);
+}
+
+.topo-hop-track {
+  position: relative;
+  height: 10px;
+  background: var(--bg-raised);
+  border-radius: 3px;
+}
+
+.topo-hop-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--status-blue);
+}
+
+.topo-hop-bar-warm {
+  background: var(--status-amber);
+}
+
+.topo-hop-bar-hot {
+  background: var(--status-red);
+}
+
+/* The injected-delay hatch — a diagonal stripe over the bar's leading edge, distinct from
+   the bar's own heat color so "artificial" reads as a texture, not another hue. */
+.topo-hop-bar-delay {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px 0 0 3px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(0, 0, 0, 0.35) 0,
+    rgba(0, 0, 0, 0.35) 2px,
+    transparent 2px,
+    transparent 5px
+  );
+}
