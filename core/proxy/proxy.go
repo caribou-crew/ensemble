@@ -24,9 +24,12 @@ type Target struct {
 	InjectBaggage map[string]string
 }
 
-// captureLimit caps how much request/response body is *captured* (never how
-// much is forwarded).
-const captureLimit = 256 * 1024
+// CaptureLimit caps how much request/response body is *captured* (never how
+// much is forwarded). Exported so other capture paths — notably
+// core/stub, which has no upstream to stream through and so can't reuse
+// cappedBuffer directly — cap at the same size instead of duplicating the
+// number.
+const CaptureLimit = 256 * 1024
 
 // Proxy runs any number of intercept listeners inside one process. Each
 // listener is a goroutine and a socket — per-service cost is kilobytes.
@@ -194,7 +197,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		}
 
 		// Capture the request body without buffering the full stream.
-		reqCap := &cappedBuffer{limit: captureLimit}
+		reqCap := &cappedBuffer{limit: CaptureLimit}
 		var reqBody io.Reader = http.NoBody
 		if r.Body != nil {
 			reqBody = io.TeeReader(r.Body, reqCap)
@@ -232,7 +235,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		// Relay the response while capturing a capped copy.
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		respCap := &cappedBuffer{limit: captureLimit}
+		respCap := &cappedBuffer{limit: CaptureLimit}
 		_, copyErr := io.Copy(w, io.TeeReader(resp.Body, respCap))
 
 		hop.Status = resp.StatusCode
