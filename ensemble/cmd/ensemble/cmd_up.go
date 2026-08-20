@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/stub"
@@ -141,6 +142,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	})
 	orch.SQLRunner = inspector.NewSQLRunner(cfg.Databases)
 	insp := buildInspector(cfg, logf)
+	orch.DBReady = dbReadyProbe(insp)
 
 	stubs, err := startStubs(cfg, rec)
 	if err != nil {
@@ -251,6 +253,38 @@ func buildInspector(cfg *config.Config, logf func(string, ...any)) *inspector.In
 		}
 	}
 	return insp
+}
+
+// dbReadyProbe builds an orchestrator.DBReadyFunc backed by insp: for a
+// database with a registered inspector.Driver (postgres, mysql, dynamodb —
+// see buildInspector), readiness is a real protocol-level check — the same
+// Schema/Tables call the dashboard uses to inspect the database, so
+// startDatabase's health gate and the dashboard's reads exercise identical
+// connection logic (task 3.6, defect D3: a bare TCP dial can't tell a live
+// server from docker's published-port proxy accepting a connection into
+// nothing).
+//
+// A database whose type has no registered driver (redis, localstack —
+// buildInspector never registers those) falls back to a single TCP dial
+// attempt; startDatabase's caller (gateDatabaseHealth) retries this every
+// poll interval until it succeeds or the health timeout elapses, so this
+// preserves the pre-3.6 TCP-gate behavior for exactly the types that have
+// no better check available yet.
+func dbReadyProbe(insp *inspector.Inspector) orchestrator.DBReadyFunc {
+	return func(ctx context.Context, name string, db config.Database) error {
+		if insp.Has(name) {
+			_, err := insp.Schema(ctx, name)
+			return err
+		}
+		if db.Port <= 0 {
+			return nil
+		}
+		conn, err := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", db.Port))
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	}
 }
 
 // apiHostPolicy translates a --api bind address into the browser guard's

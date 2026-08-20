@@ -50,12 +50,20 @@ type DockerPlacement struct {
 // Database is a datastore ensemble provisions alongside services.
 // Type defaults from Image when left empty; see Validate.
 type Database struct {
-	Image    string            `yaml:"image"`
-	Port     int               `yaml:"port"`
-	Type     string            `yaml:"type"` // postgres|mysql|redis|dynamodb|localstack
-	Seed     string            `yaml:"seed"`
-	Env      map[string]string `yaml:"env"`
-	Services []string          `yaml:"services"`
+	Image string `yaml:"image"`
+	Port  int    `yaml:"port"`
+	Type  string `yaml:"type"` // postgres|mysql|redis|dynamodb|localstack
+	// ContainerPort overrides the port the orchestrator publishes Port to,
+	// inside the container. Databases are always published to a fixed
+	// default port per Type (5432 for postgres, etc — see
+	// orchestrator.defaultContainerPorts); this is the escape hatch for an
+	// image that listens somewhere else. Zero (the default) means "use the
+	// Type table". Purely additive: it changes no meaning of any existing
+	// config field.
+	ContainerPort int               `yaml:"containerPort"`
+	Seed          string            `yaml:"seed"`
+	Env           map[string]string `yaml:"env"`
+	Services      []string          `yaml:"services"`
 }
 
 // Stub is a config-defined fake HTTP service.

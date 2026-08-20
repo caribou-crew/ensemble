@@ -107,7 +107,31 @@ type Orchestrator struct {
 	// the concrete drivers. Nil until the caller sets it, in which case
 	// Seed's SQL steps fail cleanly rather than panicking.
 	SQLRunner SQLRunner
+
+	// DBReady performs a genuine protocol-level readiness check against a
+	// managed database (e.g. issuing a real query through its driver),
+	// used by startDatabase's health gate in place of a bare TCP dial
+	// (task 3.6, defect D3: a bare TCP dial succeeds against docker's
+	// published-port proxy even when nothing — or the wrong server — is
+	// listening behind it, so it can never observe a database that's
+	// actually unreachable or misconfigured). cmd_up.go wires this from
+	// the same ensemble/inspector drivers it builds for the dashboard, so
+	// the readiness check and the dashboard's reads go through identical
+	// connection logic.
+	//
+	// Nil falls back to the legacy bare TCP dial — used by tests (and any
+	// database type ensemble/inspector has no driver for) that don't wire
+	// an inspector. Not importing ensemble/inspector directly from this
+	// package is deliberate: it's the caller's dependency to own (see
+	// cmd_up.go's buildInspector), not the orchestrator's.
+	DBReady DBReadyFunc
 }
+
+// DBReadyFunc reports whether name's database is ready to serve real
+// queries — see the DBReady field comment. A nil error means ready; any
+// error (including ctx expiring) means not yet, and the caller should
+// retry until Orchestrator.Opts.HealthTimeout elapses.
+type DBReadyFunc func(ctx context.Context, name string, db config.Database) error
 
 // New builds an Orchestrator over cfg, wiring active services' proxy
 // targets into px during Up.
@@ -464,7 +488,7 @@ func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config
 	o.dockerNodes[name] = true
 	o.mu.Unlock()
 
-	if err := o.gateHealth(ctx, name, "", db.Port, true); err != nil {
+	if err := o.gateDatabaseHealth(ctx, name, db); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: %w", name, err)
 	}
@@ -476,6 +500,33 @@ func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config
 		s.LastErr = ""
 	})
 	return nil
+}
+
+// gateDatabaseHealth gates a managed database container on the docker
+// "running" check plus a real readiness check: o.DBReady when the
+// orchestrator has one wired, else the legacy bare TCP dial (see the
+// DBReady field comment for why the dial alone is insufficient — task 3.6,
+// defect D3). Uses the same overall timeout budget as gateHealth
+// (o.opts.HealthTimeout).
+//
+// Services are untouched by this — they still go through gateHealth, whose
+// TCP-dial semantics remain correct there (a native process either has its
+// port open or it doesn't; there's no docker published-port proxy in the
+// way to mask the difference).
+func (o *Orchestrator) gateDatabaseHealth(ctx context.Context, name string, db config.Database) error {
+	if err := pollDockerRunning(ctx, name, o.opts.HealthTimeout); err != nil {
+		return err
+	}
+	if db.Port <= 0 {
+		return nil
+	}
+	if o.DBReady != nil {
+		return pollUntil(ctx, o.opts.HealthTimeout, func() (bool, error) {
+			err := o.DBReady(ctx, name, db)
+			return err == nil, err
+		})
+	}
+	return pollTCP(ctx, fmt.Sprintf("127.0.0.1:%d", db.Port), o.opts.HealthTimeout)
 }
 
 // gateHealth implements the health-gate rule: a Health path is polled

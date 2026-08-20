@@ -15,9 +15,9 @@ import (
 // mysql image's env var conventions: MYSQL_USER/MYSQL_PASSWORD when set
 // (an app user), else root using MYSQL_ROOT_PASSWORD; MYSQL_DATABASE names
 // the database (empty connects with no default database selected).
-// ensemble always publishes a database's container port to the same host
-// port (see orchestrator's dockerRunDatabase), so the driver always dials
-// 127.0.0.1:db.Port.
+// db.Port is always the HOST port ensemble publishes the container to
+// (see orchestrator's dockerRunDatabase, which maps it to the image's own
+// container-side port), so the driver always dials 127.0.0.1:db.Port.
 func MySQLDSN(db config.Database) string {
 	user := db.Env["MYSQL_USER"]
 	password := db.Env["MYSQL_PASSWORD"]

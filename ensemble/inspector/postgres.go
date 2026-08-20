@@ -15,9 +15,9 @@ import (
 // PostgresDSN builds a postgres connection string for db, following the
 // official postgres image's env var conventions: POSTGRES_USER (default
 // "postgres"), POSTGRES_PASSWORD, POSTGRES_DB (default: same as user).
-// ensemble always publishes a database's container port to the same host
-// port (see orchestrator's dockerRunDatabase), so the driver always dials
-// 127.0.0.1:db.Port.
+// db.Port is always the HOST port ensemble publishes the container to
+// (see orchestrator's dockerRunDatabase, which maps it to the image's own
+// container-side port), so the driver always dials 127.0.0.1:db.Port.
 func PostgresDSN(db config.Database) string {
 	user := db.Env["POSTGRES_USER"]
 	if user == "" {
