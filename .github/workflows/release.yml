@@ -23,11 +23,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Scaffolding only — disabled until the npm scope and registry ownership are
-  # decided. Flip `if: false` off (and fill in the real publish step) once
-  # that's settled.
+  # Scaffolding only. The scope question IS now settled — packages publish
+  # under @caribou-crew, which the maintainer owns — so do NOT read the old
+  # "once the scope is decided" note as a green light. This job stays off
+  # until the maintainer has synced npm credentials into the repo secrets and
+  # says so; publishing is theirs to authorize, not a condition an agent can
+  # observe as met. Enabling it also needs a real publish step (the run below
+  # is a placeholder) and `--access public`, since @caribou-crew packages are
+  # private by default.
   npm-publish:
-    if: false # enabled after npm scope + registry decided
+    if: false # maintainer flips this after syncing npm credentials
     runs-on: ubuntu-latest
     needs: goreleaser
     steps:
