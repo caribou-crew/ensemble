@@ -52,6 +52,22 @@ type Session struct {
 	requests  atomic.Int64
 	closed    bool
 
+	// Redaction inputs, kept on the Session because the attached path
+	// writes its hops at Close time rather than streaming them through a
+	// Recorder. Set in BOTH constructors: a Session that forgot them would
+	// write the user's own keys to disk in plaintext.
+	redact  []string
+	maxBody int
+
+	// ens is nil in standalone mode and non-nil in ensemble-attached mode.
+	// It is the single discriminator every method below branches on — see
+	// Drain, Close, ProxyFailure and WatchProxy in ensemble.go.
+	ens        EnsembleClient
+	hops       []trace.Hop // drained from ensemble; nil in standalone
+	endReport  EndReport
+	ended      bool // EndSession actually returned a report — see EndVerdict
+	trustNotes []string
+
 	mu           sync.Mutex
 	proxyFailure *ProxyFailure
 }
@@ -110,6 +126,7 @@ func StartStandalone(o Options) (*Session, error) {
 		Paths: p, RunID: runID, Mode: runs.ModeStandalone,
 		StartedAt: now(), rec: rec, prox: prox, stopProxy: stop, wireFile: wire,
 		ProxyURL: "http://" + addr,
+		redact:   o.Redact, maxBody: maxBody,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
 		stop()
@@ -142,11 +159,14 @@ func (s *Session) Env() []string {
 	}
 }
 
+// Hops returns the full provider chain. Standalone reads it from the local
+// Recorder; ensemble-attached mode has no local Recorder at all and returns
+// what Drain pulled over REST (nil before Drain runs).
 func (s *Session) Hops() []trace.Hop {
-	if s.rec == nil {
-		return nil
+	if s.rec != nil {
+		return s.rec.Snapshot()
 	}
-	return s.rec.Snapshot()
+	return s.hops
 }
 
 // RequestsSeen counts everything that reached retrace at all — proxied calls
@@ -168,23 +188,6 @@ func (s *Session) RequestsSeen() int {
 	return n
 }
 
-func (s *Session) Close() error {
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	if s.stopProxy != nil {
-		s.stopProxy()
-	}
-	if s.markerSrv != nil {
-		s.markerSrv.Close()
-	}
-	if s.wireFile == nil {
-		return nil
-	}
-	return s.wireFile.Close()
-}
-
 // ProxyDied records that the client-edge listener stopped answering while
 // the test command was still running. This is the ONLY producer of a
 // capture.ProxyFailure (Task 6 ranks it `broken/proxy-died`), and it is
@@ -202,7 +205,14 @@ func (s *Session) ProxyDied(err error) {
 // ProxyFailure returns the recorded running-phase failure, or nil. Task 4's
 // run body calls this after the test command exits and passes the result
 // into Task 6's Assess.
+// It is always nil in ensemble-attached mode: retrace does not own the
+// client-edge listener there, so it cannot truthfully witness it dying, and
+// reporting ensemble's edge as "retrace's proxy died" would put a
+// broken/proxy-died verdict on a run whose capture machinery was fine.
 func (s *Session) ProxyFailure() *ProxyFailure {
+	if s.ens != nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.proxyFailure
@@ -219,6 +229,9 @@ func (s *Session) ProxyFailure() *ProxyFailure {
 // flow shorter than one tick period would otherwise never be sampled at
 // all, and a proxy that died inside a fast test would go unrecorded.
 func (s *Session) WatchProxy(ctx context.Context) {
+	if s.ens != nil {
+		return // ensemble owns the listener; see ProxyFailure
+	}
 	if !s.probeProxy() {
 		return
 	}
