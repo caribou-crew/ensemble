@@ -149,6 +149,18 @@ additive extension; none of them narrows or reinterprets a spec'd behaviour:
   `%2e%2e%2f` traversal reaches handlers as literal `../`. Any path joining
   from a request value must root at `/` and `path.Clean` before use — see
   `ensemble/server/ui/ui.go` for the shape.
+- **A function that JOINS a caller-supplied component into a filesystem
+  path must validate that component; a function handed a fully-formed path
+  the caller already resolved does not re-litigate it.** The guard lives at
+  the construction seam and there is exactly one guard body. This cost three
+  review rounds in Task 1: the first fix validated only `PathsFor`, leaving
+  six sibling functions that joined `app`/`flow` straight into
+  `filepath.Join` — measured, `ListFlows(root, "../../..")` enumerated
+  directory names outside the runs root and `AppendGroupRecord` created
+  directories there. `ReadManifest`/`ReadHops` deliberately keep bare
+  `string` paths under the second half of this rule, because Task 10 reads
+  hop files from repro bundles that are not run dirs; fabricating a `Paths`
+  for them would produce a value that looks validated and is not.
 - Every new HTTP route sits behind the existing Origin/Host guard
   (`ensemble/server/guard.go`, extracted to `core/httpguard` in **Task 4**,
   the task that first needs it). **No task may inline a second copy of any
@@ -396,24 +408,31 @@ lives in `diff` rather than `refs`: `refs.Reject` needs a `diff.Summary`, so
   func WriteManifest(p Paths, m *Manifest) error         // stamps Schema on the caller's copy; errors on empty Capture.Status
   func ReadManifest(path string) (Manifest, error)
   func ReadHops(path string) (hops []trace.Hop, skipped int, err error)  // missing file → nil,0,nil; corrupt lines skipped and counted
-  func AppendGroupRecord(runDir string, r GroupRecord) error
+  func AppendGroupRecord(p Paths, r GroupRecord) error
 
-**Three signatures moved in Task 1's fix round (commit `7e5d5f3`); the
-committed code is authoritative and this block matches it.** `PathsFor`
-returns an error because it now validates `app`/`flow`/`runID` — the
-original joined caller-supplied names straight into `filepath.Join`, which
-*resolves* `..` rather than rejecting it, so `Create(root, "web",
-"checkout", "../../../../escaped")` returned a nil error while making a
-directory outside the runs root, invisible to every listing function.
-Validating once here is deliberate: Tasks 4, 12 and 13 all route
-request-derived values into these functions. `WriteManifest` takes a
-pointer so the schema stamp and defaults land on the caller's copy, and it
-now REJECTS an empty `Capture.Status` (an empty verdict ranks equal to
-`ok`, so an unassessed run would have gated as clean). `ReadHops` returns a
-skipped count so a partially corrupt hop log degrades visibly instead of
-either sinking a whole diff or vanishing silently. Call sites throughout
-this plan are written against these shapes.
-  func ReadGroupRecords(runDir string) ([]GroupRecord, error)
+**Five signatures moved across Task 1's fix rounds (commits
+`b2366e9..35f7555`); the committed code is authoritative and this block
+matches it.** `PathsFor` returns an error because it now validates
+`app`/`flow`/`runID` — the original joined caller-supplied names straight
+into `filepath.Join`, which *resolves* `..` rather than rejecting it, so
+`Create(root, "web", "checkout", "../../../../escaped")` returned a nil
+error while making a directory outside the runs root, invisible to every
+listing function. Validating once here is deliberate: Tasks 4, 12 and 13
+all route request-derived values into these functions. `WriteManifest`
+takes a pointer so the schema stamp and defaults land on the caller's
+copy, and it now REJECTS an empty `Capture.Status` (an empty verdict ranks
+equal to `ok`, so an unassessed run would have gated as clean). `ReadHops`
+returns a skipped count so a partially corrupt hop log degrades visibly
+instead of either sinking a whole diff or vanishing silently.
+`AppendGroupRecord` and `ReadGroupRecords` moved from a bare `runDir
+string` to a `p Paths`: the precondition that a run directory came from
+`PathsFor`/`Create` — and was therefore validated — used to live only in a
+doc comment, so a Task 4 implementer wiring a request field or
+`RETRACE_RUN_DIR` straight into a marker write got no guard from the
+signature itself; now the precondition is structural, and writing
+something that skips it looks visibly wrong. Call sites throughout this
+plan are written against these shapes.
+  func ReadGroupRecords(p Paths) ([]GroupRecord, error)
   func DeriveGroups(records []GroupRecord, finishedAt time.Time) []Group
   func GroupAt(groups []Group, ts time.Time) string
   func GroupNames(groups []Group) []string
@@ -574,7 +593,14 @@ type Paths struct {
 	MissesPath   string // replay only
 }
 
-func PathsFor(root, app, flow, runID string) (Paths, error) {  // see fix-round note below
+// PathsFor computes the paths a run directory would have, without
+// touching disk. It validates app/flow/runID (see validateComponents) so
+// every caller — Create, and every later task that resolves an existing
+// run from a selector — gets the same traversal guard from one place.
+func PathsFor(root, app, flow, runID string) (Paths, error) {
+	if err := validateComponents(app, flow, runID); err != nil {
+		return Paths{}, err
+	}
 	dir := filepath.Join(root, app, flow, runID)
 	return Paths{
 		RunDir:       dir,
@@ -584,12 +610,24 @@ func PathsFor(root, app, flow, runID string) (Paths, error) {  // see fix-round 
 		HopsPath:     filepath.Join(dir, "hops.jsonl"),
 		GroupsPath:   filepath.Join(dir, "groups.jsonl"),
 		MissesPath:   filepath.Join(dir, "misses.jsonl"),
-	}
+	}, nil
 }
 
+// Create makes a fresh run directory and its shots subdirectory. It fails
+// if the run directory already exists — two runs must never silently share
+// one directory.
 func Create(root, app, flow, runID string) (Paths, error) {
-	p := PathsFor(root, app, flow, runID)
-	if err := os.MkdirAll(p.ShotsDir, 0o755); err != nil {
+	p, err := PathsFor(root, app, flow, runID)
+	if err != nil {
+		return Paths{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(p.RunDir), 0o755); err != nil {
+		return Paths{}, err
+	}
+	if err := os.Mkdir(p.RunDir, 0o755); err != nil {
+		return Paths{}, err
+	}
+	if err := os.Mkdir(p.ShotsDir, 0o755); err != nil {
 		return Paths{}, err
 	}
 	return p, nil
@@ -957,17 +995,20 @@ func TestGroupAtIsHalfOpen(t *testing.T) {
 }
 
 func TestAppendAndReadGroupRecordsSkipsCorruptLines(t *testing.T) {
-	dir := t.TempDir()
-	if err := AppendGroupRecord(dir, GroupRecord{Phase: "start", Name: "a", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := AppendGroupRecord(p, GroupRecord{Phase: "start", Name: "a", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
 		t.Fatalf("AppendGroupRecord: %v", err)
 	}
-	if err := appendRaw(dir, "{not json\n"); err != nil {
+	if err := appendRaw(p.RunDir, "{not json\n"); err != nil {
 		t.Fatalf("appendRaw: %v", err)
 	}
-	if err := AppendGroupRecord(dir, GroupRecord{Phase: "end", TS: ts("2026-08-21T10:00:05Z")}); err != nil {
+	if err := AppendGroupRecord(p, GroupRecord{Phase: "end", TS: ts("2026-08-21T10:00:05Z")}); err != nil {
 		t.Fatalf("AppendGroupRecord: %v", err)
 	}
-	got, err := ReadGroupRecords(dir)
+	got, err := ReadGroupRecords(p)
 	if err != nil {
 		t.Fatalf("ReadGroupRecords: %v", err)
 	}
@@ -1029,15 +1070,22 @@ type Group struct {
 	Quiet     bool      `json:"quiet,omitempty"`
 }
 
-func AppendGroupRecord(runDir string, r GroupRecord) error {
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+// AppendGroupRecord and ReadGroupRecords take a Paths, not a bare runDir
+// string, so the traversal guard is structural rather than documented: a
+// Paths is only obtainable from PathsFor/Create, both of which validate
+// app/flow/runID (review finding 2, re-review section 2 — the write
+// side). A Paths{RunDir: ...} literal is technically still forgeable in
+// Go; that is an accepted, documented residual — the goal here is
+// removing the accidental door, not making Paths unforgeable.
+func AppendGroupRecord(p Paths, r GroupRecord) error {
+	if err := os.MkdirAll(p.RunDir, 0o755); err != nil {
 		return err
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(runDir, "groups.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(p.RunDir, "groups.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -1047,9 +1095,11 @@ func AppendGroupRecord(runDir string, r GroupRecord) error {
 }
 
 // ReadGroupRecords tolerates corrupt lines: a half-written marker from a
-// killed test process must not make the whole run unreadable.
-func ReadGroupRecords(runDir string) ([]GroupRecord, error) {
-	f, err := os.Open(filepath.Join(runDir, "groups.jsonl"))
+// killed test process must not make the whole run unreadable. Unlike
+// ReadHops this function does not count drops (review finding 12, parked
+// as an acceptable Minor for this task).
+func ReadGroupRecords(p Paths) ([]GroupRecord, error) {
+	f, err := os.Open(filepath.Join(p.RunDir, "groups.jsonl"))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -1393,6 +1443,7 @@ package rules
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strings"
@@ -1565,8 +1616,6 @@ const (
 	Violation Outcome = "violation"
 )
 ```
-
-Add `"net/http"` to the import block (used for `http.TimeFormat`).
 
 - [ ] **Step 4: Run — expect PASS** (`go test ./retrace/rules/ -v`).
 
@@ -2265,8 +2314,19 @@ git commit -m "feat(retrace): retrace.yaml config with machine-owned wire-rule o
   func (s *Session) RequestsSeen() int      // every request that reached the proxy or marker door
   func (s *Session) Close() error           // stops listeners, flushes wire.jsonl/hops.jsonl
   func (s *Session) Checkpoints() ([]runs.Checkpoint, error) // reads shots/*.png, decodes geometry
-  func NewMarkerDoor(runDir string, now func() time.Time) http.Handler
+  func NewMarkerDoor(p runs.Paths, now func() time.Time) http.Handler
   ```
+
+**`NewMarkerDoor` takes a `runs.Paths`, not a bare run-dir string — this is
+load-bearing, not incidental.** The marker door is exactly the case that
+motivated moving `AppendGroupRecord`/`ReadGroupRecords` off a bare `runDir
+string` in Task 1's fix round: an HTTP handler that will get
+`RETRACE_RUN_DIR` or a request-derived value wired into it by whoever
+implements this task next. Typing this parameter as a plain `string` would
+reopen exactly the door Task 1 closed, one task later — a caller could
+construct the handler with any string, validated or not. Its one caller
+(`startMarkerDoor` below) already holds a `runs.Paths` on `Session`, so
+there is no loss of information in requiring it here too.
 
 **Design note — why a third env var.** The spec names `RETRACE_RUN_DIR` and
 `RETRACE_PROXY_URL`. Those cover file-writing adapters (retrace-js,
@@ -2344,7 +2404,7 @@ ensemble's own guard tests stay green.
 func TestMarkerDoorAppendsStartAndEndRecords(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(NewMarkerDoor(dir, func() time.Time { return now }))
+	srv := httptest.NewServer(NewMarkerDoor(runs.Paths{RunDir: dir}, func() time.Time { return now }))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/group", "application/json", strings.NewReader(`{"name":"checkout"}`))
@@ -2355,7 +2415,7 @@ func TestMarkerDoorAppendsStartAndEndRecords(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("end marker status = %d", resp.StatusCode)
 	}
-	recs, _ := runs.ReadGroupRecords(dir)
+	recs, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir})
 	if len(recs) != 2 || recs[0].Name != "checkout" || recs[1].Phase != "end" {
 		t.Fatalf("records = %+v", recs)
 	}
@@ -2365,7 +2425,7 @@ func TestMarkerDoorAppendsStartAndEndRecords(t *testing.T) {
 // door exists and refused a nameless marker. Anything else means some OTHER
 // server holds the port.
 func TestMarkerDoorRejectsAnUnnamedStart(t *testing.T) {
-	srv := httptest.NewServer(NewMarkerDoor(t.TempDir(), nil))
+	srv := httptest.NewServer(NewMarkerDoor(runs.Paths{RunDir: t.TempDir()}, nil))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/group", "application/json", strings.NewReader(`{"name":"  "}`))
@@ -2381,7 +2441,7 @@ func TestMarkerDoorRejectsAnUnnamedStart(t *testing.T) {
 // A malformed body must not read as an empty one — otherwise an adapter
 // posting garbage looks exactly like an adapter posting nothing.
 func TestMarkerDoorRejectsAMalformedBody(t *testing.T) {
-	srv := httptest.NewServer(NewMarkerDoor(t.TempDir(), nil))
+	srv := httptest.NewServer(NewMarkerDoor(runs.Paths{RunDir: t.TempDir()}, nil))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/group", "application/json", strings.NewReader(`{"name":`))
@@ -2401,7 +2461,7 @@ func TestMarkerDoorRejectsAMalformedBody(t *testing.T) {
 // inlined copy did not cover).
 func TestMarkerDoorRejectsCrossSiteAndReboundHosts(t *testing.T) {
 	dir := t.TempDir()
-	h := NewMarkerDoor(dir, nil)
+	h := NewMarkerDoor(runs.Paths{RunDir: dir}, nil)
 
 	crossSite := httptest.NewRequest("POST", "http://127.0.0.1/group", strings.NewReader(`{"name":"checkout"}`))
 	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -2419,7 +2479,7 @@ func TestMarkerDoorRejectsCrossSiteAndReboundHosts(t *testing.T) {
 		t.Fatalf("rebound-Host status = %d, want 403", rec.Code)
 	}
 
-	if recs, _ := runs.ReadGroupRecords(dir); len(recs) != 0 {
+	if recs, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir}); len(recs) != 0 {
 		t.Fatalf("a rejected request wrote %d marker records", len(recs))
 	}
 }
@@ -2447,7 +2507,7 @@ import (
 // method-less pattern would panic at registration against any "GET /"
 // sibling, and the bare paths are registered explicitly so a POST is never
 // answered with a subtree-redirect 301, which drops the body.
-func NewMarkerDoor(runDir string, now func() time.Time) http.Handler {
+func NewMarkerDoor(p runs.Paths, now func() time.Time) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
@@ -2469,7 +2529,7 @@ func NewMarkerDoor(runDir string, now func() time.Time) http.Handler {
 			http.Error(w, `{"error":"group markers require a non-empty name"}`, http.StatusBadRequest)
 			return
 		}
-		if err := runs.AppendGroupRecord(runDir, runs.GroupRecord{
+		if err := runs.AppendGroupRecord(p, runs.GroupRecord{
 			Phase: "start", Name: body.Name, TS: now(), Quiet: body.Quiet,
 		}); err != nil {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
@@ -2478,7 +2538,7 @@ func NewMarkerDoor(runDir string, now func() time.Time) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /group/end", func(w http.ResponseWriter, r *http.Request) {
-		if err := runs.AppendGroupRecord(runDir, runs.GroupRecord{Phase: "end", TS: now()}); err != nil {
+		if err := runs.AppendGroupRecord(p, runs.GroupRecord{Phase: "end", TS: now()}); err != nil {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 			return
 		}
@@ -2722,7 +2782,7 @@ func (s *Session) startMarkerDoor(now func() time.Time) error {
 	if err != nil {
 		return err
 	}
-	door := NewMarkerDoor(s.Paths.RunDir, now)
+	door := NewMarkerDoor(s.Paths, now)
 	counted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
 		door.ServeHTTP(w, r)
@@ -3001,7 +3061,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	// door and by file-writing adapters. THIS is where they stop being a
 	// log and become part of the run. Without these three lines the wire
 	// diff has no sections and nothing anywhere reports that.
-	records, err := runs.ReadGroupRecords(s.Paths.RunDir)
+	records, err := runs.ReadGroupRecords(s.Paths)
 	if err != nil {
 		return runs.Manifest{}, err
 	}
@@ -5380,7 +5440,7 @@ git commit -m "feat(retrace): unified diff summary with --json and CI exit codes
   ```go
   package refs
   const MaxBundleBytes = 8 << 20   // 8 MiB per bundle, enforced at accept
-  func BundleDir(cwd, app, flow string) string   // <cwd>/.retrace-ref/<app>/<flow>/reference
+  func BundleDir(cwd, app, flow string) (string, error)   // <cwd>/.retrace-ref/<app>/<flow>/reference; errors on an invalid app/flow
   type Candidate struct {
       RunID    string `json:"runId"`
       Eligible bool   `json:"eligible"`
@@ -5455,6 +5515,31 @@ git commit -m "feat(retrace): unified diff summary with --json and CI exit codes
   func ResolveDeviations(ds []Deviation, appA, appB string) []Deviation
   func FindDeviation(ds []Deviation, method, path string) *Deviation
   ```
+
+**`BundleDir` must guard the `app`/`flow` join.** `BundleDir` performs the
+same `filepath.Join(root, app, flow, ...)` shape that `retrace/runs`'
+`PathsFor` validates, and that Task 1's re-review named as the predicted
+next place this exact bug reappears once a second package starts building
+this kind of path. Task 11 must validate `app` and `flow` before joining
+them here, and must not grow a second copy of the rule: `runs` keeps the
+one validation rule (`validateComponent`/`validateComponents`), currently
+unexported. Task 11 therefore adds `func ValidateComponents(names
+...string) error` to `retrace/runs`, delegating to the existing unexported
+`validateComponents` rather than copying its body — one guard body is the
+whole rule — and calls that from `BundleDir`, rather than duplicating the
+character-class/traversal check inside `refs`. (This wrapper is not added
+now; it would sit exported with no caller for nine tasks.)
+
+**`BundleDir` returns `(string, error)`, not a bare `string`.** A *lister*
+(`ListFlows`, `FindRun`) fails closed to an empty result because "nothing
+found" is a natural and safe answer for it. A path *constructor* has no
+natural empty — returning `""` from one invites a caller to
+`filepath.Join("", ...)` and land on a relative path rooted at the
+process CWD. `BundleDir` is a constructor, the same shape as `PathsFor`,
+and `PathsFor` returns an error; so does `BundleDir`:
+`func BundleDir(cwd, app, flow string) (string, error)`. Every caller in
+this task (`Resolve`, `Accept`, `Reject`) propagates that error the same
+way it already propagates everything else.
 
 **Ruling on the bless flow (design §6.4).** flowlens wrote proposals to a
 separate `.flowlens-ref-proposed` tree that a human promoted with `ref
