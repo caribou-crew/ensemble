@@ -137,6 +137,15 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		}
 	}()
 
+	// Nobody else owns the Proxy's lifecycle (server.Deps documents that the
+	// server doesn't); without this, every intercept listener wireProxy
+	// binds outlives runUp's return — still bound, and still recording into
+	// a Recorder whose hopsFile is about to close. Declared after the stubs
+	// defer so it runs first on unwind (LIFO): orchestrator is stopped
+	// (explicit orch.Down() below) before we return, then proxy listeners,
+	// then stubs, then sessions, then the hops file.
+	defer px.Close()
+
 	if err := orch.Up(ctx); err != nil {
 		_ = orch.Down()
 		return fmt.Errorf("orchestrator up: %w", err)
