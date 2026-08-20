@@ -165,6 +165,24 @@ exists (see 6.0/6.1).
       openspec change (`openspec archive init-ensemble-encore`) syncing
       specs/ to openspec/specs/.
 
+## Follow-ups (opened during Phase 3, tracked so they are not lost)
+
+- [ ] F.1 Real readiness checks for `redis` and `localstack` databases.
+      Task 3.6 replaced the bare TCP dial with a genuine protocol handshake,
+      but only for types that have an `inspector.Driver` (postgres, mysql,
+      dynamodb). Redis and localstack still gate on a TCP dial, which a
+      published docker port answers even when nothing is listening inside the
+      container — so "reports healthy while broken" is still live for those
+      two. Needs a readiness seam that does not require a full inspector
+      driver (redis `PING`, localstack `/_localstack/health`). Landing 3.6
+      partially fixed this class of bug; a partial fix to a lying health
+      check reads as a complete one, which is why this is tracked here rather
+      than in a report.
+- [ ] F.2 Validate `databases.<name>.containerPort` bounds in
+      `config.Validate` (1-65535). Today an absurd or negative value is
+      accepted by config parsing and fails late at `docker run` with a
+      docker-level error instead of a config error naming the field.
+
 ## Stretch (post-v1)
 
 - [ ] S.1 APM latency plugin (Datadog first): `services.<name>.apm` config
