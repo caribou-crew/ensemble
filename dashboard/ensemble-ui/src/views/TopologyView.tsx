@@ -82,6 +82,10 @@ function useTracePoll(traceId: string | null) {
       return;
     }
     let cancelled = false;
+    // Clear the previous trace's hops immediately — otherwise switching ?trace= ids flashes
+    // the OLD trace's graph/waterfall until the new fetch resolves.
+    setHops(null);
+    setError(null);
     api
       .trace(traceId)
       .then((r) => {
