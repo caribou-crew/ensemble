@@ -73,8 +73,8 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 			Summary: "propagation gap at bff",
 			Hint:    "check bff",
 		},
-		Wire: Counts{Calls: 12},
-		Hops: &Counts{Calls: 40},
+		Wire: Counts{Calls: 12, Missing: true, Reason: "wire capture disabled"},
+		Hops: &Counts{Calls: 40, Missing: true, Reason: "chain truncated"},
 		Test: Test{Command: "go test ./...", ExitCode: 0, DurationMs: 1500.5},
 		Env:  Env{Go: "1.25", Platform: "darwin/arm64", Retrace: "dev"},
 	}
@@ -89,8 +89,8 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	assertJSONKeys(t, full.Capture, []string{"status", "reasons", "gaps", "summary", "hint"})
 	assertJSONKeys(t, full.Capture.Reasons[0], []string{"code", "status", "detail", "hint"})
 	assertJSONKeys(t, full.Capture.Gaps[0], []string{"from", "to", "seconds"})
-	assertJSONKeys(t, full.Wire, []string{"calls"})
-	assertJSONKeys(t, *full.Hops, []string{"calls"})
+	assertJSONKeys(t, full.Wire, []string{"calls", "missing", "reason"})
+	assertJSONKeys(t, *full.Hops, []string{"calls", "missing", "reason"})
 	assertJSONKeys(t, full.Test, []string{"command", "exitCode", "durationMs"})
 	assertJSONKeys(t, full.Env, []string{"go", "platform", "retrace"})
 
@@ -119,7 +119,7 @@ func TestManifestHopsPointerDistinguishesAbsentFromZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(b2), `"hops":{"calls":0}`) {
-		t.Fatalf(`a recorded-but-empty chain must serialize as "hops":{"calls":0}, got %s`, b2)
+	if !strings.Contains(string(b2), `"hops":{"calls":0,"missing":false}`) {
+		t.Fatalf(`a recorded-but-empty chain must serialize as "hops":{"calls":0,"missing":false}, got %s`, b2)
 	}
 }

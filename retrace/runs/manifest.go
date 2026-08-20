@@ -47,7 +47,10 @@ type Manifest struct {
 	// Capture is never omitted: "no verdict recorded" and "verdict ok" must
 	// not serialize the same way, or a broken capture reads as a clean one.
 	Capture CaptureTrust `json:"capture"`
-	Wire    Counts       `json:"wire"`
+	// Wire is never omitted, the same as Capture and unlike Hops: it always
+	// has a key, and Counts.Missing (not a nil pointer) is what says whether
+	// the count inside it is real. See Counts below.
+	Wire Counts `json:"wire"`
 	// Hops is nil in standalone mode — see ModeStandalone. Present-but-zero
 	// means the chain was recorded and was empty.
 	Hops *Counts `json:"hops,omitempty"`
@@ -78,8 +81,20 @@ type Checkpoint struct {
 	Trim bool `json:"trim,omitempty"`
 }
 
+// Counts reports how many calls were recorded on one plane (currently
+// Manifest.Wire; Manifest.Hops uses *Counts instead — see its doc comment).
+// Missing and Calls draw the same "absent vs empty" distinction Hops draws
+// with a nil pointer: Missing false with Calls 0 means "recorded, and there
+// were none" — a real, clean fact. Missing true means "not recorded", with
+// Reason saying why, and a diff must refuse to compare against it rather
+// than silently treating it as zero calls. Missing is therefore never
+// omitempty — a bool that disappears when false is exactly how "absent" and
+// "fine" end up as the same bytes on disk, which is the trap Capture's doc
+// comment also warns about.
 type Counts struct {
-	Calls int `json:"calls"`
+	Calls   int    `json:"calls"`
+	Missing bool   `json:"missing"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type Test struct {
