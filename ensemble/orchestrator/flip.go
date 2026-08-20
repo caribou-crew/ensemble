@@ -27,6 +27,13 @@ func (o *Orchestrator) Flip(ctx context.Context, name string) error {
 		return fmt.Errorf("orchestrator: flip %q: service %s has no alternate placement", name, name)
 	}
 
+	// Serialize against any concurrent Flip/Restart/Down teardown on this
+	// same service — see the serviceLocks field comment on Orchestrator.
+	// Held across the whole read-act-mutate span below, not just the map
+	// accesses.
+	unlock := o.lockService(name)
+	defer unlock()
+
 	o.mu.Lock()
 	cmd, hasProc := o.procs[name]
 	isDocker := o.dockerNodes[name]
