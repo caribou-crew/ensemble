@@ -30,6 +30,11 @@ type Proxy struct {
 	rec       *Recorder
 	transport *http.Transport
 
+	// Latency, when set, injects artificial delay per its rules. The sleep
+	// happens before the upstream clock starts so recorded upstream timings
+	// stay honest; the injected amount lands in Hop.InjectedDelayMs.
+	Latency *LatencyStore
+
 	mu      sync.Mutex
 	servers []*http.Server
 }
@@ -146,6 +151,19 @@ func (p *Proxy) handler(t Target) http.Handler {
 			T:             trace.Timings{Start: start},
 		}
 
+		// Artificial latency runs before the upstream clock starts.
+		forwardStart := start
+		if p.Latency != nil {
+			if delay := p.Latency.DelayFor(t.Name, r.URL.Path); delay > 0 {
+				hop.InjectedDelayMs = float64(delay) / float64(time.Millisecond)
+				select {
+				case <-time.After(delay):
+				case <-r.Context().Done():
+				}
+				forwardStart = time.Now()
+			}
+		}
+
 		// Capture the request body without buffering the full stream.
 		reqCap := &cappedBuffer{limit: captureLimit}
 		var reqBody io.Reader = http.NoBody
@@ -156,7 +174,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		upReq, err := http.NewRequestWithContext(r.Context(), r.Method, t.Upstream+r.URL.RequestURI(), reqBody)
 		if err != nil {
 			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
-			hop.T.DoneMs = msSince(start)
+			hop.T.DoneMs = msSince(forwardStart)
 			p.rec.Record(hop)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -174,13 +192,13 @@ func (p *Proxy) handler(t Target) http.Handler {
 			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
 			hop.Req.Headers = flatHeaders(r.Header)
 			hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
-			hop.T.DoneMs = msSince(start)
+			hop.T.DoneMs = msSince(forwardStart)
 			p.rec.Record(hop)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
-		hop.T.FirstByteMs = msSince(start)
+		hop.T.FirstByteMs = msSince(forwardStart)
 
 		// Relay the response while capturing a capped copy.
 		copyHeaders(w.Header(), resp.Header)
@@ -193,7 +211,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
 		hop.Resp.Headers = flatHeaders(resp.Header)
 		hop.Resp.Body, hop.Resp.Truncated = respCap.buf.String(), respCap.truncated
-		hop.T.DoneMs = msSince(start)
+		hop.T.DoneMs = msSince(forwardStart)
 		if copyErr != nil {
 			hop.Err = copyErr.Error()
 		}
