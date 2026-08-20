@@ -156,6 +156,16 @@ func WriteManifest(p Paths, m *Manifest) error {
 // it doesn't recognize, and a zeroed CaptureTrust would gate as clean (see
 // WriteManifest) — a version check that is written but never read implies
 // a safety that doesn't exist.
+//
+// Capture.Status is checked here too, with the same message shape as
+// WriteManifest's check (re-review residual on finding 1): WriteManifest
+// only guards manifests THIS build wrote. A manifest written by an older
+// build, or hand-edited (reference bundles are committed to git and
+// therefore hand-editable), can still carry `"capture":{"status":""}` —
+// and per the same zero-value trap, that reads as VerdictOK-equivalent to
+// any caller that doesn't re-check. Rejecting it on read makes "a manifest
+// this package will hand back always has an assessed capture verdict" an
+// invariant of ReadManifest, not just of WriteManifest.
 func ReadManifest(path string) (Manifest, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -167,6 +177,9 @@ func ReadManifest(path string) (Manifest, error) {
 	}
 	if m.Schema != Schema {
 		return Manifest{}, fmt.Errorf("runs: manifest schema %q, want %q", m.Schema, Schema)
+	}
+	if m.Capture.Status == "" {
+		return Manifest{}, fmt.Errorf("runs: manifest capture status must not be empty — pass an explicit trace.Verdict")
 	}
 	return m, nil
 }
@@ -183,6 +196,17 @@ func ReadManifest(path string) (Manifest, error) {
 // skipped and counted, never discarding hops already parsed on either side
 // of it. A real I/O error reading the file is still surfaced, alongside
 // whatever was already parsed.
+//
+// A line that is valid JSON but not a hop (e.g. "{}", or any object
+// missing the schema stamp trace.Writer always sets) unmarshals without
+// error into a zero-value trace.Hop — json.Unmarshal never complains about
+// absent fields. Left unchecked that inflates the hop count with phantom
+// records instead of surfacing the corruption (re-review residual on
+// finding 4). Checking Schema == trace.SchemaVersion after a successful
+// unmarshal, and counting a mismatch into skipped like any other corrupt
+// line, is the cheapest correct signal: every hop this package's own
+// writers produce carries it (trace.Writer stamps it unconditionally), so
+// its absence is exactly "not actually a hop record".
 func ReadHops(path string) (hops []trace.Hop, skipped int, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -202,6 +226,10 @@ func ReadHops(path string) (hops []trace.Hop, skipped int, err error) {
 		}
 		var h trace.Hop
 		if uerr := json.Unmarshal(line, &h); uerr != nil {
+			skipped++
+			continue
+		}
+		if h.Schema != trace.SchemaVersion {
 			skipped++
 			continue
 		}
