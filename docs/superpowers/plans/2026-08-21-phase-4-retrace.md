@@ -3739,6 +3739,20 @@ two halves of a single guard against "the proxy died and nobody noticed",
 and the re-review found that leaning on either alone fails on the same
 input.
 
+**This task's verdict is what Task 10's quarantine reads.** Comparing two
+captures when one of them is already known-broken produces confident
+nonsense — a diff against a `broken` reference does not mean "identical",
+it means "nobody checked". Task 10 quarantines a side from `retrace diff`
+by default whenever `runs.CaptureTrust.Status != trace.VerdictOK` for that
+side, and reports which side and why. That check is **broader than
+`Fatal`**: `Fatal` exists to answer a different question ("should this
+stop a promotion or a CI build outright") and deliberately excludes
+`suspect` so a heuristic gap-detector does not flood false alarms — but a
+`suspect` run is still not a run Task 10 should silently diff as if it
+were clean, so quarantine keys on the raw `Status`, not on `Fatal(c)`.
+Nothing changes here: `Assess` already produces `Status` and a human
+`Summary` string for every case above, and that is all Task 10 needs.
+
 - [ ] **Step 1: Write the failing trust test** — one subtest per reason code,
   ported from flowlens `src/capture-health.mjs`:
 
@@ -5082,7 +5096,13 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
 - Modify: `retrace/cmd/retrace/main.go` (dispatch `diff`)
 
 **Interfaces:**
-- Consumes: everything from Tasks 7–9, `runs.Manifest`, `capture.Fatal`.
+- Consumes: everything from Tasks 7–9, `runs.Manifest`, `capture.Fatal`,
+  `runs.CaptureTrust.Status` (Task 6). Also consumes, but does not define,
+  two `retrace.yaml` keys Task 3's config package owns: `gates:` (per-plane
+  budgets, e.g. `gates: {pixel: {budget_pct}}`) and `fail_on:` (the list of
+  plane names allowed to fail the build) — named exactly as `cfg.Gates` and
+  `cfg.FailOn` below; their yaml shape has exactly one definition, in
+  Task 3.
 - Produces (used by Tasks 11, 13, 15, 16):
   ```go
   package diff
@@ -5149,7 +5169,7 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
       Flow               string              `json:"flow"`
       A                  RunRef              `json:"a"`
       B                  RunRef              `json:"b"`
-      Verdict            string              `json:"verdict"` // "pass" | "changed" | "failed"
+      Verdict            string              `json:"verdict"` // "pass" | "changed" | "failed" | "quarantined"
       Checkpoints        []CheckpointVerdict `json:"checkpoints"`
       Wire               Wire                `json:"wire"`
       Sections           []Section           `json:"sections"`
@@ -5160,18 +5180,73 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
       Capture            CaptureBanner       `json:"capture"`
       Counts             Counts              `json:"counts"`
       Gates              []string            `json:"gates"` // human-readable reasons the verdict is "failed"
+      // Budgets is the configurable CI-gate wire contract
+      // (closed-loop-round-one item 1): one entry per PLANE that
+      // retrace.yaml's `gates:` key names, never one per plane that merely
+      // exists. A plane `gates:` does not mention gets no entry at all —
+      // "not gated" and "gated at a threshold of zero" are different
+      // configurations (a real `budget_pct: 0` legitimately means "must be
+      // pixel-identical"), and a Go zero value cannot carry both meanings,
+      // so the zero-value Gate is simply never constructed.
+      //
+      // Pixel is the exception, and NOT one this task implements: Task 3's
+      // `applyDefaults` fills `gates.pixel` from `thresholds.gate` when the
+      // key is absent, so by the time Build sees a Config the pixel plane is
+      // never missing. "Absent means not gated" is correct for wire, hop and
+      // perf, which have no default; applying it to pixel would silently
+      // ungate the one plane that IS gated today, at 0.1. Do not add a
+      // pixel special case here — read what config hands you.
+      //
+      // `fail_on` (also
+      // consumed here, not defined here — Task 3's config package owns the
+      // yaml shape for both keys) says which of these plane names can turn
+      // Verdict to "failed"; a plane can be measured and reported without
+      // being allowed to fail the build. Named `Budgets`, not `Gates`,
+      // because `Gates []string` above already answers to that json key —
+      // Task 13's worst-first score is `100 * len(Gates)` against exactly
+      // that field, and a second field claiming the same wire key would
+      // silently shadow it. `Gate.Failed` is computed from `Observed`
+      // against `Threshold` once, in `Build`, per the Global Constraint on
+      // zero values: this is the constraint's sixth instance in this plan,
+      // and it needs a test that FAILS if an unconfigured plane is ever
+      // treated as passing, not just code that happens to get it right.
+      Budgets            []Gate              `json:"budgets"`
+      // Quarantined lists the sides excluded from this comparison because
+      // their own capture-trust verdict was not "ok" (Task 6's `Assess`
+      // produces that verdict; see the cross-reference there). Empty unless
+      // `--allow-degraded` was NOT passed and at least one side warranted it.
+      Quarantined        []Quarantine        `json:"quarantined,omitempty"`
+  }
+  // Gate is one configured CI budget for one diff plane, read from
+  // retrace.yaml's `gates:` map (e.g. `gates: {pixel: {budget_pct: 2}}`).
+  type Gate struct {
+      Plane     string  `json:"plane"`      // "pixel" | "wire" | "hop" | "perf"
+      Threshold float64 `json:"threshold"`
+      Observed  float64 `json:"observed"`
+      Failed    bool    `json:"failed"`
+  }
+  // Quarantine records why one side of a comparison was refused instead of
+  // diffed. Task 6 owns the verdict this keys on and Task 10 (here) is
+  // where "not ok" becomes a refusal instead of a diff result.
+  type Quarantine struct {
+      Side   string `json:"side"`   // "a" | "b"
+      Reason string `json:"reason"` // the runs.CaptureTrust.Summary that triggered it
   }
   type CaptureBanner struct {
       A runs.CaptureTrust `json:"a"`
       B runs.CaptureTrust `json:"b"`
   }
   type BuildInput struct {
-      App, Flow  string
-      A, B       RunRef
-      Cfg        *config.Config
-      Options    Options
-      WantImages bool
-      OutDir     string          // where diff/overlay PNGs are written (usually B's run dir)
+      App, Flow     string
+      A, B          RunRef
+      Cfg           *config.Config
+      Options       Options
+      WantImages    bool
+      OutDir        string       // where diff/overlay PNGs are written (usually B's run dir)
+      // AllowDegraded disables the default quarantine of a non-ok side
+      // (--allow-degraded). false is the safe default: a run that never
+      // sets it still refuses to diff a broken capture.
+      AllowDegraded bool
   }
   func Build(in BuildInput) (Summary, error)
   // OptionsFor is the ONE place BuildInput.Options is assembled from a
@@ -5181,20 +5256,56 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
   // deviations were silently empty on every real run while the unit tests,
   // which pass Options directly, stayed green.
   func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error)
-  func ExitCode(s Summary) int          // 0 pass, 1 changed, 2 failed
+  func ExitCode(s Summary) int          // 0 pass, 1 changed, 2 failed, 3 quarantined/could-not-evaluate
   func RenderText(w io.Writer, s Summary)
   ```
 
 **Verdict rules (the CI contract — assert each one in a test):**
-- `failed` (exit 2) if ANY of: a rule `Violation` exists;
-  `RequiredRouteFailures` is non-empty; `UnexpectedStatuses` is non-empty;
-  `Perf.Status == "over"`; `capture.Fatal` is true for either side.
-  Unexpected ≥400 fails the run **regardless of pixel/wire results** — the
-  spec's explicit scenario.
+- `quarantined` (exit 3) takes priority over everything below: if either
+  resolved side's `runs.CaptureTrust.Status != trace.VerdictOK` and
+  `--allow-degraded` was not passed, `Build` sets `Quarantined` and returns
+  immediately — it does not compute checkpoints, wire, hops, gates or any
+  other field, because a comparison against a side we already believe is
+  broken is not evidence of anything. This is deliberately **wider** than
+  the `capture.Fatal` check the `failed` bullet below still uses on its own
+  terms: quarantine also catches `suspect`, which `Fatal` does not (see
+  Task 6). `--allow-degraded` disables only this early return; a fatal
+  side that slips through it still lands the run on `failed` via
+  `capture.Fatal`, unchanged from today.
+- `failed` (exit 2) if not quarantined and ANY of: a rule `Violation`
+  exists; `RequiredRouteFailures` is non-empty; `UnexpectedStatuses` is
+  non-empty; `Perf.Status == "over"`; `capture.Fatal` is true for either
+  side; a `Budgets` entry has `Failed == true` for a plane named in
+  `fail_on`. Unexpected ≥400 fails the run **regardless of pixel/wire
+  results** — the spec's explicit scenario.
 - `changed` (exit 1) if not failed and any of: a checkpoint verdict is not
   `ok`; `Wire` has changed/moved/missing/extra entries; `HopDiff` has new or
-  gone routes or a deviating service count; `Conformance` is non-empty.
+  gone routes or a deviating service count; `Conformance` is non-empty; a
+  `Budgets` entry has `Failed == true` for a plane NOT named in `fail_on`
+  (measured and reported, but not allowed to fail the build).
 - `pass` (exit 0) otherwise.
+
+**Gate budgets are computed once, per plane, not per call site.** For each
+plane `retrace.yaml`'s `gates:` map configures (`cfg.Gates`, Task 3's
+shape — Task 10 reads it, does not redefine it), `Build` derives `Observed`
+from that plane's own data (the worst per-checkpoint `DiffPct` for
+`"pixel"`, `Wire`'s change count for `"wire"`, and so on), sets
+`Failed = Observed > Threshold`, and appends one `Gate` to `Budgets`. A
+plane `gates:` never mentions gets no `Gate` at all — not a `Gate` with
+`Threshold: 0` — so "unconfigured" and "configured to zero tolerance" stay
+distinguishable, per the Global Constraint on zero values. `cfg.FailOn`
+(also read, not redefined) names which plane budgets can move `Verdict`;
+the rest surface in `Budgets`/`--json` for a reader to see but cannot fail
+the build on their own. `--no-fail` computes and reports every gate exactly
+as above but forces `ExitCode` to `0` regardless of `Verdict` — for a
+reporting run that must not break the build.
+
+Pin the zero-value rule with a test that mutates the "no entry when
+unconfigured" behavior and watches it fail — e.g. a `Cfg.Gates` with no
+`"wire"` key must produce zero `Budgets` entries for `"wire"` even when the
+wire diff changed heavily; if a stray `Gate{Plane: "wire"}` ever starts
+appearing with `Threshold: 0` (and therefore `Failed: true` on anything
+nonzero), that test must be the one that catches it.
 
 **This task owns the exit contract, so it owns the codes it does not
 produce as well.** Task 4's review found that a **signal-killed child**
@@ -5241,6 +5352,37 @@ func TestRelayFoldingIsOnByDefaultInBuild(t *testing.T) {
 	// positive `Collapse bool`, which no caller here names.
 }
 func TestACaptureTrustBannerRidesAlongInJsonAndText(t *testing.T)
+func TestANonOkSideIsQuarantinedByDefault(t *testing.T) {
+	// B's manifest carries CaptureTrust{Status: broken}. Build must set
+	// Quarantined (naming side "b" and Fatal's own reason), Verdict must be
+	// "quarantined", and NONE of Checkpoints/Wire/Hops/Budgets may be
+	// populated — a quarantined Build is not a partial diff.
+}
+func TestAllowDegradedOverridesQuarantine(t *testing.T) {
+	// same input as above, BuildInput.AllowDegraded set: Build
+	// proceeds to a real comparison, and the fatal side still lands the run
+	// on "failed" via capture.Fatal, not "quarantined".
+}
+func TestAnUnconfiguredPlaneGetsNoGateEntry(t *testing.T) {
+	// cfg.Gates has no "wire" key; the wire diff changes heavily. Budgets
+	// must contain no Gate{Plane:"wire"} at all — the regression this test
+	// exists for is a stray zero-Threshold Gate silently appearing and
+	// reading as "passed".
+}
+func TestAZeroBudgetGatesOnAnyDifference(t *testing.T) {
+	// cfg.Gates["pixel"].BudgetPct == 0 (explicitly configured, not absent):
+	// any nonzero DiffPct must set Gate.Failed true — zero-but-configured is
+	// not the same as absent.
+}
+func TestFailOnDeterminesWhichBudgetCanFailTheBuild(t *testing.T) {
+	// a "pixel" Gate.Failed with fail_on:["wire"] only  → Verdict "changed",
+	// not "failed"; the same Gate with fail_on:["pixel"] → Verdict "failed".
+}
+func TestNoFailForcesExitZeroButStillReportsGates(t *testing.T) {
+	// --no-fail on a run with a failing Gate: ExitCode is 0, but
+	// Summary.Budgets still names the failed plane — a reporting run must
+	// not also blind the reader.
+}
 func TestSummaryJsonShapeIsStable(t *testing.T) {
 	// golden: marshal a fixed Summary and compare against
 	// testdata/summary.golden.json. Field names are an API — a rename is a
@@ -5260,6 +5402,21 @@ func TestSummaryJsonShapeIsStable(t *testing.T) {
 func Build(in BuildInput) (Summary, error) {
 	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B}
 	s.Capture = CaptureBanner{A: in.A.Manifest.Capture, B: in.B.Manifest.Capture}
+
+	// --- quarantine, checked before anything else is compared. A capture
+	// whose own trust verdict is not "ok" (Task 6's Assess) makes every
+	// downstream comparison confident nonsense, so this returns immediately
+	// rather than computing a partial Summary. --allow-degraded is the only
+	// way past it; it lives on BuildInput alongside WantImages because
+	// Build, not cmd_diff alone, is the one place every caller (CLI, serve,
+	// export) goes through.
+	if !in.AllowDegraded {
+		if q := quarantineCheck(in.A, in.B); len(q) > 0 {
+			s.Quarantined = q
+			s.Verdict = "quarantined"
+			return s, nil
+		}
+	}
 
 	// --- pixel, per checkpoint, by name union so a checkpoint that
 	// appeared or vanished is its own verdict rather than a silent skip.
@@ -5392,10 +5549,14 @@ func Build(in BuildInput) (Summary, error) {
 
 	s.Counts = countOf(s)
 	s.Gates = gatesOf(s)
+	// budgetsOf builds one Gate per plane cfg.Gates configures — NEVER one
+	// per plane that merely exists. See the Budgets field doc: a plane
+	// absent from cfg.Gates gets no entry, not a zero-Threshold one.
+	s.Budgets = budgetsOf(s, in.Cfg)
 	switch {
-	case len(s.Gates) > 0:
+	case len(s.Gates) > 0 || failingBudget(s.Budgets, in.Cfg.FailOn):
 		s.Verdict = "failed"
-	case changed(s):
+	case changed(s) || len(s.Budgets) > 0 && anyFailed(s.Budgets):
 		s.Verdict = "changed"
 	default:
 		s.Verdict = "pass"
@@ -5405,6 +5566,8 @@ func Build(in BuildInput) (Summary, error) {
 
 func ExitCode(s Summary) int {
 	switch s.Verdict {
+	case "quarantined":
+		return 3
 	case "failed":
 		return 2
 	case "changed":
@@ -5447,13 +5610,17 @@ func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
 }
 ```
 
-`RenderText` prints, in this order: the capture-trust banner for either side
-when non-ok; a per-checkpoint line (`✓ cart   0.00%` / `✗ receipt  2.14%
+`RenderText` prints, in this order: when `Verdict == "quarantined"`, the
+`Quarantined` reasons and nothing else — no checkpoint/wire/hop sections
+exist to print; otherwise the capture-trust banner for either side when
+non-ok; a per-checkpoint line (`✓ cart   0.00%` / `✗ receipt  2.14%
 (fine 3.02%)  diff/shots/receipt.png`, the OutDir-relative path
 `CheckpointImages.Diff` carries); a wire section per flow part with
-worst-first entries; the hop deltas; then a `GATE:` line per entry in
-`Gates`. Wide values are never truncated — a report an agent must read is
-not a dashboard.
+worst-first entries; the hop deltas; a `GATE:` line per entry in `Gates`;
+then a `BUDGET:` line per `Budgets` entry (`BUDGET: pixel 2.00% → 3.50%
+FAILED`), so a `--no-fail` reporting run still shows every configured
+budget even though nothing in `Gates` names it. Wide values are never
+truncated — a report an agent must read is not a dashboard.
 
 - [ ] **Step 4: Run — expect PASS.**
 
@@ -5461,8 +5628,15 @@ not a dashboard.
 
 `cmd_diff.go` flags: `--flow` (required), `--app`, `--a` (default
 `reference`, else `previous`), `--b` (default `latest`), `--json`,
-`--images` (default true), `--out`. Selector resolution: `reference` →
-`refs.Resolve` (Task 11), otherwise `runs.FindRun`.
+`--images` (default true), `--out`, `--allow-degraded` (disable the
+default quarantine of a non-ok side — see the cross-reference to Task 6
+above), `--no-fail` (compute and print every `Budgets` entry as usual, but
+exit `0` regardless of `Verdict` — for a reporting run that must not break
+the build). `--no-fail` is applied last, at the CLI's own exit-code call:
+it overrides the code `ExitCode(s)` returns, it does not change `s` or
+`ExitCode` itself, so `--json` output is identical with or without it.
+Selector resolution: `reference` → `refs.Resolve` (Task 11), otherwise
+`runs.FindRun`.
 
 **The stub, and who removes it.** `refs` does not exist yet, so
 `resolveSide("reference")` returns a `RunRef{Kind: "none"}` and
@@ -5490,12 +5664,19 @@ if err != nil {
 s, err := diff.Build(diff.BuildInput{
 	App: app, Flow: *flow, A: a, B: b, Cfg: cfg,
 	Options: opts, WantImages: *images, OutDir: outDir,
+	AllowDegraded: *allowDegraded,
 })
+...
+code := diff.ExitCode(s)
+if *noFail {
+	code = 0   // report every gate, but never break the build
+}
 ```
 
 Tests: `TestDiffExitsZeroOnIdenticalRuns`,
 `TestDiffExitsOneWhenAFieldChanged`,
 `TestDiffExitsTwoOnAnUnexpected500`,
+`TestDiffExitsThreeOnAQuarantinedSide`,
 `TestDiffJsonIsParseableAndCarriesTheVerdict`,
 `TestDiffNamesTheMissingRunInsteadOfPanicking`,
 `TestSectionsComeFromTheManifestsGroups` — **the reading half of Task 4's
