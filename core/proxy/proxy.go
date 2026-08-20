@@ -18,6 +18,10 @@ type Target struct {
 	Name     string // logical service name, becomes Hop.To
 	Listen   string // e.g. "127.0.0.1:7003"; ":0" picks an ephemeral port
 	Upstream string // base URL of the real service, e.g. "http://localhost:8003"
+	// InjectBaggage entries are forced into the trace context of every
+	// request through this listener — how a session's client-edge port
+	// stamps encore-run without the client knowing anything about it.
+	InjectBaggage map[string]string
 }
 
 // captureLimit caps how much request/response body is *captured* (never how
@@ -53,16 +57,34 @@ func New(rec *Recorder) *Proxy {
 // Serve opens the target's listener and starts intercepting immediately.
 // It returns the bound address (useful with ":0").
 func (p *Proxy) Serve(t Target) (string, error) {
+	addr, _, err := p.ServeStoppable(t)
+	return addr, err
+}
+
+// ServeStoppable is Serve with a per-listener stop, used for ephemeral
+// listeners like session client-edge ports.
+func (p *Proxy) ServeStoppable(t Target) (string, func(), error) {
 	ln, err := net.Listen("tcp", t.Listen)
 	if err != nil {
-		return "", fmt.Errorf("proxy %s: %w", t.Name, err)
+		return "", nil, fmt.Errorf("proxy %s: %w", t.Name, err)
 	}
 	srv := &http.Server{Handler: p.handler(t)}
 	p.mu.Lock()
 	p.servers = append(p.servers, srv)
 	p.mu.Unlock()
 	go srv.Serve(ln)
-	return ln.Addr().String(), nil
+	stop := func() {
+		srv.Close()
+		p.mu.Lock()
+		for i, s := range p.servers {
+			if s == srv {
+				p.servers = append(p.servers[:i], p.servers[i+1:]...)
+				break
+			}
+		}
+		p.mu.Unlock()
+	}
+	return ln.Addr().String(), stop, nil
 }
 
 // Close shuts every listener down.
@@ -133,10 +155,17 @@ func (p *Proxy) handler(t Target) http.Handler {
 			incomingSpan = ctx.SpanID
 		}
 		hopCtx := ctx.Child()
+		for k, v := range t.InjectBaggage {
+			hopCtx.Baggage[k] = v
+		}
 		hopCtx.EnsureCorrelationID()
 		// Downstream calls made by this service will carry hopCtx's span as
 		// parent — claim it so the next hop can name this service as caller.
 		p.rec.ClaimSpan(hopCtx.SpanID, t.Name)
+		// Claim trace->session at request START: nested hops are RECORDED
+		// inner-first, but they always start outer-first, so gap detection
+		// can trust this ordering.
+		p.rec.ClaimTrace(hopCtx.TraceID, hopCtx.Session())
 
 		hop := trace.Hop{
 			TraceID:       hopCtx.TraceID,

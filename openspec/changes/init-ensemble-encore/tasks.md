@@ -31,32 +31,32 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
 ## Phase 0 — Repo scaffolding
 
-- [ ] 0.1 Go workspace (`go.work`, three modules), pnpm workspace, root
+- [x] 0.1 Go workspace (`go.work`, three modules), pnpm workspace, root
       `package.json` scripts, CI (GitHub Actions: go test -race, vitest, lint),
       LICENSE (MIT), CONTRIBUTING stub. Verify: CI green on empty tests.
 
 ## Phase 1 — core: trace model + proxy (the load-bearing phase)
 
-- [ ] 1.1 `core/trace`: Hop struct + NDJSON codec + schema version; W3C
+- [x] 1.1 `core/trace`: Hop struct + NDJSON codec + schema version; W3C
       traceparent/baggage parse+stamp helpers (`correlationId`, `encore-run`
       keys). Golden tests from the JS prototype `hops` fixtures.
       Produces: `trace.Hop`, `trace.ParseCtx(header) Ctx`, `trace.Ctx.Child()`.
-- [ ] 1.2 `core/trace`: redaction (default header set + user list, applied at
+- [x] 1.2 `core/trace`: redaction (default header set + user list, applied at
       construction); body size-capping with truncation markers.
-- [ ] 1.3 `core/trace`: relay-collapse (port logic + tests from
+- [x] 1.3 `core/trace`: relay-collapse (port logic + tests from
       `local-stack/web/src/trace/collapse.ts`).
-- [ ] 1.4 `core/trace/export`: HAR 1.2, curl, raw. Golden tests from
+- [x] 1.4 `core/trace/export`: HAR 1.2, curl, raw. Golden tests from
       `local-stack/web/src/trace/export.ts` fixtures.
-- [ ] 1.5 `core/proxy`: single-process multi-listener reverse proxy; per-hop
+- [x] 1.5 `core/proxy`: single-process multi-listener reverse proxy; per-hop
       capture (timings: in/first-byte/done) → ring buffer + NDJSON appender +
       SSE broadcaster with cursor replay. Integration test: 3 chained listeners
       → one trace, joined ids.
-- [ ] 1.6 `core/proxy`: latency rules (longest-prefix per target+path; fixed +
+- [x] 1.6 `core/proxy`: latency rules (longest-prefix per target+path; fixed +
       p50/p95/p99 sampled distribution), live rule store, injected-delay
       recorded distinctly on the hop.
-- [ ] 1.7 `core/stub`: config-defined match→respond engine (method/path,
+- [x] 1.7 `core/stub`: config-defined match→respond engine (method/path,
       status/headers/body_file, Go template option); stub hits emit hops.
-- [ ] 1.8 `core/proxy`: sessions — registry, ephemeral client-edge listener
+- [x] 1.8 `core/proxy`: sessions — registry, ephemeral client-edge listener
       stamping `encore-run` baggage, hop partitioning (session vs ambient),
       propagation-gap detector → capture-trust verdict. Test: two concurrent
       sessions + ambient traffic, zero cross-contamination.
