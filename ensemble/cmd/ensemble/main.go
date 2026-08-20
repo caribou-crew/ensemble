@@ -21,7 +21,7 @@ var version = "dev"
 const usage = `ensemble — local backend orchestrator CLI
 
 Usage:
-  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api :4700]
+  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700]
   ensemble status [--api-url URL] [--json]
   ensemble down [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
