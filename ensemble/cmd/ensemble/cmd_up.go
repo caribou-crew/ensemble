@@ -27,17 +27,36 @@ type upOptions struct {
 	Addr       string // control-plane API listen address, e.g. ":4700"
 }
 
-func cmdUp(args []string, stdout, stderr io.Writer) int {
+// defaultAPIAddr is the loopback-only control-plane listen address `ensemble
+// up` binds unless overridden with --api. It must match defaultAPIURL()'s
+// client-side assumption (main.go) that the API lives on 127.0.0.1:4700.
+//
+// Deliberately NOT ":4700" (all interfaces): every route except
+// POST /api/shutdown is unauthenticated, so binding wide would expose full
+// captured request/response bodies, arbitrary seed execution, and
+// service/latency control to anyone on the local network.
+const defaultAPIAddr = "127.0.0.1:4700"
+
+// parseUpOptions parses `up`'s flags into an upOptions. Split out of cmdUp
+// so tests can assert on flag defaults (notably --api's loopback default)
+// without driving a full process.
+func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("c", "ensemble.yaml", "path to ensemble.yaml")
 	profile := fs.String("profile", "", "comma-separated active profiles")
-	addr := fs.String("api", ":4700", "control-plane API listen address")
+	addr := fs.String("api", defaultAPIAddr, "control-plane API listen address")
 	if err := fs.Parse(args); err != nil {
+		return upOptions{}, err
+	}
+	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Addr: *addr}, nil
+}
+
+func cmdUp(args []string, stdout, stderr io.Writer) int {
+	opts, err := parseUpOptions(args, stderr)
+	if err != nil {
 		return 2
 	}
-
-	opts := upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Addr: *addr}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

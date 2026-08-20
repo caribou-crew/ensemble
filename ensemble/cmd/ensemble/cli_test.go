@@ -498,3 +498,36 @@ func TestCLI_UnknownCommandIsExitCode2(t *testing.T) {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
 }
+
+// TestUpDefaultAPIAddrIsLoopback guards final-review finding C1: `ensemble
+// up` used to default --api to ":4700", binding the entire unauthenticated
+// control plane (traffic capture including bodies, arbitrary seed
+// execution, service restart/flip, latency injection) to every interface.
+// The default must be loopback-only, matching defaultAPIURL()'s client-side
+// assumption that the API lives at 127.0.0.1:4700.
+func TestUpDefaultAPIAddrIsLoopback(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, err := parseUpOptions(nil, &stderr)
+	if err != nil {
+		t.Fatalf("parseUpOptions: %v", err)
+	}
+	if opts.Addr != "127.0.0.1:4700" {
+		t.Fatalf("default --api = %q, want %q", opts.Addr, "127.0.0.1:4700")
+	}
+}
+
+// TestDefaultAPIURLMatchesUpDefaultAddr pins the client/server default
+// contract: the client commands' default --api-url must point at exactly
+// the address `ensemble up` binds by default.
+func TestDefaultAPIURLMatchesUpDefaultAddr(t *testing.T) {
+	t.Setenv("ENSEMBLE_API", "")
+	var stderr bytes.Buffer
+	opts, err := parseUpOptions(nil, &stderr)
+	if err != nil {
+		t.Fatalf("parseUpOptions: %v", err)
+	}
+	want := "http://" + opts.Addr
+	if got := defaultAPIURL(); got != want {
+		t.Fatalf("defaultAPIURL() = %q, want %q (matching up's default --api)", got, want)
+	}
+}
