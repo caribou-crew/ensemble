@@ -5170,6 +5170,25 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
   gone routes or a deviating service count; `Conformance` is non-empty.
 - `pass` (exit 0) otherwise.
 
+**This task owns the exit contract, so it owns the codes it does not
+produce as well.** Task 4's review found that a **signal-killed child**
+surfaces as `-1` (or `255` once the shell has it), which is outside the
+0/1/2/3 contract entirely — so a test run killed by CI's timeout or by
+Ctrl-C is indistinguishable from garbage rather than reporting a defined
+status. Map it explicitly: a child terminated by a signal is a run that
+did not complete, not a diff result. Decide and state which code it takes
+(`3`, alongside config/IO failures, is the natural home since it is a
+"could not evaluate" rather than a "found differences"), and pin it with a
+test that kills a child and asserts the mapped code.
+
+Two constraints on that test, both already paid for once in this project:
+assert through a **BUILT binary** (`go run` collapses every non-zero status
+to 1, so an assertion through it passes only for the one case that does not
+matter), and pin the **literal numbers** rather than the named constants —
+Task 1 shipped `exitDiff`/`exitGate` pinned only by constant assertion
+because no subcommand emitted them yet, and this is the task where they
+finally do.
+
 - [ ] **Step 1: Write the failing summary test**
 
 ```go
@@ -5969,6 +5988,22 @@ git commit -m "feat(retrace): strict replay with miss reporting, and revalidate 
   **extracted in Task 4**, which is also its first consumer (the marker
   door). This task adds no second copy and no new guard code; it wraps its
   mux exactly as Task 4's door does.
+
+  **This task owns the one open guard defect, because it is the first task
+  to pass a non-nil `allowedHosts`.** Task 4's review probed the guard
+  across 27 Host forms, 16 Origin forms and 4 raw-socket shapes and found
+  the `nil` and `"*"` paths correct — `nil` is loopback-only, `"*"` still
+  enforces `Sec-Fetch-Site`. It also found a **pre-existing** bypass in the
+  configured-hosts path involving a `"*:8080"`-shaped entry, which predates
+  the extraction and was deliberately NOT fixed in Task 4: changing host
+  matching as a ride-along in a fix round is how a security regression gets
+  in unexamined. Fix it here, where configured hosts are the subject rather
+  than a passenger, with its own test — and pin the two properties Task 4
+  established so a later change cannot quietly undo them: `nil` must stay
+  loopback-only rather than wide open, and `"*"` must keep enforcing
+  `Sec-Fetch-Site`. Both are zero-value traps on a security boundary, and
+  the Global Constraint on zero values requires each to be pinned by a test
+  that FAILS when the property is violated.
 - Produces:
   ```go
   package serve
