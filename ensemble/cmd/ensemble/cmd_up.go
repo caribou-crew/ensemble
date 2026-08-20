@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -36,6 +37,15 @@ type upOptions struct {
 // captured request/response bodies, arbitrary seed execution, and
 // service/latency control to anyone on the local network.
 const defaultAPIAddr = "127.0.0.1:4700"
+
+// Hop log rotation budget: at most hopLogKeep+1 files of hopLogMaxBytes
+// each under .ensemble/, i.e. half a gigabyte at the defaults below. Sized
+// so a long soak still leaves days of history on disk while the ceiling
+// stays something a laptop won't notice.
+const (
+	hopLogMaxBytes = 128 << 20 // 128 MiB per file
+	hopLogKeep     = 3         // hops.jsonl.1 .. hops.jsonl.3
+)
 
 // parseUpOptions parses `up`'s flags into an upOptions. Split out of cmdUp
 // so tests can assert on flag defaults (notably --api's loopback default)
@@ -86,10 +96,12 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	}
 
 	hopsPath := filepath.Join(cfg.Dir, ".ensemble", "hops.jsonl")
-	if err := os.MkdirAll(filepath.Dir(hopsPath), 0o755); err != nil {
-		return fmt.Errorf("create .ensemble dir: %w", err)
-	}
-	hopsFile, err := os.OpenFile(hopsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Rotating, and owner-only (0700/0600, not 0755/0644): hops.jsonl is a
+	// verbatim capture of every request and response flowing through the
+	// stack — bearer tokens the redactor didn't know to scrub, session
+	// cookies, customer data — and an unbounded append would fill the disk
+	// of anyone who leaves a stack (or a retry loop) running overnight.
+	hopsFile, err := trace.OpenRotatingFile(hopsPath, hopLogMaxBytes, hopLogKeep)
 	if err != nil {
 		return fmt.Errorf("open hops log: %w", err)
 	}
@@ -157,9 +169,10 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	shutdownCtx, cancelShutdown := context.WithCancel(ctx)
 	defer cancelShutdown()
 
+	allowedHosts, exposureWarning := apiHostPolicy(opts.Addr)
 	handler := server.New(server.Deps{
 		Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: version,
-		Shutdown: cancelShutdown,
+		Shutdown: cancelShutdown, AllowedHosts: allowedHosts,
 	})
 
 	// "starting", not "serving": server.Serve binds inside the goroutine
@@ -167,6 +180,9 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	// select below is what actually observes bind success (shutdownCtx
 	// stays live) vs. failure (serveErrCh fires immediately).
 	fmt.Fprintf(stdout, "ensemble: starting API on %s\n", opts.Addr)
+	if exposureWarning != "" {
+		fmt.Fprintln(stderr, exposureWarning)
+	}
 	serveErrCh := make(chan error, 1)
 	go func() { serveErrCh <- server.Serve(shutdownCtx, opts.Addr, handler) }()
 
@@ -193,6 +209,43 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return serveErr
 	}
 	return downErr
+}
+
+// apiHostPolicy translates a --api bind address into the browser guard's
+// extra allowed hosts (see server.Deps.AllowedHosts) and, when the bind
+// reaches past this machine, the warning runUp prints about it.
+//
+// Loopback binds need no extra hosts — the guard always allows loopback
+// and "localhost". A wildcard bind (":4700", "0.0.0.0:4700", "[::]:4700")
+// can be reached under any hostname that resolves here, none of which we
+// can enumerate, so host/origin matching is turned off with "*" and the
+// user is told what they just opened. A specific non-loopback address is
+// allowed under exactly that name, and warned about too.
+func apiHostPolicy(addr string) (hosts []string, warning string) {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return []string{"*"}, exposedWarning(addr)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil, ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil, ""
+	}
+	return []string{host}, exposedWarning(addr)
+}
+
+func exposedWarning(addr string) string {
+	return fmt.Sprintf(
+		"ensemble: WARNING: the control-plane API is bound to %s, which is reachable from outside this machine.\n"+
+			"ensemble: every route except POST /api/shutdown is unauthenticated — anyone who can reach that address\n"+
+			"ensemble: can read captured request/response bodies, run seeds, restart services, and inject latency.\n"+
+			"ensemble: bind to 127.0.0.1 (the default) unless you mean it.", addr)
 }
 
 // startStubs starts every config-defined stub HTTP server, mapping
