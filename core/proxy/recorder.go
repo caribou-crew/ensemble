@@ -36,9 +36,9 @@ type Recorder struct {
 	// traceSes maps trace id -> session id, claimed at request START so
 	// causal order holds even though hops are recorded at completion
 	// (nested calls complete inner-first).
-	traceSes  map[string]string
-	traceQ    []string
-	traceCap  int
+	traceSes map[string]string
+	traceQ   []string
+	traceCap int
 }
 
 func NewRecorder(opts RecorderOpts) *Recorder {
