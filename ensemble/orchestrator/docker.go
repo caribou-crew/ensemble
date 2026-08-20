@@ -31,17 +31,62 @@ func dockerRunService(name string, d *config.DockerPlacement) error {
 	return runDocker(name, args)
 }
 
-// dockerRunDatabase starts a Database via the same driver.
-func dockerRunDatabase(name string, db config.Database) error {
+// defaultContainerPorts maps a managed database's Type to the port its
+// image listens on by default *inside* the container — independent of
+// db.Port, which is the HOST port ensemble publishes it under. Every
+// managed image ensemble knows about listens on its own fixed port
+// regardless of what host port the user picks (task 3.6, defect D2):
+// publishing host db.Port to container db.Port is dead on arrival for any
+// non-default db.Port, since nothing inside the container listens there.
+var defaultContainerPorts = map[string]int{
+	"postgres":   5432,
+	"mysql":      3306,
+	"redis":      6379,
+	"dynamodb":   8000,
+	"localstack": 4566,
+}
+
+// resolveContainerPort picks db's container-side port: db.ContainerPort
+// when explicitly set (the config escape hatch for an image on a
+// non-default port), else the defaultContainerPorts entry for db.Type,
+// else db.Port itself for an unknown/empty type — guessing a wrong
+// container port for an image ensemble doesn't recognize would be worse
+// than today's host==container behavior.
+func resolveContainerPort(db config.Database) int {
+	if db.ContainerPort != 0 {
+		return db.ContainerPort
+	}
+	if p, ok := defaultContainerPorts[db.Type]; ok {
+		return p
+	}
+	return db.Port
+}
+
+// dockerRunDatabaseArgs builds dockerRunDatabase's argv as a pure function
+// of name and db, so it can be unit-tested without invoking docker (task
+// 3.6, brief step 1).
+func dockerRunDatabaseArgs(name string, db config.Database) []string {
 	args := []string{"run", "-d", "--name", dockerContainerName(name)}
 	if db.Port != 0 {
-		args = append(args, "-p", fmt.Sprintf("%d:%d", db.Port, db.Port))
+		// Bind to loopback explicitly (127.0.0.1:host:container), not
+		// docker's default 0.0.0.0 publish. Without this, a database
+		// container whose server never comes up (or a port that shadows a
+		// developer's own local server on the same port — task 3.6 defect
+		// D1) is reachable from anywhere docker's published-port proxy is
+		// reachable from, silently, instead of failing loudly with a bind
+		// conflict against a loopback-only listener.
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", db.Port, resolveContainerPort(db)))
 	}
 	for k, v := range db.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 	args = append(args, db.Image)
-	return runDocker(name, args)
+	return args
+}
+
+// dockerRunDatabase starts a Database via the same driver.
+func dockerRunDatabase(name string, db config.Database) error {
+	return runDocker(name, dockerRunDatabaseArgs(name, db))
 }
 
 func runDocker(name string, args []string) error {
