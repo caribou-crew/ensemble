@@ -387,16 +387,32 @@ lives in `diff` rather than `refs`: `refs.Reject` needs a `diff.Summary`, so
   func RunsRoot(cwd string) string                       // <cwd>/.retrace/runs
   func RefsRoot(cwd string) string                       // <cwd>/.retrace-ref
   func NewRunID(now time.Time, sha string) string        // 20260821T101500Z-ab12cd3
-  func PathsFor(root, app, flow, runID string) Paths
+  func PathsFor(root, app, flow, runID string) (Paths, error)  // validates each component
   func Create(root, app, flow, runID string) (Paths, error)
   func ListApps(root string) []string
   func ListFlows(root, app string) []string
   func ListRuns(root, app, flow string) []string         // lexical order == chronological
   func FindRun(root, app, flow, selector string) string  // "latest" | runId | short sha; "" = none
-  func WriteManifest(p Paths, m Manifest) error
+  func WriteManifest(p Paths, m *Manifest) error         // stamps Schema on the caller's copy; errors on empty Capture.Status
   func ReadManifest(path string) (Manifest, error)
-  func ReadHops(path string) ([]trace.Hop, error)        // "" file → nil, nil
+  func ReadHops(path string) (hops []trace.Hop, skipped int, err error)  // missing file → nil,0,nil; corrupt lines skipped and counted
   func AppendGroupRecord(runDir string, r GroupRecord) error
+
+**Three signatures moved in Task 1's fix round (commit `7e5d5f3`); the
+committed code is authoritative and this block matches it.** `PathsFor`
+returns an error because it now validates `app`/`flow`/`runID` — the
+original joined caller-supplied names straight into `filepath.Join`, which
+*resolves* `..` rather than rejecting it, so `Create(root, "web",
+"checkout", "../../../../escaped")` returned a nil error while making a
+directory outside the runs root, invisible to every listing function.
+Validating once here is deliberate: Tasks 4, 12 and 13 all route
+request-derived values into these functions. `WriteManifest` takes a
+pointer so the schema stamp and defaults land on the caller's copy, and it
+now REJECTS an empty `Capture.Status` (an empty verdict ranks equal to
+`ok`, so an unassessed run would have gated as clean). `ReadHops` returns a
+skipped count so a partially corrupt hop log degrades visibly instead of
+either sinking a whole diff or vanishing silently. Call sites throughout
+this plan are written against these shapes.
   func ReadGroupRecords(runDir string) ([]GroupRecord, error)
   func DeriveGroups(records []GroupRecord, finishedAt time.Time) []Group
   func GroupAt(groups []Group, ts time.Time) string
@@ -558,7 +574,7 @@ type Paths struct {
 	MissesPath   string // replay only
 }
 
-func PathsFor(root, app, flow, runID string) Paths {
+func PathsFor(root, app, flow, runID string) (Paths, error) {  // see fix-round note below
 	dir := filepath.Join(root, app, flow, runID)
 	return Paths{
 		RunDir:       dir,
@@ -692,14 +708,14 @@ func TestReadHopsSkipsBlankLinesAndMissingFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	hops, err := ReadHops(path)
-	if err != nil {
-		t.Fatalf("ReadHops: %v", err)
+	hops, skipped, err := ReadHops(path)
+	if err != nil || skipped != 0 {
+		t.Fatalf("ReadHops: %v (skipped %d)", err, skipped)
 	}
 	if len(hops) != 2 || hops[1].To != "cart" {
 		t.Fatalf("hops = %+v", hops)
 	}
-	missing, err := ReadHops(dir + "/nope.jsonl")
+	missing, _, err := ReadHops(dir + "/nope.jsonl")
 	if err != nil || missing != nil {
 		t.Fatalf("missing file must be (nil, nil), got (%v, %v)", missing, err)
 	}
@@ -823,7 +839,7 @@ type Gap struct {
 	Seconds int       `json:"seconds"`
 }
 
-func WriteManifest(p Paths, m Manifest) error {
+func WriteManifest(p Paths, m *Manifest) error {  // see fix-round note below
 	m.Schema = Schema
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -847,7 +863,7 @@ func ReadManifest(path string) (Manifest, error) {
 // ReadHops loads an NDJSON hop file through core/trace's reader, so retrace
 // never re-implements the schema's parsing. A missing file is (nil, nil):
 // a standalone run legitimately has no hops.jsonl.
-func ReadHops(path string) ([]trace.Hop, error) {
+func ReadHops(path string) (hops []trace.Hop, skipped int, err error) {  // see fix-round note below
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -2503,8 +2519,8 @@ func TestStandaloneCaptureRecordsClientEdgeHopsAndWritesWireJsonl(t *testing.T) 
 	resp.Body.Close()
 	if err := s.Close(); err != nil { t.Fatalf("Close: %v", err) }
 
-	hops, err := runs.ReadHops(s.Paths.WirePath)
-	if err != nil || len(hops) != 1 { t.Fatalf("wire.jsonl hops = %v (%v)", hops, err) }
+	hops, skipped, err := runs.ReadHops(s.Paths.WirePath)
+	if err != nil || skipped != 0 || len(hops) != 1 { t.Fatalf("wire.jsonl hops = %v (%v)", hops, err) }
 	if hops[0].Path != "/cart" || hops[0].Status != 200 {
 		t.Fatalf("hop = %+v", hops[0])
 	}
@@ -2993,7 +3009,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 
 	// Read back what actually reached disk rather than what the ring
 	// happened to hold — Close() has already flushed.
-	wireHops, err := runs.ReadHops(s.Paths.WirePath)
+	wireHops, _, err := runs.ReadHops(s.Paths.WirePath)
 	if err != nil {
 		return runs.Manifest{}, err
 	}
@@ -3033,7 +3049,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	if s.Mode == runs.ModeEnsemble {
 		m.Hops = &runs.Counts{Calls: len(hops)}
 	}
-	return m, runs.WriteManifest(s.Paths, m)
+	return m, runs.WriteManifest(s.Paths, &m)
 }
 ```
 
@@ -3239,7 +3255,7 @@ func TestDrainWaitsForLateHopsBeforeEndingTheSession(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	hops, _ := runs.ReadHops(s.Paths.HopsPath)
+	hops, _, _ := runs.ReadHops(s.Paths.HopsPath)
 	if len(hops) != 2 {
 		t.Fatalf("Drain must not end the session before late hops land: got %d, want 2", len(hops))
 	}
@@ -5179,15 +5195,15 @@ func Build(in BuildInput) (Summary, error) {
 	// one place that copies, because a shipped tree must be self-contained.
 
 	// --- wire, from each side's client-edge hops
-	hopsA, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
+	hopsA, _, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
 	...
 	s.Wire = DiffWire(hopsA, hopsB, in.Options)
 	s.Sections = BuildSections(s.Wire.Paired, s.Wire.Groups)
 
 	// --- hops, from the full chain; absent on a standalone run, and that
 	// is reported as "not captured", never as "no differences".
-	chainA, _ := runs.ReadHops(filepath.Join(in.A.Dir, "hops.jsonl"))
-	chainB, _ := runs.ReadHops(filepath.Join(in.B.Dir, "hops.jsonl"))
+	chainA, _, _ := runs.ReadHops(filepath.Join(in.A.Dir, "hops.jsonl"))
+	chainB, _, _ := runs.ReadHops(filepath.Join(in.B.Dir, "hops.jsonl"))
 	if chainA != nil || chainB != nil {
 		// NoCollapse is deliberately not set: folding is on by default,
 		// and the default is what every real run gets. Task 9's
