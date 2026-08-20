@@ -1,0 +1,58 @@
+services:
+  bff:
+    dir: ../my-company/bff-service
+    build: npm run build
+    run: node dist/main.js
+    port: 8003
+    proxy: 7003
+    env:
+      DOWNSTREAM_SVC_A: "http://localhost:7004"
+    health: /healthz
+    depends_on: [svc-a, postgres]
+    entry: true
+  svc-a:
+    dir: ../my-company/svc-a
+    run: node dist/main.js
+    port: 8004
+    proxy: 7004
+  ledger:
+    dir: ~/work/ledger-service
+    run: java -jar build/libs/ledger-0.4.2.jar
+    port: 8005
+    proxy: 7005
+    profile: full
+  payments:
+    docker:
+      image: payments:local
+      ports: ["8010:8080"]
+databases:
+  postgres:
+    image: postgres:16
+    port: 5432
+    seed: baseline
+  dynamo:
+    image: amazon/dynamodb-local
+    port: 8000
+    type: dynamodb
+  aws:
+    image: localstack/localstack
+    port: 4566
+    type: localstack
+    services: [dynamodb, sqs]
+stubs:
+  aws-kms:
+    port: 7020
+    routes:
+      - match: { method: POST, path: /encrypt }
+        respond: { status: 200, body_file: ./stubs/kms-encrypt.json, template: true }
+entities:
+  users: { base: "http://localhost:7003/users", id: token }
+latency:
+  defaults: []
+seeds:
+  baseline:
+    sql:
+      - database: postgres
+        file: ./seeds/init.sql
+profiles:
+  full: [ledger]
