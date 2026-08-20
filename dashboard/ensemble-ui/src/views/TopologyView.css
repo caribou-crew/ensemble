@@ -201,6 +201,22 @@
   white-space: nowrap;
 }
 
+.topo-hop-seq {
+  color: var(--text-tertiary);
+}
+
+/* Nested-call indent, ported from local-stack-console's TopologyTab.tsx: paddingLeft scales
+   with hopDepths()'s reconstructed call-stack depth, so a sub-call visibly nests under the
+   hop that made it rather than reading as another sibling row. */
+.topo-hop-consumer {
+  padding-left: 0;
+}
+
+.topo-hop-nest-glyph {
+  color: var(--text-tertiary);
+  margin-right: 0.25rem;
+}
+
 .topo-hop-method {
   color: var(--status-blue);
 }
