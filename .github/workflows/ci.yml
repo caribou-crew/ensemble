@@ -14,6 +14,10 @@ jobs:
           go-version: "1.25"
       - run: go vet ./core/... ./ensemble/... ./encore/...
       - run: go test -race ./core/... ./ensemble/... ./encore/...
+      - name: goreleaser config check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: check
 
   ts:
     runs-on: ubuntu-latest
