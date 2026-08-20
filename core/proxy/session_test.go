@@ -200,6 +200,51 @@ func TestUnattributedMidChainTrafficMarksSuspect(t *testing.T) {
 	})
 }
 
+// TestControlPlaneAnnotationDoesNotDegradeSession guards against a
+// specific integration bug found in ensemble/server's task-2.4 review:
+// mutating API endpoints record a control-plane annotation hop straight
+// into the same Recorder SessionManager subscribes to (To:
+// "ensemble-control", no TraceID, no Session, no From — see
+// ensemble/server/routes.go's withAnnotation). Without a guard, the
+// context-less-mid-chain-arrival heuristic below treats that exactly like
+// unattributed real traffic and permanently degrades every active session
+// to "suspect" from ordinary control-plane usage (e.g. adjusting a latency
+// rule while recording).
+func TestControlPlaneAnnotationDoesNotDegradeSession(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 64})
+	p := New(rec)
+	defer p.Close()
+	frontProxy := buildChain(t, p, []string{"traceparent", "baggage"})
+
+	mgr := NewSessionManager(p, rec, []string{"svc-front"})
+	defer mgr.Close()
+	ses, err := mgr.Start("run-ctl", "svc-front", "http://"+frontProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mirrors exactly what withAnnotation records for every mutating API
+	// call: no trace context at all, To a sentinel name that's never a
+	// real entry service.
+	rec.Record(trace.Hop{
+		To:     "ensemble-control",
+		Method: "PUT",
+		Path:   "/api/latency",
+		Status: 200,
+	})
+
+	// A real session call afterward: SessionManager.loop is a single
+	// goroutine ranging over the Recorder's subscription channel in
+	// delivery order, so these hops landing in ses.Hops() proves the
+	// annotation above was already routed — no sleep-based race needed.
+	mustGet(t, "http://"+ses.EdgeAddr+"/flow")
+	waitFor(t, "session hops after annotation", func() bool { return len(ses.Hops()) == 3 })
+
+	if v, reasons := ses.Verdict(); v != trace.VerdictOK {
+		t.Fatalf("control-plane annotation degraded the session: verdict=%v reasons=%v", v, reasons)
+	}
+}
+
 func TestEndStopsEdgeAndFinalizesSession(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 64})
 	p := New(rec)

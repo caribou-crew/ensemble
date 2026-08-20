@@ -119,6 +119,19 @@ func (m *SessionManager) route(h trace.Hop) {
 		return
 	}
 
+	// A hop with no trace id never passed through the proxy's request
+	// handling — every real proxied request gets one, minted or inherited
+	// (see proxy.go's handler: trace.ParseCtx always yields a non-empty
+	// TraceID). This is how a control-plane annotation looks (recorded
+	// straight into the Recorder for an API mutation, not a proxied call —
+	// see ensemble/server's withAnnotation). Without a provable trace it
+	// can't be shown to belong to, or be a gap in, any traced chain, so it
+	// must never influence a session's capture-trust verdict — skip it
+	// before either heuristic below gets a chance to misfire on it.
+	if h.TraceID == "" {
+		return
+	}
+
 	if len(m.sessions) == 0 {
 		return // pure ambient, nobody recording
 	}
