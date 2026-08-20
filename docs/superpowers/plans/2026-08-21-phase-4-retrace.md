@@ -578,9 +578,9 @@ func dirNames(dir string) []string {
 	return out
 }
 
-func ListApps(root string) []string              { return dirNames(root) }
-func ListFlows(root, app string) []string         { return dirNames(filepath.Join(root, app)) }
-func ListRuns(root, app, flow string) []string    { return dirNames(filepath.Join(root, app, flow)) }
+func ListApps(root string) []string            { return dirNames(root) }
+func ListFlows(root, app string) []string      { return dirNames(filepath.Join(root, app)) }
+func ListRuns(root, app, flow string) []string { return dirNames(filepath.Join(root, app, flow)) }
 
 // FindRun resolves a user-facing selector: "latest", an exact run id, or a
 // git sha (full or short) whose run id ends in its 7-char prefix. Returns
@@ -780,7 +780,7 @@ type Test struct {
 type Env struct {
 	Go       string `json:"go"`
 	Platform string `json:"platform"`
-	Retrace   string `json:"retrace"`
+	Retrace  string `json:"retrace"`
 }
 
 // CaptureTrust is the capture-trust verdict every report surface banners.
@@ -1829,6 +1829,10 @@ splits the user-facing story for no gain.
   type RequiredRoute struct { Method, Path string; Status int }
   type Rect struct { X, Y, Width, Height int }    // json+yaml tags, see Step 3
   type Thresholds struct { Gate, Fine float64 }   // defaults DefaultGate / DefaultFine
+  // EVERY type in this package needs explicit `yaml:` tags — Load uses
+  // dec.KnownFields(true) and yaml.v3 matches lower-cased field names, so
+  // an untagged `WireIgnore` rejects `wire_ignore` outright. Step 3 writes
+  // them all out.
   func Load(path string) (*Config, error)
   func Discover(cwd string) (*Config, error)      // retrace.yaml then .retrace/wire-rules.json overlay
   func (c *Config) Rules() ([]rules.Rule, error)
@@ -1932,7 +1936,68 @@ func TestMasksForFallsBackToTheWildcardCheckpoint(t *testing.T) {
 
 - [ ] **Step 3: Implement `retrace/config/config.go`**
 
-Key body (the rest is straightforward struct tags):
+**Write the `yaml:` tags out — they are not optional decoration here.**
+`Load` sets `dec.KnownFields(true)`, and yaml.v3's default field matching is
+*lower-cased field name*, not snake_case: `WireIgnore` matches `wireignore`,
+**never** `wire_ignore`. So a missing tag is not a silently-ignored key, it
+is a hard `Load` error — `field wire_ignore not found in type config.Config`
+— on the very fixture above. Every multi-word key needs its tag:
+
+```go
+type Config struct {
+	App              string                 `yaml:"app"`
+	Flows            map[string]Flow        `yaml:"flows"`
+	Entry            string                 `yaml:"entry"`
+	Upstream         string                 `yaml:"upstream"`
+	WireIgnore       []string               `yaml:"wire_ignore"`
+	WireRules        []rules.Raw            `yaml:"wire_rules"`
+	PathNormalize    []Normalize            `yaml:"path_normalize"`
+	ExpectedStatuses []StatusRule           `yaml:"expected_statuses"`
+	HopRequire       []RequiredRoute        `yaml:"hop_require"`
+	Masks            map[string][]Rect      `yaml:"masks"`
+	Thresholds       Thresholds             `yaml:"thresholds"`
+	OpenAPI          string                 `yaml:"openapi"`
+	Redact           []string               `yaml:"redact"`
+	Deviations       string                 `yaml:"deviations"`
+	// Dir is set by Load from the file's own location and is NOT a YAML
+	// key. It must be tagged `yaml:"-"`, or KnownFields(true) will happily
+	// accept a `dir:` key in the file and then Load will overwrite it —
+	// a setting that appears to work and silently does nothing.
+	Dir string `yaml:"-"`
+}
+
+type Flow struct {
+	Command      string            `yaml:"command"`
+	PerfBudgetMs float64           `yaml:"perf_budget_ms"`
+	Masks        map[string][]Rect `yaml:"masks"`
+}
+type Normalize struct {
+	Pattern     string `yaml:"pattern"`
+	Replacement string `yaml:"replacement"`
+	re          *regexp.Regexp
+}
+type StatusRule struct {
+	Path   string `yaml:"path"`
+	Status int    `yaml:"status"`
+}
+type RequiredRoute struct {
+	Method string `yaml:"method"`
+	Path   string `yaml:"path"`
+	Status int    `yaml:"status"`
+}
+type Thresholds struct {
+	Gate float64 `yaml:"gate"`
+	Fine float64 `yaml:"fine"`
+}
+```
+
+`rules.Raw` already carries `json:` tags (Task 2) and needs matching
+`yaml:` ones for the same reason — it is decoded from both
+`retrace.yaml`'s `wire_rules` and `.retrace/wire-rules.json`.
+`TestAYamlKeyTypoIsAnErrorNamingTheKey` pins the `KnownFields` behaviour so
+the tags cannot quietly rot.
+
+Key body:
 ```go
 // Package config parses retrace.yaml — the flows to record, the rules that
 // decide what counts as a difference, and the thresholds that gate CI.
@@ -2777,10 +2842,16 @@ func gitSHA(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// gitInfo is the manifest's provenance block. Same rule as gitSHA: a
-// missing repo is a zero value, never an error — Task 6's manifest needs
-// it and Task 11's reference-eligibility rules read Git.Dirty.
-func gitInfo(dir string) runs.Git {
+// GitInfo is the manifest's provenance block. Same rule as gitSHA: a
+// missing repo is a zero value, never an error — the manifest needs it and
+// Task 11's reference-eligibility rules read Git.Dirty.
+//
+// EXPORTED, unlike gitSHA. gitSHA is called only from inside this package
+// (both constructors), but GitInfo is called from runFlow in
+// `package main` — same reasoning as WatchProxy below. An unexported
+// identifier used across a package boundary is `undefined:` at build time,
+// on the only path `retrace run` has.
+func GitInfo(dir string) runs.Git {
 	g := runs.Git{SHA: gitSHA(dir)}
 	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
 		g.Branch = strings.TrimSpace(string(out))
@@ -2792,10 +2863,10 @@ func gitInfo(dir string) runs.Git {
 }
 ```
 
-Add `os/exec` to the import block above (`gitSHA`/`gitInfo` are its only
-users). `gitInfo` gets one test —
+Add `os/exec` to the import block above (`gitSHA`/`GitInfo` are its only
+users). `GitInfo` gets one test —
 `TestGitInfoIsAZeroValueOutsideARepository` — asserting that
-`gitInfo(t.TempDir())` returns `runs.Git{}` and does not error: a user
+`GitInfo(t.TempDir())` returns `runs.Git{}` and does not error: a user
 trying retrace in `/tmp` must still get a recording.
 
 - [ ] **Step 9: Run — expect PASS** (`go test -race ./retrace/capture/ -v`).
@@ -2804,8 +2875,7 @@ trying retrace in `/tmp` must still get a recording.
 
 `retrace/cmd/retrace/cmd_run.go` — flag set `--flow` (required), `--app`
 (default: the config's `app`, else the cwd base name), `--upstream`,
-`--ensemble` (default `$ENSEMBLE_API` or `http://127.0.0.1:4700`),
-`--no-ensemble`, `--json`; everything after `--` is the test command.
+`--json`; everything after `--` is the test command.
 
 ```go
 func cmdRun(args []string, stdout, stderr io.Writer) int {
@@ -2815,18 +2885,24 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		flow     = fs.String("flow", "", "flow name to record (required)")
 		app      = fs.String("app", "", "app name (default: config app, else the directory name)")
 		upstream = fs.String("upstream", "", "standalone: base URL clients would call")
-		ensembleURL = fs.String("ensemble", envOr("ENSEMBLE_API", "http://127.0.0.1:4700"), "ensemble control-plane URL")
-		noEnsemble  = fs.Bool("no-ensemble", false, "force standalone capture even if ensemble is up")
-		asJSON      = fs.Bool("json", false, "emit the manifest as JSON on stdout")
+		asJSON   = fs.Bool("json", false, "emit the manifest as JSON on stdout")
 	)
 	cmdArgs, err := splitDoubleDash(args)   // returns (flagArgs, testCmd []string)
 	...
-	// Attach decision, in one place so the manifest's Mode is never a guess:
-	//   --no-ensemble          → standalone
-	//   ensemble health check OK and config.Entry set → ensemble (Task 5)
-	//   otherwise              → standalone, with a one-line note on stderr
+	// This task records the client edge only, so Mode is always standalone
+	// and there is no attach decision to make yet.
+	sess, err := capture.StartStandalone(capture.Options{ /* … */ })
 }
 ```
+
+**`--ensemble` and `--no-ensemble` are deliberately NOT declared here.**
+They belong to the attach decision, and every line that could read them —
+the health check, `NewClient`, the fallback note — is Task 5's code. A
+`flag` result assigned to a local and never read is a compile error in Go
+(`declared and not used`), so declaring them one task early would break
+this task's own build gate. **Task 5 Step 6 adds both flags and their
+readers in the same edit**, which is the only edit in which they can both
+exist and be used.
 
 **Step 10b: the run body and manifest assembly, written out.** The earlier
 draft of this plan ended this sketch in `...`, and the result was that
@@ -2909,7 +2985,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Flow:        o.Flow,
 		RunID:       s.RunID,
 		Mode:        s.Mode,
-		Git:         gitInfo(o.Cwd),
+		Git:         capture.GitInfo(o.Cwd),
 		StartedAt:   started,
 		FinishedAt:  o.Now(),
 		Checkpoints: checkpoints,
@@ -2917,7 +2993,17 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Capture:     trust,
 		Wire:        runs.Counts{Calls: len(wireHops)},
 		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
-		Env:         runs.Env{Go: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH},
+		// Retrace is the recording binary's own version, from main.version
+		// (the `var version = "dev"` in main.go, stamped by -ldflags at
+		// release). It is replay-compatibility provenance: "which retrace
+		// wrote this bundle" is the first question asked when a reference
+		// recorded months ago stops replaying, and it cannot be
+		// reconstructed after the fact.
+		Env: runs.Env{
+			Go:       runtime.Version(),
+			Platform: runtime.GOOS + "/" + runtime.GOARCH,
+			Retrace:  version,
+		},
 	}
 	// Hops is a *Counts on purpose: nil means "standalone, no chain was
 	// recorded", present-and-zero means "the chain was recorded and was
@@ -2963,8 +3049,9 @@ command's code.
 
 `retrace/cmd/retrace/cmd_run_test.go`:
 `TestRunStandaloneRecordsAndWritesAManifest` — spins an httptest upstream,
-runs `run --flow checkout --app web --no-ensemble --upstream <url> -- <a
-tiny "go run"-free command>`. Use `sh -c 'curl -s "$RETRACE_PROXY_URL/cart" >
+runs `run --flow checkout --app web --upstream <url> -- <a tiny "go
+run"-free command>` (no `--no-ensemble`: that flag arrives with the attach
+decision in Task 5, and standalone is this task's only mode). Use `sh -c 'curl -s "$RETRACE_PROXY_URL/cart" >
 /dev/null'`… **no**: `curl` may be absent. Instead the test command is the
 test binary re-invoked with a helper env var (`os.Args[0] -test.run
 TestHelperFetchesThroughProxy`), the standard Go idiom, so the test has no
@@ -3022,7 +3109,17 @@ git commit -m "feat(retrace): standalone capture, marker door, env handshake, re
       SessionHops(ctx context.Context, id string) ([]trace.Hop, error)
       EndSession(ctx context.Context, id string) (EndReport, error)
   }
-  type EndReport struct { Hops int; Verdict trace.Verdict; Reasons []string }
+  // EndReport is DECODED from ensemble's `DELETE /api/sessions/{id}`
+  // response, so it is a wire type too — inbound rather than outbound.
+  // It happens to work untagged because encoding/json matches field names
+  // case-insensitively, which makes this the most dangerous kind of
+  // missing tag: correct today, and silently wrong the day ensemble
+  // renames a field to something that no longer case-folds onto ours.
+  type EndReport struct {
+      Hops    int           `json:"hops"`
+      Verdict trace.Verdict `json:"verdict"`
+      Reasons []string      `json:"reasons"`
+  }
   func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error)
   func (s *Session) Drain(ctx context.Context) error  // attached only; no-op standalone
   ```
@@ -3345,9 +3442,18 @@ A `Client` with `Health`, `StartSession`, `SessionHops`, `EndSession`.
 server's `{"error":"..."}` convention: non-2xx → `fmt.Errorf("%s %s: %s",
 method, path, body.Error)`.
 
-- [ ] **Step 6: Wire the attach path into `cmdRun`**
+- [ ] **Step 6: Wire the attach path into `cmdRun` — flags and readers in
+  one edit**
+
+Add BOTH flags here, not in Task 4. Task 4 could not declare them: a
+`flag` result bound to a local and never read is `declared and not used`,
+a compile error, and every possible reader is in the block below.
 
 ```go
+// New in this task, alongside the code that reads them:
+ensembleURL := fs.String("ensemble", envOr("ENSEMBLE_API", "http://127.0.0.1:4700"), "ensemble control-plane URL")
+noEnsemble  := fs.Bool("no-ensemble", false, "force standalone capture even if ensemble is up")
+
 // Attach when ensemble answers AND the config names an entry service.
 // Anything else falls back to standalone with an explicit stderr note —
 // silently recording less than the user asked for is how a "the app made
@@ -3436,7 +3542,7 @@ git commit -m "feat(retrace): ensemble-attached capture with drain-before-end ho
 - Produces (used by Tasks 10, 11, 13, 16):
   ```go
   package capture
-  const GapThreshold = 60 * time.Second
+  const DefaultGapThreshold = 60 * time.Second   // 60s; Step 3 argues the value
   // ProxyFailure is DECLARED IN TASK 4 (retrace/capture/capture.go), the
   // only thing that produces one. Task 6 consumes it and must not
   // re-declare it — same package, one declaration.
@@ -3542,16 +3648,32 @@ func TestNoScreenshotReasonIsSuppressedWhenTheTestFailed(t *testing.T) {
   `assessCapture` reason-for-reason. Key structure:
 
 ```go
-// GapThreshold is how long a stretch with no captured call has to be before
-// it counts as evidence. Measured BETWEEN consecutive calls only, never
-// against the run's own start/end: the app launching before its first call,
-// and teardown after the last, are normal and would fire on every run.
-const GapThreshold = 60 * time.Second
+// DefaultGapThreshold is how long a stretch with no captured call has to be
+// before it counts as evidence, when AssessInput.GapThreshold is unset.
+//
+// Sixty seconds, and the value is a judgement, so here is the judgement: a
+// human-driven mobile or web flow that goes a full minute without a single
+// call has almost always stopped routing through the proxy — real think
+// time, animations, retries and polling all land far under it — while the
+// legitimate long pauses (waiting on a push notification, an OTP, a
+// third-party redirect) are exactly the ones a flow can declare with a
+// `quiet` group and have subtracted. Lower and every deliberate wait
+// becomes a false `suspect`; higher and a proxy that died mid-run reads as
+// clean.
+//
+// Measured BETWEEN consecutive calls only, never against the run's own
+// start/end: the app launching before its first call, and teardown after
+// the last, are normal and would fire on every run.
+//
+// Named `Default…` to match the other zero-value fallbacks in this plan
+// (`DefaultCountTolerance`, `config.DefaultGate`, `config.DefaultFine`),
+// and there is exactly ONE declaration of this number.
+const DefaultGapThreshold = 60 * time.Second
 
 func Assess(in AssessInput) runs.CaptureTrust {
 	threshold := in.GapThreshold
 	if threshold <= 0 {
-		threshold = GapThreshold
+		threshold = DefaultGapThreshold
 	}
 	gaps := FindGaps(in.Hops, threshold, in.Quiet)
 	var reasons []runs.TrustReason
@@ -3741,7 +3863,10 @@ func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 		// stores, so "the report says this stretch was deliberately quiet"
 		// and "the verdict forgave this stretch" can never disagree.
 		Quiet:          quietOnly(groups),
-		GapThreshold:   DefaultGapThreshold,
+		// The same constant Assess falls back to, passed explicitly so the
+		// number has a visible name at the call site. There is one
+		// declaration of it, in capture/trust.go.
+		GapThreshold:   capture.DefaultGapThreshold,
 		SessionVerdict: s.EndVerdict(),
 		SessionReasons: s.EndReasons(),
 		Notes:          s.TrustNotes(),
@@ -3817,7 +3942,22 @@ git commit -m "feat(retrace): capture-trust verdict with ranked evidence and rep
       // retrace/diff/pixel.
       Trim bool
   }
-  type Overlap struct { Width, Height int; DiffPct, DiffPctFine float64; NumDiff int; PaddingPct float64 }
+  // Overlap is embedded in diff.CheckpointVerdict and therefore reaches
+  // summary.json, `retrace diff --json`, the REST item response and the
+  // static export. It is nil on the equal-size path, which is what almost
+  // every unit fixture uses — so an untagged version of this type would
+  // have shipped `{"Width":390,…}` to a UI reading `overlap.width`, and
+  // the plan's own golden could not have caught it (the golden is written
+  // from these same Go types, so a wrong-cased key gets baked in rather
+  // than flagged).
+  type Overlap struct {
+      Width       int     `json:"width"`
+      Height      int     `json:"height"`
+      DiffPct     float64 `json:"diffPct"`
+      DiffPctFine float64 `json:"diffPctFine"`
+      NumDiff     int     `json:"numDiff"`
+      PaddingPct  float64 `json:"paddingPct"`
+  }
   type Result struct {
       Width, Height  int
       DiffPct        float64
@@ -4534,7 +4674,19 @@ git commit -m "feat(retrace): wire diff with similarity pairing, field-level rul
       // means something other than zero is exactly how a "0% tolerance"
       // intent becomes 50%.
       CountTolerance float64
-      Collapse       bool
+      // NoCollapse turns relay folding OFF. The field is negative on
+      // purpose: folding is the wanted behaviour on every real run, and a
+      // `Collapse bool` documented as "default true" is a documentation
+      // claim a bool cannot keep — its zero value is false, so every
+      // caller that built HopOptions without naming the field would get
+      // folding OFF and every relay topology change would read as a new
+      // API call. That is precisely the false positive this task exists to
+      // prevent, and its own test would still have passed, because the
+      // test sets the field explicitly.
+      //
+      // No pointer, no sentinel: the zero value IS the default, which is
+      // the only shape that cannot be got wrong by omission.
+      NoCollapse bool
   }
   func DiffHops(a, b []trace.Hop, o HopOptions) HopDiff
   func CollapsedRoutes(hops []trace.Hop, normalize func(string) string) []Route  // relay-folded, with Via
@@ -4598,13 +4750,65 @@ made a decision about, so counting it as one means every relay topology
 change reads as "this flow grew an extra API call" — the exact false
 positive that gets a regression signal switched off.
 
-`DiffHops` therefore folds both sides with `trace.CollapseRelays(hops, o.Collapse)`
-(default `true`) before deriving service counts and routes, and each `Route`
-carries the folded relays in `Via` so the report can say *how* the call got
-there. `RequiredRouteFailures` and error signatures run against the **raw**
-hops — a hopRequire assertion names a real route and a 500 is a 500 no
-matter who relayed it. Task 15's `HopDeltaList` renders `Via` as a chain of
-small badges, which is the first time a user sees relay collapse at all.
+`DiffHops` therefore folds both sides with
+`trace.CollapseRelays(hops, !o.NoCollapse)` before deriving service counts
+and routes, and each `Route` carries the folded relays in `Via` so the
+report can say *how* the call got there. `RequiredRouteFailures` and error
+signatures run against the **raw** hops — a hopRequire assertion names a
+real route and a 500 is a 500 no matter who relayed it. Task 15's
+`HopDeltaList` renders `Via` as a chain of small badges, which is the first
+time a user sees relay collapse at all.
+
+**The lowering, written out — `CollapseRelays` does not return hops.** It
+returns `[]trace.LogicalHop`, whose `Hop` and `Origin` are `*trace.Hop`
+pointing into the input slice, and the two are different legs:
+
+| field | for `client → edge → bff` | meaning |
+|---|---|---|
+| `LogicalHop.Hop.To` | `"edge"` | the FIRST leg — the relay |
+| `LogicalHop.Origin.To` | `"bff"` | the LAST leg — the real destination |
+| `LogicalHop.Via` | `["edge"]` | the relays folded out of the middle |
+
+So `Route.To` must come from `Origin`, and only the method/path identity
+comes from `Hop`. Taking `To` from `Hop` would name every folded route
+after the relay it just folded out — the collapse would run, the counts
+would look right, and every route would be attributed to the wrong service:
+
+```go
+// CollapsedRoutes lowers folded hops into the route identities the diff
+// compares. Origin carries the outcome (destination, status); Hop carries
+// the request identity (method, path). Mixing them up is silent — the
+// route set stays the same size and every name is wrong.
+func CollapsedRoutes(hops []trace.Hop, normalize func(string) string) []Route {
+	seen := map[string]bool{}
+	var out []Route
+	for _, lh := range trace.CollapseRelays(hops, true) {
+		path := lh.Hop.Path
+		if normalize != nil {
+			path = normalize(path)
+		}
+		r := Route{
+			To:     lh.Origin.To, // NOT lh.Hop.To — see the table above
+			Method: lh.Hop.Method,
+			Path:   path,
+			Via:    lh.Via,
+		}
+		key := r.To + " " + r.Method + " " + r.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
+}
+```
+
+`ServiceCount` is derived from the same `[]LogicalHop`, counting
+`Origin.To` for the same reason. Note `CollapseRelays` never folds a pair
+whose legs disagree on status (`LogicalHop.StatusMismatch`) — a relay that
+changed the outcome is exactly the case worth seeing, and it arrives here
+unfolded with an empty `Via`, which needs no special handling.
 
 - [ ] **Step 2: hop.go, test first**
 
@@ -4613,9 +4817,15 @@ func TestAnAddedDownstreamCallIsListedAsANewRoute(t *testing.T)  // the spec's h
 func TestATransparentRelayHopIsFoldedAndNotCountedAsANewRoute(t *testing.T) {
 	// run A: client -> bff.            run B: client -> edge -> bff, where
 	// edge forwards unchanged. Collapsed, both runs made ONE logical call:
-	// NewRoutes is empty and the folded hop's Via is ["edge"].
-	// With Collapse:false the same input DOES report a new route — that is
-	// what proves the folding is doing the work.
+	// NewRoutes is empty and the folded route's Via is ["edge"].
+	// With NoCollapse:true the same input DOES report a new route — that
+	// is what proves the folding is doing the work.
+}
+func TestAFoldedRouteIsNamedAfterItsOriginNotItsRelay(t *testing.T) {
+	// client -> edge -> bff, folded: the single Route must be To:"bff",
+	// Via:["edge"]. Taking To from LogicalHop.Hop instead of .Origin gives
+	// To:"edge" — same route count, same Via, wrong service, and no other
+	// assertion in this file notices.
 }
 func TestCollapseIsAppliedToServiceCountsToo(t *testing.T)
 func TestHopRequireAndErrorSignaturesRunAgainstRawHops(t *testing.T) {
@@ -4728,12 +4938,18 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
       // checkpoint asked for border trimming, in the originals'
       // coordinates. nil = no trim requested, or trim refused.
       Trimmed *TrimRects       `json:"trimmed,omitempty"`
-      Images  CheckpointImages `json:"images"` // run-dir-relative paths, "" when not written
+      Images  CheckpointImages `json:"images"` // "" for any side not written
   }
   type TrimRects struct {
       A *pixel.Rect `json:"a,omitempty"`
       B *pixel.Rect `json:"b,omitempty"`
   }
+  // CheckpointImages carries the four sides of a checkpoint comparison.
+  // A and B are relative to Summary.A.Dir / Summary.B.Dir and are the
+  // capture's own path ("shots/receipt.png"); Diff and Overlay are
+  // relative to BuildInput.OutDir and are written by Build
+  // ("diff/shots/receipt.png"). Every one of the four resolves as
+  // <dir>/shots/<name>.png — see the layout contract in Step 3.
   type CheckpointImages struct {
       A       string `json:"a,omitempty"`
       B       string `json:"b,omitempty"`
@@ -4821,6 +5037,17 @@ func TestOneJsonDocumentCarriesCheckpointsWirePairsAndHopDeltas(t *testing.T) {
 	// "wire".paired, "hops".newRoutes, "verdict", "counts" — an LLM must
 	// judge a change from ONE document without parsing human output.
 }
+func TestRelayFoldingIsOnByDefaultInBuild(t *testing.T) {
+	// Two runs whose chains differ ONLY by a transparent relay
+	// (client->bff vs client->edge->bff), built through Build with a
+	// config that says nothing about collapsing — the verdict must be
+	// "pass" and Hops.NewRoutes must be empty.
+	//
+	// This asserts the DEFAULT, not the feature: Task 9's own folding test
+	// sets the option explicitly and therefore passes either way. This is
+	// the test that fails if the field is ever flipped back to a
+	// positive `Collapse bool`, which no caller here names.
+}
 func TestACaptureTrustBannerRidesAlongInJsonAndText(t *testing.T)
 func TestSummaryJsonShapeIsStable(t *testing.T) {
 	// golden: marshal a fixed Summary and compare against
@@ -4904,6 +5131,30 @@ func Build(in BuildInput) (Summary, error) {
 		}
 		s.Checkpoints = append(s.Checkpoints, v)
 	}
+	// LAYOUT CONTRACT for writeCheckpointImages. Three tasks read these
+	// paths (T12 RenderText, T13 serve, T16 export) and only this one
+	// writes them, so the layout is pinned here rather than inferred.
+	// Under OutDir:
+	//
+	//   diff/shots/<name>.png      overlay/shots/<name>.png
+	//
+	// The `shots/` level is the SECOND component, not the first. That is
+	// not aesthetic: Task 13's safeShotPath is `filepath.Join(dir, "shots",
+	// base+".png")` and rejects any name containing a separator, so every
+	// side it serves must be a directory with a `shots/` child — which is
+	// exactly what a run directory already is. Putting the side first
+	// (`shots/diff/<name>.png`) would make the diff sides the only ones
+	// safeShotPath could not address, and Task 13 would need a second
+	// path builder for them.
+	//
+	// CheckpointImages.Diff/.Overlay are those two strings, OutDir-relative
+	// ("diff/shots/receipt.png"). CheckpointImages.A/.B are NOT written
+	// here — the A- and B-side PNGs already exist in their own run
+	// directories, so A/B carry that run's own run-dir-relative path
+	// ("shots/receipt.png", the same string as runs.Checkpoint.File) and
+	// are resolved against Summary.A.Dir / Summary.B.Dir. Copying them
+	// would double every artifact for no reader; Task 16's export is the
+	// one place that copies, because a shipped tree must be self-contained.
 
 	// --- wire, from each side's client-edge hops
 	hopsA, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
@@ -4916,7 +5167,20 @@ func Build(in BuildInput) (Summary, error) {
 	chainA, _ := runs.ReadHops(filepath.Join(in.A.Dir, "hops.jsonl"))
 	chainB, _ := runs.ReadHops(filepath.Join(in.B.Dir, "hops.jsonl"))
 	if chainA != nil || chainB != nil {
-		s.Hops = DiffHops(chainA, chainB, HopOptions{...})
+		// NoCollapse is deliberately not set: folding is on by default,
+		// and the default is what every real run gets. Task 9's
+		// NoCollapse field is inverted precisely so that this call site
+		// — which cannot name every field — cannot silently turn folding
+		// off by omitting it.
+		s.Hops = DiffHops(chainA, chainB, HopOptions{
+			Normalize: in.Cfg.NormalizePath,
+			Expected:  in.Cfg.ExpectedStatuses,
+			Require:   in.Cfg.HopRequire,
+			// CountTolerance is left at zero → DefaultCountTolerance.
+			// `config.Config` has no CountTolerance field and this plan
+			// does not add one: the fallback is the only value part 1
+			// ships, so there is nothing here to read.
+		})
 	}
 
 	// --- auxiliary checks always run against side B (the candidate).
@@ -4993,7 +5257,8 @@ func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
 
 `RenderText` prints, in this order: the capture-trust banner for either side
 when non-ok; a per-checkpoint line (`✓ cart   0.00%` / `✗ receipt  2.14%
-(fine 3.02%)  shots/diff/receipt.png`); a wire section per flow part with
+(fine 3.02%)  diff/shots/receipt.png`, the OutDir-relative path
+`CheckpointImages.Diff` carries); a wire section per flow part with
 worst-first entries; the hop deltas; then a `GATE:` line per entry in
 `Gates`. Wide values are never truncated — a report an agent must read is
 not a dashboard.
@@ -5635,14 +5900,34 @@ func safeShotPath(runDir, name string) (string, error) {
 `side ∈ {a, b, diff, overlay}`, and only two of those are files somebody
 else already wrote. Resolve them in one place, `shotDirFor(side)`:
 
-- `a` → the A-side run (or bundle) directory's `shots/`, from
-  `Summary.A.Dir`.
-- `b` → `Summary.B.Dir` + `shots/`.
+`shotDirFor` returns the directory `safeShotPath` joins onto, so each of
+the four must be a directory with a `shots/` child — the diff layout
+contract in Task 10 Step 3 exists to make that true for all four:
+
+```go
+func (s *Server) shotDirFor(sum *diff.Summary, outDir, side string) (string, error) {
+	switch side {
+	case "a":
+		return sum.A.Dir, nil
+	case "b":
+		return sum.B.Dir, nil
+	case "diff", "overlay":
+		return filepath.Join(outDir, side), nil // outDir/diff/shots/<name>.png
+	}
+	return "", fmt.Errorf("unknown side %q", side)
+}
+```
+
+- `a` → the A-side run (or bundle) directory, `Summary.A.Dir`; its own
+  `shots/` is the capture's.
+- `b` → `Summary.B.Dir`, likewise.
 - `diff` / `overlay` → **generated by `diff.Build`**, into
   `BuildInput.OutDir`. `SummaryFor` therefore calls `Build` with
   `WantImages: true` and `OutDir` set to a per-flow directory under
   `<cwd>/.retrace/diffs/<app>/<flow>/`, and the returned
-  `CheckpointVerdict.Images` paths are relative to it. Serving a
+  `CheckpointVerdict.Images.Diff/.Overlay` are relative to it
+  (`diff/shots/<name>.png`), which is the same string this function's
+  `filepath.Join(outDir, side)` plus `safeShotPath` rebuilds. Serving a
   `diff`/`overlay` side for a checkpoint whose `Images.Diff` is `""` is a
   404 with `{"error":"no diff image: this checkpoint did not change"}` —
   not an empty 200, which would render as a blank comparison pane and read
@@ -6227,7 +6512,13 @@ git commit -m "feat(dashboard): retrace review UI — worst-first queue, keyboar
   ```go
   package serve
   type ExportOptions struct { Deps Deps; OutDir string; App, Flow string } // empty App/Flow = everything
-  type ExportResult struct { Dir string; Files []string; Items int }
+  // ExportResult is printed by `retrace export --json`, so it is a wire
+  // type and carries tags. ExportOptions is an input and does not.
+  type ExportResult struct {
+      Dir   string   `json:"dir"`
+      Files []string `json:"files"`
+      Items int      `json:"items"`
+  }
   func Export(o ExportOptions) (ExportResult, error)
   ```
 
@@ -6236,9 +6527,16 @@ server, because the person receiving it is reading a CI artifact:
 ```
 <out>/index.html                 queue overview, worst first
 <out>/<app>__<flow>/index.html   the item screen, static
-<out>/<app>__<flow>/shots/{a,b,diff,overlay}/<checkpoint>.png
+<out>/<app>__<flow>/{a,b,diff,overlay}/shots/<checkpoint>.png
 <out>/<app>__<flow>/summary.json the exact diff.Summary the UI consumed
 ```
+
+The four shot sides keep the `<side>/shots/<name>.png` shape they have on
+disk (Task 10 Step 3's layout contract) rather than being re-laid-out on
+copy, so `summary.json`'s `images` paths stay valid inside the export and
+an agent can join them without a second rule. Export **copies** the `a`
+and `b` PNGs in — a CI artifact has no access to the run directories they
+normally resolve against.
 
 **Ruling: the static report is server-rendered Go `html/template`, not the
 React app.** The React app is a live client of a REST API; making it work
@@ -6504,6 +6802,9 @@ after Task 15 — not "left as-is", and not earlier.**
 - Modify: `dashboard/ensemble-ui/src/views/TrafficView.tsx`
 - Modify: `dashboard/ensemble-ui/src/views/InspectorView.tsx`
 - Modify: `dashboard/ensemble-ui/src/views/EntityView.tsx`
+- Modify: `dashboard/ensemble-ui/src/views/LatencyView.tsx` — **in scope.**
+  See Step 1: it is the eleventh site, and excluding it would make Step 4's
+  gate unpassable.
 - Modify: `dashboard/ensemble-ui/package.json` if the design-system export
   needs no change — it does not; `@ensemble/design-system` is already a
   `workspace:*` dependency, so only the import line changes.
@@ -6523,10 +6824,21 @@ after Task 15 — not "left as-is", and not earlier.**
 - [ ] **Step 1: Get the authoritative list, don't trust a count**
 
 Run: `grep -rn "let cancelled" dashboard/ensemble-ui/src --include='*.tsx'`
-Expected today: **ten** sites — `App.tsx` ×1, `TopologyView.tsx` ×2,
-`TrafficView.tsx` ×1, `InspectorView.tsx` ×3, `EntityView.tsx` ×3.
-(`LatencyView.tsx` loads differently and is not in scope.) Write the list
-down; it is this task's checklist and its definition of done.
+Expected today: **eleven** sites — `App.tsx` ×1, `TopologyView.tsx` ×2,
+`TrafficView.tsx` ×1, `InspectorView.tsx` ×3, `EntityView.tsx` ×3,
+`LatencyView.tsx` ×1. Write the list down; it is this task's checklist and
+its definition of done. Re-run the grep rather than trusting this number —
+it has already moved once (`26a27cb` added LatencyView's copy after an
+earlier count said ten).
+
+**`LatencyView.tsx` is in scope**, and the earlier draft's carve-out was
+the problem, not the file. Step 4's gate is an unscoped `! grep`, so a
+deliberately-excluded eleventh site makes it fail forever; the alternatives
+were to filter the gate or to migrate the file, and **an honest gate beats
+a gate with a carve-out** — a `| grep -v LatencyView` is a permanent
+invitation to add a twelfth exclusion. The file's own comment says its copy
+exists "to follow the shape every other fetch-on-mount in the dashboard
+uses", so when that shape becomes `useAsync`, it follows.
 
 - [ ] **Step 2: Confirm the net is green before touching anything**
 
@@ -6537,9 +6849,12 @@ it preserved anything.
 - [ ] **Step 3: Migrate one file, run the suite, commit. Repeat.**
 
 One file per commit, in this order — cheapest first, so the pattern is
-established before the hard one:
+established before the hard ones:
 `App.tsx` → `TrafficView.tsx` → `TopologyView.tsx` → `InspectorView.tsx` →
-`EntityView.tsx`.
+`EntityView.tsx` → `LatencyView.tsx`.
+
+`LatencyView` is last despite having the simplest *load*, because it is the
+only file whose state is also written by mutations — see watch-out 4.
 
 The mechanical shape of each replacement:
 
@@ -6575,6 +6890,29 @@ wrong:
    error state. Render it; an error that was previously invisible is a bug
    the migration exposes, not one it introduces. Add a test in the affected
    view's existing spec file if the exposed path has no coverage.
+4. **`LatencyView`'s state has seven writers, not one.** Its load is the
+   simplest of the eleven, but `setRules(result)` is also called by six
+   mutation handlers (`upsert`, `toggle`, `delete`, `armAll` ×2, `reset`),
+   each of which gets the new list back in the response. `useAsync` owns
+   its `data` and hands back no setter, so a straight swap would strand
+   those six writes. Do **not** reintroduce a local `rules` state seeded
+   from `data` by an effect — that is the same two-sources-of-truth race in
+   a new costume. Use the version-counter refetch, which is the pattern
+   Task 15 already specifies for its three verbs:
+
+   ```tsx
+   const [version, setVersion] = useState(0);
+   const { data: rules, error } = useAsync(() => api.latencyList(), [version]);
+
+   // each mutation handler, after its await:
+   //   setRules(result)   ->   setVersion((v) => v + 1);
+   ```
+
+   The cost is one extra `GET /api/latency` per mutation against a loopback
+   dev server, which is not a cost. The gain is that the list has exactly
+   one writer, and the "which response won" question stops existing. The
+   mutation's own returned list is discarded deliberately — keep the
+   `setError` / `setFormError` handling exactly as it is.
 
 Per file:
 ```bash
@@ -6592,6 +6930,11 @@ pnpm -r test && go test -race ./core/... ./ensemble/... ./retrace/...
 Expected: the grep finds nothing in `.tsx` sources (the `*.test.ts` files may
 still mention it in a comment describing the old bug — that is fine and
 worth keeping as history), and both suites are green.
+
+The gate is deliberately **unscoped** — no `| grep -v <file>`. All eleven
+sites are in scope precisely so this line can stay honest: a gate with an
+exclusion list stops being a gate the moment someone adds the next
+exclusion instead of migrating the next file.
 
 - [ ] **Step 5: Close the loop in the docs**
 
@@ -6722,7 +7065,7 @@ silent choices: `RETRACE_MARKER_URL` and `RETRACE_STRICT`, both listed under
 `diff.OptionsFor`, `diff.ExitCode`, `refs.Resolve`, `refs.Accept`,
 `replay.Bundle.Match`, `replay.StatusDrift`, `serve.Item`, `serve.ScoreOf`,
 `httpguard.Handler`, `useAsync`/`AsyncState<T>` (Task 14, consumed unchanged
-by Tasks 15 and 18), `HopOptions.Collapse` and `Route.Via` (Task 9, rendered
+by Tasks 15 and 18), `HopOptions.NoCollapse` and `Route.Via` (Task 9, rendered
 by Task 15's `HopDeltaList`).
 
 Resolved during the first review:
