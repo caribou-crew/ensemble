@@ -79,6 +79,14 @@ type Orchestrator struct {
 	// the moment Up begins starting it — proof of dependency order without
 	// depending on process-timing.
 	testStartHook func(name string)
+
+	// killGroup and removeDockerContainer are indirections over the
+	// package-level killProcessGroup/dockerRemove, so tests can inject a
+	// failure and exercise Restart's abort-on-error path without needing
+	// a real, hard-to-provoke OS failure (e.g. EPERM). Default to the real
+	// implementations in New.
+	killGroup             func(pid int, sig syscall.Signal) error
+	removeDockerContainer func(name string) error
 }
 
 // New builds an Orchestrator over cfg, wiring active services' proxy
@@ -91,12 +99,14 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		opts.LogDir = filepath.Join(cfg.Dir, ".ensemble", "run")
 	}
 	return &Orchestrator{
-		cfg:         cfg,
-		px:          px,
-		opts:        opts,
-		states:      map[string]*ServiceState{},
-		procs:       map[string]*exec.Cmd{},
-		dockerNodes: map[string]bool{},
+		cfg:                   cfg,
+		px:                    px,
+		opts:                  opts,
+		states:                map[string]*ServiceState{},
+		procs:                 map[string]*exec.Cmd{},
+		dockerNodes:           map[string]bool{},
+		killGroup:             killProcessGroup,
+		removeDockerContainer: dockerRemove,
 	}
 }
 
@@ -159,7 +169,7 @@ func (o *Orchestrator) Down() error {
 	var errs []error
 	for name, cmd := range procs {
 		if cmd.Process != nil {
-			if err := killProcessGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
 				errs = append(errs, fmt.Errorf("%s: kill: %w", name, err))
 			}
 		}
@@ -169,7 +179,7 @@ func (o *Orchestrator) Down() error {
 		o.setStatus(name, StatusStopped, "")
 	}
 	for name := range dockerNodes {
-		if err := dockerRemove(name); err != nil {
+		if err := o.removeDockerContainer(name); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 		}
 		o.mu.Lock()
@@ -181,7 +191,14 @@ func (o *Orchestrator) Down() error {
 }
 
 // Restart stops name's current process/container, if any, re-runs its
-// build when stale, and starts it fresh (health-gated, proxy re-wired).
+// build when stale, and starts it fresh (health-gated; proxy wiring from
+// Up is left in place — see the comment on the Up/wireProxy call site).
+//
+// If stopping the previous instance fails (a genuine error — killGroup
+// already treats "no such process" as success, so a returned error means
+// something like EPERM), Restart records it and aborts rather than
+// starting a replacement over a possibly-still-live predecessor on the
+// same port.
 func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
 	svc, ok := active[name]
@@ -195,13 +212,21 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	o.mu.Unlock()
 
 	if hasProc && cmd.Process != nil {
-		_ = killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+		if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			wrapped := fmt.Errorf("kill previous instance (pid %d): %w", cmd.Process.Pid, err)
+			o.fail(name, wrapped)
+			return fmt.Errorf("orchestrator: restart %q: %w", name, wrapped)
+		}
 		o.mu.Lock()
 		delete(o.procs, name)
 		o.mu.Unlock()
 	}
 	if isDocker {
-		_ = dockerRemove(name)
+		if err := o.removeDockerContainer(name); err != nil {
+			wrapped := fmt.Errorf("remove previous container: %w", err)
+			o.fail(name, wrapped)
+			return fmt.Errorf("orchestrator: restart %q: %w", name, wrapped)
+		}
 		o.mu.Lock()
 		delete(o.dockerNodes, name)
 		o.mu.Unlock()
