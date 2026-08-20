@@ -1,11 +1,16 @@
 import type { Hop } from '../api/types';
 
-/** A hop's duration for layout purposes: doneMs is the upstream-complete offset from t.start,
-    falling back to firstByteMs for a hop that's still streaming (no doneMs yet), and finally
-    to 0 for one with no timing signal at all rather than propagating NaN through every
-    downstream percentage. */
+/** A hop's true wall-clock span, start to finish. `t.start` is stamped before an injected
+    latency rule runs, but `doneMs`/`firstByteMs` are measured from AFTER it (see
+    core/proxy/proxy.go: "Artificial latency runs before the upstream clock starts") — so
+    the recorded upstream duration alone understates how long the caller actually waited.
+    Adding injectedDelayMs back in is what makes this hop's bar end where the next one on the
+    same caller frame can legitimately begin, and what keeps hopDepths' active-frame clock
+    from closing a parent's frame before control actually returned to it. Falls back to
+    firstByteMs for a hop that's still streaming (no doneMs yet), and to 0 for one with no
+    timing signal at all rather than propagating NaN through every downstream percentage. */
 function durationOf(h: Hop): number {
-  return h.t.doneMs ?? h.t.firstByteMs ?? 0;
+  return (h.injectedDelayMs ?? 0) + (h.t.doneMs ?? h.t.firstByteMs ?? 0);
 }
 
 /** ensemble's Hop.from is optional — the root hop of a trace has no caller (nothing calls
