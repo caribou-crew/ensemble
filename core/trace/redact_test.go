@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,46 @@ func TestBodySizeCap(t *testing.T) {
 	small := r.Payload(Payload{Body: "tiny"})
 	if small.Body != "tiny" || small.Truncated {
 		t.Fatalf("small body mangled: %+v", small)
+	}
+}
+
+// TestRedactHopQueryStringValues guards final-review finding I4: query
+// strings bypassed redaction entirely, so a call like
+// GET /v1/accounts?api_key=sk_live_... landed the secret verbatim in the
+// ring, hops.jsonl, /api/traffic, and every export. Query parameter VALUES
+// whose keys match the redactor's key set (defaults + user list) must be
+// scrubbed before the hop is stored; the path segment and non-matching
+// query keys/values must survive untouched.
+func TestRedactHopQueryStringValues(t *testing.T) {
+	r := NewRedactor([]string{"token"}, 0)
+	h := r.Hop(Hop{Path: "/v1/accounts?authorization=Bearer%20x&token=y&keep=1"})
+	if !strings.HasPrefix(h.Path, "/v1/accounts?") {
+		t.Fatalf("path base mangled: %q", h.Path)
+	}
+	u, err := url.Parse(h.Path)
+	if err != nil {
+		t.Fatalf("redacted path doesn't parse: %v (%q)", err, h.Path)
+	}
+	q := u.Query()
+	if q.Get("authorization") != Redacted {
+		t.Fatalf("authorization query value not redacted: %q", h.Path)
+	}
+	if q.Get("token") != Redacted {
+		t.Fatalf("token query value not redacted: %q", h.Path)
+	}
+	if q.Get("keep") != "1" {
+		t.Fatalf("non-sensitive query param damaged: %q", h.Path)
+	}
+}
+
+// TestRedactHopPathWithoutQueryUntouched pins the no-query case: a bare
+// path must pass through unchanged (no trailing "?" added, no parsing
+// error swallowing the path).
+func TestRedactHopPathWithoutQueryUntouched(t *testing.T) {
+	r := NewRedactor(nil, 0)
+	h := r.Hop(Hop{Path: "/v1/accounts"})
+	if h.Path != "/v1/accounts" {
+		t.Fatalf("path without query changed: %q", h.Path)
 	}
 }
 
