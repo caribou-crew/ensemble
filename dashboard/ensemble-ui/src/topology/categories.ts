@@ -50,3 +50,11 @@ export function normalizeTopology(t: Topology): Topology {
     edges: t.edges.filter((e) => known.has(e.from) && known.has(e.to)),
   };
 }
+
+/** CATEGORIES' id and colorVar deliberately don't share a name (see the comment above) — a
+    node/cluster renderer can no longer string-template `--topo-cat-${category}` the way the
+    old component did (category ids and CSS var suffixes were the same set there) and must
+    look the accent up through this table instead. */
+export function colorVarOf(id: CategoryId): string {
+  return CATEGORIES.find((c) => c.id === id)?.colorVar ?? '--topo-cat-other';
+}
