@@ -17,8 +17,7 @@ import (
 // Flip requires the service to declare both `run` and `docker`; a service
 // with only one placement errors rather than silently no-op'ing.
 func (o *Orchestrator) Flip(ctx context.Context, name string) error {
-	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
-	if _, ok := active[name]; !ok {
+	if _, ok := o.activeServices()[name]; !ok {
 		return fmt.Errorf("orchestrator: flip %q: not an active service", name)
 	}
 	svc, err := o.resolve(name)

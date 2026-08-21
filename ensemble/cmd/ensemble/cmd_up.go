@@ -29,6 +29,10 @@ type upOptions struct {
 	Profiles   []string
 	Variants   map[string]string // per-service variant overrides (--variant svc=name)
 	Addr       string            // control-plane API listen address, e.g. ":4700"
+	// Positional profile names (`ensemble up lane2`): added to a running
+	// stack if one answers at the client URL, else folded into Profiles
+	// for a cold start — see cmdUp.
+	Positional []string
 }
 
 // defaultAPIAddr is the loopback-only control-plane listen address `ensemble
@@ -68,7 +72,7 @@ func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 		fmt.Fprintf(stderr, "ensemble: up: %v\n", err)
 		return upOptions{}, err
 	}
-	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr}, nil
+	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr, Positional: fs.Args()}, nil
 }
 
 // parseVariantFlag parses --variant's "svc=name,svc2=name2" form.
@@ -88,6 +92,16 @@ func cmdUp(args []string, stdout, stderr io.Writer) int {
 	opts, err := parseUpOptions(args, stderr)
 	if err != nil {
 		return 2
+	}
+	if len(opts.Positional) > 0 {
+		// `ensemble up lane2`: attach to a running stack when there is one,
+		// otherwise it's a cold start with those profiles active.
+		c := NewClient(defaultAPIURL())
+		if err := c.Health(context.Background()); err == nil {
+			return switchProfiles(c, opts.Positional, true, false, stdout, stderr)
+		}
+		fmt.Fprintf(stderr, "ensemble: no running stack at %s; starting with profiles %s\n", c.BaseURL, strings.Join(opts.Positional, ", "))
+		opts.Profiles = append(opts.Profiles, opts.Positional...)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

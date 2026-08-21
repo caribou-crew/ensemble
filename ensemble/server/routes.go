@@ -30,6 +30,10 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/seed/{name}", s.withAnnotation(s.handleSeed))
 
+	mux.HandleFunc("GET /api/profiles", s.handleProfiles)
+	mux.HandleFunc("POST /api/profiles/{name}/up", s.withAnnotation(s.handleProfileUp))
+	mux.HandleFunc("POST /api/profiles/{name}/down", s.withAnnotation(s.handleProfileDown))
+
 	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/traffic/stream", s.handleTrafficStream)
 
@@ -361,6 +365,47 @@ func (s *server) handleServiceVariant(w http.ResponseWriter, r *http.Request) {
 	}
 	st, _ := s.Orch.Service(name)
 	writeJSON(w, http.StatusOK, st)
+}
+
+// --- profiles ---
+
+func (s *server) handleProfiles(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Orch.Profiles())
+}
+
+// knownProfile 404s for a profile the config never mentions.
+func (s *server) knownProfile(w http.ResponseWriter, name string) bool {
+	for _, p := range s.Cfg.ProfileNames() {
+		if p == name {
+			return true
+		}
+	}
+	writeErr(w, http.StatusNotFound, fmt.Sprintf("profile %q not found", name))
+	return false
+}
+
+func (s *server) handleProfileUp(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !s.knownProfile(w, name) {
+		return
+	}
+	if err := s.Orch.UpProfiles(r.Context(), []string{name}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Orch.Profiles())
+}
+
+func (s *server) handleProfileDown(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !s.knownProfile(w, name) {
+		return
+	}
+	if err := s.Orch.DownProfiles([]string{name}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Orch.Profiles())
 }
 
 // --- seed ---

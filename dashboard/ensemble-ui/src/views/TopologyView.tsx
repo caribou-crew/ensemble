@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Spinner } from "@ensemble/design-system";
 import { api, messageOf } from "../api/client";
-import type { Hop, ServiceState, Topology } from "../api/types";
+import type {
+  Hop,
+  ServiceState,
+  Topology,
+  ProfileInfo,
+  ProfilesState,
+} from "../api/types";
 import { categoryOf } from "../topology/categories";
 import { layoutClustered } from "../topology/layout";
 import { layoutTrace, causalHopOrder } from "../topology/traceLayout";
@@ -39,6 +45,92 @@ function heatByService(hops: Hop[]): Map<string, HeatTier> {
   if (max === 0) return tiers;
   counts.forEach((n, service) => tiers.set(service, heatTier(n / max)));
   return tiers;
+}
+
+/** Profiles ("lanes") and their live state, polled alongside the topology. Toggling one
+    switches it on the orchestrator and then re-fetches, so the strip reflects what the
+    server did rather than what was clicked. */
+function useProfiles(refreshTopology: () => Promise<void>) {
+  const [profiles, setProfiles] = useState<ProfilesState | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setProfiles(await api.profiles());
+    } catch {
+      // The topology poll already surfaces connectivity errors; a profiles miss just
+      // leaves the strip at its last known state.
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => void load(), 5000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const toggle = useCallback(
+    async (p: ProfileInfo) => {
+      setBusy(p.name);
+      setError(null);
+      try {
+        setProfiles(
+          p.active
+            ? await api.profileDown(p.name)
+            : await api.profileUp(p.name),
+        );
+        await refreshTopology();
+      } catch (err) {
+        setError(messageOf(err, `could not switch profile ${p.name}`));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refreshTopology],
+  );
+
+  return { profiles, busy, error, toggle };
+}
+
+function ProfileStrip({
+  profiles,
+  busy,
+  error,
+  onToggle,
+}: {
+  profiles: ProfilesState;
+  busy: string | null;
+  error: string | null;
+  onToggle: (p: ProfileInfo) => void;
+}) {
+  if (profiles.profiles.length === 0) return null;
+  return (
+    <div className="topo-view__profiles" role="group" aria-label="profiles">
+      <span className="topo-view__profiles-label">lanes</span>
+      {profiles.profiles.map((p) => (
+        <button
+          key={p.name}
+          type="button"
+          className={
+            p.active
+              ? "topo-view__profile topo-view__profile--active"
+              : "topo-view__profile"
+          }
+          aria-pressed={p.active}
+          disabled={busy !== null}
+          title={p.services.join(", ")}
+          onClick={() => onToggle(p)}
+        >
+          {busy === p.name ? <Spinner /> : null}
+          {p.name}
+        </button>
+      ))}
+      {error && (
+        <InlineError message={error} className="topo-view__trace-error" />
+      )}
+    </div>
+  );
 }
 
 function useTopologyPoll() {
@@ -341,6 +433,7 @@ function HopTimingPanel({
 
 export default function TopologyView() {
   const { topology, statuses, traffic, error, refresh } = useTopologyPoll();
+  const lanes = useProfiles(refresh);
   const [traceId, setTraceId] = useUrlParam("trace");
   const { hops: traceHops, error: traceError } = useTracePoll(traceId);
 
@@ -461,6 +554,14 @@ export default function TopologyView() {
             />
           )}
         </div>
+      )}
+      {!traceId && lanes.profiles && (
+        <ProfileStrip
+          profiles={lanes.profiles}
+          busy={lanes.busy}
+          error={lanes.error}
+          onToggle={(p) => void lanes.toggle(p)}
+        />
       )}
       <div className="topo-view__body">
         <TopologyGraph

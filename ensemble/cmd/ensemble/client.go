@@ -119,6 +119,32 @@ func (c *Client) SetVariant(ctx context.Context, name, variant string) (orchestr
 	return out, err
 }
 
+// --- profiles ---
+
+// Health reports whether a control plane answers at BaseURL — the
+// `ensemble up <profile>` attach-vs-cold-start fork.
+func (c *Client) Health(ctx context.Context) error {
+	return c.do(ctx, http.MethodGet, "/api/health", nil, nil)
+}
+
+func (c *Client) Profiles(ctx context.Context) (orchestrator.ProfilesState, error) {
+	var out orchestrator.ProfilesState
+	err := c.do(ctx, http.MethodGet, "/api/profiles", nil, &out)
+	return out, err
+}
+
+func (c *Client) ProfileUp(ctx context.Context, name string) (orchestrator.ProfilesState, error) {
+	var out orchestrator.ProfilesState
+	err := c.do(ctx, http.MethodPost, "/api/profiles/"+url.PathEscape(name)+"/up", nil, &out)
+	return out, err
+}
+
+func (c *Client) ProfileDown(ctx context.Context, name string) (orchestrator.ProfilesState, error) {
+	var out orchestrator.ProfilesState
+	err := c.do(ctx, http.MethodPost, "/api/profiles/"+url.PathEscape(name)+"/down", nil, &out)
+	return out, err
+}
+
 // --- shutdown ---
 
 // ShutdownResponse mirrors POST /api/shutdown's body.

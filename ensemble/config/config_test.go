@@ -307,3 +307,24 @@ func TestServicesForProfilesUnionOverridesInactiveGroup(t *testing.T) {
 		t.Error("an active own-Profile must include the service even if it's also listed in an inactive group")
 	}
 }
+
+func TestProfileNamesAndMembers(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"shared": {Run: "x", Port: 1},
+			"a1":     {Run: "x", Port: 2, Profile: "lane1"},
+			"b1":     {Run: "x", Port: 3, Profile: "lane2"},
+			"b2":     {Run: "x", Port: 4},
+		},
+		Profiles: map[string][]string{"lane2": {"b2", "ghost"}, "ops": {"shared"}},
+	}
+	if got := strings.Join(c.ProfileNames(), ","); got != "lane1,lane2,ops" {
+		t.Errorf("ProfileNames = %q", got)
+	}
+	if got := strings.Join(c.ProfileMembers("lane2"), ","); got != "b1,b2" {
+		t.Errorf("ProfileMembers(lane2) = %q", got)
+	}
+	if got := c.ProfileMembers("nope"); len(got) != 0 {
+		t.Errorf("ProfileMembers(nope) = %v", got)
+	}
+}
