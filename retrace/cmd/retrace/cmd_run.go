@@ -202,6 +202,18 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "run: %v", err)
 	}
 
+	// Always, regardless of --json: stdout carries only the manifest under
+	// --json (the documented CI contract), but stderr is free, and a
+	// non-clean capture is exactly the fact a CI log must not bury —
+	// Tasks 10, 13 and 16 banner the same verdict on their own surfaces.
+	trust := m.Capture
+	if trust.Status != trace.VerdictOK {
+		fmt.Fprintf(stderr, "\n  ⚠ capture-trust: %s — %s\n", trust.Status, trust.Summary)
+		if trust.Hint != "" {
+			fmt.Fprintf(stderr, "    %s\n", trust.Hint)
+		}
+	}
+
 	if *asJSON {
 		if err := writeJSON(stdout, m); err != nil {
 			return fail(stderr, "run: %v", err)
@@ -357,16 +369,79 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	return m, runs.WriteManifest(s.Paths, &m)
 }
 
-// assessTrust is the seam Task 6 fills.
-//
-// TODO(task-6): replace this body with capture.Assess. Task 6 owns the
-// rules; this task owns only the call site and the manifest field. The
-// placeholder is deliberately VerdictSuspect, not VerdictOK: an empty or
-// optimistic verdict on a capture nobody has assessed would gate as clean.
+// assessTrust is the seam Task 4 left and Task 6 fills: it turns everything
+// runFlow already gathered into the single capture-trust verdict every
+// report surface (this banner, and Tasks 10/11/13/16) reads.
 func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 	groups []runs.Group, exitCode int) runs.CaptureTrust {
-	return runs.CaptureTrust{
-		Status:  trace.VerdictSuspect,
-		Summary: "capture-trust not assessed yet — see Task 6",
+	return capture.Assess(capture.AssessInput{
+		ProxyConfigured:     true,
+		ProxyFailure:        s.ProxyFailure(),
+		Hops:                hops,
+		Checkpoints:         len(cps),
+		ExpectedCheckpoints: expectedCheckpoints(s.Paths),
+		RequestsSeen:        s.RequestsSeen(),
+		TestExitCode:        exitCode,
+		// Quiet intervals come from the SAME derived groups the manifest
+		// stores, so "the report says this stretch was deliberately quiet"
+		// and "the verdict forgave this stretch" can never disagree.
+		Quiet: quietOnly(groups),
+		// The same constant Assess falls back to, passed explicitly so the
+		// number has a visible name at the call site. There is one
+		// declaration of it, in capture/trust.go.
+		GapThreshold:   capture.DefaultGapThreshold,
+		SessionVerdict: s.EndVerdict(),
+		SessionReasons: s.EndReasons(),
+		Notes:          s.TrustNotes(),
+	})
+}
+
+// expectedCheckpoints reads the previous run of the same app/flow — the run
+// directory immediately before this one in ListRuns' lexical (and, thanks
+// to NewRunID's timestamp-first encoding, chronological) order — and
+// returns the number of checkpoints its manifest recorded. It returns -1
+// when there is no history to compare against: a wire-only flow's first
+// ever run has no prior checkpoint count to fall short of, and -1 (not 0)
+// is what tells Assess "no comparison possible" from "compare against zero".
+func expectedCheckpoints(p runs.Paths) int {
+	runDir := filepath.Clean(p.RunDir)
+	flowDir := filepath.Dir(runDir)
+	appDir := filepath.Dir(flowDir)
+	root := filepath.Dir(appDir)
+	app, flow, runID := filepath.Base(appDir), filepath.Base(flowDir), filepath.Base(runDir)
+
+	ids := runs.ListRuns(root, app, flow)
+	prev := ""
+	for _, id := range ids {
+		if id == runID {
+			break
+		}
+		prev = id
 	}
+	if prev == "" {
+		return -1
+	}
+	pp, err := runs.PathsFor(root, app, flow, prev)
+	if err != nil {
+		return -1
+	}
+	m, err := runs.ReadManifest(pp.ManifestPath)
+	if err != nil {
+		return -1
+	}
+	return len(m.Checkpoints)
+}
+
+// quietOnly filters DeriveGroups' output down to the flow-declared quiet
+// intervals FindGaps subtracts. Groups is the full flow-part timeline
+// (login, checkout, ...); only the ones a flow marked `quiet` explain an
+// otherwise-suspicious silence.
+func quietOnly(groups []runs.Group) []runs.Group {
+	var out []runs.Group
+	for _, g := range groups {
+		if g.Quiet {
+			out = append(out, g)
+		}
+	}
+	return out
 }
