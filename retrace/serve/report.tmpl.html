@@ -154,7 +154,12 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{else if .Cp.Overlap}}<p class="note">The compared images differed in size after trimming; over the overlap {{pct .Cp.Overlap.DiffPct}}% of pixels differ.</p>{{end}}
 {{if .Missing}}<p class="note">Not in this export: {{range .Missing}}{{.}} {{end}}— the summary named these images and the files were not on disk. They are omitted rather than shown as blank panes, because a blank comparison pane reads as "identical".</p>{{end}}
 <div class="shots">
-{{range .Sides}}<figure class="shot"><img src="{{.Src}}" alt="{{.Label}} shot"><figcaption>{{.Label}}</figcaption></figure>{{end}}
+{{- /* The overlay is the one pane that is only occasionally wanted, so it
+    is a <details> rather than a script-driven toggle. There is no
+    JavaScript in this report at all, which is what keeps rule 1 at the top
+    of this file trivially true: a recorded value cannot reach a script
+    context that does not exist. */ -}}
+{{range .Sides}}{{if eq .Side "overlay"}}<details class="shot"><summary>{{.Label}}</summary><img src="{{.Src}}" alt="{{.Label}} shot"></details>{{else}}<figure class="shot"><img src="{{.Src}}" alt="{{.Label}} shot"><figcaption>{{.Label}}</figcaption></figure>{{end}}{{end}}
 </div>
 {{end}}
 {{else}}
