@@ -13,9 +13,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 )
 
 // version is stamped by goreleaser via -X main.version at release time.
+// Everywhere it's displayed or reported, go through buildinfo.Resolve so a
+// local build (which leaves this at "dev") still reports the commit it was
+// built from instead of a bare, indistinguishable "dev".
 var version = "dev"
 
 const usage = `ensemble — local backend orchestrator CLI
@@ -56,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "--version", "-version":
-		fmt.Fprintln(stdout, version)
+		fmt.Fprintln(stdout, buildinfo.Resolve(version))
 		return 0
 	case "up":
 		return cmdUp(args[1:], stdout, stderr)

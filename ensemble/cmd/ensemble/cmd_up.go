@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/stub"
 	"github.com/caribou-crew/ensemble/core/trace"
@@ -176,7 +177,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 
 	allowedHosts, exposureWarning := apiHostPolicy(opts.Addr)
 	handler := server.New(server.Deps{
-		Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: version,
+		Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: buildinfo.Resolve(version),
 		Shutdown: cancelShutdown, AllowedHosts: allowedHosts, Insp: insp,
 	})
 

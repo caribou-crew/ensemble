@@ -8,9 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 )
 
 // version is stamped by goreleaser via -X main.version at release time.
+// Everywhere it's displayed or reported, go through buildinfo.Resolve so a
+// local build (which leaves this at "dev") still reports the commit it was
+// built from instead of a bare, indistinguishable "dev".
 var version = "dev"
 
 const usage = `retrace — record / replay / diff / review flows
@@ -55,7 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return exitOK
 	case "--version", "-version":
-		fmt.Fprintln(stdout, version)
+		fmt.Fprintln(stdout, buildinfo.Resolve(version))
 		return exitOK
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
