@@ -86,11 +86,23 @@ type Overlap struct {
 // here; the top-level fields get their wire tags where CheckpointVerdict
 // declares them.
 type Result struct {
-	Width, Height                    int
-	DiffPct                          float64
-	DiffPctFine                      float64
-	NumDiff                          int
-	Mismatch                         bool
+	Width, Height int
+	DiffPct       float64
+	DiffPctFine   float64
+	NumDiff       int
+	// Mismatch reports whether the two SHOTS (WidthA/HeightA vs
+	// WidthB/HeightB, the real pre-trim geometry) differed in size. It is
+	// deliberately NOT "did Compare need to pad/crop to run the
+	// comparison" — Trim crops each side independently, so two same-size
+	// shots can trim to different-size crops without the SHOTS having
+	// mismatched; that is PaddedForDiff's meaning, not this one.
+	Mismatch bool
+	// PaddedForDiff reports whether Compare had to reconcile a size
+	// difference (union-pad/crop) between what it actually measured
+	// (post-trim, if Trim was set) in order to run the comparison. This can
+	// be true when Mismatch is false — differing trims on same-size shots —
+	// and is the field that means "Overlap/NumDiff were computed on a
+	// reconciled canvas," not "the shots differed."
 	PaddedForDiff                    bool
 	WidthA, HeightA, WidthB, HeightB int
 	Overlap                          *Overlap
@@ -351,6 +363,16 @@ func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error) {
 		WidthB:  bImg.Bounds().Dx(),
 		HeightB: bImg.Bounds().Dy(),
 	}
+	// Mismatch reports whether the two SHOTS differed in size — never
+	// whether Trim happened to crop them to different sizes. It is derived
+	// from WidthA/HeightA/WidthB/HeightB (the real, pre-trim geometry
+	// recorded above, never overwritten by anything below), independent of
+	// whatever the trim/padding reconciliation below decides is needed to
+	// actually run the comparison. Two same-size shots with different
+	// amounts of uniform border around identical content must never report
+	// Mismatch: true — that would make Trim manufacture the exact false
+	// signal it exists to remove.
+	res.Mismatch = res.WidthA != res.WidthB || res.HeightA != res.HeightB
 
 	// Masks are applied HERE, before any trim or size reconciliation, in
 	// the ORIGINAL screenshot's coordinate space — the only frame in which
@@ -385,7 +407,6 @@ func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error) {
 
 	var cmpA, cmpB *image.RGBA
 	if wA != wB || hA != hB {
-		res.Mismatch = true
 		// Overlap is measured on the cropped intersection BEFORE padding —
 		// that is the only number that means "the content changed"; the
 		// padded union below inflates NumDiff with forced diff wherever one
