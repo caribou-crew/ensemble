@@ -2,6 +2,7 @@ package diff
 
 import (
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"os"
@@ -475,6 +476,93 @@ func TestANonOkSideIsQuarantinedByDefault(t *testing.T) {
 	}
 }
 
+// TestIncompleteCheckOnlyFiresOnANegativeExitCodeNotAnyNonzeroOne pins the
+// other half of incompleteCheck's contract: a POSITIVE Test.ExitCode is a
+// completed test that failed (already surfaced through capture.Assess's
+// "test-failed" -> VerdictFailed -> the ordinary, AllowDegraded-gated
+// quarantineCheck path), not a truncated recording. Collapsing "!= 0" would
+// make incompleteCheck fire unconditionally for a merely-failing test too,
+// silently taking away --allow-degraded's ability to let a human compare
+// one anyway.
+func TestIncompleteCheckOnlyFiresOnANegativeExitCodeNotAnyNonzeroOne(t *testing.T) {
+	a := RunRef{Manifest: manifest("a", nil, nil, okCapture())}
+	b := RunRef{Manifest: manifest("b", nil, nil, okCapture())}
+	b.Manifest.Test.ExitCode = 7
+	if q := incompleteCheck(a, b); len(q) != 0 {
+		t.Fatalf("incompleteCheck = %+v, want empty — a positive exit code is a completed (failing) test, not a truncated recording", q)
+	}
+}
+
+// TestASignalKilledTestCommandIsQuarantinedNotDiffed pins the team lead's
+// ruling on the brief's original "signal-killed child" passage: `retrace
+// diff` never execs a child (only `retrace run`'s `-- <test command>` tail
+// does — cmd_run.go, out of scope for this task), so the signal-kill
+// reaches Build as DATA, not as a live process. cmd_run.go writes
+// exec.ExitError.ExitCode()'s raw -1 straight into the manifest's
+// Test.ExitCode when the test command is killed by a signal (CI's timeout,
+// Ctrl-C); a fixture manifest carrying that value is all this needs — no
+// child process anywhere.
+//
+// Side b's Capture is deliberately "ok" here, unlike
+// TestANonOkSideIsQuarantinedByDefault: this proves incompleteCheck itself
+// gates the build, not a side effect of capture.Assess also marking a
+// nonzero TestExitCode VerdictFailed. Today those two paths would agree in
+// production, but cmd_run.go's own pass-through behavior is a separate,
+// still-open ruling — this test must not depend on it.
+func TestASignalKilledTestCommandIsQuarantinedNotDiffed(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bManifest := manifest("b", nil, nil, okCapture())
+	bManifest.Test.ExitCode = -1
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
+	cfg := baseConfig(t)
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if s.Verdict != "quarantined" {
+		t.Fatalf("verdict = %q, want quarantined (a signal-killed test command produced a truncated recording, not a comparable run)", s.Verdict)
+	}
+	if ExitCode(s) != 3 {
+		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+	}
+	if len(s.Quarantined) != 1 || s.Quarantined[0].Side != "b" {
+		t.Fatalf("Quarantined = %+v, want side b named", s.Quarantined)
+	}
+	if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 || len(s.Budgets) != 0 {
+		t.Fatalf("a quarantined Build must not populate any comparison field, got %+v", s)
+	}
+}
+
+// TestAllowDegradedDoesNotOverrideASignalKilledTestCommand: --allow-degraded
+// (see TestAllowDegradedOverridesQuarantine) exists so a human can accept a
+// LOWER-CONFIDENCE but still-complete capture. A run whose test command was
+// killed by a signal has no complete data to accept — there is nothing for
+// the flag to override, so incompleteCheck is NOT gated behind
+// AllowDegraded the way quarantineCheck is.
+func TestAllowDegradedDoesNotOverrideASignalKilledTestCommand(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bManifest := manifest("b", nil, nil, okCapture())
+	bManifest.Test.ExitCode = -1
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
+	cfg := baseConfig(t)
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
+	if s.Verdict != "quarantined" {
+		t.Fatalf("verdict = %q, want quarantined even with AllowDegraded (a truncated recording has no complete data to accept)", s.Verdict)
+	}
+	if ExitCode(s) != 3 {
+		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+	}
+}
+
 // TestASuspectSideIsQuarantinedEvenThoughItIsNotFatal pins quarantineCheck's
 // documented breadth: it reads the raw Status, excluding only VerdictOK —
 // deliberately WIDER than capture.Fatal, which also excludes VerdictSuspect
@@ -551,6 +639,126 @@ func TestAnUnconfiguredPlaneGetsNoGateEntry(t *testing.T) {
 		if g.Plane == "wire" {
 			t.Fatalf("Budgets contains a wire entry (%+v) though cfg.Gates never configured \"wire\" — a stray zero-Threshold Gate would read as \"passed\"", g)
 		}
+	}
+}
+
+// TestAWireBudgetComparesAPercentageNotARawCount pins the team lead's
+// review finding: every Gate.Threshold comes from `gates: {<plane>:
+// {budget_pct}}` — always a percentage — so Observed must be one too, for
+// every plane including "wire". An earlier draft used Counts.WireChanged
+// (a raw count) for wire's Observed, matching the brief's literal wording;
+// under that reading 3 changed entries out of 1000 would fail a
+// `budget_pct: 2` gate (3 > 2), which is absurd — 0.3% of a flow's calls
+// changing is nowhere near a 2% budget. A fixture where the raw-count and
+// percentage readings agree (e.g. 3 of 4) would pin neither; this one only
+// passes under the percentage reading.
+func TestAWireBudgetComparesAPercentageNotARawCount(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	const total, changed = 1000, 3
+	hopsA := make([]trace.Hop, total)
+	hopsB := make([]trace.Hop, total)
+	for i := range total {
+		path := fmt.Sprintf("/item/%d", i)
+		respB := `{"v":1}`
+		if i < changed {
+			respB = `{"v":2}`
+		}
+		hopsA[i] = hop(uint64(i+1), "GET", path, 200, "", `{"v":1}`)
+		hopsB[i] = hop(uint64(i+1), "GET", path, 200, "", respB)
+	}
+	writeWireFile(t, dirA, hopsA)
+	writeWireFile(t, dirB, hopsB)
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Gates["wire"] = gatePct(2) // 2% budget; 3/1000 = 0.3% must PASS
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if s.Counts.WireChanged != changed {
+		t.Fatalf("Counts.WireChanged = %d, want %d", s.Counts.WireChanged, changed)
+	}
+	var g *Gate
+	for i := range s.Budgets {
+		if s.Budgets[i].Plane == "wire" {
+			g = &s.Budgets[i]
+		}
+	}
+	if g == nil {
+		t.Fatalf("no wire Gate in Budgets: %+v", s.Budgets)
+	}
+	if g.Failed {
+		t.Fatalf("wire Gate = %+v, want Failed=false (0.3%% observed, 2%% threshold) — a raw-count reading would compare 3 > 2 and fail", *g)
+	}
+	if g.Observed < 0.29 || g.Observed > 0.31 {
+		t.Fatalf("wire Gate.Observed = %v, want ~0.3 (a percentage: 3/1000*100), not the raw count 3", g.Observed)
+	}
+}
+
+// TestAPerfBudgetOf0MsEmitsNoGateAtAll pins the second half of the units
+// ruling: BudgetMs == 0 (DerivePerfBudget never configured one) must not
+// silently read as "0% over budget" — clean — nor divide by zero. It must
+// behave exactly like a plane cfg.Gates never mentions: no entry at all.
+func TestAPerfBudgetOf0MsEmitsNoGateAtAll(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Gates["perf"] = gatePct(10) // configured, but no PerfBudgetMs anywhere -> BudgetMs stays 0
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if s.Perf.BudgetMs != 0 {
+		t.Fatalf("test setup: Perf.BudgetMs = %v, want 0", s.Perf.BudgetMs)
+	}
+	for _, g := range s.Budgets {
+		if g.Plane == "perf" {
+			t.Fatalf("Budgets contains a perf entry (%+v) though BudgetMs is 0 — an unset budget must emit no Gate, not one that divides by zero or reads as clean", g)
+		}
+	}
+}
+
+// TestAPerfBudgetIsPercentOverNotPercentOf pins the perf half of the units
+// ruling: Observed is percent OVER budget, (Measured-Budget)/Budget*100 —
+// 0 means "exactly at budget" — not percent OF budget consumed
+// (Measured/Budget*100, this implementer's original call, overturned in
+// review because 100 would then mean "at budget" and every threshold on
+// this one plane alone would have to be written around 100 instead of 0).
+// 150ms measured against a 100ms budget is 50% over.
+func TestAPerfBudgetIsPercentOverNotPercentOf(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	slow := trace.Hop{Seq: 1, Method: "GET", Path: "/cart", Status: 200, T: trace.Timings{DoneMs: 150}}
+	writeWireFile(t, dirB, []trace.Hop{slow})
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Flows = map[string]config.Flow{"flow": {PerfBudgetMs: 100}}
+	cfg.Gates["perf"] = gatePct(60) // 50% over must PASS a 60% allowance
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if s.Perf.MeasuredMs != 150 || s.Perf.BudgetMs != 100 {
+		t.Fatalf("test setup: Perf = %+v, want Measured 150 / Budget 100", s.Perf)
+	}
+	var g *Gate
+	for i := range s.Budgets {
+		if s.Budgets[i].Plane == "perf" {
+			g = &s.Budgets[i]
+		}
+	}
+	if g == nil {
+		t.Fatalf("no perf Gate in Budgets: %+v", s.Budgets)
+	}
+	if g.Observed < 49.9 || g.Observed > 50.1 {
+		t.Fatalf("perf Gate.Observed = %v, want ~50 (percent OVER budget: (150-100)/100*100), not ~150 (percent OF budget)", g.Observed)
+	}
+	if g.Failed {
+		t.Fatalf("perf Gate = %+v, want Failed=false (50%% over is under the 60%% allowance)", *g)
 	}
 }
 
