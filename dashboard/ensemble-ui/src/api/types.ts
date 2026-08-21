@@ -44,6 +44,8 @@ export interface ServiceState {
   port?: number;
   startedAt?: string;
   lastErr?: string;
+  /** Current `variants:` choice, for a service that declares any. */
+  variant?: string;
 }
 
 export interface TopologyNode {
@@ -51,6 +53,9 @@ export interface TopologyNode {
   category: "service" | "database" | "stub" | "gateway";
   status: string;
   entry?: boolean;
+  /** Set only for a service declaring `variants:` — the current choice and every option. */
+  variant?: string;
+  variants?: string[];
 }
 
 export interface TopologyEdge {

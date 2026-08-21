@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Spinner } from '@ensemble/design-system';
-import { api, messageOf } from '../api/client';
-import type { Hop, ServiceState, Topology } from '../api/types';
-import { categoryOf } from '../topology/categories';
-import { layoutClustered } from '../topology/layout';
-import { layoutTrace, causalHopOrder } from '../topology/traceLayout';
-import { heatTier, hopDepths, hopTimeline, type HeatTier } from '../topology/hopTimeline';
-import type { CategoryId } from '../topology/types';
-import TopologyGraph from '../components/TopologyGraph';
-import InlineError from '../components/InlineError';
-import { useUrlParam } from '../urlState';
-import './TopologyView.css';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Badge, Spinner } from "@ensemble/design-system";
+import { api, messageOf } from "../api/client";
+import type { Hop, ServiceState, Topology } from "../api/types";
+import { categoryOf } from "../topology/categories";
+import { layoutClustered } from "../topology/layout";
+import { layoutTrace, causalHopOrder } from "../topology/traceLayout";
+import {
+  heatTier,
+  hopDepths,
+  hopTimeline,
+  type HeatTier,
+} from "../topology/hopTimeline";
+import type { CategoryId } from "../topology/types";
+import TopologyGraph from "../components/TopologyGraph";
+import InlineError from "../components/InlineError";
+import { useUrlParam } from "../urlState";
+import "./TopologyView.css";
 
 const POLL_MS = 5000;
 /** Recent-activity window for the graph's per-node heat glow. */
@@ -66,7 +71,7 @@ function useTopologyPoll() {
       setError(null);
     } catch (err) {
       if (generation !== generationRef.current) return;
-      setError(messageOf(err, 'failed to reach the ensemble API'));
+      setError(messageOf(err, "failed to reach the ensemble API"));
     }
   }, []);
 
@@ -131,20 +136,33 @@ function useTracePoll(traceId: string | null) {
 
 function ServicePanel({
   state,
+  variants,
   onClose,
   onRestart,
   onFlip,
+  onSetVariant,
 }: {
   state: ServiceState;
+  /** The service's declared `variants:` (from the topology node); empty = no selector. */
+  variants: string[];
   onClose: () => void;
   onRestart: () => Promise<void>;
   onFlip: () => Promise<void>;
+  onSetVariant: (variant: string) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState<'restart' | 'flip' | null>(null);
+  const [busy, setBusy] = useState<"restart" | "flip" | "variant" | null>(null);
 
-  const statusTone = state.status === 'healthy' ? 'green' : state.status === 'unhealthy' ? 'red' : 'amber';
+  const statusTone =
+    state.status === "healthy"
+      ? "green"
+      : state.status === "unhealthy"
+        ? "red"
+        : "amber";
 
-  async function run(action: 'restart' | 'flip', fn: () => Promise<void>) {
+  async function run(
+    action: "restart" | "flip" | "variant",
+    fn: () => Promise<void>,
+  ) {
     setBusy(action);
     try {
       await fn();
@@ -157,13 +175,19 @@ function ServicePanel({
     <aside className="topo-panel">
       <div className="topo-panel__header">
         <h3>{state.name}</h3>
-        <button type="button" className="topo-panel__close" onClick={onClose} aria-label="close">
+        <button
+          type="button"
+          className="topo-panel__close"
+          onClick={onClose}
+          aria-label="close"
+        >
           ×
         </button>
       </div>
       <div className="topo-panel__row">
         <Badge tone={statusTone}>{state.status}</Badge>
         <Badge tone="neutral">{state.placement}</Badge>
+        {state.variant && <Badge tone="neutral">{state.variant}</Badge>}
       </div>
       <dl className="topo-panel__meta">
         {state.pid !== undefined && (
@@ -196,13 +220,40 @@ function ServicePanel({
         <button
           type="button"
           disabled={busy !== null}
-          onClick={() => void run('restart', onRestart)}
+          onClick={() => void run("restart", onRestart)}
         >
-          {busy === 'restart' ? <Spinner /> : 'Restart'}
+          {busy === "restart" ? <Spinner /> : "Restart"}
         </button>
-        <button type="button" disabled={busy !== null} onClick={() => void run('flip', onFlip)}>
-          {busy === 'flip' ? <Spinner /> : `Flip to ${state.placement === 'docker' ? 'native' : 'docker'}`}
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={() => void run("flip", onFlip)}
+        >
+          {busy === "flip" ? (
+            <Spinner />
+          ) : (
+            `Flip to ${state.placement === "docker" ? "native" : "docker"}`
+          )}
         </button>
+        {variants.length > 0 && (
+          <label className="topo-panel__variant">
+            <span>variant</span>
+            <select
+              value={state.variant ?? ""}
+              disabled={busy !== null}
+              onChange={(e) =>
+                void run("variant", () => onSetVariant(e.target.value))
+              }
+            >
+              {variants.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            {busy === "variant" && <Spinner />}
+          </label>
+        )}
       </div>
     </aside>
   );
@@ -248,19 +299,24 @@ function HopTimingPanel({
           <button
             type="button"
             key={`${h.seq}-${h.to}`}
-            className={`topo-hop-row${selectedHop === h.seq ? ' topo-hop-row-selected' : ''}`}
+            className={`topo-hop-row${selectedHop === h.seq ? " topo-hop-row-selected" : ""}`}
             onClick={() => onSelectHop(h.seq)}
           >
             <span className="topo-hop-meta">
-              <span className="topo-hop-seq">#{h.seq}</span>{' '}
-              <span className="topo-hop-consumer" style={{ paddingLeft: depth * 12 }}>
+              <span className="topo-hop-seq">#{h.seq}</span>{" "}
+              <span
+                className="topo-hop-consumer"
+                style={{ paddingLeft: depth * 12 }}
+              >
                 {depth > 0 && <span className="topo-hop-nest-glyph">↳</span>}
-                {h.from ?? 'client'}
+                {h.from ?? "client"}
               </span>
-              {' → '}
+              {" → "}
               {h.to}
               {h.method && <span className="topo-hop-method"> {h.method}</span>}
-              {h.status !== undefined && <span className="topo-hop-status"> {h.status}</span>}
+              {h.status !== undefined && (
+                <span className="topo-hop-status"> {h.status}</span>
+              )}
             </span>
             <span className="topo-hop-track">
               <span
@@ -285,12 +341,14 @@ function HopTimingPanel({
 
 export default function TopologyView() {
   const { topology, statuses, traffic, error, refresh } = useTopologyPoll();
-  const [traceId, setTraceId] = useUrlParam('trace');
+  const [traceId, setTraceId] = useUrlParam("trace");
   const { hops: traceHops, error: traceError } = useTracePoll(traceId);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedHop, setSelectedHop] = useState<number | null>(null);
-  const [expandedBundles, setExpandedBundles] = useState<Set<string>>(new Set());
+  const [expandedBundles, setExpandedBundles] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Leaving trace mode drops whatever was selected inside it — a stale hop selection
   // pointing at a node the cluster graph doesn't have would just dim nothing, silently.
@@ -299,7 +357,10 @@ export default function TopologyView() {
     setSelectedNodeId(null);
   }, [traceId]);
 
-  const statusMap = useMemo(() => new Map((statuses ?? []).map((s) => [s.name, s])), [statuses]);
+  const statusMap = useMemo(
+    () => new Map((statuses ?? []).map((s) => [s.name, s])),
+    [statuses],
+  );
   const nodeHeat = useMemo(() => heatByService(traffic), [traffic]);
 
   // layoutTrace stays a pure (hops) => GraphLayout function with no per-node category (see
@@ -325,8 +386,17 @@ export default function TopologyView() {
         }),
       };
     }
-    return topology ? layoutClustered(topology, statusMap, expandedBundles) : null;
-  }, [traceId, traceHops, topology, statusMap, expandedBundles, categoryByName]);
+    return topology
+      ? layoutClustered(topology, statusMap, expandedBundles)
+      : null;
+  }, [
+    traceId,
+    traceHops,
+    topology,
+    statusMap,
+    expandedBundles,
+    categoryByName,
+  ]);
 
   const toggleBundle = useCallback((key: string) => {
     setExpandedBundles((cur) => {
@@ -347,7 +417,14 @@ export default function TopologyView() {
     await refresh();
   }
 
-  const selectedState = selectedNodeId ? statusMap.get(selectedNodeId) : undefined;
+  async function setVariant(name: string, variant: string) {
+    await api.setVariant(name, variant);
+    await refresh();
+  }
+
+  const selectedState = selectedNodeId
+    ? statusMap.get(selectedNodeId)
+    : undefined;
 
   if (error) {
     return (
@@ -362,7 +439,9 @@ export default function TopologyView() {
     return (
       <div className="topo-view topo-view--loading">
         <Spinner />
-        <span>{traceId ? `loading trace ${traceId}…` : 'loading topology…'}</span>
+        <span>
+          {traceId ? `loading trace ${traceId}…` : "loading topology…"}
+        </span>
       </div>
     );
   }
@@ -375,7 +454,12 @@ export default function TopologyView() {
           <button type="button" onClick={() => setTraceId(null)}>
             back to topology
           </button>
-          {traceError && <InlineError message={traceError} className="topo-view__trace-error" />}
+          {traceError && (
+            <InlineError
+              message={traceError}
+              className="topo-view__trace-error"
+            />
+          )}
         </div>
       )}
       <div className="topo-view__body">
@@ -391,14 +475,23 @@ export default function TopologyView() {
         {!traceId && selectedState && (
           <ServicePanel
             state={selectedState}
+            variants={
+              topology?.nodes.find((n) => n.name === selectedState.name)
+                ?.variants ?? []
+            }
             onClose={() => setSelectedNodeId(null)}
             onRestart={() => restart(selectedState.name)}
             onFlip={() => flip(selectedState.name)}
+            onSetVariant={(v) => setVariant(selectedState.name, v)}
           />
         )}
       </div>
       {traceId && traceHops && (
-        <HopTimingPanel hops={traceHops} selectedHop={selectedHop} onSelectHop={setSelectedHop} />
+        <HopTimingPanel
+          hops={traceHops}
+          selectedHop={selectedHop}
+          onSelectHop={setSelectedHop}
+        />
       )}
     </div>
   );

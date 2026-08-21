@@ -817,3 +817,18 @@ func TestDefaultAPIURLMatchesUpDefaultAddr(t *testing.T) {
 		t.Fatalf("defaultAPIURL() = %q, want %q (matching up's default --api)", got, want)
 	}
 }
+
+func TestParseVariantFlag(t *testing.T) {
+	got, err := parseVariantFlag("mono=real, api=stub")
+	if err != nil || got["mono"] != "real" || got["api"] != "stub" || len(got) != 2 {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if got, err := parseVariantFlag(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty: %v, %v", got, err)
+	}
+	for _, bad := range []string{"mono", "=real", "mono="} {
+		if _, err := parseVariantFlag(bad); err == nil {
+			t.Errorf("%q: expected error", bad)
+		}
+	}
+}

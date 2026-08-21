@@ -27,9 +27,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 
 	tw := newTabwriter(stdout)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tPLACEMENT\tPID\tPORT\tPROXY\tERROR")
+	fmt.Fprintln(tw, "NAME\tSTATUS\tPLACEMENT\tVARIANT\tPID\tPORT\tPROXY\tERROR")
 	for _, s := range res.Services {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.Name, s.Status, s.Placement, s.PID, s.Port, s.ProxyPort, s.LastErr)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.Name, s.Status, s.Placement, s.Variant, s.PID, s.Port, s.ProxyPort, s.LastErr)
 	}
 	tw.Flush()
 	return 0

@@ -103,6 +103,51 @@ stubs:                            # dependencies you can't run locally
 A stub response can also read its body from a file (`body_file:`) instead of
 inlining it.
 
+### Variants: a stub or the real thing behind one service
+
+Sometimes a service is backed by a 10 MB Go stub that implements the slice
+of a monolith you need (still talking to the real databases), and
+sometimes by the 1.5 GB monolith itself. `variants:` declares both
+backings on the one logical service — same port, proxy, health path, and
+dependencies — and `default:` picks what `ensemble up` starts:
+
+```yaml
+services:
+  monolith:
+    port: 8081
+    proxy: 9081
+    health: /healthz
+    depends_on: [postgres]
+    default: stub
+    variants:
+      stub:
+        dir: ./services/monolith-stub
+        build: go build -o stub .
+        run: ./stub
+        watch: ["**/*.go"]
+      real:
+        dir: ../java-monolith
+        build: ./gradlew bootJar
+        run: java -jar build/libs/app.jar
+        env: { JAVA_OPTS: -Xmx1g }
+        startup_timeout_s: 120
+```
+
+`dir`, `build`, `watch`, `run`, `env`, `docker`, and `startup_timeout_s`
+live on the variants; everything else stays on the service. Switch at
+runtime — the stub is killed, the other variant is built if stale and
+started, health-gated, and the proxy listener (and any gateway route) never
+notices because the port is the service's:
+
+```sh
+ensemble variant monolith real          # or the selector on the service's dashboard panel
+ensemble up --variant monolith=real     # one-off override of `default`
+```
+
+`Restart` keeps the current variant, `ensemble status` shows a VARIANT
+column, and build stamps are kept per variant so switching never skips a
+stale build.
+
 ### Gateways
 
 `proxy:` is one-in, one-out — a single intercept port in front of a single

@@ -48,11 +48,18 @@ func (c *Config) Validate() error {
 	}
 
 	for name, svc := range c.Services {
-		if svc.Run == "" && svc.Docker == nil {
-			errs = append(errs, fmt.Errorf("service %q: must set run or docker", name))
-		}
-		if svc.Run != "" && svc.Port == 0 {
-			errs = append(errs, fmt.Errorf("service %q: run is set but port is 0", name))
+		if len(svc.Variants) > 0 {
+			errs = append(errs, c.validateVariants(name, svc)...)
+		} else {
+			if svc.Default != "" {
+				errs = append(errs, fmt.Errorf("service %q: default is set but no variants are declared", name))
+			}
+			if svc.Run == "" && svc.Docker == nil {
+				errs = append(errs, fmt.Errorf("service %q: must set run or docker", name))
+			}
+			if svc.Run != "" && svc.Port == 0 {
+				errs = append(errs, fmt.Errorf("service %q: run is set but port is 0", name))
+			}
 		}
 		if svc.Port != 0 {
 			usedPorts[svc.Port] = append(usedPorts[svc.Port], "service "+name)
@@ -153,6 +160,37 @@ func (c *Config) hasServiceOrDatabase(name string) bool {
 		return true
 	}
 	return false
+}
+
+// validateVariants applies the variant rules to a service declaring
+// variants: backing fields live on the variants only, every variant is
+// runnable, and the default is unambiguous.
+func (c *Config) validateVariants(name string, svc Service) []error {
+	var errs []error
+	if svc.hasBackingFields() {
+		errs = append(errs, fmt.Errorf("service %q: dir/build/watch/run/env/docker/startup_timeout_s must be set on the variants, not the service, when variants are declared", name))
+	}
+	switch {
+	case svc.Default == "" && len(svc.Variants) > 1:
+		errs = append(errs, fmt.Errorf("service %q: default is required when more than one variant is declared (have %s)", name, strings.Join(svc.VariantNames(), ", ")))
+	case svc.Default != "":
+		if _, ok := svc.Variants[svc.Default]; !ok {
+			errs = append(errs, fmt.Errorf("service %q: default %q is not a declared variant (have %s)", name, svc.Default, strings.Join(svc.VariantNames(), ", ")))
+		}
+	}
+	for _, vname := range svc.VariantNames() {
+		v := svc.Variants[vname]
+		if v.Run == "" && v.Docker == nil {
+			errs = append(errs, fmt.Errorf("service %q: variant %q: must set run or docker", name, vname))
+		}
+		if v.Run != "" && svc.Port == 0 {
+			errs = append(errs, fmt.Errorf("service %q: variant %q: run is set but the service's port is 0", name, vname))
+		}
+		if v.StartupTimeoutS < 0 {
+			errs = append(errs, fmt.Errorf("service %q: variant %q: startup_timeout_s must be >= 0", name, vname))
+		}
+	}
+	return errs
 }
 
 // hasStub reports whether name identifies a declared stub.

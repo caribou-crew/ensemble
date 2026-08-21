@@ -109,6 +109,16 @@ func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
 	return out, err
 }
 
+// --- variant ---
+
+// SetVariant switches name to one of its declared variants and returns
+// the resulting state (POST /api/services/{name}/variant).
+func (c *Client) SetVariant(ctx context.Context, name, variant string) (orchestrator.ServiceState, error) {
+	var out orchestrator.ServiceState
+	err := c.do(ctx, http.MethodPost, "/api/services/"+url.PathEscape(name)+"/variant", map[string]string{"variant": variant}, &out)
+	return out, err
+}
+
 // --- shutdown ---
 
 // ShutdownResponse mirrors POST /api/shutdown's body.
