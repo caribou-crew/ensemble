@@ -1,0 +1,8 @@
+# One service per line: name  git-url  branch  dir
+#
+# `dir` must match the `dir:` field for the same service in ensemble.yaml —
+# that's how the two files stay in sync. Blank lines and lines starting with
+# # are ignored.
+
+edge     git@github.com:acme/edge.git      main   services/edge
+catalog  git@github.com:acme/catalog.git   main   services/catalog
