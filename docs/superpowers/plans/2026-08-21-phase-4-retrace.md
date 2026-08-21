@@ -302,7 +302,17 @@ do not. Same format as `docs/phase-3-porting-inventory.md`.
   `RequestURI()`, query included).
 - flowlens bodies were parsed objects; `trace.Payload.Body` is raw text and
   may be `Truncated`. A truncated body must never be diffed field-wise —
-  report `truncated` and skip (Task 8, Step 6).
+  report `truncated` and skip (Task 8, Step 6). **Clarified after Task 8's
+  review: truncation gates PER PAYLOAD, not per entry.** An `Entry` has four
+  payloads (request and response, on each side); a truncation flag suppresses
+  field-diffing of *that body only*, and the other three are diffed normally.
+  `Entry.Truncated` reports that at least one was truncated. The earlier text
+  was ambiguous between the two readings — Step 6's `parseBody(p
+  trace.Payload)` signature says per-payload, Step 5's test description read
+  as per-entry — and the implementation took the per-entry reading, so a
+  truncated REQUEST body silently suppressed the RESPONSE diff and the entry
+  reported `identical`. A false "ok" produced by ambiguity in this plan, not
+  by the implementer.
 - flowlens had zero TODO/FIXME and comments that explain *why*. Carry the
   explanatory comments across when porting; they are the design record.
 
@@ -4637,8 +4647,19 @@ git commit -m "feat(retrace): pixelmatch port with masks, thresholds, border tri
       Glob    string `json:"glob,omitempty"`
   }
   type HeaderDiff struct {
-      Scope   string `json:"scope"`
-      Name    string `json:"name"`
+      Scope string `json:"scope"`
+      Name  string `json:"name"`
+      // Type is the OUTCOME, not merely the shape of the change:
+      // "changed" | "added" | "removed" | "tolerated" | "violation".
+      // Clarified after Task 8's review, which found the implementation
+      // emitting only "changed" — so a rule violation and a tolerated
+      // change produced structurally identical rows and Task 10's
+      // "exit 2 if a rule Violation exists" bullet became inexpressible
+      // for headers. Task 15's TS mirror already declares this exact
+      // five-value union, so the field always meant this; nothing about
+      // the wire shape changes. `classify` keys on Type: "violation" and
+      // "changed" count as changed, "tolerated" and "ignored" do NOT —
+      // mirroring BodyTolerated, which deliberately does not.
       Type    string `json:"type"`
       A       string `json:"a"`
       B       string `json:"b"`
@@ -4861,9 +4882,16 @@ Port `walk` / `diffArrays` / `blankTolerated` / `canonicalJSON` from
   `FieldDiff{Path: "", Type: "changed"}` — never a field tree over
   half-parsed data.
 - `canonicalJSON(v any) string` sorts object keys so structurally identical
-  values compare equal regardless of key order (`json.Marshal` on a
-  `map[string]any` already sorts, but arrays of maps need the recursive
-  form — write it explicitly, don't rely on the marshaller).
+  values compare equal regardless of key order. **Corrected after Task 8's
+  review: the parenthetical this line used to carry — that `json.Marshal`
+  sorts only top-level `map[string]any` keys and "arrays of maps need the
+  recursive form" — is factually false.** `encoding/json` sorts map keys at
+  every nesting level, maps inside slices included; measured, the two forms
+  are equivalent on any value decoded from JSON. Keep the explicit function
+  (one pass, no intermediate `[]byte`, and it makes the ordering guarantee
+  local rather than inherited), but do NOT repeat the false justification in
+  its doc comment. A mutation replacing its body with `json.Marshal` is an
+  equivalent mutant, not a coverage gap — do not chase it.
 - Array index segments are emitted as `items[0].sku`, so a rule glob
   `items.*.sku` will NOT match. Document this in `MatchFieldGlob`'s doc
   comment and cover it: `TestFieldGlobsAddressArrayElementsWithBracketIndices`.
