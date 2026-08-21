@@ -107,10 +107,13 @@ export interface SeedResult {
 }
 
 export const api = {
-  status(): Promise<ServiceState[]> {
-    return request<{ services: ServiceState[] }>("/api/status").then(
-      (r) => r.services,
-    );
+  /** `withMem` opts into `?mem=1`, which populates each service's `rssKB`
+   * at the cost of a `ps`/`docker stats` shell-out per running node —
+   * leave it off for tight polling loops (health strip, other views). */
+  status(withMem = false): Promise<ServiceState[]> {
+    return request<{ services: ServiceState[] }>(
+      `/api/status${withMem ? "?mem=1" : ""}`,
+    ).then((r) => r.services);
   },
 
   topology(): Promise<Topology> {
@@ -173,6 +176,13 @@ export const api = {
   flip(name: string): Promise<ServiceState> {
     return request<ServiceState>(
       `/api/services/${encodeURIComponent(name)}/flip`,
+      jsonInit("POST"),
+    );
+  },
+
+  stop(name: string): Promise<ServiceState> {
+    return request<ServiceState>(
+      `/api/services/${encodeURIComponent(name)}/stop`,
       jsonInit("POST"),
     );
   },

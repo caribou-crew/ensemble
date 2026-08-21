@@ -771,6 +771,89 @@ func TestServiceRestartUnknownIs404JSON(t *testing.T) {
 	}
 }
 
+func TestServiceStop(t *testing.T) {
+	e := newTestEnv(t)
+
+	resp, body := e.post(t, "/api/services/svc/stop", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var st orchestrator.ServiceState
+	if err := json.Unmarshal(body, &st); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if st.Name != "svc" || st.Status != orchestrator.StatusStopped {
+		t.Fatalf("state = %+v", st)
+	}
+
+	// GET /api/status must reflect the stop too, not just the response
+	// body of the stop call itself.
+	resp2, body2 := e.get(t, "/api/status")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp2.StatusCode, body2)
+	}
+	var got struct {
+		Services []orchestrator.ServiceState `json:"services"`
+	}
+	if err := json.Unmarshal(body2, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Services) != 1 || got.Services[0].Status != orchestrator.StatusStopped {
+		t.Fatalf("services after stop = %+v", got.Services)
+	}
+}
+
+func TestServiceStopUnknownIs404JSON(t *testing.T) {
+	e := newTestEnv(t)
+
+	resp, body := e.post(t, "/api/services/nope/stop", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["error"] == "" {
+		t.Fatalf("expected non-empty error field, got %s", body)
+	}
+}
+
+// GET /api/status must leave RSSKB unset by default (cheap, tight-loop
+// path) and populate it only when the caller opts in with ?mem=1 — the
+// whole point of gating memory sampling behind a query flag.
+func TestStatusMemOptIn(t *testing.T) {
+	e := newTestEnv(t)
+
+	resp, body := e.get(t, "/api/status")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var plain struct {
+		Services []orchestrator.ServiceState `json:"services"`
+	}
+	if err := json.Unmarshal(body, &plain); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(plain.Services) != 1 || plain.Services[0].RSSKB != 0 {
+		t.Fatalf("services without ?mem=1 = %+v, want RSSKB unset", plain.Services)
+	}
+
+	resp2, body2 := e.get(t, "/api/status?mem=1")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp2.StatusCode, body2)
+	}
+	var withMem struct {
+		Services []orchestrator.ServiceState `json:"services"`
+	}
+	if err := json.Unmarshal(body2, &withMem); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(withMem.Services) != 1 || withMem.Services[0].RSSKB <= 0 {
+		t.Fatalf("services with ?mem=1 = %+v, want RSSKB > 0 for the live native svc", withMem.Services)
+	}
+}
+
 func TestServiceFlip(t *testing.T) {
 	binDir := t.TempDir()
 	logPath := filepath.Join(binDir, "docker-calls.log")

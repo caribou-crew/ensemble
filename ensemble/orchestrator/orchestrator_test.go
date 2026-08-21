@@ -443,6 +443,90 @@ func TestRestartAbortsOnKillFailure(t *testing.T) {
 	}
 }
 
+// Stop must kill the running process, mark the node StatusStopped, and
+// leave it in the active profile set so a later Restart starts it again
+// exactly like a first-time Up (Stop deliberately doesn't touch o.active).
+func TestStop(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30"},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	t.Cleanup(func() { o.Down() })
+
+	before, ok := o.Service("svc")
+	if !ok || before.PID == 0 {
+		t.Fatalf("expected a live PID for svc after Up, got %+v", before)
+	}
+	if !processAlive(before.PID) {
+		t.Fatalf("process %d not alive right after Up", before.PID)
+	}
+
+	if err := o.Stop("svc"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	after, ok := o.Service("svc")
+	if !ok {
+		t.Fatal("expected a state for svc after Stop")
+	}
+	if after.Status != StatusStopped {
+		t.Fatalf("status = %q, want %q", after.Status, StatusStopped)
+	}
+	// Stop mirrors Down's per-name teardown, which leaves the last-known
+	// PID in state rather than zeroing it (Down does the same) — the
+	// authoritative signal that the process is gone is StatusStopped plus
+	// the OS no longer reporting the PID alive, not a zeroed field. The
+	// kill signal is synchronous but reaping (proc.go's cmd.Wait goroutine)
+	// isn't, so poll rather than asserting immediately.
+	err := pollUntil(context.Background(), time.Second, func() (bool, error) {
+		return !processAlive(before.PID), nil
+	})
+	if err != nil {
+		t.Fatalf("process %d still alive after Stop: %v", before.PID, err)
+	}
+
+	// Restart after Stop must behave like a first-time start, not error
+	// out because nothing is currently running.
+	if err := o.Restart(context.Background(), "svc"); err != nil {
+		t.Fatalf("Restart after Stop: %v", err)
+	}
+	revived, ok := o.Service("svc")
+	if !ok || revived.Status != StatusHealthy {
+		t.Fatalf("state after Restart-following-Stop = %+v", revived)
+	}
+	if !processAlive(revived.PID) {
+		t.Fatalf("revived process %d not alive", revived.PID)
+	}
+}
+
+// Stopping a service that isn't part of the active profile set is an
+// error, not a silent no-op — there's nothing tracked to tear down and
+// callers (the REST handler) need to surface that as a real failure.
+func TestStopUnknownServiceErrors(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30"},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+
+	err := o.Stop("nope")
+	if err == nil {
+		t.Fatal("expected an error stopping a service that was never started")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("error doesn't name the service: %v", err)
+	}
+}
+
 // Docker driver: exercised with a fake `docker` on PATH so CI needs no real
 // docker install. Confirms run/inspect/rm shape out the documented CLI
 // invocations and that the orchestrator's own state tracks them.

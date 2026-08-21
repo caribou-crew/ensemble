@@ -1,0 +1,108 @@
+.services-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.services-view--error,
+.services-view--loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.services-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.services-table thead th {
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline-strong);
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+}
+
+.services-table__row td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.services-table__name {
+  font-weight: 600;
+}
+
+.services-table__num {
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.services-table__dash {
+  color: var(--text-tertiary);
+}
+
+.services-table__variant select {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 0.2rem 0.35rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+.services-table__actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  position: relative;
+  white-space: nowrap;
+}
+
+.services-table__actions button {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.services-table__actions button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent-strong);
+}
+
+.services-table__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.services-table__row-error {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.services-table__empty {
+  padding: 1.25rem;
+  text-align: center;
+  color: var(--text-tertiary);
+}

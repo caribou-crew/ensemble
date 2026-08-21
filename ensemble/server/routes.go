@@ -25,6 +25,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/topology", s.handleTopology)
 
 	mux.HandleFunc("POST /api/services/{name}/restart", s.withAnnotation(s.handleServiceRestart))
+	mux.HandleFunc("POST /api/services/{name}/stop", s.withAnnotation(s.handleServiceStop))
 	mux.HandleFunc("POST /api/services/{name}/flip", s.withAnnotation(s.handleServiceFlip))
 	mux.HandleFunc("POST /api/services/{name}/variant", s.withAnnotation(s.handleServiceVariant))
 
@@ -153,8 +154,17 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.Version})
 }
 
+// handleStatus reports every node's live state. Memory (RSSKB) is left
+// unsampled by default — States() is a cheap in-memory read used by tight
+// CLI/dashboard polling loops, and sampling shells out (`ps`/`docker
+// stats`) once per running node. ?mem=1 opts a caller into that cost (the
+// Services dashboard view; nothing else needs it).
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"services": s.Orch.States()})
+	states := s.Orch.States()
+	if r.URL.Query().Get("mem") == "1" {
+		states = s.Orch.WithMemory(r.Context(), states)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": states})
 }
 
 // TopologyNode is one node in the topology graph: a service, database,
@@ -312,6 +322,20 @@ func (s *server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Orch.Restart(r.Context(), name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	st, _ := s.Orch.Service(name)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *server) handleServiceStop(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, ok := s.Cfg.Services[name]; !ok {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("service %q not found", name))
+		return
+	}
+	if err := s.Orch.Stop(name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

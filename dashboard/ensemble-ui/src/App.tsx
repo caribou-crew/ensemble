@@ -8,10 +8,12 @@ import TrafficView from './views/TrafficView';
 import LatencyView from './views/LatencyView';
 import InspectorView from './views/InspectorView';
 import EntityView from './views/EntityView';
+import ServicesView from './views/ServicesView';
 import './App.css';
 
 const VIEWS: TabItem[] = [
   { id: 'topology', label: 'Topology' },
+  { id: 'services', label: 'Services' },
   { id: 'traffic', label: 'Traffic' },
   { id: 'latency', label: 'Latency' },
   { id: 'inspector', label: 'Inspector' },
@@ -98,6 +100,8 @@ export default function App() {
       <main className="app-main">
         {activeView === 'topology' ? (
           <TopologyView />
+        ) : activeView === 'services' ? (
+          <ServicesView />
         ) : activeView === 'traffic' ? (
           <TrafficView />
         ) : activeView === 'latency' ? (
