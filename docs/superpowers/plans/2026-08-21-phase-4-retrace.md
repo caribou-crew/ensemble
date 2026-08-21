@@ -5513,9 +5513,29 @@ that for `"wire"`; Task 10's implementer caught it. The four planes:
 Pin the unit with a fixture on which the count reading and the percentage
 reading disagree: **3 changed wire entries out of 1000 against
 `budget_pct: 2` must PASS**. A 3-of-4 fixture fails under both readings and
-therefore pins neither. `--no-fail` computes and reports every gate exactly
-as above but forces `ExitCode` to `0` regardless of `Verdict` — for a
-reporting run that must not break the build.
+therefore pins neither.
+
+**An empty denominator emits NO gate for that plane.** `observedFor` divides
+for three of the four planes, and returning `0` when the denominator is empty
+reports a **clean gate** for a plane that captured nothing — a run whose B
+side paired no wire entries at all passes its wire budget. "No data" is not
+"0% changed", and a reassuring number derived from an absence of evidence is
+what the Global Constraint on zero values forbids. So `WirePaired == 0` and
+`len(ServiceCounts) == 0` behave exactly as `BudgetMs == 0` already does on
+perf: `budgetsOf` emits no `Gate` for that plane, the same rule as a plane
+`gates:` never mentions. Pin all three the same way.
+
+`--no-fail` computes and reports every gate exactly as above but forces
+`ExitCode` to `0` for the verdicts `changed` and `failed` — for a reporting
+run that must not break the build.
+
+**`--no-fail` suppresses findings, not inability to run.** A `quarantined`
+verdict still exits **3** under `--no-fail`, alongside config and I/O
+failure. Otherwise a report-only CI job reports *success* for a run that was
+never compared — and a config error, which is the same class of "could not
+evaluate", already exits 3 regardless of the flag, so zeroing quarantine is
+also internally inconsistent. A flag meaning "do not break the build on
+differences" must not also mean "call it clean when nothing was evaluated".
 
 Pin the zero-value rule with a test that mutates the "no entry when
 unconfigured" behavior and watches it fail — e.g. a `Cfg.Gates` with no
@@ -5869,8 +5889,20 @@ non-ok; a per-checkpoint line (`✓ cart   0.00%` / `✗ receipt  2.14%
 worst-first entries; the hop deltas; a `GATE:` line per entry in `Gates`;
 then a `BUDGET:` line per `Budgets` entry (`BUDGET: pixel 2.00% → 3.50%
 FAILED`), so a `--no-fail` reporting run still shows every configured
-budget even though nothing in `Gates` names it. Wide values are never
-truncated — a report an agent must read is not a dashboard.
+budget even though nothing in `Gates` names it; and a **conformance
+section**. Wide values are never truncated — a report an agent must read is
+not a dashboard.
+
+**The conformance section is not optional, and `unchecked` gets its own
+line.** Task 9 added the fifth `ConformanceFinding.Kind`, `"unchecked"`, for
+exactly one reason: an unresolvable `$ref`, an unparseable body or a
+redaction-truncated body must never read as a verified pass. If `RenderText`
+omits conformance, then in the default human-facing view — everything that is
+not `--json` — an `unchecked` finding is **invisible**, which restores the
+silent pass at the presentation layer with the producer correctly fixed and
+simply unused. Print `unchecked` findings distinguishably from both a pass
+and a violation, so "we could not check this" cannot be read as "we checked
+it and it was fine".
 
 - [ ] **Step 4: Run — expect PASS.**
 
@@ -5881,8 +5913,9 @@ truncated — a report an agent must read is not a dashboard.
 `--images` (default true), `--out`, `--allow-degraded` (disable the
 default quarantine of a non-ok side — see the cross-reference to Task 6
 above), `--no-fail` (compute and print every `Budgets` entry as usual, but
-exit `0` regardless of `Verdict` — for a reporting run that must not break
-the build). `--no-fail` is applied last, at the CLI's own exit-code call:
+exit `0` for a `changed` or `failed` verdict — for a reporting run that must
+not break the build; a `quarantined` verdict still exits 3, see the ruling
+above). `--no-fail` is applied last, at the CLI's own exit-code call:
 it overrides the code `ExitCode(s)` returns, it does not change `s` or
 `ExitCode` itself, so `--json` output is identical with or without it.
 Selector resolution: `reference` → `refs.Resolve` (Task 11), otherwise
