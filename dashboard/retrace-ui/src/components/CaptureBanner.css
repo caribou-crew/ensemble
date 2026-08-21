@@ -1,0 +1,42 @@
+.capture-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--status-amber);
+  border-radius: 6px;
+  background: var(--status-amber-bg);
+  font-size: 0.78rem;
+}
+
+.capture-banner__line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.capture-banner__line--broken,
+.capture-banner__line--failed {
+  color: var(--status-red);
+}
+
+.capture-banner__summary {
+  color: var(--text-primary);
+}
+
+.capture-banner__hint {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.capture-banner__reasons {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--text-secondary);
+}
+
+.capture-banner__reasons code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}

@@ -1,0 +1,159 @@
+.wire-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wire-section {
+  border: 1px solid var(--border-hairline);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.wire-section__header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wire-section__counts {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.wire-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.wire-table td {
+  padding: 0.3rem 0.75rem;
+  border-top: 1px solid var(--border-hairline);
+  vertical-align: top;
+}
+
+.wire-row__toggle {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.wire-row--changed .wire-row__toggle {
+  color: var(--status-amber);
+}
+
+.wire-row--moved .wire-row__toggle {
+  color: var(--status-blue);
+}
+
+.wire-row--new .wire-row__toggle {
+  color: var(--status-green);
+}
+
+.wire-row--missing .wire-row__toggle {
+  color: var(--status-red);
+}
+
+.wire-row--identical .wire-row__toggle {
+  color: var(--text-tertiary);
+}
+
+.wire-row__counts {
+  color: var(--text-tertiary);
+  text-align: right;
+}
+
+.wire-row__explanation {
+  margin: 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.wire-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.wire-field__button {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.1rem 0;
+}
+
+.wire-field--selected {
+  background: var(--accent-dim);
+  border-radius: 4px;
+}
+
+.wire-field--violation .wire-field__path {
+  color: var(--status-red);
+}
+
+.wire-field--tolerated {
+  color: var(--text-tertiary);
+}
+
+.wire-field__scope {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.wire-value,
+.wire-field__path {
+  font-family: var(--font-mono);
+}
+
+.wire-field__matcher {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.redacted {
+  color: var(--text-tertiary);
+  background: var(--bg-raised-2);
+  border-radius: 3px;
+  padding: 0 0.2rem;
+  cursor: help;
+}
+
+.wire-header {
+  margin-right: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.wire-header--violation {
+  color: var(--status-red);
+}
+
+.wire-empty {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}

@@ -1,0 +1,83 @@
+.shot-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.shot-compare__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.shot-compare__name {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.shot-compare__tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.shot-compare__tab {
+  background: none;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.shot-compare__tab[aria-selected='true'] {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+  background: var(--accent-dim);
+}
+
+.shot-compare__pane {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-hairline);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  touch-action: none;
+}
+
+.shot-compare__base,
+.shot-compare__reference {
+  display: block;
+  max-width: 100%;
+}
+
+.shot-compare__wipe {
+  position: absolute;
+  inset: 0 auto 0 0;
+  overflow: hidden;
+}
+
+.shot-compare__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+
+.shot-compare__explanation {
+  margin: 0;
+  padding: 1rem;
+  border: 1px dashed var(--border-hairline-strong);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.shot-compare__slider {
+  width: 100%;
+}
