@@ -3,7 +3,7 @@
 // caching and no retries — the three verbs are filesystem mutations and a
 // retried accept is a second promotion.
 
-import type { FieldDiff, ItemResponse, QueueResponse } from './types';
+import type { FieldDiff, ItemResponse, QueueResponse, Verdict } from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -123,6 +123,49 @@ export function ruleRequestFor(
   };
 }
 
+/**
+ * What POST .../accept actually answered — F1, and the most expensive
+ * omission in this file.
+ *
+ * `refs.AcceptResult`'s own doc names this UI as the intended consumer:
+ * captureStatus and unmatchedMasks "travel as VALUES, not as the stderr
+ * sentences the CLI prints", so a caller can act on them without parsing
+ * prose. `retrace ref accept` prints a warning for each on every promotion.
+ * Typing the response as `{ ok: true }` threw both away, and the UI said
+ * "accepted … as the new reference" with identical confidence whether or not
+ * it had just promoted a broken capture, or a bundle whose redaction mask
+ * silenced nothing.
+ *
+ * `unmatchedMasks` is the one that costs money. refs.go reports it rather
+ * than refusing precisely because "a typo silently redacting nothing is the
+ * one that ends with pixels in git" — and a reviewer accepting through the UI
+ * got no signal at all.
+ */
+export interface AcceptBundle {
+  dir: string;
+  /** bundle-relative, slash-separated */
+  files: string[];
+  bytes: number;
+  runId: string;
+  /** The PROMOTED run's own capture verdict. Anything but "ok" means every
+   * future diff against this reference inherits that doubt. */
+  captureStatus: Verdict;
+  /** Project-wide mask entries that matched no checkpoint in this run —
+   * never nil on the Go side, so this is `[]` and never absent. */
+  unmatchedMasks: string[];
+}
+
+/** What POST .../reject answered. `warning` is D3: handleReject sets it when
+ * the diff that would EXPLAIN the rejection could not be computed, so the
+ * bundle has no summary.json. A reviewer who reads the unqualified "repro
+ * bundle written to <dir>" believes they have a bundle explaining the
+ * rejection; they have a directory. */
+export interface RejectResult {
+  ok: true;
+  repro: { dir: string; files: string[]; runId: string };
+  warning?: string;
+}
+
 export const api = {
   queue(): Promise<QueueResponse> {
     return request<QueueResponse>('/api/queue');
@@ -130,10 +173,10 @@ export const api = {
   item(app: string, flow: string): Promise<ItemResponse> {
     return request<ItemResponse>(`/api/queue/${seg(app)}/${seg(flow)}`);
   },
-  accept(app: string, flow: string): Promise<{ ok: true }> {
+  accept(app: string, flow: string): Promise<{ ok: true; bundle: AcceptBundle }> {
     return request(`/api/queue/${seg(app)}/${seg(flow)}/accept`, jsonInit('POST'));
   },
-  reject(app: string, flow: string): Promise<{ ok: true; repro: { dir: string } }> {
+  reject(app: string, flow: string): Promise<RejectResult> {
     return request(`/api/queue/${seg(app)}/${seg(flow)}/reject`, jsonInit('POST'));
   },
   rule(app: string, flow: string, r: RuleRequest): Promise<{ ok: true }> {
@@ -146,10 +189,20 @@ export const api = {
    *
    * An empty name is a throw, not a URL: it means the caller reached here
    * from a CheckpointVerdict whose images.<side> was "" — the side was never
-   * written — and `/api/shots/app/flow/diff/` would 404 as a mystery. Callers
-   * that can see the empty field should render the explanation instead (see
-   * ShotCompare); this is the backstop for the ones that cannot, and it lands
-   * in useAsync's error state rather than taking the tree down (Task 14).
+   * written — and `/api/shots/app/flow/diff/` would 404 as a mystery.
+   *
+   * This throw is NOT a backstop, and an earlier note here claiming it was is
+   * what made someone write the unsafe call on purpose. Every caller of this
+   * function is a component building an `src` DURING RENDER. A throw in the
+   * render phase is not a rejected promise: useAsync never sees it, there is
+   * no error boundary anywhere under dashboard/, and React 19 unmounts the
+   * root — the reviewer gets a WHITE PAGE, on exactly the checkpoint they
+   * opened the flow to look at.
+   *
+   * So the obligation is entirely on the caller: check the field, and render
+   * an explanation naming the checkpoint when it is empty (see ShotCompare,
+   * which guards all four sides). This throw only refuses to manufacture a
+   * URL that cannot resolve; it does not make the mistake survivable.
    */
   shotUrl(app: string, flow: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string): string {
     if (name === '') {

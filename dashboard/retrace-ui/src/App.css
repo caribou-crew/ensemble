@@ -168,7 +168,8 @@
   color: var(--text-secondary);
 }
 
-.picker input {
+.picker input,
+.picker select {
   background: var(--bg-base);
   border: 1px solid var(--border-hairline-strong);
   border-radius: 4px;

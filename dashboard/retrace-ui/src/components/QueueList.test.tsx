@@ -45,10 +45,18 @@ afterEach(() => {
   container.remove();
 });
 
-function renderQueue(items: Item[], empty: EmptyReason) {
+function renderQueue(items: Item[], empty: EmptyReason, showPassing = false) {
   act(() =>
     root.render(
-      <QueueList items={items} empty={empty} selected={null} onSelect={() => {}} onOpen={() => {}} />,
+      <QueueList
+        items={items}
+        empty={empty}
+        selected={null}
+        showPassing={showPassing}
+        onShowPassingChange={() => {}}
+        onSelect={() => {}}
+        onOpen={() => {}}
+      />,
     ),
   );
   return container.textContent ?? '';
@@ -93,6 +101,77 @@ describe('QueueList rows', () => {
     // R-W's consumer side: `item.gates.length` on a row with nothing wrong.
     const text = renderQueue([item({ score: 2, verdict: 'changed' })], '');
     expect(text).toContain('0 gates');
+  });
+
+  it('banners a broken capture on the queue row — the first of the two report surfaces', () => {
+    // The brief requires EVERY report surface to banner a non-ok CaptureTrust,
+    // and the queue row is where a reviewer decides whether to open the flow
+    // at all. The fixture is asymmetric on purpose: side a is ok and side b is
+    // broken, so a swap, an inversion or a deletion each change the output.
+    // Every capture fixture in this suite used to be {a: ok, b: ok}.
+    const text = renderQueue(
+      [
+        item({
+          score: 2,
+          verdict: 'changed',
+          capture: {
+            a: { status: 'ok', summary: 'capture looks complete' },
+            b: { status: 'broken', summary: 'the proxy died 12s in' },
+          },
+        }),
+      ],
+      '',
+    );
+    expect(text).toContain('this run');
+    expect(text).toContain('broken');
+    expect(text).toContain('the proxy died 12s in');
+    expect(text).not.toContain('reference');
+  });
+
+  it('paints a quarantined row as a call for attention, not as a non-event', () => {
+    // D1. ScoreOf gives quarantined 1000 — deliberately the top of the queue —
+    // and a verdictTone with no arm for it returned undefined, which <Badge>
+    // renders NEUTRAL GREY. The row sorted to the top because it demands
+    // attention and was painted the colour of a non-event; colour is
+    // pre-attentive and sort order is not.
+    renderQueue([item({ verdict: 'quarantined', score: 1000, gates: ['side b was quarantined'] })], '');
+    const badge = Array.from(container.querySelectorAll('.ds-badge')).find(
+      (b) => b.textContent === 'quarantined',
+    );
+    expect(badge).toBeDefined();
+    expect(badge!.className).not.toContain('ds-badge--neutral');
+    expect(badge!.className).toContain('ds-badge--amber');
+  });
+
+  it('says WHY every kind of changed row is flagged, including the three that used to strip empty', () => {
+    // F7. countsStrip omitted wireMoved, unexpectedStatuses and conformance —
+    // three of the counts diff.changed() keys on — so a reorder-only,
+    // status-only or conformance-only flow rendered an amber "changed" badge,
+    // "0 gates" and an EMPTY strip: flagged, with nothing on the row saying
+    // why, and no move available but to open it and find out.
+    //
+    // Driven one count at a time. A fixture that set several at once could not
+    // tell which of them the strip was actually reading.
+    const cases: [keyof Item['counts'], RegExp][] = [
+      ['pixelChanged', /1 shots/],
+      ['wireChanged', /1 wire/],
+      ['wireMissing', /1 wire/],
+      ['wireExtra', /1 wire/],
+      ['wireMoved', /1 reordered/],
+      ['hopNew', /\+1 hop/],
+      ['hopGone', /-1 hop/],
+      ['violations', /1 violations/],
+      ['unexpectedStatuses', /1 unexpected statuses/],
+      ['conformance', /1 conformance/],
+    ];
+    for (const [key, expected] of cases) {
+      const row = item({ verdict: 'changed', score: 1, counts: { ...item().counts, [key]: 1 } });
+      const text = renderQueue([row], '');
+      const strip = container.querySelector('.queue-row__counts')?.textContent ?? '';
+      expect(strip, `counts.${key} left the strip empty`).not.toBe('');
+      expect(strip, `counts.${key} is not named in the strip`).toMatch(expected);
+      expect(text).toContain('web/checkout');
+    }
   });
 
   it('collapses score-zero rows under a disclosure rather than listing them', () => {

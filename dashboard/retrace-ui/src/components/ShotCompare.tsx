@@ -20,6 +20,22 @@ export function clampPosition(n: number): number {
  * empty 200. */
 const NO_IMAGE = 'No diff image was written for this checkpoint — the two shots did not differ, so there is nothing to overlay.';
 
+/** Copy for a checkpoint whose CANDIDATE side was never captured at all.
+ *
+ * summary.go builds the "missing", "added" and "unreadable" verdicts as a
+ * bare CheckpointVerdict with a zero CheckpointImages, so `images.b` is ""
+ * on exactly the checkpoints a reviewer opened the flow to look at. Calling
+ * api.shotUrl with that empty name throws, and a throw HERE is in the render
+ * phase — not a rejected promise — so useAsync never sees it and React
+ * unmounts the whole tree. The reviewer would get a white page in place of
+ * the checkpoint that went missing.
+ *
+ * So this pane says which checkpoint it is and why there is nothing in it,
+ * the same treatment NO_IMAGE gives the diff tab. */
+function noShotCopy(checkpoint: CheckpointVerdict): string {
+  return `No shot of "${checkpoint.name}" was recorded for this run (verdict: ${checkpoint.verdict}), so there is nothing to compare against the reference. A blank pane here would read as "identical", which is the one thing this checkpoint is not.`;
+}
+
 export default function ShotCompare({
   app,
   flow,
@@ -107,6 +123,11 @@ export default function ShotCompare({
         )
       ) : overlay && !overlayAvailable ? (
         <p className="shot-compare__explanation">{NO_IMAGE}</p>
+      ) : !baseSrc ? (
+        // The guard images.b never had. images.a, images.diff and
+        // images.overlay were all guarded; the candidate side — the one that
+        // is empty precisely when a checkpoint went MISSING — was not.
+        <p className="shot-compare__explanation">{noShotCopy(checkpoint)}</p>
       ) : (
         <div
           className="shot-compare__pane"
@@ -117,7 +138,7 @@ export default function ShotCompare({
         >
           <img
             className="shot-compare__base"
-            src={api.shotUrl(app, flow, baseName, baseSrc ? checkpoint.name : '')}
+            src={api.shotUrl(app, flow, baseName, checkpoint.name)}
             alt={`${baseName === 'overlay' ? 'overlay' : 'this run'} shot of ${checkpoint.name}`}
           />
           {!showOverlay && images.a ? (

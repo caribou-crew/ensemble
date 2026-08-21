@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RulePicker } from './App';
 import { RULE_BLAST_RADIUS } from './api/client';
+import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff } from './api/types';
 
 const entry: Entry = {
@@ -73,6 +74,50 @@ describe('the rule picker', () => {
     expect(
       radius!.compareDocumentPosition(confirm!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('offers the matcher as a closed set and opens on a member of it', () => {
+    // F6. The matcher field shipped as a free-text box defaulting to "any",
+    // which rules.ParseMatcher does not accept and config.AppendWireRule
+    // validates before writing — so every rule written without editing that
+    // box answered 400. The verb was broken on the path nobody edits.
+    //
+    // The old test read all three inputs and asserted only method and path,
+    // so the matcher's value passed through the assertion untouched.
+    let wrote: string | null = null;
+    act(() =>
+      root.render(
+        <RulePicker
+          entry={entry}
+          field={field}
+          busy={false}
+          onCancel={() => {}}
+          onConfirm={(matcher) => {
+            wrote = matcher;
+          }}
+        />,
+      ),
+    );
+
+    const select = container.querySelector('select.picker__matcher') as HTMLSelectElement | null;
+    expect(select).not.toBeNull();
+    // Every option, in order, and nothing else — a select cannot be typo'd,
+    // but it can be seeded from a hand-written list that drifted.
+    expect(Array.from(select!.options).map((o) => o.value)).toEqual([...MATCHER_NAMES]);
+    // And it OPENS on a dialect member, which is the assertion the shipped
+    // bug fails. Asserted against the list rather than against the literal
+    // 'exact', so the two cannot be changed apart.
+    expect(MATCHER_NAMES).toContain(select!.value);
+    expect(select!.value).toBe(DEFAULT_MATCHER);
+
+    // The unedited default is what actually gets written.
+    const confirm = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'write the rule',
+    );
+    act(() => {
+      confirm!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(MATCHER_NAMES).toContain(wrote as unknown as string);
   });
 
   it('seeds method and path from the selected entry — the only two dimensions a rule has', () => {

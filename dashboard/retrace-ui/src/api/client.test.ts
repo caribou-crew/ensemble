@@ -94,9 +94,15 @@ describe('shotUrl', () => {
 
   it('throws rather than building a URL for a side the summary never wrote', () => {
     // The empty string means images.<side> was "" — the side was never
-    // written. `/api/shots/web/search/diff/` would 404 as a mystery; the throw
-    // lands in useAsync's error state instead (Task 14), which says what
-    // happened on the pane that failed rather than blanking the tree.
+    // written, and `/api/shots/web/search/diff/` would 404 as a mystery.
+    //
+    // What this throw does NOT do is make the mistake survivable. Every caller
+    // builds an `src` during render, and a render-phase throw does not reach
+    // useAsync's error state — there is no error boundary under dashboard/, so
+    // React unmounts the root and the reviewer gets a blank page. The
+    // component-side guard is what keeps that from happening; see
+    // ShotCompare.test.tsx, which drives the exact JSON summary.go emits for a
+    // missing checkpoint.
     expect(() => api.shotUrl('web', 'search', 'diff', '')).toThrow(/no diff-side image/);
   });
 });

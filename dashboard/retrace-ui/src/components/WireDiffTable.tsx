@@ -177,9 +177,17 @@ function EntryRows({
  * The wire plane, one collapsible section per FLOW PART.
  *
  * The section names are `summary.sections[].name` verbatim — the UI end of
- * the marker → group → section chain. A section whose name is null is the
- * traffic that happened before any marker was placed, and it says so rather
- * than being dropped or silently merged into the first named part.
+ * the marker → group → section chain. A section whose name is the EMPTY
+ * STRING is the traffic that happened before any marker was placed, and it
+ * says so rather than being dropped or silently merged into the first named
+ * part.
+ *
+ * `""` and not `null`: diff.Section.Name is a Go `string` with a bare tag and
+ * BuildSections constructs the unnamed section as `buildSection("", …)`, so
+ * null never arrives. It matters far beyond the leading-traffic case — a run
+ * that declared no group markers at all gets ONE section named `""`, so
+ * `?? 'before any marker'` (which `''` sails straight through) put every
+ * marker-less flow's entire wire plane under a blank header.
  */
 export default function WireDiffTable({
   sections,
@@ -199,7 +207,7 @@ export default function WireDiffTable({
   return (
     <div className="wire-diff">
       {sections.map((section, i) => {
-        const name = section.name ?? 'before any marker';
+        const name = section.name === '' ? 'before any marker' : section.name;
         const id = `${i}:${name}`;
         const isCollapsed = collapsed[id] === true;
         return (
