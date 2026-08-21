@@ -31,7 +31,15 @@ type Item struct {
 	RefRunID string             `json:"refRunId,omitempty"`
 	Counts   diff.Counts        `json:"counts"`
 	Capture  diff.CaptureBanner `json:"capture"`
-	Gates    []string           `json:"gates,omitempty"`
+	// Gates is never omitempty, and itemGates never returns nil (R-W).
+	// Summary.Gates — the same field name, one route over on the same REST
+	// surface — carries a bare tag like every other array field on that
+	// type, and two opposite presence contracts for one name is a
+	// distinction no consumer can be expected to remember. A row with no
+	// gates is the HEALTHY row, so the omitted key landed on exactly the
+	// rows a queue screen renders most of: `item.gates.length` is undefined
+	// there, and that throws synchronously inside the render.
+	Gates []string `json:"gates"`
 }
 
 // Deps is everything the queue and its handlers need. It is a value, copied
@@ -240,7 +248,11 @@ func itemOf(s diff.Summary) Item {
 // "quarantined" with nothing beside it tells a reviewer to go and read the
 // manifest themselves.
 func itemGates(s diff.Summary) []string {
-	out := append([]string(nil), s.Gates...)
+	// Non-nil even when there is nothing to say: a nil slice marshals to
+	// `null`, which is the same undefined-shaped hazard as the omitted key
+	// wearing a different hat. See Item.Gates.
+	out := make([]string, 0, len(s.Gates)+len(s.Quarantined))
+	out = append(out, s.Gates...)
 	for _, q := range s.Quarantined {
 		reason := q.Reason
 		if reason == "" {

@@ -635,3 +635,57 @@ func TestSummaryForRefusesAnAppOrFlowThatWouldEscapeTheRunsRoot(t *testing.T) {
 		}
 	}
 }
+
+// R-W. Item.Gates and Summary.Gates share the field name "gates" on the same
+// REST surface, and they did NOT share a presence contract: every array field
+// on Summary carries a bare json tag, while Item.Gates carried `omitempty`.
+// So the queue row for a HEALTHY flow — the rows that are FINE — omitted the
+// key entirely, and the first consumer of that row (the review UI's queue
+// screen, which shows the gate count) reads `item.gates.length`, which throws
+// synchronously on undefined. The blank first screen would have been caused
+// by the passing flows.
+//
+// Asserted on the JSON BYTES, not on a decoded struct, because the struct
+// cannot tell the three encodings apart: an absent key, `null` and `[]` all
+// decode to a nil []string. Only one of the three is readable by a client
+// without a special case, and `"gates":[]` is it — which also means dropping
+// `omitempty` alone is not enough: itemGates must return an empty slice
+// rather than the nil that `append([]string(nil))` produces for a flow with
+// nothing to report.
+func TestAPassingItemSerialisesGatesAsAnEmptyArray(t *testing.T) {
+	items, err := BuildQueue(deps(t, threeFlowProject(t)))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	var passing, failing *Item
+	for i := range items {
+		switch {
+		case len(items[i].Gates) == 0 && passing == nil:
+			passing = &items[i]
+		case items[i].Verdict == "failed" && failing == nil:
+			failing = &items[i]
+		}
+	}
+	if passing == nil || failing == nil {
+		t.Fatalf("fixture no longer has both a gate-free flow and a failing one: %v", queueOrder(items))
+	}
+
+	b, err := json.Marshal(passing)
+	if err != nil {
+		t.Fatalf("marshalling %s/%s: %v", passing.App, passing.Flow, err)
+	}
+	if !bytes.Contains(b, []byte(`"gates":[]`)) {
+		t.Fatalf("the passing row %s/%s does not serialise \"gates\":[] — a client reading item.gates.length gets undefined and throws on the healthy case: %s",
+			passing.App, passing.Flow, b)
+	}
+
+	// The mirror, and it is what stops "always emit []" from satisfying the
+	// assertion above: a failing row's reasons still travel.
+	fb, err := json.Marshal(failing)
+	if err != nil {
+		t.Fatalf("marshalling %s/%s: %v", failing.App, failing.Flow, err)
+	}
+	if bytes.Contains(fb, []byte(`"gates":[]`)) {
+		t.Fatalf("the failing row %s/%s serialises an EMPTY gates array — a red row with no reason: %s", failing.App, failing.Flow, fb)
+	}
+}

@@ -75,3 +75,13 @@ sample/clients/web-app/playwright-report/
 !ensemble/server/ui/dist/
 !ensemble/server/ui/dist/index.html
 ensemble/server/ui/dist/assets/
+
+# Same hazard as ensemble/server/ui/dist, one binary over: retrace's review
+# UI is embedded via go:embed (retrace/serve/ui/ui.go), only the placeholder
+# retrace/serve/ui/dist/index.html is committed, and the blanket `dist/` rule
+# at the top would otherwise swallow it. `pnpm -r build` overwrites it with
+# the real bundle, which must never land in a commit — `git restore
+# retrace/serve/ui/dist/index.html` after building, before committing.
+!retrace/serve/ui/dist/
+!retrace/serve/ui/dist/index.html
+retrace/serve/ui/dist/assets/
