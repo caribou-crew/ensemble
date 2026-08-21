@@ -18,6 +18,16 @@ dist/
 # ...except the machine-owned wire-rule overlay, which IS committed — it is
 # the reviewed record of which fields are allowed to vary (config.OverlayPath).
 !.retrace/wire-rules.json
+#
+# Reference bundles ARE committed — .retrace-ref/<app>/<flow>/reference is
+# the blessed artifact a diff runs against, and an ignored bundle is a diff
+# that silently has nothing to compare against on a fresh clone. There is
+# deliberately NO pattern for it here: it lives OUTSIDE .retrace/ precisely
+# so the blanket rule above cannot swallow it. Do not "tidy" the two roots
+# into one. The repro bundles `retrace ref reject` emits are the opposite —
+# throwaway attachments for a bug report — and land under .retrace/repro/,
+# which line 17 already covers; naming it explicitly would contradict the
+# wholesale rule stated above, so it is not named.
 coverage/
 bin/
 
