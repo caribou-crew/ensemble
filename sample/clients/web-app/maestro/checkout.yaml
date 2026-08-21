@@ -1,0 +1,23 @@
+# Same money path as tests/checkout.spec.js, driven by Maestro instead of
+# Playwright — the point of having both is demonstrating retrace tapping
+# into more than one test runner, not testing the app twice.
+#
+# Web support is beta and Chromium-only as of writing (see
+# https://docs.maestro.dev/get-started/supported-platform/web-browser).
+# Needs the full sample stack running and seeded first — same prerequisite
+# as the Playwright suite, see ../playwright.config.js and
+# sample/README.md. Run with: maestro test maestro/checkout.yaml
+url: http://127.0.0.1:5173
+---
+- launchApp
+- assertVisible: "brew"
+- assertVisible: "menu"
+- assertVisible: "cart"
+- assertVisible: "empty"
+# assertVisible's text is a full regex match against an element's whole
+# text, not a substring search — "total: .*" rather than "total:" to match
+# the rendered "total: $3.50".
+- tapOn: "add to cart"
+- assertVisible: "total: .*"
+- tapOn: "checkout"
+- assertVisible: "order confirmed"

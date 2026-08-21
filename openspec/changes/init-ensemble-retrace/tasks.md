@@ -146,9 +146,14 @@ review UI exist.
       (Java/Spring/MySQL, profile `full`), notify-worker (Go/redis),
       storefront-bff + ops-bff (Node, dynamo cart), edge-gw (Go) — real CRUD,
       trace-header forwarding, /healthz each.
-- [ ] 5.2 Clients: web-app (React/Vite) done — browse/cart/checkout against
+- [x] 5.2 Clients: web-app (React/Vite) — browse/cart/checkout against
       edge-gw, wired into ensemble.yaml, live-tested against the seeded
-      stack. rn-app (Expo) not started.
+      stack. Plus a Playwright spec and a Maestro web flow (beta) driving
+      the same checkout path — two test runners on one app, ready for
+      retrace's adapters (task 4.7) once those exist. rn-app (Expo)
+      dropped by user decision (2026-08-21): its purpose was demonstrating
+      retrace tapping into a different test runner, and web-app + Maestro
+      now covers that without the RN/Expo toolchain weight.
 - [x] 5.3 `sample/ensemble.yaml` (the reference config: dbs incl. dynamodb,
       stubs payment/analytics/kms, profiles) + seeds
       (baseline/empty/bulk/outage). Uses DynamoDB Local directly rather than
@@ -158,12 +163,17 @@ review UI exist.
 - [ ] 5.4 Dog-food e2e in CI: retrace records a web-app flow against the live
       sample, replays it stackless, diffs — zero unexplained deltas.
 
-## Phase-exit acceptance (user-set, 2026-08-20)
+## Phase-exit acceptance (user-set, 2026-08-20; amended 2026-08-21)
 
-Before this change is called done: web client AND Expo RN client build
-cleanly; at least one retrace capture run recorded against the sample
-scenario; replay of that recording exercised and green; release automation
-exists (see 6.0/6.1).
+Before this change is called done: web client builds cleanly; at least one
+retrace capture run recorded against the sample scenario; replay of that
+recording exercised and green; release automation exists (see 6.0/6.1).
+
+Amendment (2026-08-21, user decision): dropped the Expo RN client
+requirement. Its purpose was demonstrating retrace tapping into a second
+test runner — web-app now covers that with Playwright and a Maestro web
+flow (both beta/Chromium for the latter) against the same checkout path,
+without the RN/Expo toolchain weight.
 
 ## Phase 6 — distribution + docs
 
