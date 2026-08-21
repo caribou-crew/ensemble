@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,12 +39,22 @@ func resolveDir(base, dir string) string {
 	return filepath.Join(base, dir)
 }
 
-// envSlice flattens a Service.Env map into "K=V" entries, appended to
-// os.Environ() so a service inherits the ensemble process's environment
-// plus its own overrides.
+// envSlice merges env into the ensemble process's own environment, config
+// entries winning on key collisions, and flattens the result into "K=V"
+// entries. A plain append of env after os.Environ() doesn't reliably
+// override: most libc getenv() implementations return the first match for
+// a duplicate key, so a config override placed after the parent's own
+// entry for the same name would be shadowed by it in the child.
 func envSlice(env map[string]string) []string {
-	out := make([]string, 0, len(env))
-	for k, v := range env {
+	merged := make(map[string]string, len(env))
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			merged[k] = v
+		}
+	}
+	maps.Copy(merged, env)
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
 		out = append(out, k+"="+v)
 	}
 	return out
@@ -67,7 +78,7 @@ func startNativeProcess(run, workDir string, env map[string]string, logPath stri
 
 	cmd := shellCommand(run)
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(), envSlice(env)...)
+	cmd.Env = envSlice(env)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	setProcessGroup(cmd)

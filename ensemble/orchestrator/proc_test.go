@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,33 @@ func TestUpRealSupervisionAndDown(t *testing.T) {
 			t.Fatalf("process group %d still alive after Down", st.PID)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestEnvSliceOverridesParentEnv guards against a plain
+// append(os.Environ(), ...) regression: config env must win over an
+// existing parent-process value for the same key, not just be present
+// somewhere in the slice.
+func TestEnvSliceOverridesParentEnv(t *testing.T) {
+	t.Setenv("ENSEMBLE_PROC_TEST_VAR", "parent")
+
+	out := envSlice(map[string]string{"ENSEMBLE_PROC_TEST_VAR": "config", "ENSEMBLE_PROC_TEST_NEW": "fresh"})
+
+	got := map[string]string{}
+	for _, kv := range out {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			if _, dup := got[k]; dup {
+				t.Fatalf("duplicate key %q in envSlice output", k)
+			}
+			got[k] = v
+		}
+	}
+
+	if got["ENSEMBLE_PROC_TEST_VAR"] != "config" {
+		t.Errorf("ENSEMBLE_PROC_TEST_VAR: got %q, want config to win over parent", got["ENSEMBLE_PROC_TEST_VAR"])
+	}
+	if got["ENSEMBLE_PROC_TEST_NEW"] != "fresh" {
+		t.Errorf("ENSEMBLE_PROC_TEST_NEW: got %q, want fresh", got["ENSEMBLE_PROC_TEST_NEW"])
 	}
 }
 
