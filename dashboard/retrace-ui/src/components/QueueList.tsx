@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Badge } from '@ensemble/design-system';
 import type { EmptyReason, Item } from '../api/types';
 import { verdictTone } from '../tone';
@@ -7,18 +6,59 @@ import './QueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;
 
+/**
+ * The partition this component renders, and the ONE definition of it.
+ *
+ * `score > 0` is the server's own contract for "needs attention" — ScoreOf
+ * floors every non-`pass` verdict above zero precisely so this line can stay
+ * an exact test rather than an approximation. It is exported because App's
+ * keyboard navigation must walk the same list the screen shows; two copies of
+ * this filter is how `j` came to move the selection onto a row nobody can
+ * see.
+ */
+export function partitionQueue(items: Item[]): { needsAttention: Item[]; passing: Item[] } {
+  return {
+    needsAttention: items.filter((i) => i.score > 0),
+    passing: items.filter((i) => i.score === 0),
+  };
+}
+
+/**
+ * The rows actually ON SCREEN, in the order they are rendered.
+ *
+ * This is what `j`/`k` walk. Walking the raw server list instead put the
+ * selection on a collapsed row: nothing on screen carried aria-current any
+ * more, so the key looked like a no-op and the reviewer pressed it again —
+ * and `enter` then opened a flow they never saw, while `a` (a filesystem
+ * mutation) fired against it.
+ */
+export function visibleRows(items: Item[], showPassing: boolean): Item[] {
+  const { needsAttention, passing } = partitionQueue(items);
+  return showPassing ? [...needsAttention, ...passing] : needsAttention;
+}
+
 // The one-line counts strip. Only planes with something to say appear: "0
 // shots · 0 wire" on every row is noise that trains a reviewer to skip the
 // strip, which is the opposite of what it is for.
+//
+// It covers EVERY count diff.changed() keys on, and that is not tidiness
+// (F7). wireMoved, conformance and unexpectedStatuses were missing, so a
+// reorder-only, conformance-only or unexpected-status-only flow rendered an
+// amber "changed" badge, "0 gates" and an EMPTY strip — flagged, with
+// nothing on the row saying why. The reviewer's only move from there is to
+// open the flow to find out whether anything is wrong at all.
 function countsStrip(item: Item): string {
   const parts: string[] = [];
   const c = item.counts;
   if (c.pixelChanged > 0) parts.push(`${c.pixelChanged} shots`);
   const wire = c.wireChanged + c.wireMissing + c.wireExtra;
   if (wire > 0) parts.push(`${wire} wire`);
+  if (c.wireMoved > 0) parts.push(`${c.wireMoved} reordered`);
   if (c.hopNew > 0) parts.push(`+${c.hopNew} hop`);
   if (c.hopGone > 0) parts.push(`-${c.hopGone} hop`);
   if (c.violations > 0) parts.push(`${c.violations} violations`);
+  if (c.unexpectedStatuses > 0) parts.push(`${c.unexpectedStatuses} unexpected statuses`);
+  if (c.conformance > 0) parts.push(`${c.conformance} conformance`);
   return parts.join(' · ');
 }
 
@@ -140,18 +180,23 @@ export default function QueueList({
   items,
   empty,
   selected,
+  showPassing,
+  onShowPassingChange,
   onSelect,
   onOpen,
 }: {
   items: Item[];
   empty: EmptyReason;
   selected: string | null;
+  // The disclosure is CONTROLLED by App rather than owned here, because App's
+  // j/k navigation has to know which rows are on screen. Kept local, "what is
+  // rendered" lived in two places that could disagree — and they did.
+  showPassing: boolean;
+  onShowPassingChange: (next: boolean) => void;
   onSelect: (item: Item) => void;
   onOpen: (item: Item) => void;
 }) {
-  const [showPassing, setShowPassing] = useState(false);
-  const needsAttention = items.filter((i) => i.score > 0);
-  const passing = items.filter((i) => i.score === 0);
+  const { needsAttention, passing } = partitionQueue(items);
 
   if (items.length === 0) {
     return <Empty reason={empty} />;
@@ -177,7 +222,7 @@ export default function QueueList({
             type="button"
             className="queue__disclosure"
             aria-expanded={showPassing}
-            onClick={() => setShowPassing((v) => !v)}
+            onClick={() => onShowPassingChange(!showPassing)}
           >
             {showPassing ? '▾' : '▸'} {passing.length} passing
           </button>

@@ -13,13 +13,27 @@ const TONE: Record<Verdict, BadgeTone> = {
   degraded: 'amber',
   broken: 'red',
   failed: 'red',
+  // The zero value, and it ranks with the worst rather than with `ok`.
+  // serve.brokenItem folds a zero diff.Summary into a queue row for any flow
+  // that could not be diffed at all, so `{"status":""}` is on the wire for
+  // exactly the rows a reviewer most needs to look at. Record<Verdict, …> is
+  // what makes leaving this arm out a compile error rather than an
+  // `undefined` tone, which <Badge> paints neutral grey.
+  '': 'red',
 };
+
+/** The verdict as a human reads it. "" is not a verdict anybody reached; it
+ * is the absence of one, and it must not render as a blank badge that looks
+ * like a rendering glitch. */
+function verdictLabel(status: Verdict): string {
+  return status === '' ? 'not assessed' : status;
+}
 
 function TrustLine({ side, trust }: { side: 'a' | 'b'; trust: CaptureTrust }) {
   return (
     <div className={`capture-banner__line capture-banner__line--${trust.status}`}>
       <Badge tone={TONE[trust.status] ?? 'red'}>
-        {side === 'a' ? 'reference' : 'this run'}: {trust.status}
+        {side === 'a' ? 'reference' : 'this run'}: {verdictLabel(trust.status)}
       </Badge>
       <span className="capture-banner__summary">{trust.summary}</span>
       {trust.hint ? <span className="capture-banner__hint">{trust.hint}</span> : null}

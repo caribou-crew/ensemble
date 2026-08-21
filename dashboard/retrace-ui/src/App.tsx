@@ -1,17 +1,65 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
-import { RULE_BLAST_RADIUS, api, messageOf, ruleRequestFor } from './api/client';
+import { RULE_BLAST_RADIUS, api, messageOf, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
+import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
 import { verdictTone } from './tone';
 import { useUrlParam } from './urlState';
 import CaptureBanner from './components/CaptureBanner';
 import HopDeltaList from './components/HopDeltaList';
-import QueueList, { keyOf } from './components/QueueList';
+import QueueList, { keyOf, visibleRows } from './components/QueueList';
 import ShotCompare from './components/ShotCompare';
 import WireDiffTable, { entryKey } from './components/WireDiffTable';
 import './App.css';
+
+/**
+ * What the accept verb just did, in the reviewer's words — F1.
+ *
+ * `retrace ref accept` prints TWO warnings to stderr on every promotion that
+ * warrants them, and refs.AcceptResult carries both as typed values so this
+ * surface can say the same thing without parsing prose. A notice that reads
+ * "accepted … as the new reference" with identical confidence either way is
+ * two faces of one verb disagreeing about what the operation did.
+ *
+ * `unmatchedMasks` is the expensive one: refs.go reports rather than refuses
+ * it precisely because a typo that silently redacts nothing is the one that
+ * ends with pixels in git — and those pixels are now in a bundle that gets
+ * COMMITTED.
+ */
+export function acceptNotice(app: string, flow: string, bundle: AcceptBundle): string {
+  const done = `accepted ${app}/${flow} as the new reference (${bundle.runId})`;
+  const warnings: string[] = [];
+  if (bundle.captureStatus !== 'ok') {
+    warnings.push(
+      `its capture verdict is "${bundle.captureStatus === '' ? 'not assessed' : bundle.captureStatus}" — every diff against this reference now inherits that doubt`,
+    );
+  }
+  if (bundle.unmatchedMasks.length > 0) {
+    warnings.push(
+      `the project-wide masks: entry for ${bundle.unmatchedMasks.join(', ')} matched no checkpoint in this flow, so it redacted NOTHING here — check the spelling before these shots are committed`,
+    );
+  }
+  if (warnings.length === 0) return done;
+  return `${done} — WARNING: ${warnings.join('; and ')}`;
+}
+
+/**
+ * What the reject verb just did — D3.
+ *
+ * The warning replaces the unqualified sentence rather than sitting beside
+ * it. handleReject sets it when the diff that would EXPLAIN the rejection
+ * could not be computed, so there is no summary.json in the bundle; a
+ * reviewer who reads "repro bundle written to <dir>" believes they have a
+ * bundle that explains the rejection, and they have a directory.
+ */
+export function rejectNotice(app: string, flow: string, res: RejectResult): string {
+  if (res.warning) {
+    return `wrote a repro bundle for ${app}/${flow} to ${res.repro.dir}, but it does NOT explain the rejection: ${res.warning}`;
+  }
+  return `repro bundle written to ${res.repro.dir}`;
+}
 
 function Problem({ message }: { message: string }) {
   return (
@@ -40,7 +88,13 @@ export function RulePicker({
   onCancel: () => void;
   onConfirm: (matcher: string, method: string, path: string) => void;
 }) {
-  const [matcher, setMatcher] = useState('any');
+  // A SELECT over the dialect, seeded with a member of it. The dialect is a
+  // closed set that the server validates before writing, so a free-text box
+  // here is a control whose every typo is a 400 — and its shipped default,
+  // "any", was not a matcher at all, which broke the rule verb on the path
+  // nobody edits. See api/matchers.ts, whose list a Go test pins against
+  // rules.Names().
+  const [matcher, setMatcher] = useState<string>(DEFAULT_MATCHER);
   const [method, setMethod] = useState(entry.method);
   const [path, setPath] = useState(entry.normalizedPath);
 
@@ -52,7 +106,17 @@ export function RulePicker({
       <p className="picker__radius">{RULE_BLAST_RADIUS}</p>
       <label>
         matcher
-        <input value={matcher} onChange={(e) => setMatcher(e.target.value)} />
+        <select
+          className="picker__matcher"
+          value={matcher}
+          onChange={(e) => setMatcher(e.target.value)}
+        >
+          {MATCHER_NAMES.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         method
@@ -99,7 +163,13 @@ function ItemScreen({
   // field is empty ON PURPOSE — so the planes below are not rendered as
   // "nothing differed", which is what an empty checkpoint list and an empty
   // section list would otherwise read as.
-  const tone = summary.verdict === 'quarantined' ? 'red' : verdictTone(summary.verdict);
+  //
+  // The tone comes from verdictTone and from nowhere else. It used to be
+  // special-cased here, which was a second home for "what colour is this
+  // verdict" and let the queue row and the item screen paint the same verdict
+  // differently — verdictTone is now total over all four (D1), so there is
+  // one answer.
+  const tone = verdictTone(summary.verdict);
 
   return (
     <div className="item">
@@ -203,6 +273,9 @@ export default function App() {
   const [overlay, setOverlay] = useState(false);
   const [position, setPosition] = useState(50);
   const [showHelp, setShowHelp] = useState(false);
+  // Owned here, not inside QueueList: j/k must walk the rows that are ON
+  // SCREEN, and "is the passing group expanded" is half of that answer.
+  const [showPassing, setShowPassing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -260,11 +333,18 @@ export default function App() {
     switch (action) {
       case 'next':
       case 'prev': {
-        if (items.length === 0) return;
-        const at = items.findIndex((i) => keyOf(i) === selectedKey);
+        // The RENDERED rows, not queue.data.items. The queue screen shows two
+        // groups and collapses the passing one, so stepping through the raw
+        // server list walked the selection straight off the bottom of the
+        // visible set: nothing on screen was selected any more, the keypress
+        // looked like a no-op, and `enter` then opened a flow the reviewer
+        // had never seen.
+        const rows = visibleRows(items, showPassing);
+        if (rows.length === 0) return;
+        const at = rows.findIndex((i) => keyOf(i) === selectedKey);
         const step = action === 'next' ? 1 : -1;
-        const nextAt = at < 0 ? 0 : Math.min(items.length - 1, Math.max(0, at + step));
-        select(items[nextAt]);
+        const nextAt = at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + step));
+        select(rows[nextAt]);
         return;
       }
       case 'open':
@@ -283,17 +363,23 @@ export default function App() {
         setPosition((p) => Math.min(100, p + 5));
         return;
       case 'accept':
-        if (!app || !flow || busy) return;
+        // Gated on `open`, and that gate is the point. Accepting a reference
+        // is a filesystem mutation, and ungated it fired from the QUEUE
+        // screen against whatever ?app=&flow= happened to hold — including a
+        // selection that had walked onto a collapsed row the reviewer could
+        // not see. A verb this expensive fires only from the screen that is
+        // showing you what you are about to promote.
+        if (!open || !app || !flow || busy) return;
         void mutate('accept', async () => {
-          await api.accept(app, flow);
-          return `accepted ${app}/${flow} as the new reference`;
+          const res = await api.accept(app, flow);
+          return acceptNotice(app, flow, res.bundle);
         });
         return;
       case 'reject':
-        if (!app || !flow || busy) return;
+        // Same gate, same reason: reject removes and rewrites a directory.
+        if (!open || !app || !flow || busy) return;
         void mutate('reject', async () => {
-          const res = await api.reject(app, flow);
-          return `repro bundle written to ${res.repro.dir}`;
+          return rejectNotice(app, flow, await api.reject(app, flow));
         });
         return;
       case 'rule': {
@@ -380,6 +466,8 @@ export default function App() {
             items={queue.data.items}
             empty={queue.data.empty}
             selected={selectedKey}
+            showPassing={showPassing}
+            onShowPassingChange={setShowPassing}
             onSelect={select}
             onOpen={(next) => {
               select(next);

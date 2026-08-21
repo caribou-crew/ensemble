@@ -123,4 +123,62 @@ describe('ShotCompare', () => {
     expect(explanation?.textContent ?? '').toMatch(/did not differ/);
     expect(container.querySelector('.shot-compare__pane')).toBeNull();
   });
+
+  // The bytes summary.go actually emits for a checkpoint that went missing:
+  // "missing", "added" and "unreadable" are constructed as a bare
+  // CheckpointVerdict, every image tag is omitempty, so the JSON is
+  // `"images":{}` and EVERY side is absent.
+  //
+  // The fixture is parsed from that JSON rather than spread over the
+  // checkpoint() helper on purpose: the helper hardcodes all four images, and
+  // the one existing test that varies them drops `diff` and `overlay` while
+  // KEEPING `a` and `b` — it varies the two sides that were guarded and
+  // leaves the unguarded one intact.
+  const MISSING_CHECKPOINT_JSON =
+    '{"name":"receipt","verdict":"missing","diffPct":0,"diffPctFine":0,"numDiff":0,"images":{}}';
+
+  it('explains a checkpoint whose candidate shot was never captured, instead of throwing out of render', () => {
+    const missing = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
+    expect(missing.images.b).toBeUndefined(); // the wire really does omit it
+
+    render(
+      <ShotCompare
+        app="web"
+        flow="checkout"
+        checkpoint={missing}
+        overlay={false}
+        onOverlayChange={() => {}}
+        position={50}
+        onPositionChange={() => {}}
+      />,
+    );
+
+    const explanation = container.querySelector('.shot-compare__explanation');
+    expect(explanation).not.toBeNull();
+    // Named, so the reviewer knows WHICH checkpoint the empty pane is about,
+    // and carrying the verdict, so "missing" is not mistaken for "identical".
+    expect(explanation?.textContent ?? '').toContain('receipt');
+    expect(explanation?.textContent ?? '').toContain('missing');
+    expect(container.querySelector('.shot-compare__base')).toBeNull();
+  });
+
+  it('does the same for "added" and "unreadable", the other two zero-image verdicts', () => {
+    for (const verdict of ['added', 'unreadable'] as const) {
+      const cp = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
+      cp.verdict = verdict;
+      render(
+        <ShotCompare
+          app="web"
+          flow="checkout"
+          checkpoint={cp}
+          overlay={false}
+          onOverlayChange={() => {}}
+          position={50}
+          onPositionChange={() => {}}
+        />,
+      );
+      expect(container.querySelector('.shot-compare__explanation')).not.toBeNull();
+      expect(container.querySelector('.shot-compare__base')).toBeNull();
+    }
+  });
 });

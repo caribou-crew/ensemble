@@ -23,7 +23,7 @@ const entry = (over: Partial<Entry> = {}): Entry => ({
   ...over,
 });
 
-const section = (name: string | null, entries: Entry[]): Section => ({
+const section = (name: string, entries: Entry[]): Section => ({
   name,
   entries,
   counts: { changed: entries.length },
@@ -112,15 +112,22 @@ describe('WireDiffTable', () => {
   });
 
   it('names each section from summary.sections', () => {
-    // The UI end of the marker → group → section chain. A null name is the
-    // traffic recorded before any marker was placed; it says so rather than
-    // being dropped or silently folded into the first named part.
+    // The UI end of the marker → group → section chain. The EMPTY-STRING name
+    // is the traffic recorded before any marker was placed; it says so rather
+    // than being dropped or silently folded into the first named part.
+    //
+    // `''` and not `null`, and the fixture is the finding: diff.Section.Name
+    // is a Go `string` with a bare tag and BuildSections builds the unnamed
+    // section as `buildSection("", …)`, so production can never send null.
+    // Seeded with null, this test named all three sections and pinned the
+    // fallback copy — it looked maximally discriminating while discriminating
+    // nothing about the bytes the server emits.
     render(
       <WireDiffTable
         sections={[
           section('checkout', [entry()]),
           section('receipt', [entry({ normalizedPath: '/receipt' })]),
-          section(null, [entry({ normalizedPath: '/health' })]),
+          section('', [entry({ normalizedPath: '/health' })]),
         ]}
         selectedField={null}
         onSelectField={() => {}}
@@ -130,5 +137,23 @@ describe('WireDiffTable', () => {
       (el) => el.textContent,
     );
     expect(names).toEqual(['checkout', 'receipt', 'before any marker']);
+  });
+
+  it('names the ONE section a marker-less flow produces, which is the ordinary case', () => {
+    // BuildSections returns a single section named "" whenever a run declared
+    // no group markers at all (order.go:202-204) — i.e. every flow that has
+    // not adopted markers. That is not an edge case at the end of the list;
+    // it is what most flows send, and it rendered the entire wire plane under
+    // a blank header.
+    render(
+      <WireDiffTable
+        sections={[section('', [entry()])]}
+        selectedField={null}
+        onSelectField={() => {}}
+      />,
+    );
+    const name = container.querySelector('.wire-section__name');
+    expect(name?.textContent).toBe('before any marker');
+    expect(name?.textContent).not.toBe('');
   });
 });

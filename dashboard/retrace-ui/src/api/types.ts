@@ -24,6 +24,22 @@
 //   - `Item.refRunId` is the one that stays optional, and correctly: it is a
 //     string, and "there is no reference run" is a real state that its
 //     absence expresses honestly. The row handles it.
+//
+// R-X: every type below has been walked FROM THE GO STRUCT that produces it
+// — retrace/diff, retrace/runs, retrace/serve — field by field against its
+// `json:` tag, and the table is in task-15-report.md. The direction matters:
+// an audit driven from THIS file cannot see a field the Go sends and this
+// file never mentions, which is the shape that produced most of the bugs
+// (accept's whole `bundle`, reject's `warning`, `wire.recorded`). The three
+// shapes it hunts are (1) a union missing a member the Go can emit, (2) a
+// field typed required whose Go tag carries `omitempty`, (3) a field the Go
+// sends that is absent here.
+//
+// Where this file is DELIBERATELY wider than the Go — `FieldDiff.a`/`b`,
+// `HeaderDiff.a`/`b`, `HopDiff.newErrors`/`goneErrors`/`requiredFailures` and
+// `Route.via` are typed optional where the Go tag is bare — that costs a
+// redundant guard and cannot mislead, so it is left alone. Narrowing is the
+// direction that hurts.
 
 export interface Timings {
   start: string;
@@ -55,7 +71,23 @@ export interface Hop {
   err?: string;
 }
 
-export type Verdict = 'ok' | 'suspect' | 'degraded' | 'broken' | 'failed';
+/**
+ * A capture-trust verdict — core/trace.Verdict — and the EMPTY STRING is a
+ * member, not an omission (R-X, shape 1).
+ *
+ * trace.Verdict is a Go string type whose zero value is "". ReadManifest
+ * refuses an empty capture status, so a verdict that came off a manifest is
+ * always one of the five named ones — but `serve.brokenItem` folds a
+ * hand-built zero `diff.Summary` into a queue row for any flow that could not
+ * be diffed at all, and that row's `capture.a`/`capture.b` are zero
+ * `runs.CaptureTrust` values. `{"status":"","summary":""}` is on the wire for
+ * exactly the rows that most need a human, so a union of five would make the
+ * badge for those rows fall off the end of the tone table.
+ *
+ * "" ranks with the worst, never with `ok`: it is "nobody assessed this",
+ * which is the state global-constraints.md's zero-value rule exists for.
+ */
+export type Verdict = '' | 'ok' | 'suspect' | 'degraded' | 'broken' | 'failed';
 export interface TrustReason {
   code: string;
   status: Verdict;
@@ -138,7 +170,18 @@ export interface Entry {
   headerDiff: HeaderDiff[];
 }
 export interface Section {
-  name: string | null;
+  /**
+   * NEVER null, and that is the whole finding (R-X, shape 1 and 3 at once).
+   *
+   * `diff.Section.Name` is a Go `string` with a bare tag, and the unnamed
+   * section is built as `buildSection("", entries)` — order.go:203 and :221.
+   * It is `""` on the wire, always. A `string | null` here made
+   * `section.name ?? 'before any marker'` dead code (`'' ?? x` is `''`), so
+   * every flow that has not adopted group markers — which is the ordinary
+   * case, since BuildSections returns a single `""`-named section when a run
+   * declared no markers — rendered its whole wire plane under a blank header.
+   */
+  name: string;
   entries: Entry[];
   counts: Record<string, number>;
 }
@@ -161,7 +204,19 @@ export interface Counts {
 export interface Item {
   app: string;
   flow: string;
-  verdict: 'pass' | 'changed' | 'failed';
+  /**
+   * The same four values as `Summary.verdict` — `Item.Verdict` is copied
+   * from it verbatim by `serve.itemOf`, so a three-value union here was a
+   * narrowing of the type one field over on the same REST surface.
+   *
+   * `quarantined` is the expensive one to drop: `ScoreOf` scores it 1000,
+   * deliberately the top of the queue, and a `verdictTone` with no arm for it
+   * returned `undefined`, which `<Badge>` paints NEUTRAL GREY. The queue
+   * sorted a row to the very top because it demands attention and then
+   * painted it the colour of a non-event; colour is pre-attentive and sort
+   * order is not, so colour wins.
+   */
+  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
   score: number;
   runId: string;
   /** Absent when no reference run resolved — see the presence note above. */
@@ -184,6 +239,26 @@ export interface GroupNames {
   b: string[];
 }
 
+/**
+ * `runs.Counts` — one recorded plane's call count, and D4.
+ *
+ * `recorded` is the field that makes `calls` readable, and dropping it from
+ * this mirror is what makes `wire.calls === 0` read as a clean wire plane.
+ * `runs.Counts`' own doc names that as its entire reason for existing:
+ * "wire recorded, none seen" and "wire never recorded" are different worlds,
+ * and only `recorded: false` distinguishes them. `reason` says WHY the plane
+ * was not recorded when it was not.
+ *
+ * Nothing in this task renders manifest counts. This is the type only,
+ * corrected now because the next consumer inherits it either way and it is
+ * expensive to correct later.
+ */
+export interface RunCounts {
+  calls: number;
+  recorded: boolean;
+  reason?: string;
+}
+
 export interface Manifest {
   schema: string;
   app: string;
@@ -194,10 +269,14 @@ export interface Manifest {
   startedAt: string;
   finishedAt: string;
   checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
-  groups?: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
+  // Never absent: `runs.Manifest.Groups` carries a bare tag and WriteManifest
+  // defaults a nil slice to `[]Group{}`, exactly as Checkpoints does.
+  groups: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
   capture: CaptureTrust;
-  wire: { calls: number };
-  hops?: { calls: number };
+  wire: RunCounts;
+  /** nil in standalone mode, and that nil is the ONLY spelling of "the hop
+   * plane was not recorded" — see runs.Manifest.Hops. */
+  hops?: RunCounts;
   test: { command: string; exitCode: number; durationMs: number };
   env: { go: string; platform: string; retrace: string };
 }
