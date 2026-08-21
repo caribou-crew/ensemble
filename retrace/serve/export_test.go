@@ -339,6 +339,28 @@ func TestTwoFlowsWhoseNamesCollideUnderAJoinKeepTheirOwnReports(t *testing.T) {
 	if res.Items != 2 {
 		t.Fatalf("exported %d items, want 2", res.Items)
 	}
+
+	// Layout-INDEPENDENT, and this is the arm that bites on the collision
+	// itself rather than on the directory scheme: whatever scheme is used,
+	// two flows must produce TWO DISTINCT report paths and TWO DISTINCT
+	// checkpoint files. Under an <app>__<flow> join both pairs are one path
+	// written twice, and the second write silently replaces the first.
+	distinct := func(suffix string) map[string]bool {
+		out := map[string]bool{}
+		for _, f := range res.Files {
+			if strings.HasSuffix(f, suffix) && f != suffix {
+				out[f] = true
+			}
+		}
+		return out
+	}
+	if pages := distinct("index.html"); len(pages) != 2 {
+		t.Fatalf("two flows produced %d distinct report pages, want 2 — one is overwriting the other: %v", len(pages), res.Files)
+	}
+	if pngs := distinct("a/shots/home.png"); len(pngs) != 2 {
+		t.Fatalf("two flows produced %d distinct home checkpoint files, want 2 — their shots are merging into one tree: %v", len(pngs), res.Files)
+	}
+
 	got := map[string][]byte{}
 	for _, f := range []struct{ app, flow string }{{"web__search", "x"}, {"web", "search__x"}} {
 		dir := filepath.Join(out, f.app, f.flow)
@@ -413,6 +435,15 @@ func TestAnUnEvaluableRowNeverRendersAsMeasuredAndClean(t *testing.T) {
 	if !strings.Contains(broken, "could not be evaluated") {
 		t.Fatalf("the un-evaluable row does not say it was never compared:\n%s", broken)
 	}
+	// And the reason came from the capture banner's own reason code, not
+	// from an export that re-ran the comparison and happened to fail the
+	// same way. Those are different situations — "nobody ever looked" and
+	// "somebody looked and this report could not reproduce it" — and they
+	// carry different sentences, so a report that reached this row the
+	// second way says so instead of borrowing the first way's words.
+	if strings.Contains(broken, "could not reproduce that comparison") {
+		t.Fatalf("the un-evaluable row's reason came from a failed second comparison rather than from the capture's own capture-not-assessed code:\n%s", broken)
+	}
 	// The clean arm, which is what keeps the arm above from being satisfied
 	// by rendering every row as un-evaluable.
 	if !strings.Contains(clean, "row__runs") || !strings.Contains(clean, runB) {
@@ -440,7 +471,7 @@ func TestAnUnEvaluableRowNeverRendersAsMeasuredAndClean(t *testing.T) {
 // have no other source. The shared fixture's expected order is neither the
 // listing order nor its reverse nor alphabetical.
 func TestExportOrdersTheOverviewByTheQueuesOwnScore(t *testing.T) {
-	cwd := threeFlowProject(t)
+	cwd := scoreOrderProject(t)
 	items, err := BuildQueue(deps(t, cwd))
 	if err != nil {
 		t.Fatalf("BuildQueue: %v", err)
@@ -453,8 +484,8 @@ func TestExportOrdersTheOverviewByTheQueuesOwnScore(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("overview order = %v, want the queue's own worst-first order %v", got, want)
 	}
-	if strings.Join(got, ",") != "web/cart,web/search,admin/login,web/login" {
-		t.Fatalf("overview order = %v — the fixture's worst-first order is web/cart,web/search,admin/login,web/login", got)
+	if strings.Join(got, ",") != "web/zzz,web/bbb,web/aaa,web/ccc,web/ddd" {
+		t.Fatalf("overview order = %v — the fixture's worst-first order is web/zzz,web/bbb,web/aaa,web/ccc,web/ddd", got)
 	}
 	// The score itself travels, so the ordering key is legible to an agent
 	// reading the artifact rather than implied by the row order.
@@ -472,6 +503,63 @@ func TestExportOrdersTheOverviewByTheQueuesOwnScore(t *testing.T) {
 			t.Fatalf("row %s does not carry ScoreOf's value %v:\n%s", m[1], it.Score, m[0])
 		}
 	}
+}
+
+// scoreOrderProject is the ordering fixture, and it is built so that the
+// correct rule and the plausible WRONG rules give DIFFERENT answers — the
+// subtlest fixture-symmetry costume, and one the shared three-flow fixture
+// walked straight into: there, sorting by verdict class produces exactly the
+// order ScoreOf produces, so a second ordering keyed on the verdict would
+// have sorted this report and gone unnoticed.
+//
+//	web/zzz  failed, TWO unexpected statuses  — two gates, the worst score
+//	web/bbb  failed, ONE unexpected status    — one gate
+//	web/aaa  quarantined                      — 1000 flat: no Gates at all,
+//	                                            because diff.Build returns
+//	                                            before any plane is computed
+//	web/ccc  changed                          — one changed checkpoint
+//	web/ddd  pass                             — zero
+//
+// Worst-first is zzz, bbb, aaa, ccc, ddd. Alphabetical order is not that.
+// Neither is ANY sort keyed on the verdict class alone: whichever way such a
+// sort ranks the classes, bbb and zzz tie inside "failed" and fall back to
+// listing order, which puts bbb first.
+func scoreOrderProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	ok200 := []trace.Hop{hop(1, "GET", "/one", 200, `{"ok":1}`), hop(2, "GET", "/two", 200, `{"ok":2}`)}
+
+	// web/zzz — two 500s, so two gates.
+	recordRun(t, cwd, "web", "zzz", runA, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	acceptRef(t, cwd, "web", "zzz", runA)
+	recordRun(t, cwd, "web", "zzz", runB, map[string][]byte{"s": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/one", 500, `{"e":1}`), hop(2, "GET", "/two", 500, `{"e":2}`)})
+
+	// web/bbb — one 500.
+	recordRun(t, cwd, "web", "bbb", runA, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	acceptRef(t, cwd, "web", "bbb", runA)
+	recordRun(t, cwd, "web", "bbb", runB, map[string][]byte{"s": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/one", 500, `{"e":1}`), hop(2, "GET", "/two", 200, `{"ok":2}`)})
+
+	// web/aaa — quarantined: the capture verdict is not ok, so nothing is
+	// compared and the Summary carries no Gates to weight.
+	recordRun(t, cwd, "web", "aaa", runA, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	acceptRef(t, cwd, "web", "aaa", runA)
+	recordRun(t, cwd, "web", "aaa", runB, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	degradeCapture(t, cwd, "web", "aaa", runB, runs.CaptureTrust{
+		Status: trace.VerdictBroken, Summary: "the proxy recorded nothing for 40 seconds",
+	})
+
+	// web/ccc — changed on every pixel.
+	recordRun(t, cwd, "web", "ccc", runA, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	acceptRef(t, cwd, "web", "ccc", runA)
+	recordRun(t, cwd, "web", "ccc", runB, map[string][]byte{"s": shotPNG(t, blue)}, ok200)
+
+	// web/ddd — identical.
+	recordRun(t, cwd, "web", "ddd", runA, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	acceptRef(t, cwd, "web", "ddd", runA)
+	recordRun(t, cwd, "web", "ddd", runB, map[string][]byte{"s": shotPNG(t, white)}, ok200)
+	return cwd
 }
 
 // The two empty worlds, on the surface with the least context available to
