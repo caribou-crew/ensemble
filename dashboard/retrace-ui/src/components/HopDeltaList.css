@@ -1,0 +1,55 @@
+.hop-delta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.hop-routes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.hop-route {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hop-route code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.hop-route__to,
+.hop-route__via {
+  color: var(--text-secondary);
+}
+
+.hop-counts {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.hop-counts th,
+.hop-counts td {
+  padding: 0.2rem 0.75rem 0.2rem 0;
+  text-align: left;
+  color: var(--text-secondary);
+}
+
+.hop-counts th {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.hop-empty {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
