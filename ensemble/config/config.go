@@ -16,6 +16,7 @@ type Config struct {
 	Services  map[string]Service  `yaml:"services"`
 	Databases map[string]Database `yaml:"databases"`
 	Stubs     map[string]Stub     `yaml:"stubs"`
+	Gateways  map[string]Gateway  `yaml:"gateways"`
 	Entities  map[string]Entity   `yaml:"entities"`
 	Latency   Latency             `yaml:"latency"`
 	Seeds     map[string]Seed     `yaml:"seeds"`
@@ -97,6 +98,47 @@ type StubRespond struct {
 	Body     string            `yaml:"body"`
 	BodyFile string            `yaml:"body_file"`
 	Template bool              `yaml:"template"`
+}
+
+// Gateway is a config-defined edge router: one intercept port that fans
+// requests out to services and stubs by path prefix, forwarding onto
+// ensemble's own resolved ports (see Config.RoutablePort). It fills the
+// role a hand-written edge/envoy service otherwise would, and is captured
+// as a hop node like any other listener.
+type Gateway struct {
+	Port   int            `yaml:"port"`
+	Routes []GatewayRoute `yaml:"routes"`
+}
+
+// GatewayRoute maps a "/"-rooted path prefix to a service or stub. The
+// longest matching prefix wins; a trailing "/" on Prefix is ignored. With
+// StripPrefix the matched prefix is removed from the forwarded path.
+type GatewayRoute struct {
+	Prefix      string `yaml:"prefix"`
+	Service     string `yaml:"service"`
+	StripPrefix bool   `yaml:"strip_prefix"`
+}
+
+// RoutablePort resolves the port a gateway route targeting name forwards
+// to: a service's intercept (proxy) port when it has one — so the
+// gateway -> service hop is captured and per-service latency rules still
+// apply — else its real port; a stub's own port. kind is "service" or
+// "stub". ok is false for an unknown name, a database, or a service with
+// no port at all (a docker service that publishes nothing).
+func (c *Config) RoutablePort(name string) (port int, kind string, ok bool) {
+	if svc, found := c.Services[name]; found {
+		if svc.Proxy > 0 {
+			return svc.Proxy, "service", true
+		}
+		if svc.Port > 0 {
+			return svc.Port, "service", true
+		}
+		return 0, "", false
+	}
+	if st, found := c.Stubs[name]; found && st.Port > 0 {
+		return st.Port, "stub", true
+	}
+	return 0, "", false
 }
 
 // Entity is a dashboard plugin slot: a generic CRUD page over one resource.

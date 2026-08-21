@@ -103,6 +103,40 @@ stubs:                            # dependencies you can't run locally
 A stub response can also read its body from a file (`body_file:`) instead of
 inlining it.
 
+### Gateways
+
+`proxy:` is one-in, one-out — a single intercept port in front of a single
+service. Stacks that sit behind an edge router fan one public port out to
+many services by path, and a `gateways:` block declares that router without
+writing one:
+
+```yaml
+gateways:
+  public:
+    port: 9000                    # the one port your client calls
+    routes:
+      - { prefix: /products, service: catalog }
+      - { prefix: /cart,     service: edge, strip_prefix: true }
+      - { prefix: /pay,      service: payments }   # a stub is a valid target
+      - { prefix: /,         service: edge }        # optional catch-all
+```
+
+Each route forwards onto ensemble's **own resolved port** for the target:
+the service's `proxy` port when it has one (so `client → public` and
+`public → catalog` are both captured hops, and `latency set --target
+catalog` still applies), otherwise its real `port`; a stub forwards to the
+stub's `port`. The longest matching prefix wins, matching on path segments
+(`/cart` matches `/cart` and `/cart/items`, never `/cartoon`). A request
+matching no route gets a `404` and is still recorded as a hop so the
+mis-route is visible in `ensemble traffic`. `strip_prefix: true` drops the
+matched prefix before forwarding (`/cart/items?limit=5` → `/items?limit=5`).
+
+A gateway is a node like any other: it shows in the topology (as an entry),
+`latency set --target public --path /products` delays at the edge, and it
+can be the `entry` of a retrace recording session. Gateway names share the
+namespace with services, databases, and stubs, and `port` joins the same
+collision check as every other port.
+
 Any value in `ensemble.yaml` can reference an environment variable with
 `${VAR}` or, with a fallback, `${VAR:-default}` — e.g. `port:
 ${BFF_PORT:-8003}`, or `dir: ${LOCAL_STACK_DIR:-$HOME/dev/local-stack}` (a

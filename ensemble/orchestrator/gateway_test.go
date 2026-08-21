@@ -1,0 +1,127 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/ensemble/config"
+)
+
+func portOf(t *testing.T, srv *httptest.Server) int {
+	t.Helper()
+	_, p, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestUpWiresGateway: a gateway routes /products through the service's
+// intercept port (two hops, From=gateway on the second) and /legacy to an
+// unproxied service's real port, stripping the prefix.
+func TestUpWiresGateway(t *testing.T) {
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "catalog:"+r.URL.Path)
+	}))
+	defer catalog.Close()
+	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "legacy:"+r.URL.Path)
+	}))
+	defer legacy.Close()
+
+	catalogProxy := freePort(t)
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"catalog": {Run: "sleep 30", Port: portOf(t, catalog), Proxy: catalogProxy},
+			"legacy":  {Run: "sleep 30", Port: portOf(t, legacy)},
+		},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Routes: []config.GatewayRoute{
+				{Prefix: "/products", Service: "catalog"},
+				{Prefix: "/legacy", Service: "legacy", StripPrefix: true},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	get := func(path string) string {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", gwPort, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Sprintf("%d %s", resp.StatusCode, b)
+	}
+	if got := get("/products/1"); got != "200 catalog:/products/1" {
+		t.Errorf("/products/1: %q", got)
+	}
+	if got := get("/legacy/x"); got != "200 legacy:/x" {
+		t.Errorf("/legacy/x: %q", got)
+	}
+	if got := get("/nope"); !strings.HasPrefix(got, "404 ") {
+		t.Errorf("/nope: %q", got)
+	}
+
+	var fromGateway int
+	for _, h := range rec.Snapshot() {
+		if h.To == "catalog" && h.From == "public" {
+			fromGateway++
+		}
+	}
+	if fromGateway != 1 {
+		t.Errorf("catalog hops called by gateway: got %d, want 1", fromGateway)
+	}
+	if _, ok := o.Service("public"); ok {
+		t.Error("gateway must not appear as a supervised ServiceState")
+	}
+}
+
+func TestUpGatewayBindFailureNamesGateway(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	taken := ln.Addr().(*net.TCPAddr).Port
+
+	cfg := &config.Config{
+		Dir:      t.TempDir(),
+		Services: map[string]config.Service{"svc": {Run: "sleep 30", Port: freePort(t)}},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: taken, Routes: []config.GatewayRoute{{Prefix: "/", Service: "svc"}}},
+		},
+	}
+	px := proxy.New(proxy.NewRecorder(proxy.RecorderOpts{Ring: 8}))
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	err = o.Up(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "gateway public") {
+		t.Fatalf("want bind error naming the gateway, got %v", err)
+	}
+	if _, ok := o.Service("svc"); ok {
+		t.Error("service must not have been started when the gateway failed to bind")
+	}
+}

@@ -81,6 +81,45 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	for name, gw := range c.Gateways {
+		if c.hasServiceOrDatabase(name) || c.hasStub(name) {
+			errs = append(errs, fmt.Errorf("gateway %q: a service, database, or stub has the same name", name))
+		}
+		if gw.Port <= 0 {
+			errs = append(errs, fmt.Errorf("gateway %q: port must be set", name))
+		} else {
+			usedPorts[gw.Port] = append(usedPorts[gw.Port], "gateway "+name)
+		}
+		if len(gw.Routes) == 0 {
+			errs = append(errs, fmt.Errorf("gateway %q: routes is empty", name))
+		}
+		seenPrefix := make(map[string]bool, len(gw.Routes))
+		for i, route := range gw.Routes {
+			switch {
+			case route.Prefix == "":
+				errs = append(errs, fmt.Errorf("gateway %q: route %d: prefix is empty", name, i))
+			case !strings.HasPrefix(route.Prefix, "/"):
+				errs = append(errs, fmt.Errorf("gateway %q: route %d: prefix %q must start with /", name, i, route.Prefix))
+			default:
+				p := normalizeGatewayPrefix(route.Prefix)
+				if seenPrefix[p] {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: duplicate prefix %q", name, i, p))
+				}
+				seenPrefix[p] = true
+			}
+			if _, _, ok := c.RoutablePort(route.Service); !ok {
+				switch {
+				case route.Service == "":
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: service is empty", name, i))
+				case c.hasServiceOrDatabase(route.Service) || c.hasStub(route.Service):
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: %q has no port to route to (only services and stubs with a port are routable)", name, i, route.Service))
+				default:
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: references unknown service/stub %q", name, i, route.Service))
+				}
+			}
+		}
+	}
+
 	for port, names := range usedPorts {
 		if len(names) > 1 {
 			errs = append(errs, fmt.Errorf("duplicate port %d: %s", port, strings.Join(names, ", ")))
@@ -114,6 +153,24 @@ func (c *Config) hasServiceOrDatabase(name string) bool {
 		return true
 	}
 	return false
+}
+
+// hasStub reports whether name identifies a declared stub.
+func (c *Config) hasStub(name string) bool {
+	_, ok := c.Stubs[name]
+	return ok
+}
+
+// normalizeGatewayPrefix drops a trailing slash from every prefix but "/",
+// mirroring core/proxy's matching so "/cart" and "/cart/" are one rule.
+func normalizeGatewayPrefix(p string) string {
+	if len(p) > 1 {
+		if t := strings.TrimRight(p, "/"); t != "" {
+			return t
+		}
+		return "/"
+	}
+	return p
 }
 
 // inferDatabaseType guesses a Database's Type from its Image when Type is

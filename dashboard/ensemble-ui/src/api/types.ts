@@ -38,7 +38,7 @@ export interface Hop {
 export interface ServiceState {
   name: string;
   status: string;
-  placement: 'native' | 'docker';
+  placement: "native" | "docker";
   pid?: number;
   proxyPort?: number;
   port?: number;
@@ -48,7 +48,7 @@ export interface ServiceState {
 
 export interface TopologyNode {
   name: string;
-  category: 'service' | 'database' | 'stub';
+  category: "service" | "database" | "stub" | "gateway";
   status: string;
   entry?: boolean;
 }
