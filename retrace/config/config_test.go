@@ -981,3 +981,33 @@ func TestConcurrentGoroutinesWithNoFileLockLandEveryRule(t *testing.T) {
 			len(got), goroutines*per, goroutines*per-len(got))
 	}
 }
+
+// TestQueryIgnoreIsATopLevelKeyAndBlankEntriesAreDropped pins R-J's config
+// half. `query_ignore` is a real key (KnownFields(true) makes a typo an
+// error, so a config carrying it only loads if the field exists), it is
+// PROJECT-WIDE and top-level like its sibling `wire_ignore`, and a blank
+// entry never reaches the matcher: an empty key is the most permissive
+// value the type has, and the zero-value constraint says an unset value
+// must not become a permissive one. The other half — that the key changes
+// what `retrace replay` actually matches — is pinned at the CLI seam by
+// TestRetraceYamlDecidesWhatReplayMatches.
+func TestQueryIgnoreIsATopLevelKeyAndBlankEntriesAreDropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\nquery_ignore:\n  - t\n  - \"\"\n  - \"   \"\n  - cb\n"), 0o644)
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("query_ignore did not load as a top-level key: %v", err)
+	}
+	got := c.QueryIgnoreKeys()
+	if len(got) != 2 || got[0] != "t" || got[1] != "cb" {
+		t.Fatalf("QueryIgnoreKeys() = %q, want the two named params with the blanks dropped", got)
+	}
+	// The mirror: no key at all yields no ignores, never a nil-derived
+	// "ignore everything".
+	empty := &Config{}
+	if len(empty.QueryIgnoreKeys()) != 0 {
+		t.Fatalf("QueryIgnoreKeys() on a config with no query_ignore = %q, want none", empty.QueryIgnoreKeys())
+	}
+}

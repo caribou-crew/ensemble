@@ -37,10 +37,16 @@ type Result struct {
 
 // Request is one incoming call, already split into the parts that
 // identify it. Body is the DECODED request body (nil when there was none
-// or it was not JSON).
+// or it was not JSON); Raw is the same body's bytes VERBATIM, which is
+// what a recorded body this package could not parse is compared against.
+//
+// Raw's zero value is the refusing one: a caller that forgets to set it
+// cannot match a recording whose request body was opaque, it can only
+// miss.
 type Request struct {
 	Method, Path, Query string
 	Body                any
+	Raw                 string
 }
 
 // Options is everything that can loosen matching, and every field's zero
@@ -123,10 +129,15 @@ func (b *Bundle) Match(r Request, o Options) Result {
 		near := b.nearest(method, path, o)
 		res := Result{Miss: true, Nearest: near}
 		if near != nil {
-			res.Diff = []MissField{
-				{Field: "method", Expected: near.Key.Method, Actual: r.Method},
-				{Field: "path", Expected: near.Key.Path, Actual: r.Path},
+			// The METHOD row only when the method is actually part of the
+			// difference. `GET /admin/purge` against a nearest `GET /cart`
+			// printing "method: expected GET, got GET" is a reported
+			// difference that is not one, in the body a human reads to act
+			// on.
+			if !strings.EqualFold(near.Key.Method, method) {
+				res.Diff = append(res.Diff, MissField{Field: "method", Expected: near.Key.Method, Actual: r.Method})
 			}
+			res.Diff = append(res.Diff, MissField{Field: "path", Expected: near.Key.Path, Actual: r.Path})
 		}
 		return res
 	}
@@ -149,13 +160,13 @@ func (b *Bundle) Match(r Request, o Options) Result {
 	res := rules.Resolve(o.Rules, method, path)
 	var candidates []int
 	for _, i := range byQuery {
-		if len(bodyDiff(b.Exchanges[i].ReqBody, r.Body, "", res)) == 0 {
+		if len(requestBodyDiff(&b.Exchanges[i], r, res)) == 0 {
 			candidates = append(candidates, i)
 		}
 	}
 	if len(candidates) == 0 {
 		near := &b.Exchanges[byQuery[0]]
-		return Result{Miss: true, Nearest: near, Diff: bodyDiff(near.ReqBody, r.Body, "", res)}
+		return Result{Miss: true, Nearest: near, Diff: requestBodyDiff(near, r, res)}
 	}
 
 	// Recorded order for repeats: the first candidate that has not been
@@ -171,6 +182,39 @@ func (b *Bundle) Match(r Request, o Options) Result {
 	}
 	b.Exchanges[chosen].used++
 	return Result{Hit: &b.Exchanges[chosen]}
+}
+
+// requestBodyDiff decides whether one recorded request body admits this
+// request's body.
+//
+// A recorded body the loader could not parse as JSON — a form post, XML,
+// a protobuf, plain text — is compared BYTE FOR BYTE against the bytes
+// that arrived. It is emphatically not "no constraint": that reading made
+// a recorded `POST /login` with a form-encoded body match ANY body on the
+// same method+path+query, which is the wildcard this package exists to
+// refuse (F3). Byte-exact is the useful of the two honest answers,
+// because a non-JSON body genuinely has no structure this package can
+// subset-match — and truncated bodies, the one case where byte-exact
+// would reject correct clients, never reach here: LoadBundle refuses the
+// bundle.
+//
+// A recorded literal `null` also lands here (it decodes to a nil `any`
+// while its bytes are "null"), and is therefore held to those four bytes.
+// That is stricter than the old reading and deliberately so: fail-closed
+// is the tie-breaker whenever a value could mean either "nothing was
+// recorded" or "nothing is required".
+func requestBodyDiff(e *Exchange, r Request, res rules.Resolved) []MissField {
+	if e.ReqBody == nil && e.ReqRaw != "" {
+		if r.Raw == e.ReqRaw {
+			return nil
+		}
+		actual := r.Raw
+		if actual == "" {
+			actual = absent
+		}
+		return []MissField{{Field: "body", Expected: e.ReqRaw, Actual: actual}}
+	}
+	return bodyDiff(e.ReqBody, r.Body, "", res)
 }
 
 func normalizeWith(o Options, p string) string {
@@ -243,11 +287,10 @@ func min3(a, b, c int) int {
 // the wire diff. rules.Classify's zero Matcher — "no rule applies" —
 // classifies as Changed, so an unruled field is always compared.
 //
-// A nil recorded body constrains nothing: the recording carried no
-// parseable request body, so there is no declared shape to hold the
-// client to. That is not "anything matches" leaking in — the method, path
-// and query still had to match, and a recorded body of `null` decodes to
-// a nil `any` too, which is genuinely no constraint.
+// A nil recorded body reaches here only when the recording carried NO
+// request body at all — requestBodyDiff routes a body that was present
+// but unparseable to a verbatim comparison before this is called — so
+// there is genuinely no declared shape to hold the client to.
 func bodyDiff(fixture, request any, path string, res rules.Resolved) []MissField {
 	if fixture == nil {
 		return nil

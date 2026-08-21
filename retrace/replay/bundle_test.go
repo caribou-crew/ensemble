@@ -194,3 +194,69 @@ func TestLoadBundleRefusesAnEmptyDirectoryArgument(t *testing.T) {
 		t.Fatal("LoadBundle(\"\") was accepted")
 	}
 }
+
+func TestLoadBundleRefusesAnExchangeRecordedWithContentEncoding(t *testing.T) {
+	// The bytes in the bundle are NOT what that header describes. core/proxy
+	// forwards the client's Accept-Encoding verbatim and Go's transport only
+	// auto-decompresses when it added the header itself, so a browser-driven
+	// capture records raw gzip bytes into a Go string — and encoding/json
+	// replaces every invalid UTF-8 byte with U+FFFD when wire.jsonl is
+	// written. Re-asserting `Content-Encoding: gzip` over that hands the
+	// client a body it cannot decode, on a HIT, where the miss machinery
+	// never sees it: a green gate over a response nobody could read.
+	//
+	// Refused rather than stripped. Stripping serves a mangled body as if it
+	// were fine — plausible, and therefore worse (the third zero-value
+	// clause). This package refuses rather than degrades.
+	h := hop(1, "GET", "/cart", "", 200, "\x1f\x8b\x08garbage")
+	h.Resp.Headers["Content-Encoding"] = "gzip"
+	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
+
+	_, err := LoadBundle(dir)
+	if err == nil {
+		t.Fatal("LoadBundle accepted an exchange recorded with Content-Encoding — replay would re-assert it over bytes that are no longer compressed")
+	}
+	if !strings.Contains(err.Error(), "Content-Encoding") || !strings.Contains(err.Error(), "/cart") {
+		t.Fatalf("error %q does not name the header and the exchange", err)
+	}
+
+	// Both mirrors, so the refusal is about a CLAIMED encoding and not
+	// about response headers in general: the same bundle with no
+	// Content-Encoding loads, and so does one that explicitly says
+	// "identity" — the header's own no-op, which is not a claim about the
+	// bytes.
+	clean := hop(2, "GET", "/cart", "", 200, `{"items":[]}`)
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{clean})); err != nil {
+		t.Fatalf("a bundle with no Content-Encoding did not load: %v", err)
+	}
+	identity := hop(3, "GET", "/cart", "", 200, `{"items":[]}`)
+	identity.Resp.Headers["Content-Encoding"] = "identity"
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity})); err != nil {
+		t.Fatalf("a bundle recording Content-Encoding: identity did not load: %v", err)
+	}
+}
+
+func TestLoadBundleRefusesATruncatedRecordedRequestBody(t *testing.T) {
+	// A size-capped request body has no trustworthy tail, so there are only
+	// two things a matcher could do with it and both are wrong: treat it as
+	// no constraint (every client body matches — F3's wildcard) or match it
+	// verbatim (every correct client is reported as a deviation). The
+	// bundle is refused instead, alongside the corrupt-line refusal.
+	h := hop(1, "POST", "/checkout", `{"pay":"ca`, 201, `{"ok":true}`)
+	h.Req.Truncated = true
+	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
+
+	_, err := LoadBundle(dir)
+	if err == nil {
+		t.Fatal("LoadBundle accepted a truncated recorded request body")
+	}
+	if !strings.Contains(err.Error(), "TRUNCATED") || !strings.Contains(err.Error(), "/checkout") {
+		t.Fatalf("error %q does not name the problem and the exchange", err)
+	}
+
+	// The mirror: the same body, not truncated, loads and constrains.
+	whole := hop(1, "POST", "/checkout", `{"pay":"card"}`, 201, `{"ok":true}`)
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole})); err != nil {
+		t.Fatalf("an untruncated bundle did not load: %v", err)
+	}
+}

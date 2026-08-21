@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/diff"
@@ -24,6 +25,26 @@ const (
 // matches the recording side's own capture limit closely enough that a
 // body too large to record is also a body too large to compare.
 const maxLiveBody = 8 << 20
+
+// liveCallTimeout bounds ONE re-issued call. A live stack that accepts the
+// connection and never answers would otherwise hang `retrace revalidate`
+// forever, which is the one outcome a 0/1/2/3 contract cannot express and
+// the one a CI job cannot tell apart from a slow build. It is a var, not a
+// const, only so the timeout itself can be pinned by a test in reasonable
+// wall-clock time.
+var liveCallTimeout = 30 * time.Second
+
+// liveClient is what re-issues a recorded call. It deliberately does NOT
+// follow redirects: revalidate reports what the live stack does with the
+// recorded request, and a 301/302 is exactly that — the route has moved,
+// which is drift. Following it would compare the recording against the
+// REDIRECT TARGET's response and report "no drift" about a call that no
+// longer exists, and http.DefaultClient's redirect handling also downgrades
+// POST to GET on 301/302/303, so the write endpoint would never be
+// exercised at all.
+var liveClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // StatusDrift is nil when the status did not change.
 type StatusDrift struct {
@@ -119,8 +140,11 @@ func Revalidate(ctx context.Context, b *Bundle, upstream string, o Options) (Rev
 	return rep, nil
 }
 
-// issue sends one recorded request to the live stack.
+// issue sends one recorded request to the live stack, under its own
+// deadline so one unanswering endpoint cannot hang the whole command.
 func issue(ctx context.Context, base string, e Exchange) (int, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveCallTimeout)
+	defer cancel()
 	url := base + e.Key.Path
 	if e.Key.Query != "" {
 		url += "?" + e.Key.Query
@@ -139,7 +163,7 @@ func issue(ctx context.Context, base string, e Exchange) (int, string, error) {
 		}
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := liveClient.Do(req)
 	if err != nil {
 		return 0, "", err
 	}

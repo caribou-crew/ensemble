@@ -40,8 +40,11 @@ type Exchange struct {
 	Key Key `json:"key"`
 	// ReqBody is the recorded request body DECODED, because matching is
 	// structural (a subset match, field by field, under wire rules) rather
-	// than byte-wise. nil means the recording carried no parseable request
-	// body, which constrains nothing — see bodyDiff.
+	// than byte-wise. nil means the recording carried no PARSEABLE request
+	// body — which is not the same as "no constraint": when ReqRaw is
+	// non-empty the matcher falls back to comparing the recorded bytes
+	// verbatim, so a form post, a protobuf or a plain-text body still
+	// constrains what matches it. See requestBodyDiff.
 	ReqBody any `json:"reqBody,omitempty"`
 	// ReqRaw and ReqHeaders are the request side kept VERBATIM, for
 	// Revalidate to re-issue the recorded call against a live stack.
@@ -93,7 +96,24 @@ type Bundle struct {
 //     then report as a client deviation. That accusation must never be an
 //     artifact of our own reading;
 //   - zero exchanges — there is nothing to replay, and a server that
-//     501s every single call is not a strict mock, it is a broken one.
+//     501s every single call is not a strict mock, it is a broken one;
+//   - a TRUNCATED recorded request body — a size-capped body has no
+//     trustworthy tail, so it can only be matched as a wildcard (which is
+//     the F3 defect: an unparseable recorded body matching every client
+//     body) or as a prefix (a wildcard with extra steps, since a client
+//     that merely starts the same way is accepted). Neither is a contract,
+//     so the bundle is refused instead;
+//   - a recorded response carrying Content-Encoding — the bytes in the
+//     bundle are NOT what that header describes. core/proxy forwards the
+//     client's Accept-Encoding verbatim and Go's transport only
+//     auto-decompresses when it added that header itself, so the compressed
+//     bytes are recorded into a Go string and encoding/json replaces every
+//     invalid UTF-8 byte with U+FFFD when wire.jsonl is written. Replaying
+//     `Content-Encoding: gzip` over that is a lie told to the client, and
+//     it lands on a HIT, so the miss machinery never sees it. Stripping the
+//     header would serve a mangled body as if it were fine — plausible, and
+//     therefore worse. (The capture-layer root cause is out of scope here;
+//     this refusal is what makes it visible instead of silent.)
 func LoadBundle(dir string) (*Bundle, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("replay: bundle directory is empty — a bundle is never the process working directory")
@@ -119,12 +139,45 @@ func LoadBundle(dir string) (*Bundle, error) {
 	}
 	b := &Bundle{Dir: dir, Manifest: m, Exchanges: make([]Exchange, 0, len(hops))}
 	for _, h := range hops {
+		if err := refuse(h); err != nil {
+			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w", dir, err)
+		}
 		b.Exchanges = append(b.Exchanges, lower(h))
 	}
 	if len(b.Exchanges) == 0 {
 		return nil, fmt.Errorf("replay: the bundle at %s records no exchanges — there is nothing to replay, and a server that answers every call with a miss is a broken mock rather than a strict one", dir)
 	}
 	return b, nil
+}
+
+// refuse reports the recorded hops this package will not replay. Both
+// cases are recordings whose BYTES no longer describe what the headers or
+// the matcher would claim about them, and in both the honest answer is a
+// loud refusal at load rather than a plausible answer at request time.
+func refuse(h trace.Hop) error {
+	where := strings.ToUpper(h.Method) + " " + h.Path
+	if h.Req.Truncated {
+		return fmt.Errorf("hop %d (%s) recorded a TRUNCATED request body — a capped body has no trustworthy tail, so it can neither be matched verbatim (every correct client would be reported as a deviation) nor treated as no constraint (every client body would match); re-record the flow with a larger capture cap", h.Seq, where)
+	}
+	if enc := contentEncoding(h.Resp.Headers); enc != "" {
+		return fmt.Errorf("hop %d (%s) recorded Content-Encoding: %s — the recorded body is no longer those bytes (the capture wrote them through JSON, which replaces every invalid UTF-8 byte), so replaying that header would hand the client a body it cannot decode; re-record the flow with the client sending `Accept-Encoding: identity`", h.Seq, where, enc)
+	}
+	return nil
+}
+
+// contentEncoding returns the recorded Content-Encoding when it claims an
+// actual encoding. "identity" is the explicit no-op and is not a claim
+// about the bytes, so it is not a refusal.
+func contentEncoding(headers map[string]string) string {
+	for k, v := range headers {
+		if !strings.EqualFold(k, "content-encoding") {
+			continue
+		}
+		if t := strings.TrimSpace(v); t != "" && !strings.EqualFold(t, "identity") {
+			return t
+		}
+	}
+	return ""
 }
 
 func reasonOr(s, def string) string {
@@ -152,11 +205,14 @@ func lower(h trace.Hop) Exchange {
 	}
 }
 
-// decodeBody parses a recorded payload as JSON for structural matching. A
-// truncated payload decodes to nil — "constrains nothing" — because a
-// size-capped body has no trustworthy tail, and matching a client against
-// half a recorded body would reject correct clients. It is the same
-// judgment diff.parseBody makes for the same reason.
+// decodeBody parses a recorded payload as JSON for structural matching.
+//
+// nil does NOT mean "constrains nothing" any more: Match compares the
+// recorded bytes VERBATIM whenever the recording carried a request body
+// this could not parse (see requestBodyDiff). A truncated payload cannot
+// reach here through LoadBundle at all — the bundle is refused — so the
+// Truncated branch is a belt-and-braces guard for a hand-built Exchange
+// rather than a live path.
 func decodeBody(p trace.Payload) any {
 	if p.Truncated {
 		return nil

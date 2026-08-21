@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
@@ -296,5 +298,84 @@ func TestRevalidateReportsAFieldThatBrokeItsOwnRuleAsDrift(t *testing.T) {
 	}
 	if len(rep.Drifts) != 1 || len(rep.Drifts[0].Fields) != 1 || rep.Drifts[0].Fields[0].Path != "requestId" {
 		t.Fatalf("drifts = %+v, want the requestId violation reported", rep.Drifts)
+	}
+}
+
+func TestRevalidateReportsARedirectAsDriftInsteadOfFollowingIt(t *testing.T) {
+	// A recorded call the live stack has since MOVED is drift — the most
+	// interesting kind, because the recording is now describing a route
+	// that no longer answers. http.DefaultClient would follow the 302 and
+	// compare the recording against the redirect TARGET's response,
+	// reporting "no drift" about a call that is gone; it also downgrades
+	// POST to GET on 301/302/303, so a write endpoint would never be
+	// exercised at all.
+	var sawMovedPath, sawTarget atomic.Bool
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cart" {
+			sawMovedPath.Store(true)
+			http.Redirect(w, r, "/v2/cart", http.StatusFound)
+			return
+		}
+		sawTarget.Store(true)
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer live.Close()
+
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	rep, err := Revalidate(context.Background(), b, live.URL, Options{})
+	if err != nil {
+		t.Fatalf("Revalidate: %v", err)
+	}
+	if !sawMovedPath.Load() {
+		t.Fatal("the recorded path was never requested")
+	}
+	if sawTarget.Load() {
+		t.Fatal("revalidate followed the redirect — it compared the recording against the redirect target, not against what the recorded call now does")
+	}
+	if rep.Verdict != VerdictDrift {
+		t.Fatalf("verdict = %q, want %q — a 302 is a finding, not a step", rep.Verdict, VerdictDrift)
+	}
+	if len(rep.Drifts) != 1 || rep.Drifts[0].Status == nil || rep.Drifts[0].Status.Live != http.StatusFound {
+		t.Fatalf("drifts = %+v, want the 302 reported as a status change", rep.Drifts)
+	}
+}
+
+func TestRevalidateGivesUpOnALiveStackThatNeverAnswers(t *testing.T) {
+	// The one outcome a 0/1/2/3 contract cannot express is "still running".
+	// A stack that accepts the connection and never answers would hang
+	// `retrace revalidate` forever, and a CI job cannot tell that from a
+	// slow build. Whatever comes back must be an ERROR — never a report,
+	// and above all never a clean one.
+	block := make(chan struct{})
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+	}))
+	// LIFO: the handler is released BEFORE Close, which waits for every
+	// outstanding request to finish.
+	defer live.Close()
+	defer close(block)
+
+	old := liveCallTimeout
+	liveCallTimeout = 50 * time.Millisecond
+	defer func() { liveCallTimeout = old }()
+
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	done := make(chan struct{})
+	var rep RevalReport
+	var err error
+	go func() {
+		defer close(done)
+		rep, err = Revalidate(context.Background(), b, live.URL, Options{})
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Revalidate never returned against a stack that never answers — there is no deadline at any layer")
+	}
+	if err == nil {
+		t.Fatalf("Revalidate returned a report (%+v) for a stack that never answered — could-not-evaluate must be an error", rep)
+	}
+	if rep.Verdict == VerdictClean {
+		t.Fatalf("verdict = %q for a stack that never answered", rep.Verdict)
 	}
 }
