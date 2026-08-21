@@ -48,6 +48,11 @@ type ServiceState struct {
 	Variant   string    `json:"variant,omitempty"` // current config.Service variant, if it declares any
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	LastErr   string    `json:"lastErr,omitempty"`
+	// RSSKB is resident memory in KB, sampled best-effort at read time (see
+	// WithMemory) — 0 when unsampled or the node isn't currently running.
+	// Not tracked continuously: States()/Service() never set it, only
+	// WithMemory's own returned copy does.
+	RSSKB int64 `json:"rssKB,omitempty"`
 }
 
 // Opts configures an Orchestrator.
@@ -691,6 +696,53 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	}
 
 	return o.startServiceAs(ctx, name, svc, placement)
+}
+
+// Stop tears down name's currently running process or container, if any,
+// and leaves it stopped — unlike Restart, it does not start a replacement.
+// The service stays part of the active profile set (o.active is untouched,
+// same as Down); only its live process/container goes away, so a later
+// Restart brings it back exactly like a first-time start. A no-op, not an
+// error, when nothing is currently running.
+func (o *Orchestrator) Stop(name string) error {
+	if _, ok := o.activeServices()[name]; !ok {
+		return fmt.Errorf("orchestrator: stop %q: not an active service", name)
+	}
+
+	// Serialize against any concurrent Flip/Restart/Stop/Down teardown on
+	// this same service — see the serviceLocks field comment.
+	unlock := o.lockService(name)
+	defer unlock()
+
+	o.mu.Lock()
+	cmd, hasProc := o.procs[name]
+	isDocker := o.dockerNodes[name]
+	o.mu.Unlock()
+
+	if hasProc && cmd.Process != nil {
+		if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			wrapped := fmt.Errorf("kill: %w", err)
+			o.fail(name, wrapped)
+			return fmt.Errorf("orchestrator: stop %q: %w", name, wrapped)
+		}
+		o.mu.Lock()
+		delete(o.procs, name)
+		o.mu.Unlock()
+	}
+	if isDocker {
+		if err := o.removeDockerContainer(name); err != nil {
+			wrapped := fmt.Errorf("remove container: %w", err)
+			o.fail(name, wrapped)
+			return fmt.Errorf("orchestrator: stop %q: %w", name, wrapped)
+		}
+		o.mu.Lock()
+		delete(o.dockerNodes, name)
+		o.mu.Unlock()
+	}
+	if hasProc || isDocker {
+		o.setStatus(name, StatusStopped, "")
+	}
+	return nil
 }
 
 // States returns a snapshot of every known node, sorted by name.

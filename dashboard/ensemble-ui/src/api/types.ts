@@ -46,6 +46,8 @@ export interface ServiceState {
   lastErr?: string;
   /** Current `variants:` choice, for a service that declares any. */
   variant?: string;
+  /** Sampled RSS in KB. Only populated when status was fetched with `?mem=1`. */
+  rssKB?: number;
 }
 
 export interface TopologyNode {
