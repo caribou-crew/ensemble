@@ -680,5 +680,10 @@ func TestDiffHopsResultIsJSONSerializableWithContractTags(t *testing.T) {
 		RequiredRouteFailures: []RouteFailure{{Method: "GET", Path: "/x", ExpectedStatus: 200, ActualStatus: 500, Reason: "wrong-status"}},
 		HopRequireConfigured:  true,
 	}
-	assertJSONKeys(t, d, []string{"serviceCounts", "newErrors", "newRoutes", "goneRoutes", "requiredFailures", "hopRequireConfigured"})
+	// GoneErrors is nil above and its key is still expected: array fields on
+	// the wire types carry no omitempty, so every one of them is always
+	// present. A consumer reads the same key set from every HopDiff it is
+	// ever handed, and never has to distinguish an absent key from an empty
+	// one.
+	assertJSONKeys(t, d, []string{"serviceCounts", "newErrors", "goneErrors", "newRoutes", "goneRoutes", "requiredFailures", "hopRequireConfigured"})
 }

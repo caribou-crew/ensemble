@@ -1043,6 +1043,12 @@ func TestSummaryJsonShapeIsStable(t *testing.T) {
 		Gates:    []string{},
 		Budgets:  []Gate{{Plane: "pixel", Threshold: 0.1, Observed: 1.5, Failed: true}},
 	}
+	// Through the same normalisation every Summary gets at Build's exits.
+	// A golden built from a hand-assembled struct that skipped it would
+	// document a shape production never emits — nulls for array fields that
+	// always ship as [] — and pin the contract to a hypothetical.
+	fixed.ensureArrays()
+
 	got, err := json.MarshalIndent(fixed, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

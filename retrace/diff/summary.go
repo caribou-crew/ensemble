@@ -143,7 +143,7 @@ type Summary struct {
 	// Quarantined lists the sides excluded from this comparison because
 	// their own capture-trust verdict was not "ok". Empty unless
 	// --allow-degraded was NOT passed and at least one side warranted it.
-	Quarantined []Quarantine `json:"quarantined,omitempty"`
+	Quarantined []Quarantine `json:"quarantined"`
 }
 
 // Gate is one configured CI budget for one diff plane, read from
@@ -339,6 +339,7 @@ func Build(in BuildInput) (Summary, error) {
 	if q := incompleteCheck(in.A, in.B); len(q) > 0 {
 		s.Quarantined = q
 		s.Verdict = "quarantined"
+		s.ensureArrays()
 		return s, nil
 	}
 
@@ -350,6 +351,7 @@ func Build(in BuildInput) (Summary, error) {
 		if q := quarantineCheck(in.A, in.B); len(q) > 0 {
 			s.Quarantined = q
 			s.Verdict = "quarantined"
+			s.ensureArrays()
 			return s, nil
 		}
 	}
@@ -473,6 +475,7 @@ func Build(in BuildInput) (Summary, error) {
 	default:
 		s.Verdict = "pass"
 	}
+	s.ensureArrays()
 	return s, nil
 }
 
@@ -838,5 +841,102 @@ func renderConformance(w io.Writer, findings []ConformanceFinding) {
 		// differently from every real violation at a glance and cannot be
 		// mistaken for one — nor for the silence of a pass.
 		fmt.Fprintf(w, "  %-22s %s %s %d — %s\n", strings.ToUpper(f.Kind), f.Method, f.Path, f.Status, f.Detail)
+	}
+}
+
+// ensureArrays gives every array-valued field on the wire type an empty
+// slice rather than nil, so each one marshals as `[]` and never as `null`.
+//
+// null, absent and [] are three encodings of ONE meaning here — "no
+// entries" — and the nil arrived by too many routes to mean anything on its
+// own: budgetsOf returns nil both when no gates were configured and when
+// gates were configured and none were measurable. Carrying that ambiguity
+// on the wire buys nothing and costs every consumer a null-guard, where the
+// consumer who forgets does not misbehave quietly, it crashes:
+// `summary.budgets.map(...)` throws on an API-only flow, which is an
+// ordinary correct configuration, not an edge case.
+//
+// Called at BOTH of Build's exits. The quarantine return matters as much as
+// the normal one: that path computes almost nothing, so it is the exit most
+// likely to hand a consumer a nil, and "we refused to compare" is already
+// carried explicitly by Verdict — it does not also need to be encoded in
+// the shape of nine other fields.
+//
+// Conformance is deliberately NOT in this list; see its own note below.
+func (s *Summary) ensureArrays() {
+	if s.Checkpoints == nil {
+		s.Checkpoints = []CheckpointVerdict{}
+	}
+	if s.Sections == nil {
+		s.Sections = []Section{}
+	}
+	for i := range s.Sections {
+		if s.Sections[i].Entries == nil {
+			s.Sections[i].Entries = []Entry{}
+		}
+	}
+	if s.UnexpectedStatuses == nil {
+		s.UnexpectedStatuses = []StatusFinding{}
+	}
+	if s.Gates == nil {
+		s.Gates = []string{}
+	}
+	if s.Budgets == nil {
+		s.Budgets = []Gate{}
+	}
+	if s.Quarantined == nil {
+		s.Quarantined = []Quarantine{}
+	}
+
+	if s.Wire.Paired == nil {
+		s.Wire.Paired = []Entry{}
+	}
+	if s.Wire.Missing == nil {
+		s.Wire.Missing = []Call{}
+	}
+	if s.Wire.Extra == nil {
+		s.Wire.Extra = []Call{}
+	}
+	// Wire.Groups stays a nil POINTER when neither manifest named any
+	// groups. That nil is a real distinction — "this flow has no group
+	// structure" is not "this flow has groups and they are empty" — and it
+	// is carried by a pointer, which is the honest way to say "absent",
+	// rather than by the emptiness of an array.
+	if s.Wire.Groups != nil {
+		if s.Wire.Groups.A == nil {
+			s.Wire.Groups.A = []string{}
+		}
+		if s.Wire.Groups.B == nil {
+			s.Wire.Groups.B = []string{}
+		}
+	}
+
+	if s.Hops.ServiceCounts == nil {
+		s.Hops.ServiceCounts = []ServiceCount{}
+	}
+	if s.Hops.NewRoutes == nil {
+		s.Hops.NewRoutes = []Route{}
+	}
+	if s.Hops.GoneRoutes == nil {
+		s.Hops.GoneRoutes = []Route{}
+	}
+	if s.Hops.NewErrors == nil {
+		s.Hops.NewErrors = []StatusFinding{}
+	}
+	if s.Hops.GoneErrors == nil {
+		s.Hops.GoneErrors = []StatusFinding{}
+	}
+	if s.Hops.RequiredRouteFailures == nil {
+		s.Hops.RequiredRouteFailures = []RouteFailure{}
+	}
+	for i := range s.Hops.NewRoutes {
+		if s.Hops.NewRoutes[i].Via == nil {
+			s.Hops.NewRoutes[i].Via = []string{}
+		}
+	}
+	for i := range s.Hops.GoneRoutes {
+		if s.Hops.GoneRoutes[i].Via == nil {
+			s.Hops.GoneRoutes[i].Via = []string{}
+		}
 	}
 }
