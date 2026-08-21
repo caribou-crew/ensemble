@@ -830,6 +830,9 @@ func writeChain(t *testing.T, p runs.Paths, hops []trace.Hop) {
 //	              budget it meets, and a spec its call conforms to.
 //	web/silent  — shots and nothing else: no wire call to pair, no hop
 //	              chain, and no perf budget configured for this flow.
+//	web/quiet   — shots and nothing else, but WITH a perf budget and the
+//	              project's spec: the two planes that are configured here
+//	              have no evidence to say anything about.
 //	web/nothing — no evidence at all, so not even the pixel plane (which
 //	              every project gates, by config default) is measurable.
 //
@@ -851,15 +854,18 @@ gates:
 flows:
   paired:
     perf_budget_ms: 5000
+  quiet:
+    perf_budget_ms: 5000
 `)
 	calls := []trace.Hop{hop(1, "GET", "/paired", 200, `{"ok":true}`)}
 	for _, id := range []string{runA, runB} {
 		p := recordRun(t, cwd, "web", "paired", id, map[string][]byte{"home": shotPNG(t, white)}, calls)
 		writeChain(t, p, calls)
 		recordRun(t, cwd, "web", "silent", id, map[string][]byte{"home": shotPNG(t, white)}, nil)
+		recordRun(t, cwd, "web", "quiet", id, map[string][]byte{"home": shotPNG(t, white)}, nil)
 		recordRun(t, cwd, "web", "nothing", id, nil, nil)
 		if id == runA {
-			for _, flow := range []string{"paired", "silent", "nothing"} {
+			for _, flow := range []string{"paired", "silent", "quiet", "nothing"} {
 				acceptRef(t, cwd, "web", flow, runA)
 			}
 		}
@@ -1356,5 +1362,51 @@ func TestEveryPageSaysWhenTheExportWasProduced(t *testing.T) {
 		if !strings.Contains(body, "2026-08-21T09:30:00Z") {
 			t.Fatalf("%s carries no produced-at stamp, so a reader cannot tell this report from a newer one:\n%s", page, body)
 		}
+	}
+}
+
+// Fix round 2. Two sentences claimed a verified result over evidence the
+// run does not contain — F-1's shape one plane down, twice:
+//
+//   - conformance: "Every recorded call conformed to the configured spec"
+//     is VACUOUSLY true over zero recorded calls, and reads as a pass.
+//   - performance: MeasuredMs sums side B's call durations, so a run with
+//     no calls measures 0ms, comes in under any budget, and CheckPerfBudget
+//     calls that "ok".
+//
+// Both are two-armed against a flow that did record calls, because the
+// sentence each replaces is the correct one for that flow.
+func TestAPlaneWithNoCallsToExamineDoesNotReportAPass(t *testing.T) {
+	pages := itemPages(t, gatedProject(t))
+	for _, tc := range []struct {
+		section       string
+		want, notWant string
+	}{{
+		section: "OpenAPI conformance",
+		want:    "No call was recorded on this run, so nothing was checked against the configured spec",
+		notWant: "Every recorded call conformed to the configured spec",
+	}, {
+		section: "Performance",
+		want:    "this run recorded no calls, so there was no backend work to measure against it",
+		notWant: "ms of backend work against a",
+	}} {
+		t.Run(tc.section, func(t *testing.T) {
+			// The arm that DID have calls to examine keeps its sentence.
+			examined := pageSection(t, pages["web/paired"], tc.section)
+			if !strings.Contains(examined, tc.notWant) {
+				t.Fatalf("test setup: the flow that recorded calls does not carry %q:\n%s", tc.notWant, examined)
+			}
+			if strings.Contains(examined, tc.want) {
+				t.Fatalf("a flow that recorded calls says it recorded none:\n%s", examined)
+			}
+			// web/quiet configures BOTH planes and recorded no calls.
+			quiet := pageSection(t, pages["web/quiet"], tc.section)
+			if strings.Contains(quiet, tc.notWant) {
+				t.Fatalf("this run recorded no call at all and %q reports a verified result over it:\n%s", tc.section, quiet)
+			}
+			if !strings.Contains(quiet, tc.want) {
+				t.Fatalf("this run recorded no call at all and %q does not say so:\n%s", tc.section, quiet)
+			}
+		})
 	}
 }
