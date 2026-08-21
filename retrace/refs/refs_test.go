@@ -2,6 +2,7 @@ package refs
 
 import (
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/draw"
@@ -586,16 +587,19 @@ func TestAcceptRefusesToExceedTheSizeBudgetNamingTheOffender(t *testing.T) {
 	}
 }
 
-func TestAcceptWarnsButProceedsOnANonOkCapture(t *testing.T) {
-	// promotion is explicit, so an untrustworthy capture is warned about,
-	// never promoted silently — that is how a proxy-down run becomes the
-	// source of truth.
+// TestAcceptProceedsOnASuspectCaptureCarryingTheVerdict pins the MIDDLE
+// tier, and is named for it. `suspect` is a heuristic doubt — unattributed
+// traffic mid-run — not a proven gap, so promotion proceeds and the caller
+// warns. The tier above it (capture.Fatal) is refused instead; see
+// TestAcceptRefusesAFatalCaptureUnlessForced. The two together are what
+// stop "a warning in a CI log" from being mistaken for a gate.
+func TestAcceptProceedsOnASuspectCaptureCarryingTheVerdict(t *testing.T) {
 	cwd := t.TempDir()
 	root, runID := acceptFixture(t, cwd, withCapture(trace.VerdictSuspect, "unattributed traffic mid-run"))
 
 	res, err := Accept(acceptOpts(cwd, root, runID))
 	if err != nil {
-		t.Fatalf("Accept refused a non-ok capture: %v — promotion is explicit, so this is the human's call to make", err)
+		t.Fatalf("Accept refused a SUSPECT capture: %v — a heuristic doubt is the human's call to make, and only capture.Fatal is gated", err)
 	}
 	if res.CaptureStatus != trace.VerdictSuspect {
 		t.Fatalf("CaptureStatus = %q, want %q carried through as a typed value, not reconstructible only from warning text",
@@ -610,6 +614,90 @@ func TestAcceptWarnsButProceedsOnANonOkCapture(t *testing.T) {
 	if m.Capture.Status != trace.VerdictSuspect {
 		t.Fatalf("bundle manifest capture status = %q, want the promoted run's own verdict %q", m.Capture.Status, trace.VerdictSuspect)
 	}
+}
+
+// TestAcceptRefusesAFatalCaptureUnlessForced pins the TOP tier and both
+// sides of the override. The brief's own words for this case are "that is
+// how a proxy-down run becomes the source of truth" — a proxy-down run is
+// degraded, i.e. capture.Fatal — so this tier gets a gate rather than a
+// warning, and Force is how an operator says they meant it.
+//
+// Both arms are asserted because a one-armed test cannot tell "Force works"
+// from "there was never a refusal": with the gate deleted the refusal arm
+// dies, and with the `&& !o.Force` deleted the override arm dies.
+func TestAcceptRefusesAFatalCaptureUnlessForced(t *testing.T) {
+	for _, v := range []trace.Verdict{trace.VerdictDegraded, trace.VerdictBroken, trace.VerdictFailed} {
+		t.Run(string(v), func(t *testing.T) {
+			cwd := t.TempDir()
+			root, runID := acceptFixture(t, cwd, withCapture(v, "the proxy died mid-run"))
+
+			o := acceptOpts(cwd, root, runID)
+			_, err := Accept(o)
+			if err == nil {
+				t.Fatalf("Accept promoted a %q capture — a run the capture machinery could not vouch for must not become the thing every later diff is judged against", v)
+			}
+			if !strings.Contains(err.Error(), string(v)) {
+				t.Fatalf("error = %v, want it to name the verdict %q it refused on", err, v)
+			}
+			// The refusal must leave no bundle behind: a half-promoted
+			// reference is worse than none.
+			dir, derr := BundleDir(cwd, "web", "checkout")
+			if derr != nil {
+				t.Fatal(derr)
+			}
+			if _, serr := os.Stat(dir); !errors.Is(serr, fs.ErrNotExist) {
+				t.Fatalf("os.Stat(%s) = %v, want the bundle never created by a refused promotion", dir, serr)
+			}
+
+			o.Force = true
+			res, err := Accept(o)
+			if err != nil {
+				t.Fatalf("Accept with Force refused a %q capture: %v — Force exists for exactly this refusal", v, err)
+			}
+			if res.CaptureStatus != v {
+				t.Fatalf("CaptureStatus = %q, want the forced promotion to still RECORD the verdict %q it was forced past", res.CaptureStatus, v)
+			}
+		})
+	}
+}
+
+// TestForceDoesNotOverrideTheOtherTwoRefusals is the negative half of the
+// ruling: Force gates capture.Fatal and NOTHING else. Without this, Force
+// would drift into a general "do it anyway", which is how a size budget
+// stops being a budget.
+func TestForceDoesNotOverrideTheOtherTwoRefusals(t *testing.T) {
+	t.Run("the size budget", func(t *testing.T) {
+		cwd := t.TempDir()
+		root, runID := acceptFixture(t, cwd, withCheckpoint("huge", "huge.png"))
+		p, err := runs.PathsFor(root, "web", "checkout", runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(p.RunDir, "shots", "huge.png"), make([]byte, MaxBundleBytes+1))
+
+		o := acceptOpts(cwd, root, runID)
+		o.Force = true
+		if _, err := Accept(o); err == nil {
+			t.Fatal("Force pushed a bundle past MaxBundleBytes — over-budget is a fix-your-flow signal, and forcing it moves the cost to everyone who clones the repo")
+		}
+	})
+
+	t.Run("an undecodable masked shot", func(t *testing.T) {
+		cwd := t.TempDir()
+		root, runID := acceptFixture(t, cwd, withCheckpoint("broken", "broken.png"))
+		p, err := runs.PathsFor(root, "web", "checkout", runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(p.RunDir, "shots", "broken.png"), []byte("not a png"))
+
+		o := acceptOpts(cwd, root, runID)
+		o.Force = true
+		o.MasksFor = func(string) []pixel.Rect { return []pixel.Rect{{X: 0, Y: 0, Width: 1, Height: 1}} }
+		if _, err := Accept(o); err == nil {
+			t.Fatal("Force promoted a shot that could not be decoded to be masked — a redaction that cannot be proven to have happened must never be forcible")
+		}
+	})
 }
 
 func TestAcceptRejectsAnAppOrFlowThatWouldEscapeTheRefsRoot(t *testing.T) {
@@ -700,20 +788,76 @@ func TestRejectCarriesTheMissesFileAcceptDrops(t *testing.T) {
 // compare against something other than what is in git while reporting a
 // perfectly ordinary "run", which is the same class of silent substitution
 // as a zero value reading as "fine".
+//
+// Both arms are pinned because corruption has two shapes and the DIRECTORY
+// is the boundary, not the manifest: a malformed manifest.json, and a
+// manifest.json deleted outright by a bad merge, a partial checkout or an
+// LFS smudge that never ran. The second is the likelier one — deleting a
+// file is easier than corrupting one — and it is exactly the arm a
+// manifest-shaped boundary lets through.
 func TestACorruptCommittedBundleIsRefusedNotSilentlySkipped(t *testing.T) {
+	for _, c := range []struct{ name, breakage string }{
+		{"a malformed manifest", "malform"},
+		{"the manifest deleted from a bundle that is otherwise intact", "delete"},
+		{"the bundle path blocked by a file where a directory belongs", "notdir"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			root := runs.RunsRoot(cwd)
+			writeRun(t, root, "web", "checkout", "20260821T100000Z-aaa1111") // an eligible fallback exists
+			dir := writeBundle(t, cwd, "web", "checkout", "20260101T000000Z-bbb2222")
+			manifest := filepath.Join(dir, "manifest.json")
+			switch c.breakage {
+			case "malform":
+				if err := os.WriteFile(manifest, []byte(`{"schema":"retrace/0"}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "notdir":
+				// A stat failure that is not ErrNotExist: something is at
+				// the path and it is not a bundle. This arm exists because
+				// "the error was not ErrNotExist" is otherwise an unpinned
+				// branch, and an unpinned branch is where a later `else`
+				// quietly becomes a fallback.
+				parent := filepath.Dir(dir)
+				if err := os.RemoveAll(parent); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(parent, []byte("not a directory"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "delete":
+				if err := os.Remove(manifest); err != nil {
+					t.Fatal(err)
+				}
+				// The rest of the bundle is still committed and still
+				// there; that is what makes this corrupt and not absent.
+				if _, err := os.Stat(dir); err != nil {
+					t.Fatalf("the bundle directory must survive the removal for this arm to mean anything: %v", err)
+				}
+			}
+
+			got := Resolve(cwd, root, "web", "checkout")
+			if got.Kind != "none" {
+				t.Fatalf("Kind = %q, want \"none\" — a corrupt bundle must not silently degrade into a local-run comparison", got.Kind)
+			}
+			if !strings.Contains(got.Reason, dir) {
+				t.Fatalf("Reason = %q, want it to name the bundle that cannot be read", got.Reason)
+			}
+		})
+	}
+}
+
+// TestAnAbsentBundleDirectoryStillFallsBack is the other side of the
+// boundary above: "there is no bundle" is the DESIGNED path, not a
+// corruption, and moving the boundary must not have turned every project
+// without a committed reference into an exit-3.
+func TestAnAbsentBundleDirectoryStillFallsBack(t *testing.T) {
 	cwd := t.TempDir()
 	root := runs.RunsRoot(cwd)
-	writeRun(t, root, "web", "checkout", "20260821T100000Z-aaa1111") // an eligible fallback exists
-	dir := writeBundle(t, cwd, "web", "checkout", "20260101T000000Z-bbb2222")
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"schema":"retrace/0"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRun(t, root, "web", "checkout", "20260821T100000Z-aaa1111")
 
 	got := Resolve(cwd, root, "web", "checkout")
-	if got.Kind != "none" {
-		t.Fatalf("Kind = %q, want \"none\" — a corrupt bundle must not silently degrade into a local-run comparison", got.Kind)
-	}
-	if !strings.Contains(got.Reason, dir) {
-		t.Fatalf("Reason = %q, want it to name the bundle that cannot be read", got.Reason)
+	if got.Kind != "run" {
+		t.Fatalf("Kind = %q (reason %q), want \"run\" — no bundle directory is the designed path, not a corrupt bundle", got.Kind, got.Reason)
 	}
 }

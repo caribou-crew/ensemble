@@ -22,9 +22,14 @@ const refUsage = `retrace ref — the reference bundle a diff runs against
 
 Usage:
   retrace ref list   [--app NAME] [--flow NAME] [--json]
-  retrace ref accept --flow NAME [--app NAME] [--run SELECTOR] [--json]
+  retrace ref accept --flow NAME [--app NAME] [--run SELECTOR] [--force] [--json]
   retrace ref reject --flow NAME [--app NAME] [--run SELECTOR] [--out DIR] [--json]
-  retrace ref rule   --flow NAME --scope req|resp --field PATH --matcher NAME [--method M] [--path GLOB]
+  retrace ref rule   --field PATH --matcher NAME [--method M] [--path GLOB]
+
+A wire rule applies to EVERY flow in the project and to BOTH the request and
+the response body, matched on HTTP method and normalized URL path. It takes
+neither --flow nor --scope, unlike the three verbs above; narrow it with
+--path and --method.
 `
 
 // cmdRef dispatches the `ref` verbs. Every one of them is also a REST call
@@ -183,6 +188,7 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 	flow := fs.String("flow", "", "flow name to promote (required)")
 	app := fs.String("app", "", "app name (default: config app, else the directory name)")
 	sel := fs.String("run", "latest", "which run to promote: \"latest\", an exact run id, or a git sha prefix")
+	force := fs.Bool("force", false, "promote even though the capture verdict is degraded/broken/failed (nothing else is overridden)")
 	asJSON := fs.Bool("json", false, "emit the result as JSON on stdout")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -201,7 +207,7 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 
 	res, err := refs.Accept(refs.AcceptOptions{
 		Cwd: p.cwd, RunsRoot: p.runsRoot, App: p.app, Flow: *flow, RunID: runID,
-		MasksFor: p.masksFor(*flow),
+		MasksFor: p.masksFor(*flow), Force: *force,
 	})
 	if err != nil {
 		return fail(stderr, "ref accept: %v", err)
@@ -318,25 +324,47 @@ func rejectSummary(p project, flow, runID string) (*diff.Summary, string) {
 // uses, so the CLI and the UI cannot drift into two rule writers with two
 // idempotency rules and two locks.
 //
-// --scope and --flow are accepted, validated, and REPORTED BACK as wider
-// than they read. The wire-rule dialect has neither dimension: rules.Raw
-// carries method/path/headers/body, config.WireRules is top-level with no
-// per-flow list, and rules.Resolve keys on method plus normalized path
+// It takes NEITHER --flow NOR --scope, and that absence is deliberate.
+// The wire-rule dialect can express neither dimension: rules.Raw carries
+// method/path/headers/body, config.WireRules is a top-level list with no
+// per-flow nesting, and rules.Resolve keys on method plus normalized path
 // alone — diffBodyScope("req", ...) and diffBodyScope("resp", ...) consult
-// exactly the same globs. So a rule minted here from a response field also
-// covers the identical path in a request body, and a rule minted "for the
-// checkout flow" covers every flow in the project.
+// exactly the same globs. So a rule minted "for the checkout flow" from a
+// response field silences that field path in every flow and in both bodies.
 //
-// The flags are kept rather than dropped because they are the vocabulary
-// the review queue presses on (a FieldDiff has a scope; a queue entry has a
-// flow) and the input a future scoped dialect would need. What is NOT
-// acceptable is honouring them silently, so the confirmation line says
-// plainly what the rule actually covers.
+// Offering the flags and then warning would be the plausible value this
+// phase keeps ruling against: `--flow checkout` SAILS. The person typing it
+// believes they scoped, the reviewer reading the pull request believes it
+// too, and the rule goes on silencing `total` project-wide. A flag that was
+// never offered cannot be misread. So the flags are recognized and REFUSED
+// with an error that teaches the model — not left to flag.Parse's
+// "unknown flag", which would tell a user they typed a typo when what they
+// actually did was assume this verb resembles its three siblings.
+//
+// The dialect gap itself is logged as follow-up F.7 and is not a defect
+// this verb introduces: the review queue mints the same scope-agnostic rule
+// from a scoped finding. When F.7 lands, these flags come back and work.
 func cmdRefRule(args []string, stdout, stderr io.Writer) int {
+	// Checked BEFORE flag.Parse, because ContinueOnError would otherwise
+	// print "flag provided but not defined: -flow" and this error is the
+	// entire user-facing documentation of the model.
+	for _, a := range args {
+		name := strings.TrimLeft(a, "-")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		if name == "flow" || name == "scope" {
+			return fail(stderr, "ref rule: --%s is not a flag this verb has, and that is deliberate: a wire rule is scoped by neither flow nor request/response.\n"+
+				"The rule you are about to write would apply to EVERY flow in this project and to BOTH the request and the response body.\n"+
+				"Narrow it with --path GLOB and --method M instead — those are the only dimensions the rule dialect has.", name)
+		}
+	}
+
 	fs := flag.NewFlagSet("ref rule", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	flow := fs.String("flow", "", "flow the rule was raised from (required; see below — wire rules are not flow-scoped)")
-	scope := fs.String("scope", "", "req|resp — which body the field was seen in (required; see below — wire rules are not scope-scoped)")
 	field := fs.String("field", "", "dotted body field-path glob, e.g. \"items[*].requestId\" (required)")
 	matcher := fs.String("matcher", "", "matcher name: exact, ignore, uuid, etag, semver, iso8601, http-date, integer (required)")
 	method := fs.String("method", "", "limit the rule to one HTTP method (default: any)")
@@ -345,15 +373,10 @@ func cmdRefRule(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	for _, req := range []struct{ name, val string }{
-		{"--flow", *flow}, {"--scope", *scope}, {"--field", *field}, {"--matcher", *matcher},
-	} {
+	for _, req := range []struct{ name, val string }{{"--field", *field}, {"--matcher", *matcher}} {
 		if strings.TrimSpace(req.val) == "" {
 			return fail(stderr, "ref rule: %s is required", req.name)
 		}
-	}
-	if *scope != "req" && *scope != "resp" {
-		return fail(stderr, "ref rule: --scope is %q, want \"req\" or \"resp\"", *scope)
 	}
 	p, err := resolveProject("")
 	if err != nil {
@@ -368,20 +391,16 @@ func cmdRefRule(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "ref rule: %v", err)
 	}
 
-	// Said once, plainly, on the channel a human and a CI log both see. A
-	// reviewer who believes this rule is scoped to one flow or one direction
-	// has been misled by the flags, and that is exactly what this prevents.
-	fmt.Fprintf(stderr, "retrace: note: wire rules are not scoped by flow or by request/response — this rule applies to %s %s in BOTH bodies, in EVERY flow, not only to --scope %s of --flow %s\n",
-		methodLabel(*method), pathLabel(*pathGlob), *scope, *flow)
-
 	if *asJSON {
 		if err := writeJSON(stdout, r); err != nil {
 			return fail(stderr, "ref rule: %v", err)
 		}
 		return exitOK
 	}
-	fmt.Fprintf(stdout, "appended to %s\n  %s %s body[%s] = %s\n", filepath.Join(p.cwd, config.OverlayPath),
-		methodLabel(*method), pathLabel(*pathGlob), *field, *matcher)
+	// Stated positively, in the same terms the refusal above uses: a reader
+	// of this line should be unable to form the narrower belief.
+	fmt.Fprintf(stdout, "appended to %s\n  %s %s body[%s] = %s\n  applies to every flow, in both request and response bodies\n",
+		filepath.Join(p.cwd, config.OverlayPath), methodLabel(*method), pathLabel(*pathGlob), *field, *matcher)
 	return exitOK
 }
 

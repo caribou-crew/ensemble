@@ -291,10 +291,17 @@ func TestRefRejectWithoutAReferenceStillWritesTheBundleAndSaysWhyThereIsNoSummar
 	}
 }
 
-func TestRefAcceptWarnsOnStderrWhenPromotingANonOkCapture(t *testing.T) {
-	// A run with no upstream traffic at all grades "degraded", so this
-	// drives the real assessor rather than hand-editing a verdict onto a
-	// manifest production would never write.
+// TestRefAcceptRefusesAFatalCaptureUntilForced drives the tier split
+// end-to-end through the real assessor rather than a hand-edited verdict: a
+// run with no upstream traffic at all grades "degraded", which is
+// capture.Fatal. That is the proxy-down run this gate exists for — the
+// disaster is a run the capture machinery could not vouch for becoming the
+// thing every later diff is judged against, and a warning in a CI log is
+// not a gate.
+//
+// Both arms are here because a refusal nobody can get past is a different
+// bug from a gate that never closes.
+func TestRefAcceptRefusesAFatalCaptureUntilForced(t *testing.T) {
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, dateRuleConfig)
@@ -309,12 +316,27 @@ func TestRefAcceptWarnsOnStderrWhenPromotingANonOkCapture(t *testing.T) {
 		t.Fatalf("run dirs = %v, want one", ids)
 	}
 
-	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web", "--json")
+	refused := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web", "--json")
+	if refused.code == 0 {
+		t.Fatalf("ref accept promoted a degraded capture\nstdout: %s", refused.stdout)
+	}
+	if !strings.Contains(refused.stderr, "--force") {
+		t.Fatalf("stderr = %q, want the refusal to name the flag that overrides it", refused.stderr)
+	}
+	bundle, err := refs.BundleDir(cwd, "web", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(bundle); err == nil {
+		t.Fatal("the refused promotion still wrote a bundle")
+	}
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web", "--force", "--json")
 	if res.code != 0 {
-		t.Fatalf("ref accept refused a non-ok capture: exit = %d\nstderr: %s — promotion is explicit, so this is the human's call", res.code, res.stderr)
+		t.Fatalf("ref accept --force: exit = %d\nstderr: %s — --force exists for exactly this refusal", res.code, res.stderr)
 	}
 	if !strings.Contains(res.stderr, "warning") {
-		t.Fatalf("stderr = %q, want a warning on the channel a CI log keeps", res.stderr)
+		t.Fatalf("stderr = %q, want a warning on the channel a CI log keeps — forcing is not the same as it being fine", res.stderr)
 	}
 	var out struct {
 		CaptureStatus string `json:"captureStatus"`
@@ -323,7 +345,7 @@ func TestRefAcceptWarnsOnStderrWhenPromotingANonOkCapture(t *testing.T) {
 		t.Fatalf("ref accept --json: %v\n%s", err, res.stdout)
 	}
 	if out.CaptureStatus == "" || out.CaptureStatus == "ok" {
-		t.Fatalf("captureStatus = %q, want the real non-ok verdict carried as a typed field, not reconstructible only from the warning text", out.CaptureStatus)
+		t.Fatalf("captureStatus = %q, want the real verdict carried as a typed field, not reconstructible only from the warning text", out.CaptureStatus)
 	}
 }
 
@@ -375,7 +397,7 @@ func TestRefRuleAppendsToTheOverlayAndSilencesTheDiff(t *testing.T) {
 	}
 
 	rule := runRetrace(t, bin, cwd, "", "ref", "rule",
-		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "integer")
+		"--field", "requestId", "--matcher", "integer")
 	if rule.code != 0 {
 		t.Fatalf("ref rule: exit = %d\nstdout: %s\nstderr: %s", rule.code, rule.stdout, rule.stderr)
 	}
@@ -388,12 +410,12 @@ func TestRefRuleAppendsToTheOverlayAndSilencesTheDiff(t *testing.T) {
 	if !strings.Contains(string(overlay), "requestId") || !strings.Contains(string(overlay), "integer") {
 		t.Fatalf("overlay = %s, want the appended rule", overlay)
 	}
-	// The flags the dialect cannot honour must be reported, not honoured
-	// silently: a reviewer who believes this rule is scoped to one flow or
-	// one direction has been misled by the flags they just typed.
-	for _, want := range []string{"not scoped by flow", "BOTH bodies", "EVERY flow"} {
-		if !strings.Contains(rule.stderr, want) {
-			t.Fatalf("ref rule stderr = %q, want it to contain %q", rule.stderr, want)
+	// What the rule covers is stated POSITIVELY on success, in the same
+	// terms the refusal of --flow/--scope uses. A reader of this line must
+	// be unable to form the narrower belief.
+	for _, want := range []string{"every flow", "request and response"} {
+		if !strings.Contains(rule.stdout, want) {
+			t.Fatalf("ref rule stdout = %q, want it to say the rule covers %q", rule.stdout, want)
 		}
 	}
 
@@ -404,7 +426,7 @@ func TestRefRuleAppendsToTheOverlayAndSilencesTheDiff(t *testing.T) {
 
 	// Idempotent: pressing the same rule twice must not grow the file.
 	if res := runRetrace(t, bin, cwd, "", "ref", "rule",
-		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "integer"); res.code != 0 {
+		"--field", "requestId", "--matcher", "integer"); res.code != 0 {
 		t.Fatalf("second ref rule: exit = %d\n%s", res.code, res.stderr)
 	}
 	again, err := os.ReadFile(filepath.Join(cwd, ".retrace", "wire-rules.json"))
@@ -422,7 +444,7 @@ func TestRefRuleRefusesAnUnknownMatcherRatherThanBrickingTheOverlay(t *testing.T
 	writeConfig(t, cwd, dateRuleConfig)
 
 	res := runRetrace(t, bin, cwd, "", "ref", "rule",
-		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "intiger")
+		"--field", "requestId", "--matcher", "intiger")
 	if res.code != exitUsage {
 		t.Fatalf("exit = %d, want %d", res.code, exitUsage)
 	}
@@ -433,13 +455,13 @@ func TestRefRuleRefusesAnUnknownMatcherRatherThanBrickingTheOverlay(t *testing.T
 
 func TestRefRuleRequiresItsFlagsRatherThanDefaultingThem(t *testing.T) {
 	// Each flag is omitted in turn from an otherwise-complete command, so a
-	// guard that checked only the first would fail here. --field and
-	// --matcher especially: an empty field glob matches every field, and an
-	// empty matcher is the zero Matcher, which classifies as Changed.
+	// guard that checked only the first would fail here. An empty field glob
+	// matches every field, and an empty matcher is the zero Matcher, which
+	// classifies as Changed.
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, dateRuleConfig)
-	full := map[string]string{"--flow": "checkout", "--scope": "resp", "--field": "requestId", "--matcher": "integer"}
+	full := map[string]string{"--field": "requestId", "--matcher": "integer"}
 	for omit := range full {
 		t.Run("without "+omit, func(t *testing.T) {
 			args := []string{"ref", "rule"}
@@ -457,13 +479,80 @@ func TestRefRuleRequiresItsFlagsRatherThanDefaultingThem(t *testing.T) {
 			}
 		})
 	}
-	t.Run("with a scope that is neither req nor resp", func(t *testing.T) {
-		res := runRetrace(t, bin, cwd, "", "ref", "rule",
-			"--flow", "checkout", "--scope", "header", "--field", "requestId", "--matcher", "integer")
-		if res.code != exitUsage {
-			t.Fatalf("exit = %d, want %d\nstderr: %s", res.code, exitUsage, res.stderr)
-		}
-	})
+}
+
+// TestRefRuleRefusesTheFlagsTheDialectCannotExpress is the only guard these
+// two flags have, and it is the reason they are refused rather than warned
+// about. `--flow checkout` is the plausible value the zero-value constraint
+// forbids: it sails past the person typing it and past the reviewer reading
+// the pull request, while the rule silences the field in every flow. A flag
+// that was never offered cannot be misread.
+//
+// The error text is PINNED, because "unknown flag: -flow" would tell a user
+// they made a typo when what they actually did was assume this verb
+// resembles its three siblings — all of which require --flow.
+func TestRefRuleRefusesTheFlagsTheDialectCannotExpress(t *testing.T) {
+	bin := buildRetrace(t)
+	// Both spellings, because a check that split on "=" only, or on a
+	// separate argument only, would let the other form through to
+	// flag.Parse and produce the unknown-flag error this exists to avoid.
+	for _, c := range []struct {
+		name string
+		args []string
+	}{
+		{"--flow as a separate argument", []string{"--flow", "checkout"}},
+		{"--flow=value", []string{"--flow=checkout"}},
+		{"--scope as a separate argument", []string{"--scope", "resp"}},
+		{"--scope=value", []string{"--scope=resp"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			writeConfig(t, cwd, dateRuleConfig)
+			args := append([]string{"ref", "rule", "--field", "requestId", "--matcher", "integer"}, c.args...)
+			res := runRetrace(t, bin, cwd, "", args...)
+			if res.code == exitOK {
+				t.Fatalf("exit = 0 — the flag was accepted, so the user believes they scoped a rule that is not scoped\nstdout: %s", res.stdout)
+			}
+			if strings.Contains(res.stderr, "not defined") {
+				t.Fatalf("stderr = %q — this is flag.Parse's unknown-flag error; it tells the user they typo'd when they in fact assumed this verb resembles its siblings", res.stderr)
+			}
+			// The consequence, not the limitation: what will happen to the
+			// rule they are writing.
+			for _, want := range []string{"EVERY flow", "BOTH the request and the response body", "--path"} {
+				if !strings.Contains(res.stderr, want) {
+					t.Fatalf("stderr = %q, want it to state %q", res.stderr, want)
+				}
+			}
+			// And nothing was written: a refused command must not have
+			// half-appended the rule it refused to describe honestly.
+			if _, err := os.Stat(filepath.Join(cwd, ".retrace", "wire-rules.json")); err == nil {
+				t.Fatal("the refused command still wrote the overlay")
+			}
+		})
+	}
+}
+
+// TestTheSiblingVerbsStillRequireFlow pins the other side of the asymmetry.
+// list, accept and reject each address a bundle directory at
+// <app>/<flow>/reference, so --flow is load-bearing for them; only `rule`
+// refuses it. Three verbs taking a flag and one refusing it is the
+// interface telling the truth about the model, and something that looks
+// enough like an inconsistency that a later reader may "fix" it.
+func TestTheSiblingVerbsStillRequireFlow(t *testing.T) {
+	bin := buildRetrace(t)
+	for _, verb := range []string{"accept", "reject"} {
+		t.Run(verb, func(t *testing.T) {
+			cwd := t.TempDir()
+			writeConfig(t, cwd, dateRuleConfig)
+			res := runRetrace(t, bin, cwd, "", "ref", verb, "--app", "web")
+			if res.code != exitUsage {
+				t.Fatalf("exit = %d, want %d — %s addresses a bundle directory and cannot default its flow\nstderr: %s", res.code, exitUsage, verb, res.stderr)
+			}
+			if !strings.Contains(res.stderr, "--flow") {
+				t.Fatalf("stderr = %q, want it to name --flow", res.stderr)
+			}
+		})
+	}
 }
 
 // TestRefRejectRefusesToDiffTheRejectedRunAgainstItself — with no committed

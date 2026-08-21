@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -147,22 +148,29 @@ func Resolve(cwd, runsRoot, app, flow string) Reference {
 	if err != nil {
 		return Reference{Kind: "none", Reason: err.Error()}
 	}
-	bundleManifest := filepath.Join(dir, "manifest.json")
-	m, berr := runs.ReadManifest(bundleManifest)
-	switch {
-	case berr == nil:
+	// The boundary between "no bundle" and "broken bundle" is the
+	// DIRECTORY, not the manifest. Splitting on the manifest leaves the
+	// likelier corruption open: a bad merge resolution, a partial checkout
+	// or an LFS smudge that never ran deletes manifest.json while shots/
+	// and wire.jsonl still sit there in git, and reading that as "there is
+	// no bundle" silently compares against a local run instead. Deleting a
+	// file is easier than corrupting one.
+	//
+	// So: directory absent is the designed path and falls back. Directory
+	// present means a bundle was committed here, and from that point the
+	// manifest MUST read or the whole resolve is Kind "none" — which the CI
+	// contract maps to exit 3, could-not-evaluate, rather than 0.
+	switch _, derr := os.Stat(dir); {
+	case derr == nil:
+		m, berr := runs.ReadManifest(filepath.Join(dir, "manifest.json"))
+		if berr != nil {
+			return Reference{Kind: "none", Reason: corruptBundle(dir, berr)}
+		}
 		// RunID keeps the PROVENANCE of the run the bundle was promoted
 		// from; the directory is the literal "reference".
 		return Reference{Kind: "bundle", Dir: dir, RunID: m.RunID, Manifest: m}
-	case !errors.Is(berr, fs.ErrNotExist):
-		// The bundle EXISTS and cannot be read. Falling through to a local
-		// run here would silently compare against something other than what
-		// is committed — the operator would see "run" and never learn that
-		// the artifact in git is broken. A bundle is hand-editable by
-		// construction (it is committed), so this is a reachable state and
-		// it is refused loudly.
-		return Reference{Kind: "none", Reason: fmt.Sprintf(
-			"the committed reference bundle at %s cannot be read: %v — fix or delete it; falling back to a local run would compare against something other than what is in git", dir, berr)}
+	case !errors.Is(derr, fs.ErrNotExist):
+		return Reference{Kind: "none", Reason: corruptBundle(dir, derr)}
 	}
 
 	ids, err := runs.ListRunsErr(runsRoot, app, flow)
@@ -196,6 +204,17 @@ func Resolve(cwd, runsRoot, app, flow string) Reference {
 // dirty runs whose reason stops at three reads as if the other three were
 // never examined, which is the same "present but silent" failure History
 // exists to prevent.
+// corruptBundle words the refusal for a bundle directory that exists and
+// cannot be trusted. The two arms read differently on purpose: "cannot be
+// read: no such file or directory" would be a baffling thing to tell
+// someone whose bundle directory is plainly right there.
+func corruptBundle(dir string, err error) string {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Sprintf("the committed reference bundle at %s has no manifest.json — the directory is committed, so this is a CORRUPT bundle rather than an absent one; fix or delete it. Falling back to a local run would quietly compare against something other than what is in git", dir)
+	}
+	return fmt.Sprintf("the committed reference bundle at %s cannot be read: %v — fix or delete it. Falling back to a local run would quietly compare against something other than what is in git", dir, err)
+}
+
 func noneReason(app, flow string, history []Candidate) string {
 	parts := make([]string, 0, len(history))
 	for _, c := range history {
@@ -225,6 +244,28 @@ type AcceptOptions struct {
 	// the captured truth, and Accept's job is to not LEAK past a mask that
 	// exists, never to invent one.
 	MasksFor func(checkpoint string) []pixel.Rect
+	// Force overrides ONE refusal: promoting a run whose capture verdict is
+	// fatal (capture.Fatal — degraded, broken, failed, or the unassessed
+	// zero verdict). It overrides nothing else, and the zero value is the
+	// protective reading, which is the only reading this phase allows a
+	// bool to have.
+	//
+	// It is not a general override, because the other two refusals want
+	// different answers:
+	//
+	//   - Over-budget is a fix-your-flow signal, not a push-through-it one.
+	//     Forcing past MaxBundleBytes moves the cost to everyone who ever
+	//     clones the repository, so overBudget's message offers three
+	//     remedies and pointedly not this flag.
+	//   - An undecodable masked shot is a redaction that cannot be proven
+	//     to have happened. Nothing may override that.
+	//
+	// A `suspect` capture is NOT gated: it is a heuristic doubt, and the
+	// caller warns and proceeds. Only capture.Fatal gets a gate, because a
+	// warning in a CI log is not a gate — and a proxy-down run silently
+	// becoming the source of truth is precisely the disaster this exists
+	// to stop.
+	Force bool
 }
 
 // AcceptResult is what a promotion did, in the shape `--json` emits.
@@ -268,6 +309,19 @@ type bundleFile struct {
 // a copy — an undecodable shot, an over-budget file — would otherwise have
 // already destroyed the previous reference, turning "I refused to promote
 // this" into "you now have no reference at all".
+//
+// A fatal capture verdict is REFUSED unless o.Force; a `suspect` one is
+// promoted and left for the caller to warn about. See AcceptOptions.Force.
+//
+// Note what is deliberately NOT a bar here: a dirty git tree. Resolve
+// refuses a dirty run and Accept does not, and the asymmetry is the point.
+// Resolve picks a reference NOBODY chose, silently, as a fallback — its
+// dirty-tree bar stops unattended machinery from blessing uncommitted work.
+// Accept is a human typing a command with a git diff in front of them, and
+// promoting from a dirty tree is the PRIMARY workflow: the app changed, so
+// the screens changed, so you accept the new reference and commit it
+// alongside the change that moved it. A bar there would refuse this tool's
+// most common correct use.
 func Accept(o AcceptOptions) (AcceptResult, error) {
 	p, err := runs.PathsFor(o.RunsRoot, o.App, o.Flow, o.RunID)
 	if err != nil {
@@ -280,6 +334,12 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	m, err := runs.ReadManifest(p.ManifestPath)
 	if err != nil {
 		return AcceptResult{}, fmt.Errorf("reading the manifest for %s/%s/%s: %w", o.App, o.Flow, o.RunID, err)
+	}
+
+	if capture.Fatal(m.Capture) && !o.Force {
+		return AcceptResult{}, fmt.Errorf(
+			"refusing to promote %s: its capture verdict is %q — a run the capture machinery could not vouch for cannot be the thing every later diff is judged against, and that is how a proxy-down run becomes the source of truth; re-record the flow, or pass --force if you have established the capture is sound",
+			o.RunID, m.Capture.Status)
 	}
 
 	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
