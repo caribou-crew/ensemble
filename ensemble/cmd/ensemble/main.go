@@ -27,6 +27,7 @@ const usage = `ensemble — local backend orchestrator CLI
 
 Usage:
   ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700]
+  ensemble dashboard [--api-url URL] [--no-open]
   ensemble status [--api-url URL] [--json]
   ensemble down [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
@@ -65,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "up":
 		return cmdUp(args[1:], stdout, stderr)
+	case "dashboard":
+		return cmdDashboard(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
 	case "down":

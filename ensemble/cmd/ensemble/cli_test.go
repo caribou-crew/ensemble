@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -641,6 +642,120 @@ func TestCLI_Down(t *testing.T) {
 
 	if err := env.wait(t, 5*time.Second); err != nil {
 		t.Fatalf("runUp returned error after down: %v", err)
+	}
+}
+
+// TestCLI_DashboardOpensBrowserWhenReachable drives `dashboard` against a
+// fake control plane (just enough to answer GET /api/status) and confirms
+// it prints the URL and hands it to openBrowserFn — stubbed here so the
+// test never spawns a real browser process.
+func TestCLI_DashboardOpensBrowserWhenReachable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"services":[]}`))
+	}))
+	defer ts.Close()
+
+	var opened string
+	orig := openBrowserFn
+	openBrowserFn = func(url string) error { opened = url; return nil }
+	defer func() { openBrowserFn = orig }()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"dashboard", "--api-url", ts.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != ts.URL {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), ts.URL)
+	}
+	if opened != ts.URL {
+		t.Fatalf("openBrowserFn called with %q, want %q", opened, ts.URL)
+	}
+}
+
+// TestCLI_DashboardFailsWhenUnreachable checks the reachability preflight:
+// with nothing listening, dashboard must fail with a clear message and
+// never call openBrowserFn — better than handing the user a browser tab
+// that just shows a generic connection error.
+func TestCLI_DashboardFailsWhenUnreachable(t *testing.T) {
+	unreachable := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
+
+	called := false
+	orig := openBrowserFn
+	openBrowserFn = func(url string) error { called = true; return nil }
+	defer func() { openBrowserFn = orig }()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"dashboard", "--api-url", unreachable}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit, stdout = %s", stdout.String())
+	}
+	if called {
+		t.Fatal("openBrowserFn should not be called when the control plane is unreachable")
+	}
+	if !strings.Contains(stderr.String(), "ensemble up") {
+		t.Fatalf("stderr = %q, want a hint to run `ensemble up`", stderr.String())
+	}
+}
+
+// TestCLI_DashboardNoOpenSkipsReachabilityCheck checks --no-open just
+// prints the URL — it must succeed even with nothing listening, since it's
+// meant to work as a plain lookup (e.g. to see the address before
+// `ensemble up` is even running), not a "is it running" check.
+func TestCLI_DashboardNoOpenSkipsReachabilityCheck(t *testing.T) {
+	unreachable := fmt.Sprintf("http://127.0.0.1:%d", freePort(t))
+
+	called := false
+	orig := openBrowserFn
+	openBrowserFn = func(url string) error { called = true; return nil }
+	defer func() { openBrowserFn = orig }()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"dashboard", "--api-url", unreachable, "--no-open"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != unreachable {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), unreachable)
+	}
+	if called {
+		t.Fatal("openBrowserFn should not be called with --no-open")
+	}
+}
+
+// TestBrowserCommandPerOS pins the per-OS "open a URL" launcher: darwin
+// uses `open`, windows uses rundll32's URL protocol handler (not `start`,
+// which is a cmd.exe builtin exec.Command can't invoke directly), and
+// everything else falls back to xdg-open. Path is checked with a suffix
+// match, not equality: exec.Command resolves the binary via LookPath when
+// it's on this machine's PATH (e.g. "open" on this Mac), leaving it
+// unresolved otherwise — either way it ends with the launcher's name.
+func TestBrowserCommandPerOS(t *testing.T) {
+	cases := []struct {
+		goos     string
+		wantPath string
+		wantArgs []string
+	}{
+		{"darwin", "open", []string{"open", "http://x"}},
+		{"windows", "rundll32", []string{"rundll32", "url.dll,FileProtocolHandler", "http://x"}},
+		{"linux", "xdg-open", []string{"xdg-open", "http://x"}},
+		{"freebsd", "xdg-open", []string{"xdg-open", "http://x"}},
+	}
+	for _, c := range cases {
+		t.Run(c.goos, func(t *testing.T) {
+			cmd := browserCommand(c.goos, "http://x")
+			if !strings.HasSuffix(cmd.Path, c.wantPath) {
+				t.Fatalf("Path = %q, want suffix %q", cmd.Path, c.wantPath)
+			}
+			if !reflect.DeepEqual(cmd.Args, c.wantArgs) {
+				t.Fatalf("Args = %v, want %v", cmd.Args, c.wantArgs)
+			}
+		})
 	}
 }
 
