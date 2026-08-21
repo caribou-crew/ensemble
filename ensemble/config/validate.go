@@ -70,6 +70,7 @@ func (c *Config) Validate() error {
 		if svc.StartupTimeoutS < 0 {
 			errs = append(errs, fmt.Errorf("service %q: startup_timeout_s must be >= 0", name))
 		}
+		errs = append(errs, validateDockerArgs(fmt.Sprintf("service %q", name), svc.Docker)...)
 		for _, dep := range svc.DependsOn {
 			if !c.hasServiceOrDatabase(dep) {
 				errs = append(errs, fmt.Errorf("service %q: depends_on references unknown service/database %q", name, dep))
@@ -188,6 +189,23 @@ func (c *Config) validateVariants(name string, svc Service) []error {
 		}
 		if v.StartupTimeoutS < 0 {
 			errs = append(errs, fmt.Errorf("service %q: variant %q: startup_timeout_s must be >= 0", name, vname))
+		}
+		errs = append(errs, validateDockerArgs(fmt.Sprintf("service %q: variant %q", name, vname), v.Docker)...)
+	}
+	return errs
+}
+
+// validateDockerArgs rejects an empty docker.args entry — a stray "" in
+// the YAML list would become an empty argv element that docker reads as
+// the image name.
+func validateDockerArgs(where string, d *DockerPlacement) []error {
+	if d == nil {
+		return nil
+	}
+	var errs []error
+	for i, a := range d.Args {
+		if strings.TrimSpace(a) == "" {
+			errs = append(errs, fmt.Errorf("%s: docker.args[%d] is empty", where, i))
 		}
 	}
 	return errs

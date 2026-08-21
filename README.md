@@ -155,7 +155,29 @@ services:
 ```
 
 `dir`, `build`, `watch`, `run`, `env`, `docker`, and `startup_timeout_s`
-live on the variants; everything else stays on the service. Switch at
+live on the variants; everything else stays on the service. A variant can
+just as well be a container — `build:` is any shell command run on your
+machine (with your VPN, registry login, and credentials), so building the
+image is simply the build step, and `docker:` runs the result:
+
+```yaml
+      real:
+        dir: ../java-monolith
+        build: docker build -t monolith:local .
+        watch: ["src/**", "build.gradle", "Dockerfile"]
+        startup_timeout_s: 180
+        docker:
+          image: monolith:local
+          ports: ["8081:8080"]            # publish to the service's `port`
+          env: { DATABASE_URL: "postgres://…@host.docker.internal:55432/…" }
+          args: ["--add-host=host.docker.internal:host-gateway"]   # any extra `docker run` flags
+```
+
+Build output streams to `.ensemble/run/<name>.log` as it happens (`tail
+-f` it during a long `docker build`), and a failed build's `lastErr` in
+`ensemble status` carries the last few KB of that output. `docker.args`
+is passed verbatim to `docker run` before the image — `--network`, `-v`,
+`--platform`, whatever ensemble has no field for. Switch at
 runtime — the stub is killed, the other variant is built if stale and
 started, health-gated, and the proxy listener (and any gateway route) never
 notices because the port is the service's:

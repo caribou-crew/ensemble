@@ -108,3 +108,20 @@ func TestValidateVariantRejections(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDockerArgsEmptyEntry(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"box": {Docker: &DockerPlacement{Image: "x", Args: []string{"--network=host", " "}}},
+	}}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "docker.args[1] is empty") {
+		t.Fatalf("err = %v", err)
+	}
+	c = variantBase()
+	svc := c.Services["monolith"]
+	svc.Variants["box"] = Variant{Docker: &DockerPlacement{Image: "x", Args: []string{""}}}
+	c.Services["monolith"] = svc
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), `variant "box": docker.args[0] is empty`) {
+		t.Fatalf("variant err = %v", err)
+	}
+}

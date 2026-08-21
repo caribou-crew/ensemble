@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -727,10 +728,14 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 			return fmt.Errorf("orchestrator: %s: check build staleness: %w", name, err)
 		}
 		if stale {
-			if err := runBuild(svc.Build, workDir); err != nil {
+			logPath := filepath.Join(o.opts.LogDir, name+".log")
+			o.logf("orchestrator: building %s (output: %s)", name, logPath)
+			buildStart := time.Now()
+			if err := runBuild(svc.Build, workDir, logPath); err != nil {
 				o.fail(name, err)
 				return fmt.Errorf("orchestrator: %s: build: %w", name, err)
 			}
+			o.logf("orchestrator: built %s in %s", name, time.Since(buildStart).Round(time.Millisecond))
 			if err := touchStamp(stampPath); err != nil {
 				o.fail(name, err)
 				return fmt.Errorf("orchestrator: %s: write build stamp: %w", name, err)
@@ -978,15 +983,54 @@ func buildStale(stampPath, workDir string, watch []string) (bool, error) {
 	return false, nil
 }
 
-func runBuild(build, workDir string) error {
+// buildTailBytes bounds how much build output a failed build's error
+// carries — enough for the compiler's complaint, not the whole log.
+const buildTailBytes = 4 * 1024
+
+// runBuild runs build in workDir, streaming its output to logPath (the
+// service's own log, appended under a header naming the command) so a
+// multi-minute `docker build` or `gradle` run is visible as it happens
+// rather than only once it ends. A failure's error carries the last
+// buildTailBytes of output, so ServiceState.LastErr still says why.
+func runBuild(build, workDir, logPath string) error {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open log %s: %w", logPath, err)
+	}
+	defer logFile.Close()
+	fmt.Fprintf(logFile, "=== build: %s ===\n", build)
+
+	tail := &tailBuffer{limit: buildTailBytes}
 	cmd := exec.Command("/bin/sh", "-c", build)
 	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%q: %w: %s", build, err, strings.TrimSpace(string(out)))
+	cmd.Stdout = io.MultiWriter(logFile, tail)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(logFile, "=== build failed: %v ===\n", err)
+		return fmt.Errorf("%q: %w: %s", build, err, strings.TrimSpace(tail.String()))
 	}
+	fmt.Fprintln(logFile, "=== build ok ===")
 	return nil
 }
+
+// tailBuffer keeps the last limit bytes written to it.
+type tailBuffer struct {
+	buf   []byte
+	limit int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.limit {
+		t.buf = t.buf[len(t.buf)-t.limit:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.buf) }
 
 // touchStamp records "now" as the build's completion time.
 func touchStamp(path string) error {
