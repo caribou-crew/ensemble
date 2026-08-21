@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -341,4 +342,158 @@ func samePath(t *testing.T, a, b string) bool {
 		t.Fatalf("EvalSymlinks(%q): %v", b, err)
 	}
 	return ra == rb
+}
+
+// TestRefRuleAppendsToTheOverlayAndSilencesTheDiff drives the verb end to
+// end through the same code path the review queue's `rule` verb uses. The
+// silencing half is what proves the rule reached the ENGINE and not merely
+// the file: an overlay that is written but never merged into Discover's
+// config would pass a "the JSON has one entry" assertion and change nothing.
+func TestRefRuleAppendsToTheOverlayAndSilencesTheDiff(t *testing.T) {
+	// Same reason as above: the counter is touched from the server's
+	// goroutines, so it is atomic rather than a bare int.
+	var n atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"requestId":%d}`, n.Add(1))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+	if res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web"); res.code != 0 {
+		t.Fatalf("ref accept: exit = %d\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+
+	// requestId differs between the two runs, so the diff has a finding.
+	before := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web")
+	if before.code != exitDiff {
+		t.Fatalf("exit = %d, want %d (a real difference to silence)\nstdout: %s\nstderr: %s", before.code, exitDiff, before.stdout, before.stderr)
+	}
+
+	rule := runRetrace(t, bin, cwd, "", "ref", "rule",
+		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "integer")
+	if rule.code != 0 {
+		t.Fatalf("ref rule: exit = %d\nstdout: %s\nstderr: %s", rule.code, rule.stdout, rule.stderr)
+	}
+	// The overlay is the machine-owned file config.OverlayPath names — the
+	// same one Discover merges, not a second store.
+	overlay, err := os.ReadFile(filepath.Join(cwd, ".retrace", "wire-rules.json"))
+	if err != nil {
+		t.Fatalf("reading the overlay: %v", err)
+	}
+	if !strings.Contains(string(overlay), "requestId") || !strings.Contains(string(overlay), "integer") {
+		t.Fatalf("overlay = %s, want the appended rule", overlay)
+	}
+	// The flags the dialect cannot honour must be reported, not honoured
+	// silently: a reviewer who believes this rule is scoped to one flow or
+	// one direction has been misled by the flags they just typed.
+	for _, want := range []string{"not scoped by flow", "BOTH bodies", "EVERY flow"} {
+		if !strings.Contains(rule.stderr, want) {
+			t.Fatalf("ref rule stderr = %q, want it to contain %q", rule.stderr, want)
+		}
+	}
+
+	after := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web")
+	if after.code != exitOK {
+		t.Fatalf("exit = %d, want 0 — the appended rule must reach the diff engine, not just the file\nstdout: %s\nstderr: %s", after.code, after.stdout, after.stderr)
+	}
+
+	// Idempotent: pressing the same rule twice must not grow the file.
+	if res := runRetrace(t, bin, cwd, "", "ref", "rule",
+		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "integer"); res.code != 0 {
+		t.Fatalf("second ref rule: exit = %d\n%s", res.code, res.stderr)
+	}
+	again, err := os.ReadFile(filepath.Join(cwd, ".retrace", "wire-rules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(overlay) {
+		t.Fatalf("the overlay grew on a repeated rule:\n%s\nvs\n%s", overlay, again)
+	}
+}
+
+func TestRefRuleRefusesAnUnknownMatcherRatherThanBrickingTheOverlay(t *testing.T) {
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+
+	res := runRetrace(t, bin, cwd, "", "ref", "rule",
+		"--flow", "checkout", "--scope", "resp", "--field", "requestId", "--matcher", "intiger")
+	if res.code != exitUsage {
+		t.Fatalf("exit = %d, want %d", res.code, exitUsage)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".retrace", "wire-rules.json")); err == nil {
+		t.Fatal("a rejected rule still wrote the overlay — an unknown matcher must fail the append, not brick every later Discover")
+	}
+}
+
+func TestRefRuleRequiresItsFlagsRatherThanDefaultingThem(t *testing.T) {
+	// Each flag is omitted in turn from an otherwise-complete command, so a
+	// guard that checked only the first would fail here. --field and
+	// --matcher especially: an empty field glob matches every field, and an
+	// empty matcher is the zero Matcher, which classifies as Changed.
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	full := map[string]string{"--flow": "checkout", "--scope": "resp", "--field": "requestId", "--matcher": "integer"}
+	for omit := range full {
+		t.Run("without "+omit, func(t *testing.T) {
+			args := []string{"ref", "rule"}
+			for k, v := range full {
+				if k != omit {
+					args = append(args, k, v)
+				}
+			}
+			res := runRetrace(t, bin, cwd, "", args...)
+			if res.code != exitUsage {
+				t.Fatalf("exit = %d, want %d\nstderr: %s", res.code, exitUsage, res.stderr)
+			}
+			if !strings.Contains(res.stderr, omit) {
+				t.Fatalf("stderr = %q, want it to name the missing flag %s", res.stderr, omit)
+			}
+		})
+	}
+	t.Run("with a scope that is neither req nor resp", func(t *testing.T) {
+		res := runRetrace(t, bin, cwd, "", "ref", "rule",
+			"--flow", "checkout", "--scope", "header", "--field", "requestId", "--matcher", "integer")
+		if res.code != exitUsage {
+			t.Fatalf("exit = %d, want %d\nstderr: %s", res.code, exitUsage, res.stderr)
+		}
+	})
+}
+
+// TestRefRejectRefusesToDiffTheRejectedRunAgainstItself — with no committed
+// bundle, `reference` falls back to the newest eligible run, which for the
+// latest run IS the run being rejected. A self-diff would write a
+// summary.json saying "pass" into a bundle whose entire reason for existing
+// is that something went wrong: a plausible value, which is worse than an
+// absent one.
+func TestRefRejectRefusesToDiffTheRejectedRunAgainstItself(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	// No `ref accept`, and the tree is clean, so `reference` resolves to the
+	// newest eligible run — the one about to be rejected.
+	id := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+
+	res := runRetrace(t, bin, cwd, "", "ref", "reject", "--flow", "checkout", "--app", "web")
+	if res.code != 0 {
+		t.Fatalf("ref reject: exit = %d\nstderr: %s", res.code, res.stderr)
+	}
+	dir := filepath.Join(cwd, ".retrace", "repro", "web__checkout__"+id)
+	if _, err := os.Stat(filepath.Join(dir, "summary.json")); err == nil {
+		t.Fatal("summary.json holds a self-diff of the rejected run — a \"pass\" in a repro bundle is worse than no summary at all")
+	}
+	if !strings.Contains(res.stderr, "itself") {
+		t.Fatalf("stderr = %q, want it to say the only reference available was the rejected run itself", res.stderr)
+	}
 }
