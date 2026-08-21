@@ -74,10 +74,14 @@ describe('CaptureBanner', () => {
   });
 
   it('renders the EMPTY verdict as "not assessed", never as a blank badge', () => {
-    // R-X. serve.brokenItem folds a zero diff.Summary into a queue row for any
-    // flow that could not be diffed at all, so `{"status":"","summary":""}` is
-    // on the wire for exactly the rows that most need a human. A five-member
-    // Verdict union made that fall off the end of the tone table.
+    // R-X. serve.brokenItem used to fold a zero diff.Summary into a queue row
+    // for any flow that could not be diffed, so `{"status":"","summary":""}`
+    // reached this component for exactly the rows that most need a human; a
+    // five-member Verdict union made that fall off the end of the tone table.
+    // N-3 fixed the server, so nothing sends "" today — this pins the
+    // defence, which exists because trace.Verdict's zero value is still ""
+    // and the next construction path onto Item.Capture has no UI protecting
+    // it. Deleting the arm is a compile error; changing its tone fails here.
     const text = renderBanner(trust('ok'), { status: '', summary: '' });
     expect(text).toContain('not assessed');
     const badge = container.querySelector('.ds-badge');

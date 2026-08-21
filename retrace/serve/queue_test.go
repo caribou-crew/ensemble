@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -791,5 +792,175 @@ func TestAPassingFlowStillScoresExactlyZeroAndEarnsAllClear(t *testing.T) {
 	}
 	if got := EmptyReasonFor(items); got != EmptyAllClear {
 		t.Fatalf("EmptyReasonFor = %q over an all-passing queue, want %q", got, EmptyAllClear)
+	}
+}
+
+// --- N-3: a row nobody could evaluate must not assert a capture verdict --
+
+// captureOf pulls one side's capture object out of a row's MARSHALLED JSON.
+//
+// The bytes, not the struct, and that is the whole point of this test:
+// unmarshalling into runs.CaptureTrust cannot tell `"status":""` from a
+// `status` key that was never written, and it cannot tell either of them from
+// a caller that forgot to set the field. TestAPassingItemSerialisesGatesAsAn
+// EmptyArray avoids the same trap for the same reason.
+func captureOf(t *testing.T, it Item, side string) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(it)
+	if err != nil {
+		t.Fatalf("marshalling the row: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(b, &row); err != nil {
+		t.Fatalf("the row is not a JSON object: %v\n%s", err, b)
+	}
+	capture, ok := row["capture"].(map[string]any)
+	if !ok {
+		t.Fatalf("the row has no \"capture\" object: %s", b)
+	}
+	trust, ok := capture[side].(map[string]any)
+	if !ok {
+		t.Fatalf("the row's capture has no %q side: %s", side, b)
+	}
+	return trust
+}
+
+// A flow that could not be diffed at all carries a capture that SAYS it was
+// never assessed, on both sides, as a value.
+//
+// The row is built by production: a flow recorded once and never accepted, so
+// refs.Resolve has nothing to compare against and SummaryFor errors, which is
+// the path brokenItem exists for. Nothing here hand-builds an Item.
+//
+// Delete the Capture field from brokenItem and every assertion below goes
+// red, because `""` is what comes back.
+func TestARowNobodyCouldEvaluateSaysItsCaptureWasNeverAssessed(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "onboarding", runA, map[string][]byte{"step1": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/onboarding", 200, `{"step":1}`)})
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 || items[0].Verdict != "failed" {
+		t.Fatalf("expected one un-evaluable row, got %+v", items)
+	}
+
+	// BOTH sides. A fixture that checked only side a is symmetric in the
+	// dimension under test — the two sides of a CaptureBanner are the most
+	// interchangeable pair on this type.
+	for _, side := range []string{"a", "b"} {
+		trust := captureOf(t, items[0], side)
+		status, _ := trust["status"].(string)
+		if status == "" {
+			t.Fatalf("capture.%s.status is the ZERO VALUE on a flow nobody compared — a consumer cannot tell it from a field somebody forgot to set, and the next consumer has no UI to paper over it: %v", side, trust)
+		}
+		if status == string(trace.VerdictOK) {
+			t.Fatalf("capture.%s.status is %q on a flow nobody compared", side, status)
+		}
+		// The distinction the ruling asks for, machine-readable and without
+		// a new trace.Verdict member: "assessed and found unusable" versus
+		// "never assessed at all".
+		reasons, _ := trust["reasons"].([]any)
+		var codes []string
+		for _, r := range reasons {
+			if m, ok := r.(map[string]any); ok {
+				if c, ok := m["code"].(string); ok {
+					codes = append(codes, c)
+				}
+			}
+		}
+		if !slices.Contains(codes, "capture-not-assessed") {
+			t.Fatalf("capture.%s carries no machine-readable \"never assessed\" reason — a consumer would have to parse prose, or know brokenItem exists: codes %v", side, codes)
+		}
+		summary, _ := trust["summary"].(string)
+		if !strings.Contains(summary, "not assessed") {
+			t.Fatalf("capture.%s.summary does not say it was never assessed: %q", side, summary)
+		}
+	}
+}
+
+// The contrast arm, and it is what keeps the arm above from being satisfied
+// by "make every capture say not-assessed". A flow that WAS compared reports
+// its real capture verdict, so "assessed and fine" and "never assessed" stay
+// distinguishable in both directions.
+func TestAFlowThatWasComparedStillReportsItsRealCaptureVerdict(t *testing.T) {
+	cwd := t.TempDir()
+	shots := map[string][]byte{"login": shotPNG(t, white)}
+	recordRun(t, cwd, "web", "login", runA, shots, []trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, shots, []trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one row, got %v", queueOrder(items))
+	}
+	for _, side := range []string{"a", "b"} {
+		trust := captureOf(t, items[0], side)
+		if got, _ := trust["status"].(string); got != string(trace.VerdictOK) {
+			t.Fatalf("capture.%s.status = %q on a flow that was compared and passed, want %q", side, got, trace.VerdictOK)
+		}
+		if _, present := trust["reasons"]; present {
+			t.Fatalf("capture.%s carries reasons on a clean capture: %v", side, trust)
+		}
+	}
+}
+
+// Every non-omitempty field on an UN-EVALUABLE row means something, walked
+// over the marshalled bytes rather than a hand-written inventory — the same
+// property TestEveryFieldTheWorstRowCarriesIsPopulated asserts for a row that
+// WAS diffed. brokenItem is the other construction path onto this type, and
+// it was the one where `capture` was vacuous.
+//
+// TWO DOCUMENTED EXCEPTIONS, and they are known open findings rather than
+// properties this test is choosing not to hold. Both are bare tags, so the
+// key is present carrying the type's zero — exactly as `capture` was:
+//
+//   - `runId` is "" — Item.RunID is Summary.B.RunID and brokenItem's Summary
+//     has a zero B.
+//   - `counts` is twelve zeros, which reads as "every plane was measured and
+//     nothing changed" on a row where no plane was measured at all.
+//     global-constraints.md names Counts{} by name as this trap.
+//
+// They are LISTED, not skipped silently, and the assertion below fails if
+// either quietly starts passing — so the day they are fixed this block
+// shrinks and the walk tightens, and any OTHER field that drifts into the
+// same state still fails today. Reported and deliberately not fixed in the
+// fix round 2 report: N-3's ruling names `capture`, and these are not it.
+func TestEveryFieldAnUnEvaluableRowCarriesIsPopulated(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "onboarding", runA, map[string][]byte{"step1": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/onboarding", 200, `{"step":1}`)})
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	b, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshalling the row: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(b, &row); err != nil {
+		t.Fatalf("the row is not a JSON object: %v\n%s", err, b)
+	}
+	knownOpen := []string{"runId", "counts"}
+	for key, val := range row {
+		if slices.Contains(knownOpen, key) {
+			continue
+		}
+		if !informative(val) {
+			t.Fatalf("an un-evaluable row's %q is %v — a zero one reads as \"measured, and fine\"\n%s", key, val, b)
+		}
+	}
+	// And the exceptions are real, not stale entries that have quietly
+	// started passing. When one does, delete it from knownOpen.
+	for _, key := range knownOpen {
+		if informative(row[key]) {
+			t.Fatalf("%q is now informative on an un-evaluable row — remove it from knownOpen and let the walk cover it", key)
+		}
 	}
 }

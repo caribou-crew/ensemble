@@ -492,6 +492,37 @@ describe('what the verbs report', () => {
   });
 });
 
+describe('a notice belongs to the flow it was produced for', () => {
+  it('is cleared when the reviewer moves to another flow', async () => {
+    const calls = stubServer({
+      posts: {
+        accept: {
+          ok: true,
+          bundle: {
+            dir: '.retrace/refs/web/search',
+            files: ['manifest.json'],
+            bytes: 4096,
+            runId: '20260821T101000Z-bbbbbbb',
+            captureStatus: 'ok',
+            unmatchedMasks: [],
+          },
+        },
+      },
+    });
+    await mount();
+    await openAFlow(calls);
+    await press('a');
+    expect(notice()).toMatch(/accepted web\/search/);
+
+    // Back to the queue and onto a different row. The message is about
+    // web/search and must not sit above web/cart.
+    await press('Escape');
+    await press('k');
+    expect(selectedRow()).toBe('web/cart');
+    expect(notice()).toBeNull();
+  });
+});
+
 // --- the item screen ----------------------------------------------------
 
 describe('the item screen', () => {

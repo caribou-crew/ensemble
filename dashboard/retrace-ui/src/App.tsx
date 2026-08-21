@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
-import { RULE_BLAST_RADIUS, api, messageOf, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
+import { api, messageOf, ruleBlastRadius, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
@@ -74,7 +74,12 @@ function Problem({ message }: { message: string }) {
  * than receiving it from the server's 400 afterwards: a reviewer who clicks
  * a button believing they scoped the rule to one flow and one direction has
  * already formed the wrong belief by the time a refusal arrives, and nobody
- * reads a REST call in a pull request. */
+ * reads a REST call in a pull request.
+ *
+ * And it keeps saying it: the sentence is recomputed from the CURRENT method
+ * and path values on every render, so clearing the path box — which widens
+ * the rule to every path, because an empty glob matches everything — changes
+ * the copy in the same keystroke. See ruleBlastRadius. */
 export function RulePicker({
   entry,
   field,
@@ -103,7 +108,7 @@ export function RulePicker({
       <h2>
         Tolerate <code>{field.path}</code>
       </h2>
-      <p className="picker__radius">{RULE_BLAST_RADIUS}</p>
+      <p className="picker__radius">{ruleBlastRadius(method, path)}</p>
       <label>
         matcher
         <select
@@ -297,6 +302,13 @@ export default function App() {
     setApp(next.app);
     setFlow(next.flow);
     setSelectedField(null);
+    // The notice and the error belong to the flow they were produced for.
+    // "accepted web/search as the new reference" sitting above web/cart names
+    // its own flow and so does not strictly lie, but a stale success message
+    // over a different flow is the reassuring direction, and this phase's
+    // whole problem is the reassuring direction.
+    setNotice(null);
+    setActionError(null);
   };
 
   const mutate = async (label: string, fn: () => Promise<string>) => {

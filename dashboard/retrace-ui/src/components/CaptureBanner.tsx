@@ -14,11 +14,12 @@ const TONE: Record<Verdict, BadgeTone> = {
   broken: 'red',
   failed: 'red',
   // The zero value, and it ranks with the worst rather than with `ok`.
-  // serve.brokenItem folds a zero diff.Summary into a queue row for any flow
-  // that could not be diffed at all, so `{"status":""}` is on the wire for
-  // exactly the rows a reviewer most needs to look at. Record<Verdict, …> is
-  // what makes leaving this arm out a compile error rather than an
-  // `undefined` tone, which <Badge> paints neutral grey.
+  // No production path sends it any more — serve.brokenItem used to, and N-3
+  // fixed that at the source — but trace.Verdict is a Go string type whose
+  // zero value is still "", so Record<Verdict, …> keeps this table TOTAL over
+  // the type's domain. That is what makes a future construction path which
+  // forgets the field a compile error here rather than an `undefined` tone,
+  // which <Badge> paints neutral grey.
   '': 'red',
 };
 
