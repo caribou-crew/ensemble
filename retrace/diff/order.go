@@ -127,13 +127,30 @@ func argsortUint(entries []Entry, key func(Entry) uint64) []int {
 }
 
 // classify derives an entry's Classes from what actually changed.
-// BodyTolerated/BodyIgnored/OrderingChanges alone do not make an entry
-// "changed" — those are differences a rule already explained; only an
-// unexplained difference (BodyDiff, BodyViolations, HeaderDiff,
+// BodyTolerated/BodyIgnored alone do not make an entry "changed" — those
+// are differences a rule already explained; only an unexplained difference
+// (BodyDiff, BodyViolations, a non-tolerated HeaderDiff, OrderingChanges,
 // StatusChange) does. Reordering itself is treated as a body-level change
 // on top of whatever moved/identical status the entry's OWN position gets.
+//
+// F1: Truncated folds into changed unconditionally. An entry the engine
+// admits it could not fully compare must never come out "identical" —
+// "identical" is a stronger, more reassuring claim than an empty class
+// list, and Task 10's verdict logic trusts it. F6: a HeaderDiff only counts
+// as changed when its Type isn't "tolerated" — mirroring BodyTolerated's
+// exclusion above, so a header rule that correctly excused a change does
+// not move the entry to "changed", asymmetric with body handling before
+// this fix. "added"/"removed" header entries are always non-tolerated
+// (Classify is always Changed for a one-sided header), so they still count.
 func classify(e Entry) []string {
-	changed := len(e.BodyDiff) > 0 || len(e.BodyViolations) > 0 || len(e.HeaderDiff) > 0 ||
+	headerChanged := false
+	for _, hd := range e.HeaderDiff {
+		if hd.Type != "tolerated" {
+			headerChanged = true
+			break
+		}
+	}
+	changed := e.Truncated || len(e.BodyDiff) > 0 || len(e.BodyViolations) > 0 || headerChanged ||
 		len(e.OrderingChanges) > 0 || e.StatusChange != nil
 	var classes []string
 	if changed {

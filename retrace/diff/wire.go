@@ -507,15 +507,27 @@ func sameMultiset(a, b []string) bool {
 }
 
 // blankTolerated returns a copy of v with every leaf whose resolved field
-// matcher is an ignore or a value matcher (named/pattern — anything that
-// COULD excuse a difference) replaced by a fixed placeholder. It never
-// looks at a second value: it is applied independently to each side, which
-// is what lets diffArrays detect "same content, reordered" even when a
-// tolerated field (e.g. a per-element uuid) legitimately differs in every
-// element — see TestAReorderIsDetectedEvenThoughAToleratedFieldDiffersInEveryElement.
+// matcher EXCUSES this side's own value replaced by a fixed placeholder. It
+// never compares to a second value: it is applied independently to each
+// side, which is what lets diffArrays detect "same content, reordered" even
+// when a tolerated field (e.g. a per-element uuid) legitimately differs in
+// every element — see TestAReorderIsDetectedEvenThoughAToleratedFieldDiffersInEveryElement.
 // A field with no rule (the zero/exact matcher) is never blanked, so an
 // unruled differentiator correctly defeats multiset matching — see
 // TestWithoutARuleTheSameReorderStillReportsPositionalChanges.
+//
+// F2: a value/pattern matcher only gets to blank a leaf whose OWN value it
+// actually accepts — rules.Classify(m, v, v, true) != Violation, i.e. "does
+// this side's value satisfy its own matcher". A side whose value VIOLATES
+// its own matcher must keep its real value: that defeats the multiset
+// match and pushes the element down diffArrays' positional fallback, where
+// record() reports the Violation. Blanking it unconditionally (the
+// pre-fix behaviour) let a genuine rule Violation vanish into a benign
+// OrderingChanges entry whenever it happened to co-occur with a reorder —
+// a reorder and a rule violation are independent facts and neither may
+// silently swallow the other. KindIgnore is unaffected: Classify(m, v, v,
+// true) always answers Ignored for it, never Violation, so an ignored
+// field keeps blanking unconditionally regardless of its value.
 const blankedPlaceholder = "xretrace:blanked"
 
 func blankTolerated(v any, ctx diffCtx, path string) any {
@@ -534,7 +546,8 @@ func blankTolerated(v any, ctx diffCtx, path string) any {
 		return out
 	default:
 		m, _, matched := resolveField(ctx, path)
-		if matched && (m.Kind == rules.KindIgnore || m.Kind == rules.KindNamed || m.Kind == rules.KindPattern) {
+		if matched && (m.Kind == rules.KindIgnore || m.Kind == rules.KindNamed || m.Kind == rules.KindPattern) &&
+			rules.Classify(m, v, v, true) != rules.Violation {
 			return blankedPlaceholder
 		}
 		return v
@@ -543,9 +556,13 @@ func blankTolerated(v any, ctx diffCtx, path string) any {
 
 // canonicalJSON renders v with object keys sorted at every level, so
 // structurally identical values compare equal regardless of source key
-// order. json.Marshal on a map[string]any already sorts that map's own
-// keys, but does nothing for maps nested inside a []any — hence the
-// explicit recursive form rather than relying on the marshaller.
+// order. B1: encoding/json's own Marshal already sorts map keys at EVERY
+// nesting level, slices included — this explicit recursive form is not
+// covering a gap in the marshaller (an earlier version of this comment
+// claimed one; it was wrong). It is kept anyway because it is one pass with
+// no intermediate []byte allocation, marginally cheaper than round-tripping
+// through json.Marshal for this package's hot path (bodySimilarity runs
+// once per DP cell in align).
 func canonicalJSON(v any) string {
 	var b strings.Builder
 	writeCanonical(&b, v)
@@ -603,7 +620,16 @@ func lowerHeaders(m map[string]string) map[string]string {
 // still reported" rule for deviations), carrying the matcher's Label() so a
 // consumer can tell "this was excused" from "this was never explained" —
 // Classify never returns Tolerated for a one-sided (add/remove) header, so
-// Matcher is only ever populated on a "changed" entry.
+// Matcher is only ever populated on a two-sided entry.
+//
+// F6: Type is the outcome field for a two-sided header — "changed" (no rule
+// or the zero/exact matcher), "tolerated", or "violation" — mirroring
+// classify's BodyTolerated exclusion so a correctly-excused header change
+// does not move the entry to "changed", and surfacing a header rule
+// Violation, which used to be indistinguishable from an ordinary change
+// (both reported Type: "changed", with only the label-not-outcome Matcher
+// field to tell them apart). A one-sided header stays "added"/"removed" —
+// Classify is always Changed for those, never Tolerated/Violation.
 func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []HeaderDiff {
 	la, lb := lowerHeaders(a), lowerHeaders(b)
 	seen := map[string]bool{}
@@ -637,6 +663,10 @@ func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []Hea
 		}
 		hd := HeaderDiff{Scope: scope, Name: name, A: av, B: bv}
 		switch {
+		case bothPresent && outcome == rules.Violation:
+			hd.Type = "violation"
+		case bothPresent && outcome == rules.Tolerated:
+			hd.Type = "tolerated"
 		case bothPresent:
 			hd.Type = "changed"
 		case aok:
@@ -662,18 +692,25 @@ func buildEntry(p Pair, res rules.Resolved, o Options) Entry {
 	if p.A.Status != p.B.Status {
 		e.StatusChange = &StatusChange{A: p.A.Status, B: p.B.Status}
 	}
+	// Truncated is the banner ("at least one of the four payloads was
+	// size-capped"), but it is NOT a gate on diffing — the gate is per
+	// payload, inside parseBody. Ruling: a truncated request body must
+	// never silence the response diff (or vice versa). diffBodyScope always
+	// runs for both scopes; parseBody's own p.Truncated check (previously
+	// dead code — this entry-level gate always intercepted first) makes a
+	// truncated payload fall back to the same whole-string comparison used
+	// for non-JSON bodies, never a field tree over half-parsed data, while
+	// the OTHER three payloads diff normally.
 	e.Truncated = p.A.Req.Truncated || p.B.Req.Truncated || p.A.Resp.Truncated || p.B.Resp.Truncated
-	if !e.Truncated {
-		ctx := diffCtx{res: res, ignore: o.WireIgnore}
-		acc := &bodyAcc{}
-		diffBodyScope("req", p.A.Req, p.B.Req, ctx, acc)
-		diffBodyScope("resp", p.A.Resp, p.B.Resp, ctx, acc)
-		e.BodyDiff = acc.Diff
-		e.BodyTolerated = acc.Tolerated
-		e.BodyViolations = acc.Violations
-		e.BodyIgnored = acc.Ignored
-		e.OrderingChanges = acc.Ordering
-	}
+	ctx := diffCtx{res: res, ignore: o.WireIgnore}
+	acc := &bodyAcc{}
+	diffBodyScope("req", p.A.Req, p.B.Req, ctx, acc)
+	diffBodyScope("resp", p.A.Resp, p.B.Resp, ctx, acc)
+	e.BodyDiff = acc.Diff
+	e.BodyTolerated = acc.Tolerated
+	e.BodyViolations = acc.Violations
+	e.BodyIgnored = acc.Ignored
+	e.OrderingChanges = acc.Ordering
 	e.HeaderDiff = append(
 		DiffHeaders(p.A.Req.Headers, p.B.Req.Headers, res, "req"),
 		DiffHeaders(p.A.Resp.Headers, p.B.Resp.Headers, res, "resp")...,

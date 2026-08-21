@@ -46,6 +46,85 @@ func TestAnnotateMarksOnlyTheMinimalMovedSet(t *testing.T) {
 	}
 }
 
+func TestAnnotateAssignsPosAAndPosBFromTheCorrectSide(t *testing.T) {
+	// O3: annotate swapping the PosA/PosB assignment. A-order and B-order
+	// deliberately differ for every entry, so a swap is observable on all
+	// three, not just the one that ends up Moved.
+	entries := []Entry{
+		{Method: "GET", NormalizedPath: "/e1", SeqA: 1, SeqB: 30},
+		{Method: "GET", NormalizedPath: "/e2", SeqA: 2, SeqB: 10},
+		{Method: "GET", NormalizedPath: "/e3", SeqA: 3, SeqB: 20},
+	}
+	out := annotate(entries)
+	byPath := map[string]Entry{}
+	for _, e := range out {
+		byPath[e.NormalizedPath] = e
+	}
+	want := map[string][2]int{
+		"/e1": {0, 2},
+		"/e2": {1, 0},
+		"/e3": {2, 1},
+	}
+	for name, w := range want {
+		e := byPath[name]
+		if e.PosA != w[0] || e.PosB != w[1] {
+			t.Fatalf("%s: PosA=%d PosB=%d, want %d,%d", name, e.PosA, e.PosB, w[0], w[1])
+		}
+	}
+}
+
+func TestArgsortUintSortsAscending(t *testing.T) {
+	// O14: argsortUint's sort direction reversed.
+	entries := []Entry{{SeqA: 30}, {SeqA: 10}, {SeqA: 20}}
+	idx := argsortUint(entries, func(e Entry) uint64 { return e.SeqA })
+	want := []int{1, 2, 0} // SeqA 10,20,30 -> original indices 1,2,0
+	if len(idx) != 3 || idx[0] != want[0] || idx[1] != want[1] || idx[2] != want[2] {
+		t.Fatalf("argsortUint = %v, want %v", idx, want)
+	}
+}
+
+func TestClassifyCountsEachChangeSignalIndependently(t *testing.T) {
+	// F4/O6-O9: classify reads five signals (BodyDiff, BodyViolations,
+	// HeaderDiff, OrderingChanges, StatusChange) plus Truncated (F1) — each
+	// alone must drive "changed", not just BodyDiff/BodyTolerated as the
+	// pre-existing TestClassifyDistinguishesChangedMovedAndIdentical covered.
+	cases := []struct {
+		name string
+		e    Entry
+	}{
+		{"BodyViolations", Entry{BodyViolations: []FieldDiff{{Path: "x"}}}},
+		{"HeaderDiff", Entry{HeaderDiff: []HeaderDiff{{Type: "changed"}}}},
+		{"OrderingChanges", Entry{OrderingChanges: []FieldDiff{{Path: "x"}}}},
+		{"StatusChange", Entry{StatusChange: &StatusChange{A: 200, B: 500}}},
+		{"Truncated", Entry{Truncated: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classify(c.e)
+			if len(got) != 1 || got[0] != "changed" {
+				t.Fatalf("classify(%s) = %v, want [changed]", c.name, got)
+			}
+		})
+	}
+}
+
+func TestClassifyDoesNotCountAToleratedHeaderAsChanged(t *testing.T) {
+	// F6: mirrors BodyTolerated's exclusion — a header rule that correctly
+	// excused a change must not move the entry to "changed", symmetric with
+	// body handling.
+	got := classify(Entry{HeaderDiff: []HeaderDiff{{Type: "tolerated"}}})
+	if len(got) != 1 || got[0] != "identical" {
+		t.Fatalf("classify(tolerated header only) = %v, want [identical]", got)
+	}
+}
+
+func TestClassifyCountsAViolatingHeaderAsChanged(t *testing.T) {
+	got := classify(Entry{HeaderDiff: []HeaderDiff{{Type: "violation"}}})
+	if len(got) != 1 || got[0] != "changed" {
+		t.Fatalf("classify(violation header) = %v, want [changed]", got)
+	}
+}
+
 func TestClassifyDistinguishesChangedMovedAndIdentical(t *testing.T) {
 	changed := classify(Entry{BodyDiff: []FieldDiff{{Path: "x"}}})
 	if len(changed) != 1 || changed[0] != "changed" {
@@ -91,6 +170,47 @@ func TestSectionsSeedDeclaredButEmptyParts(t *testing.T) {
 	}
 	if len(byName["browse"].Entries) != 1 {
 		t.Fatalf("browse.Entries = %+v, want 1", byName["browse"].Entries)
+	}
+}
+
+func TestUnionNamesIncludesNamesOnlyOnB(t *testing.T) {
+	// O12: unionNames returning only A's names.
+	got := unionNames([]string{"browse"}, []string{"browse", "checkout"})
+	want := []string{"browse", "checkout"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unionNames = %v, want %v", got, want)
+	}
+}
+
+func TestBuildSectionsFallsBackToGroupBWhenGroupAIsEmpty(t *testing.T) {
+	// O11: dropping BuildSections' GroupB fallback.
+	entries := []Entry{
+		{Method: "GET", NormalizedPath: "/x", GroupA: "", GroupB: "checkout", Classes: []string{"identical"}},
+	}
+	groups := &GroupNames{A: []string{"browse"}, B: []string{"browse", "checkout"}}
+	sections := BuildSections(entries, groups)
+	byName := map[string]Section{}
+	for _, s := range sections {
+		byName[s.Name] = s
+	}
+	if len(byName["checkout"].Entries) != 1 {
+		t.Fatalf("checkout section = %+v, want the entry to fall back to GroupB", byName["checkout"])
+	}
+}
+
+func TestBuildSectionsAppendsATrailingUnnamedSectionForUngroupedEntries(t *testing.T) {
+	// O15: dropping the trailing unnamed section.
+	entries := []Entry{
+		{Method: "GET", NormalizedPath: "/browse", GroupA: "browse", GroupB: "browse", Classes: []string{"identical"}},
+		{Method: "GET", NormalizedPath: "/orphan", GroupA: "", GroupB: "", Classes: []string{"identical"}},
+	}
+	groups := &GroupNames{A: []string{"browse"}, B: []string{"browse"}}
+	sections := BuildSections(entries, groups)
+	if len(sections) != 2 {
+		t.Fatalf("len(sections) = %d, want 2 (browse + trailing unnamed)", len(sections))
+	}
+	if sections[1].Name != "" || len(sections[1].Entries) != 1 {
+		t.Fatalf("sections[1] = %+v, want a trailing unnamed section with the orphan entry", sections[1])
 	}
 }
 
