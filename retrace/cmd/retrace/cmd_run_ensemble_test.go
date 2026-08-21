@@ -153,6 +153,66 @@ func TestRunAttachedRecordsTheFullChainAndSplitsWireFromHops(t *testing.T) {
 	}
 }
 
+// TestRunAttachedWithNoTrafficIsNeverProxyNeverReached is Finding 1's
+// regression test, and it MUST go through cmdRun's real production path —
+// requestsSeenForTrust — not call capture.Assess directly with a
+// hand-written RequestsSeen: -1. The two tests that "covered" this before
+// the fix (TestAttachedZeroRequestsSeenNeverReadsAsProxyNeverReached in
+// package capture, and the "zero calls, reachability unknown" table case)
+// both construct AssessInput{RequestsSeen: -1} by hand — a value nothing in
+// the production tree ever constructed, because the only production call
+// site (assessTrust in cmd_run.go) hardcoded ProxyConfigured: true and
+// passed s.RequestsSeen() raw. In attached mode s.rec is nil, so
+// RequestsSeen() counts marker-door hits ONLY, and a healthy attached flow
+// that posts no markers — this test's "true" command — returned 0, not -1.
+// Before the fix, that verdicted this run `broken`/proxy-never-reached and
+// Task 10 would have quarantined it: a perfectly good attached recording,
+// accused of misconfiguring a base URL retrace does not even own in this
+// mode.
+//
+// This is deliberately NOT the earlier "no traffic" fixture reused from
+// TestRunBannersANonOkVerdict: that one is standalone, where RequestsSeen
+// raw IS the reachability signal and `broken` is the CORRECT verdict.
+// Attached is the mode where 0 must never be read as "verified and zero".
+func TestRunAttachedWithNoTrafficIsNeverProxyNeverReached(t *testing.T) {
+	api := newEnsembleAPI(t, nil) // no hops at all — ensemble drained nothing
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\nentry: bff\n")
+
+	// "true" never dials the edge and never posts a marker, so
+	// s.RequestsSeen() (marker-door hits only, in attached mode) is 0 —
+	// exactly the value this finding is about.
+	args := []string{"run", "--flow", "checkout", "--app", "web", "--ensemble", api.URL, "--", "true"}
+	res := runRetrace(t, bin, cwd, "", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 (the test command itself succeeded)\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+
+	m := onlyManifest(t, cwd, "web", "checkout")
+	if m.Mode != runs.ModeEnsemble {
+		t.Fatalf("manifest.mode = %q, want %q — this test only proves what it claims to in attached mode", m.Mode, runs.ModeEnsemble)
+	}
+	if m.Capture.Status == trace.VerdictBroken {
+		t.Fatalf("capture.status = broken — a healthy attached run with no marker traffic must never read as proxy-never-reached (attached mode cannot verify reachability, it can only prove unknown): %+v", m.Capture)
+	}
+	for _, r := range m.Capture.Reasons {
+		if r.Code == "proxy-never-reached" {
+			t.Fatalf("capture.reasons contains proxy-never-reached: %+v", m.Capture)
+		}
+	}
+	// The honest reading of "attached, zero marker hits" is degraded/no-calls
+	// (unknown reachability), not ok — RequestsSeen: -1 still enters the
+	// zero-Hops branch, it just lands in the "unknown" case rather than the
+	// "confirmed absent" one.
+	if m.Capture.Status != trace.VerdictDegraded {
+		t.Fatalf("capture.status = %q, want %q: %+v", m.Capture.Status, trace.VerdictDegraded, m.Capture)
+	}
+	if !strings.Contains(res.stderr, "capture-trust:") || !strings.Contains(res.stderr, "degraded") {
+		t.Fatalf("stderr does not banner the degraded capture-trust verdict:\n%s", res.stderr)
+	}
+}
+
 // The single most likely integration bug, and the one a hand-written fake
 // could paper over: GET /api/sessions/{id}/hops is NDJSON, not a JSON
 // array. A client written against json.Unmarshal of an array fails here,
