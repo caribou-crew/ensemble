@@ -9,14 +9,28 @@ importers:
   .: {}
 
   dashboard/design-system:
-    dependencies:
-      react:
-        specifier: '*'
-        version: 19.2.8
     devDependencies:
       '@types/react':
         specifier: ^19.2.18
         version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.4
+        version: 19.2.4(@types/react@19.2.18)
+      happy-dom:
+        specifier: ^20.11.6
+        version: 20.11.6
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+      vite:
+        specifier: ^8.2.2
+        version: 8.2.2(@types/node@26.2.0)
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@26.2.0)(happy-dom@20.11.6)(vite@8.2.2(@types/node@26.2.0))
 
   dashboard/ensemble-ui:
     dependencies:
