@@ -221,6 +221,43 @@ func quarantineCheck(a, b RunRef) []Quarantine {
 	return out
 }
 
+// incompleteCheck reports which sides of a and b never finished recording:
+// `retrace run` execs the `-- <test command>` tail (cmd_run.go), and
+// exec.ExitError.ExitCode() reports -1 (never any other negative value)
+// specifically for a process terminated by a signal — CI's timeout or a
+// Ctrl-C mid-test. cmd_run.go writes that raw code straight into
+// runs.Test.ExitCode, so a negative value on disk means the hop stream is
+// truncated at the moment of the kill, not that anything was verified.
+// Diffing a truncated stream against a complete reference would report
+// every un-run hop as a fabricated "gone route"/"missing call" — the same
+// false-positive class Task 9's C1 review found for nondeterministic path
+// matching, just from stale data instead of stale ordering.
+//
+// Deliberately does NOT key off Test.ExitCode == 0: a manifest that omits
+// `test.exitCode` entirely is indistinguishable, after JSON decode, from
+// one recording a genuine passing 0 — the same overloaded-zero trap this
+// whole plan keeps finding. Checking only "< 0" sidesteps it: Go's
+// ExitCode() never returns any other negative number, so this check reads
+// as unambiguous evidence either way, unlike the zero value would.
+//
+// Unlike quarantineCheck below, this check is NOT gated behind
+// AllowDegraded: --allow-degraded exists so a human can accept a
+// LOWER-CONFIDENCE but still-complete capture (a quiet stretch, a capture
+// note); a run that never finished has no complete data to accept, so
+// there is nothing for that flag to override.
+func incompleteCheck(a, b RunRef) []Quarantine {
+	var out []Quarantine
+	if code := a.Manifest.Test.ExitCode; code < 0 {
+		out = append(out, Quarantine{Side: "a", Reason: fmt.Sprintf(
+			"the test command did not complete (signal-killed, raw exit code %d) — the recording is truncated, not a comparable run", code)})
+	}
+	if code := b.Manifest.Test.ExitCode; code < 0 {
+		out = append(out, Quarantine{Side: "b", Reason: fmt.Sprintf(
+			"the test command did not complete (signal-killed, raw exit code %d) — the recording is truncated, not a comparable run", code)})
+	}
+	return out
+}
+
 // checkpointUnion returns every checkpoint name across both manifests, in
 // first-seen order (a's names, then any b-only name) — the same shape
 // unionNames already gives BuildSections' group names.
@@ -293,6 +330,16 @@ func writePNG(path string, img *image.RGBA) error {
 func Build(in BuildInput) (Summary, error) {
 	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B}
 	s.Capture = CaptureBanner{A: in.A.Manifest.Capture, B: in.B.Manifest.Capture}
+
+	// --- incomplete, checked first and unconditionally (not even
+	// --allow-degraded gets past it — see incompleteCheck's doc comment). A
+	// signal-killed test command leaves a truncated recording, which is not
+	// evidence of anything, degraded or otherwise.
+	if q := incompleteCheck(in.A, in.B); len(q) > 0 {
+		s.Quarantined = q
+		s.Verdict = "quarantined"
+		return s, nil
+	}
 
 	// --- quarantine, checked before anything else is compared. A capture
 	// whose own trust verdict is not "ok" makes every downstream comparison
@@ -529,21 +576,42 @@ func changed(s Summary) bool {
 // plane order so the result is deterministic regardless of Go's randomized
 // map iteration order.
 //
-// Observed's derivation is spelled out for "pixel" (the worst
-// per-checkpoint DiffPct) and "wire" (the wire plane's own change count,
-// Counts.WireChanged — a raw count, matching the brief's literal wording,
-// not a percentage normalized against WirePaired) by the brief itself.
-// "hop" and "perf" are this implementer's documented judgment call, since
-// the brief says only "and so on" and no listed test pins either: hop uses
-// the percentage of ServiceCounts entries that deviate, and perf uses
-// percent of budget consumed (MeasuredMs/BudgetMs*100, which lines up with
-// PerfResult.Status == "over" at exactly 100).
+// Observed is a PERCENTAGE for every plane, one unit across the whole map —
+// Threshold always comes from `gates: {<plane>: {budget_pct}}`, so mixing
+// units would compare a percentage against a raw count for whichever plane
+// got it wrong (the team lead's review caught an earlier draft doing
+// exactly that for "wire": 3 changed entries out of 1000 would have failed
+// a budget_pct: 2 gate under a raw-count reading, when 0.3% plainly should
+// not — see TestAWireBudgetComparesAPercentageNotARawCount, the fixture
+// that pins the distinction; a same-verdict fixture would pin neither
+// reading).
+//
+//   - pixel: the worst per-checkpoint DiffPct (already a %).
+//   - wire: changed paired entries / total paired entries × 100.
+//   - hop: % of ServiceCounts entries with Deviates == true.
+//   - perf: percent OVER budget, (MeasuredMs-BudgetMs)/BudgetMs×100 — 0
+//     means "exactly at budget", budget_pct: 10 means "10% over is
+//     allowed". MeasuredMs/BudgetMs×100 (percent OF budget) was this
+//     implementer's original call and was overturned in review: under it,
+//     100 means "at budget" and every threshold on this one plane would
+//     have to be written around 100, unlike the other three.
 func budgetsOf(s Summary, cfg *config.Config) []Gate {
 	planes := []string{"hop", "perf", "pixel", "wire"}
 	var out []Gate
 	for _, plane := range planes {
 		g, ok := cfg.Gates[plane]
 		if !ok || g.BudgetPct == nil {
+			continue
+		}
+		// perf's percentage is only meaningful once a budget exists to be
+		// a percentage OF. BudgetMs == 0 (DerivePerfBudget never
+		// configured one) means "no perf gate", the same "not gated" vs
+		// "gated at a threshold of zero" distinction Summary.Budgets'
+		// own doc comment states for cfg.Gates itself — appending a Gate
+		// here would divide by zero (Inf/NaN) or, worse, silently read as
+		// "0% over budget": clean. Neither is the zero value this project
+		// can afford; skip the plane entirely instead.
+		if plane == "perf" && s.Perf.BudgetMs == 0 {
 			continue
 		}
 		threshold := *g.BudgetPct
@@ -564,7 +632,10 @@ func observedFor(s Summary, plane string) float64 {
 		}
 		return worst
 	case "wire":
-		return float64(s.Counts.WireChanged)
+		if s.Counts.WirePaired == 0 {
+			return 0
+		}
+		return 100 * float64(s.Counts.WireChanged) / float64(s.Counts.WirePaired)
 	case "hop":
 		total := len(s.Hops.ServiceCounts)
 		if total == 0 {
@@ -578,10 +649,13 @@ func observedFor(s Summary, plane string) float64 {
 		}
 		return 100 * float64(deviating) / float64(total)
 	case "perf":
+		// Callers route through budgetsOf, which already skips this plane
+		// when BudgetMs == 0; guarded again here so a direct call (e.g.
+		// from a test) never divides by zero.
 		if s.Perf.BudgetMs == 0 {
 			return 0
 		}
-		return 100 * s.Perf.MeasuredMs / s.Perf.BudgetMs
+		return 100 * (s.Perf.MeasuredMs - s.Perf.BudgetMs) / s.Perf.BudgetMs
 	default:
 		return 0
 	}

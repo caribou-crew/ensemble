@@ -20,7 +20,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -352,46 +351,14 @@ func TestSectionsComeFromTheManifestsGroups(t *testing.T) {
 	}
 }
 
-// TestHelperKillsSelfWithSIGKILL is the `-- <test command>` tail for
-// TestDiffExitsThreeOnASignalKilledChild. `retrace run` is the only
-// subcommand that execs a child (the `-- <test command>` tail); `retrace
-// diff` never spawns one. So the way to reach a signal-killed *exec.Command
-// from a black-box CLI test is to make the child kill ITSELF — no external
-// process control needed, and no flakiness from racing a kill signal
-// against the child's own startup.
-func TestHelperKillsSelfWithSIGKILL(t *testing.T) {
-	if os.Getenv("RETRACE_TEST_HELPER") != "self-sigkill" {
-		return
-	}
-	_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
-	// Unreachable if the signal took effect; exit non-zero-but-defined so a
-	// platform where it didn't still fails loudly instead of looking like
-	// a clean pass.
-	os.Exit(1)
-}
-
-// TestDiffExitsThreeOnASignalKilledChild pins Task 10's ownership of the
-// exit codes it does not itself produce (see the brief's "this task owns
-// the exit contract" ruling, and cmd_run.go's ExitCode < 0 branch): a
-// `retrace run` test command killed by a signal must not leak exec.
-// ExitError.ExitCode()'s raw -1 (which the OS truncates to 255, outside the
-// 0/1/2/3 contract) as retrace's own process exit code. It is a "could not
-// evaluate" outcome, mapped to 3 alongside config/IO failures — asserted
-// through the BUILT binary (never `go run`, which collapses every non-zero
-// child to 1) and against the literal number, not the exitUsage constant,
-// per global-constraints.md.
-func TestDiffExitsThreeOnASignalKilledChild(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer upstream.Close()
-
-	bin := buildRetrace(t)
-	cwd := t.TempDir()
-	writeConfig(t, cwd, "app: web\n")
-
-	args := append([]string{"run", "--flow", "checkout", "--app", "web", "--upstream", upstream.URL},
-		selfCmd(t, "TestHelperKillsSelfWithSIGKILL")...)
-	res := runRetrace(t, bin, cwd, "self-sigkill", args...)
-	if res.code != 3 {
-		t.Fatalf("exit = %d, want 3 (a signal-killed child is \"could not evaluate\", not a diff result)\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
-	}
-}
+// The "signal-killed child" exit-code mapping the brief originally asked
+// for here turned out to be scoped wrong: `retrace diff` never execs a
+// child (only `retrace run`'s `-- <test command>` tail does), and the team
+// lead's ruling was that the signal-kill reaches Task 10 as DATA, not as a
+// live process — a truncated hop stream from a manifest whose
+// `Test.ExitCode` is negative (cmd_run.go:275's `ee.ExitCode()`, -1 for a
+// signal-killed process) — and is pinned with a fixture manifest, no child
+// process anywhere. See diff/summary_test.go's
+// TestASignalKilledTestCommandIsQuarantinedNotDiffed and
+// TestAllowDegradedDoesNotOverrideASignalKilledTestCommand. cmd_run.go
+// itself is out of scope for this task per that ruling.
