@@ -1,10 +1,13 @@
-# "brew" sample stack — vertical slice 1 of Phase 5 (see
-# openspec/changes/init-ensemble-retrace/{design.md §8, tasks.md 5.1}).
+# "brew" sample stack (see openspec/changes/init-ensemble-retrace/design.md
+# §8, tasks.md Phase 5). Money path: client -> edge-gw -> storefront-bff ->
+# order-svc -> (catalog-svc + user-svc + payments stub) -> redis ->
+# notify-worker. ops-bff is a read-only internal aggregator over
+# catalog-svc/order-svc. order-svc is Java behind `profile: full` — the
+# rest of the stack runs and degrades gracefully without it (see
+# storefront-bff's checkout / ops-bff's /admin/orders 503 handling).
 #
-# Wired so far: client -> edge-gw (auth stub) -> catalog-svc (Postgres,
-# real CRUD) -> payments stub, a real 3-hop trace end to end. The rest of
-# the "brew" stack (user-svc, order-svc, notify-worker, storefront-bff,
-# ops-bff, the two clients) is not built yet — see tasks.md 5.1/5.2.
+# Not built yet: the two clients (web-app, rn-app) — task 5.2. Everything
+# under 5.1 (services) is here.
 services:
   edge:
     dir: ./services/edge-gw
@@ -19,9 +22,10 @@ services:
     env:
       PORT: "8080"
       CATALOG_URL: "http://127.0.0.1:9081"
+      STOREFRONT_URL: "http://127.0.0.1:9085"
     health: /healthz
     entry: true
-    depends_on: [catalog]
+    depends_on: [catalog, storefront]
 
   catalog:
     dir: ./services/catalog-svc
@@ -37,6 +41,86 @@ services:
     health: /healthz
     depends_on: [postgres]
 
+  user:
+    dir: ./services/user-svc
+    build: npm install
+    run: node index.js
+    port: 8082
+    proxy: 9082
+    env:
+      PORT: "8082"
+      # Same Postgres instance as catalog, different schema (users.accounts
+      # vs catalog's public.products) — "brew" deliberately shares one
+      # Postgres container across two schemas rather than running two.
+      DATABASE_URL: "postgres://catalog:catalog@127.0.0.1:55432/catalog?sslmode=disable"
+    health: /healthz
+    depends_on: [postgres]
+
+  order:
+    dir: ./services/order-svc
+    build: ./gradlew bootJar --console=plain
+    run: java -jar build/libs/order-svc-0.0.1.jar
+    port: 8083
+    proxy: 9083
+    env:
+      PORT: "8083"
+      DATASOURCE_URL: "jdbc:mysql://127.0.0.1:53306/orders"
+      DATASOURCE_USER: orders
+      DATASOURCE_PASSWORD: orders
+      REDIS_HOST: "127.0.0.1"
+      REDIS_PORT: "56379"
+      CATALOG_URL: "http://127.0.0.1:9081"
+      USER_URL: "http://127.0.0.1:9082"
+      PAYMENTS_URL: "http://127.0.0.1:9099"
+    health: /actuator/health
+    depends_on: [mysql, redis, catalog, user]
+    # First run without a JDK: leaving this off `ensemble up`'s active
+    # profile set means order-svc simply doesn't start, and the rest of the
+    # stack (storefront-bff's checkout, ops-bff's /admin/orders) is written
+    # to degrade to a 503 rather than fail — see specs/sample-stack/spec.md
+    # "First run without JDK" scenario. Activate with `--profile full`.
+    profile: full
+
+  notify:
+    dir: ./services/notify-worker
+    build: GOWORK=off go build -o notify-worker .
+    run: ./notify-worker
+    port: 8084
+    proxy: 9084
+    env:
+      PORT: "8084"
+      REDIS_URL: "redis://127.0.0.1:56379"
+    health: /healthz
+    depends_on: [redis]
+
+  storefront:
+    dir: ./services/storefront-bff
+    build: npm install
+    run: node index.js
+    port: 8085
+    proxy: 9085
+    env:
+      PORT: "8085"
+      CATALOG_URL: "http://127.0.0.1:9081"
+      ORDER_URL: "http://127.0.0.1:9083"
+      DYNAMODB_URL: "http://127.0.0.1:58000"
+      DYNAMODB_TABLE: carts
+    health: /healthz
+    depends_on: [catalog, dynamodb]
+
+  ops:
+    dir: ./services/ops-bff
+    build: npm install
+    run: node index.js
+    port: 8086
+    proxy: 9086
+    env:
+      PORT: "8086"
+      CATALOG_URL: "http://127.0.0.1:9081"
+      ORDER_URL: "http://127.0.0.1:9083"
+    health: /healthz
+    depends_on: [catalog]
+
 databases:
   postgres:
     image: postgres:16
@@ -47,7 +131,29 @@ databases:
       POSTGRES_DB: catalog
     seed: baseline
 
+  mysql:
+    image: mysql:8.0
+    port: 53306
+    env:
+      MYSQL_ROOT_PASSWORD: orders
+      MYSQL_DATABASE: orders
+      MYSQL_USER: orders
+      MYSQL_PASSWORD: orders
+
+  redis:
+    image: redis:7
+    port: 56379
+
+  dynamodb:
+    image: amazon/dynamodb-local
+    port: 58000
+
 stubs:
+  # Only payments sits on the money path (catalog-svc calls it on purchase).
+  # analytics and kms are unwired decorations — nothing in the sample calls
+  # them yet — kept only so the topology has the third-party edge nodes the
+  # design calls for; wire a real caller into either before relying on them
+  # for a demo.
   payments:
     port: 9099
     routes:
@@ -57,8 +163,54 @@ stubs:
           headers: { content-type: application/json }
           body: '{"id":"ch_1","status":"succeeded"}'
 
+  analytics:
+    port: 9098
+    routes:
+      - match: { method: POST, path: /events }
+        respond:
+          status: 202
+          headers: { content-type: application/json }
+          body: '{"accepted":true}'
+
+  kms:
+    port: 9097
+    routes:
+      - match: { method: POST, path: /encrypt }
+        respond:
+          status: 200
+          headers: { content-type: application/json }
+          body: '{"ciphertext":"stub-ciphertext"}'
+
 seeds:
   baseline:
     sql:
       - database: postgres
         file: ./seeds/baseline.sql
+      - database: postgres
+        file: ./seeds/users.sql
+
+  empty:
+    sql:
+      - database: postgres
+        file: ./seeds/empty.sql
+    # Deliberately doesn't touch mysql: orders/order_items only exist once
+    # order-svc has connected at least once (Hibernate ddl-auto=update
+    # creates them lazily), so a blind TRUNCATE there would fail on a
+    # stack that never activated the `full` profile.
+
+  bulk:
+    sql:
+      - database: postgres
+        file: ./seeds/bulk.sql
+
+  outage:
+    http:
+      # Not a hard failure (ensemble's latency mechanism injects delay, not
+      # faults) — this simulates a badly degraded catalog: 5s added to
+      # every request. Targets the control plane's default address; if you
+      # run `ensemble up --api <other>`, re-arm by hand instead:
+      # `ensemble latency set --target catalog --path / --fixed 5000 --enabled`.
+      - method: PUT
+        url: "http://127.0.0.1:4700/api/latency"
+        headers: { content-type: application/json }
+        body: '{"target":"catalog","path":"/","fixedMs":5000,"enabled":true}'

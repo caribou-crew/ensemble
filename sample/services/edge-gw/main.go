@@ -22,26 +22,33 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	catalogURL := os.Getenv("CATALOG_URL")
-	if catalogURL == "" {
-		log.Fatal("CATALOG_URL is required")
-	}
-
-	target, err := url.Parse(catalogURL)
-	if err != nil {
-		log.Fatalf("parse CATALOG_URL: %v", err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	catalogProxy := mustProxy("CATALOG_URL")
+	storefrontProxy := mustProxy("STOREFRONT_URL")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.Handle("/products", requireAuth(proxy))
-	mux.Handle("/products/", requireAuth(proxy))
+	mux.Handle("/products", requireAuth(catalogProxy))
+	mux.Handle("/products/", requireAuth(catalogProxy))
+	mux.Handle("/cart/", requireAuth(storefrontProxy))
 
-	log.Printf("edge-gw listening on :%s (catalog=%s)", port, catalogURL)
+	log.Printf("edge-gw listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
+}
+
+// mustProxy builds a reverse proxy to the service named by the env var
+// envName (its proxy port, so the hop gets captured — never the real port).
+func mustProxy(envName string) http.Handler {
+	raw := os.Getenv(envName)
+	if raw == "" {
+		log.Fatalf("%s is required", envName)
+	}
+	target, err := url.Parse(raw)
+	if err != nil {
+		log.Fatalf("parse %s: %v", envName, err)
+	}
+	return httputil.NewSingleHostReverseProxy(target)
 }
 
 // requireAuth is the auth stub: a fixed bearer token stands in for whatever

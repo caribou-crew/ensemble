@@ -1,0 +1,16 @@
+{
+  "name": "storefront-bff",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Backend-for-frontend for the \"brew\" sample stack: manages a shopping cart backed by DynamoDB Local and checks out through order-svc.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.687.0",
+    "@aws-sdk/lib-dynamodb": "^3.687.0",
+    "express": "^4.21.1"
+  }
+}
