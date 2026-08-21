@@ -138,6 +138,25 @@ func trustNotAssessed(t runs.CaptureTrust) bool {
 	return false
 }
 
+// The three reasons a row can carry no measurements, and they say DIFFERENT
+// things because they are different situations. Two of them would otherwise
+// be indistinguishable in the rendered page, and that is not a cosmetic
+// difference: it is what decides whether the reason on the row came from the
+// capture banner's own reason code — the wire value R-AA rules this must be
+// read from — or from an export that re-ran the comparison and happened to
+// fail the same way.
+const (
+	// The queue never compared this flow at all: brokenItem's row, detected
+	// from CaptureNotAssessed.
+	whyNotAssessed = "could not be evaluated — this flow was never compared, so nothing below is a finding about it"
+	// The queue DID compare it and this export could not reproduce that.
+	// Reachable when the runs tree changes underneath a long export (a
+	// concurrent `retrace run`, a directory removed). Deliberately worded
+	// apart from whyNotAssessed: a reader must be able to tell "nobody ever
+	// looked" from "somebody looked and this report could not".
+	whyNotReproduced = "could not be evaluated — the review queue compared this flow and this export could not reproduce that comparison, so nothing below can be trusted as a finding about it"
+)
+
 // --- the view ------------------------------------------------------------
 
 // reportRow is one line of the overview.
@@ -348,7 +367,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 	row.Href = path.Join(dir, "index.html")
 
 	if unEvaluable(it) {
-		row.WhyNot = "could not be evaluated — this flow was never compared, so nothing below is a finding about it"
+		row.WhyNot = whyNotAssessed
 		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row})
 	}
 
@@ -363,7 +382,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 		row.Verdict, row.Score, row.Gates = broken.Verdict, broken.Score, broken.Gates
 		row.Capture = broken.Capture
 		row.Reasons = append(append([]runs.TrustReason{}, broken.Capture.A.Reasons...), broken.Capture.B.Reasons...)
-		row.WhyNot = "could not be evaluated — this flow was never compared, so nothing below is a finding about it"
+		row.WhyNot = whyNotReproduced
 		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row})
 	}
 
