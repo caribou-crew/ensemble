@@ -1927,7 +1927,7 @@ splits the user-facing story for no gain.
   func (n Normalize) Apply(path string) string
   type StatusRule struct { Path string; Status int }
   type RequiredRoute struct { Method, Path string; Status int }
-  type Rect struct { X, Y, Width, Height int }    // json+yaml tags, see Step 3
+  type Rect struct { X, Y, Width, Height int; Why string }  // json+yaml tags, see Step 3
   type Thresholds struct { Gate, Fine float64 }   // defaults DefaultGate / DefaultFine
   // EVERY type in this package needs explicit `yaml:` tags — Load uses
   // dec.KnownFields(true) and yaml.v3 matches lower-cased field names, so
@@ -2059,17 +2059,42 @@ type Config struct {
 	OpenAPI          string                 `yaml:"openapi"`
 	Redact           []string               `yaml:"redact"`
 	Deviations       string                 `yaml:"deviations"`
+	// --- added after this task shipped, by the consolidated shapes task ---
+	// Gates is the per-plane CI budget. Gate.BudgetPct is *float64, NOT
+	// float64: that pointer is what keeps "absent" and "explicitly 0"
+	// distinguishable, and an explicit `budget_pct: 0` legitimately means
+	// "must be pixel-identical". applyDefaults fills Gates["pixel"] from
+	// Thresholds.Gate when absent, so pixel is NEVER missing; wire, hop and
+	// perf have no default and stay ungated when absent. Task 10 consumes.
+	Gates  map[string]Gate `yaml:"gates"`
+	FailOn []string        `yaml:"fail_on"`
+	// Preflight runs once before any flow; Flow.Preflight then runs before
+	// that specific flow. Shape only — nothing executes these yet.
+	Preflight []string `yaml:"preflight"`
 	// Dir is set by Load from the file's own location and is NOT a YAML
 	// key. It must be tagged `yaml:"-"`, or KnownFields(true) will happily
 	// accept a `dir:` key in the file and then Load will overwrite it —
 	// a setting that appears to work and silently does nothing.
 	Dir string `yaml:"-"`
+	// Loaded reports whether a real retrace.yaml was found and read. Zero
+	// value false is deliberately the unsafe-to-proceed one: no config means
+	// no redaction rules, so a consumer that captures traffic must REFUSE
+	// rather than write unredacted bodies to disk.
+	Loaded bool `yaml:"-"`
+}
+
+type Gate struct {
+	BudgetPct *float64 `yaml:"budget_pct"`
 }
 
 type Flow struct {
 	Command      string            `yaml:"command"`
 	PerfBudgetMs float64           `yaml:"perf_budget_ms"`
 	Masks        map[string][]Rect `yaml:"masks"`
+	// Shape only, as above: parsed and tagged, never executed here.
+	Preflight []string `yaml:"preflight"`
+	Setup     []string `yaml:"setup"`
+	Teardown  []string `yaml:"teardown"`
 }
 type Normalize struct {
 	Pattern     string `yaml:"pattern"`
@@ -2252,6 +2277,11 @@ type Rect struct {
 	Y      int `json:"y" yaml:"y"`
 	Width  int `json:"width" yaml:"width"`
 	Height int `json:"height" yaml:"height"`
+	// Why records the reason this mask exists. A mask hides pixels from the
+	// diff, so an unexplained one is indistinguishable from a mask added to
+	// silence a real regression — and masks outlive whoever added them.
+	// Optional: existing configs without it must keep loading.
+	Why string `json:"why,omitempty" yaml:"why"`
 }
 
 // MasksFor resolves the masks for one checkpoint: the flow's own map wins,
