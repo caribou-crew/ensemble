@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -291,6 +292,73 @@ func TestRefRejectWithoutAReferenceStillWritesTheBundleAndSaysWhyThereIsNoSummar
 	}
 }
 
+// TestRefAcceptWarnsAndProceedsOnASuspectCapture pins the MIDDLE tier at
+// the CLI surface, where it is reachable. `suspect` is a heuristic doubt —
+// unattributed traffic, a quiet stretch, an ensemble note — so promotion is
+// the human's call and the machine only warns.
+//
+// The verdict is stamped onto a REAL recorded run through runs.WriteManifest
+// rather than hand-written JSON: production writes suspect manifests, just
+// not from a standalone run that finishes in milliseconds (every suspect
+// producer here is ensemble-mode or needs a 60-second quiet stretch —
+// capture.DefaultGapThreshold). Driving the assessor for this tier would
+// cost a minute of wall clock per run; driving production's own manifest
+// writer costs nothing and pins the same seam.
+//
+// Its pair is TestRefAcceptRefusesAFatalCaptureUntilForced below. Together
+// they are why the old single "NonOk" test could not stand: that one name
+// spanned both tiers, which is exactly the ambiguity that let two contracts
+// blur into one.
+func TestRefAcceptWarnsAndProceedsOnASuspectCapture(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	id := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+
+	paths, err := runs.PathsFor(runs.RunsRoot(cwd), "web", "checkout", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := runs.ReadManifest(paths.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Capture = runs.CaptureTrust{
+		Status:  trace.VerdictSuspect,
+		Summary: "a stretch of the run captured nothing",
+	}
+	if err := runs.WriteManifest(paths, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web", "--json")
+	if res.code != 0 {
+		t.Fatalf("ref accept refused a SUSPECT capture: exit = %d\nstderr: %s — only capture.Fatal is gated; a heuristic doubt is the human's call", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "warning") || !strings.Contains(res.stderr, string(trace.VerdictSuspect)) {
+		t.Fatalf("stderr = %q, want a warning naming the %q verdict on the channel a CI log keeps", res.stderr, trace.VerdictSuspect)
+	}
+	// No --force was passed, so a passing exit here cannot be Force masking
+	// a refusal — it is the suspect tier genuinely not being gated.
+	if strings.Contains(res.stderr, "--force") {
+		t.Fatalf("stderr = %q, want no mention of --force: a suspect capture is not something a human has to override", res.stderr)
+	}
+	var out struct {
+		CaptureStatus string `json:"captureStatus"`
+	}
+	if err := json.Unmarshal([]byte(res.stdout), &out); err != nil {
+		t.Fatalf("ref accept --json: %v\n%s", err, res.stdout)
+	}
+	if out.CaptureStatus != string(trace.VerdictSuspect) {
+		t.Fatalf("captureStatus = %q, want %q carried as a typed field rather than reconstructible only from warning text", out.CaptureStatus, trace.VerdictSuspect)
+	}
+}
+
 // TestRefAcceptRefusesAFatalCaptureUntilForced drives the tier split
 // end-to-end through the real assessor rather than a hand-edited verdict: a
 // run with no upstream traffic at all grades "degraded", which is
@@ -320,8 +388,13 @@ func TestRefAcceptRefusesAFatalCaptureUntilForced(t *testing.T) {
 	if refused.code == 0 {
 		t.Fatalf("ref accept promoted a degraded capture\nstdout: %s", refused.stdout)
 	}
-	if !strings.Contains(refused.stderr, "--force") {
-		t.Fatalf("stderr = %q, want the refusal to name the flag that overrides it", refused.stderr)
+	// Asserted on the message, not the exit code alone: the exit code says
+	// "no", and the message is the only thing that says WHY and what to do
+	// about it. It must name the run, its verdict, and both remedies.
+	for _, want := range []string{ids[0], string(trace.VerdictDegraded), "re-record", "--force"} {
+		if !strings.Contains(refused.stderr, want) {
+			t.Fatalf("stderr = %q, want the refusal to contain %q", refused.stderr, want)
+		}
 	}
 	bundle, err := refs.BundleDir(cwd, "web", "checkout")
 	if err != nil {
