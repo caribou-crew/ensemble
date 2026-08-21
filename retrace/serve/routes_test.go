@@ -81,6 +81,20 @@ func post(t *testing.T, ts *httptest.Server, path, body string) response {
 	return do(t, ts, http.MethodPost, path, body, nil)
 }
 
+// pixelAt decodes a served shot and returns one pixel. "200 image/png with
+// a non-empty body" is true of all four comparison panes at once, so it
+// cannot tell them apart; the contract this surface actually has is WHICH
+// image, and only a decode can assert it.
+func pixelAt(t *testing.T, r response, side string, x, y int) [4]uint32 {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(r.body))
+	if err != nil {
+		t.Fatalf("side %q did not serve a decodable PNG: %v", side, err)
+	}
+	cr, cg, cb, ca := img.At(x, y).RGBA()
+	return [4]uint32{cr, cg, cb, ca}
+}
+
 func mustOK(t *testing.T, r response, what string) map[string]any {
 	t.Helper()
 	if r.status != http.StatusOK {
@@ -187,15 +201,45 @@ func TestPostAcceptUpdatesTheReferenceExactlyAsTheUiWould(t *testing.T) {
 
 // ruleProject is a flow whose only difference between the reference and the
 // latest run is a timestamp — the noise a wire rule exists to excuse.
+//
+// THREE calls carry that same noisy field, and the two extra ones are the
+// point. A rule the caller narrowed to `GET /cart` must silence the first
+// and neither of the others; with only one call in the fixture, a
+// project-wide rule and a scoped one produce the identical verdict, so the
+// fixture cannot tell the correct rule from the incorrect one (rule
+// symmetry) and dropping req.Method/req.Path at the handler is invisible.
+// POST /cart differs from the rule in METHOD alone and GET /checkout in
+// PATH alone, so each dimension is pinned by its own surviving call rather
+// than by the pair together.
 func ruleProject(t *testing.T) string {
 	t.Helper()
 	cwd := t.TempDir()
+	hops := func(stamp string) []trace.Hop {
+		body := `{"cart":{"updatedAt":"` + stamp + `","items":1}}`
+		return []trace.Hop{
+			hop(1, "GET", "/cart", 200, body),
+			hop(2, "POST", "/cart", 200, body),
+			hop(3, "GET", "/checkout", 200, body),
+		}
+	}
 	recordRun(t, cwd, "web", "checkout", runA, map[string][]byte{"cart": shotPNG(t, white)},
-		[]trace.Hop{hop(1, "GET", "/cart", 200, `{"cart":{"updatedAt":"2026-08-21T10:00:00Z","items":1}}`)})
+		hops("2026-08-21T10:00:00Z"))
 	acceptRef(t, cwd, "web", "checkout", runA)
 	recordRun(t, cwd, "web", "checkout", runB, map[string][]byte{"cart": shotPNG(t, white)},
-		[]trace.Hop{hop(1, "GET", "/cart", 200, `{"cart":{"updatedAt":"2026-08-21T11:30:00Z","items":1}}`)})
+		hops("2026-08-21T11:30:00Z"))
 	return cwd
+}
+
+// itemFor reads one flow's queue row over REST.
+func itemFor(t *testing.T, ts *httptest.Server, app, flow string) Item {
+	t.Helper()
+	for _, it := range queueFromREST(t, ts) {
+		if it.App == app && it.Flow == flow {
+			return it
+		}
+	}
+	t.Fatalf("%s/%s is not in the queue", app, flow)
+	return Item{}
 }
 
 // The spec's "Rule from the UI" scenario, asserted through REST only.
@@ -212,8 +256,12 @@ func TestPostRuleAppendsAWireRuleAndTheQueueReEvaluatesWithoutThatNoise(t *testi
 	if doc["ok"] != true {
 		t.Fatalf("POST rule did not report ok: %v", doc)
 	}
-	if _, ok := doc["rule"].(map[string]any); !ok {
+	echoed, ok := doc["rule"].(map[string]any)
+	if !ok {
 		t.Fatalf("POST rule did not echo the rule it wrote: %v", doc)
+	}
+	if echoed["method"] != "GET" || echoed["path"] != "/cart" {
+		t.Fatalf("the echoed rule dropped the dimensions the caller narrowed it with: %v", echoed)
 	}
 	list, ok := doc["rules"].([]any)
 	if !ok || len(list) != 1 {
@@ -234,11 +282,40 @@ func TestPostRuleAppendsAWireRuleAndTheQueueReEvaluatesWithoutThatNoise(t *testi
 	if len(raw) != 1 || raw[0].Body["cart.updatedAt"] != "iso8601" {
 		t.Fatalf("the overlay does not carry the rule: %+v", raw)
 	}
+	// The two dimensions the rule dialect HAS, and the two this endpoint's
+	// own refusal tells the caller to narrow with ("narrow it with `path`
+	// and `method` instead — those are the only dimensions the rule dialect
+	// has"). rules.MatchPathGlob("", x) is true and an empty Rule.Method
+	// matches every method, so dropping either one here widens a rule the
+	// caller scoped to one call into one that silences that field on every
+	// call in the project and in both bodies — while still answering
+	// {"ok":true} and still writing to a committed file. This is R-N's own
+	// defect on R-N's own endpoint.
+	if raw[0].Method != "GET" || raw[0].Path != "/cart" {
+		t.Fatalf("the written rule is method=%q path=%q, want GET /cart — the endpoint accepted the two dimensions it promises are the only ones it has, and wrote a rule that ignores them", raw[0].Method, raw[0].Path)
+	}
 
 	// And the very next read re-evaluates WITH it — a server that kept its
 	// startup config would tell the reviewer the rule had no effect.
+	//
+	// "changed", not "pass": the SCOPED rule excuses GET /cart and must
+	// leave POST /cart and GET /checkout alone. Two calls still differ, so
+	// this assertion is what a rule widened to the whole project fails —
+	// it would report a clean flow, which is the whole failure mode.
+	if _, v := verdictOf(t, ts, "web", "checkout"); v != "changed" {
+		t.Fatalf("after the scoped rule: verdict = %q, want \"changed\" — GET /cart is excused, POST /cart and GET /checkout are not", v)
+	}
+	if got := itemFor(t, ts, "web", "checkout").Counts.WireChanged; got != 2 {
+		t.Fatalf("wireChanged = %d after a rule scoped to GET /cart, want 2 — the rule reached calls it does not name", got)
+	}
+
+	// The over-refusal mirror, and the scenario's payoff: the SAME field
+	// with no method/path is a project-wide rule, which does excuse all
+	// three, and the queue re-evaluates to a collapsed row.
+	mustOK(t, post(t, ts, "/api/queue/web/checkout/rule",
+		`{"field":"cart.updatedAt","matcher":"iso8601"}`), "POST an unscoped rule")
 	if _, v := verdictOf(t, ts, "web", "checkout"); v != "pass" {
-		t.Fatalf("after the rule: verdict = %q, want \"pass\" — the tolerated timestamp is no longer a difference", v)
+		t.Fatalf("after the project-wide rule: verdict = %q, want \"pass\" — the tolerated timestamp is no longer a difference anywhere", v)
 	}
 	items := queueFromREST(t, ts)
 	if len(items) != 1 || items[0].Score != 0 {
@@ -474,6 +551,7 @@ func TestEverySideOfAChangedCheckpointServesAndAnUnchangedOneSaysSo(t *testing.T
 	cwd := threeFlowProject(t)
 	ts := newServer(t, cwd)
 
+	px := map[string][4]uint32{}
 	for _, side := range shotSides {
 		r := get(t, ts, "/api/shots/web/search/"+side+"/results")
 		if r.status != http.StatusOK {
@@ -485,6 +563,37 @@ func TestEverySideOfAChangedCheckpointServesAndAnUnchangedOneSaysSo(t *testing.T
 		if len(r.body) == 0 {
 			t.Fatalf("side %q served an empty body, which renders as a blank pane", side)
 		}
+		px[side] = pixelAt(t, r, side, 20, 20)
+	}
+
+	// WHICH image, not merely "an image". This fixture has always carried
+	// the asymmetry that decides it — web/search's A side is solid white
+	// and its B side solid blue — and nothing had ever asserted it, which
+	// is worse than no asymmetry at all: it makes this test look
+	// discriminating to every future reader while discriminating nothing.
+	// Swapping the "a" and "b" arms of shotDirFor, or returning the diff
+	// directory for "overlay", leaves every assertion above green and
+	// answers a valid 200 image/png for all four sides.
+	//
+	// This is the quietest failure on this surface: a reviewer sees the
+	// blue shot labelled "reference" and the white one labelled "latest",
+	// accepts a regression, and the wrong answer is promoted into the
+	// committed bundle every later diff is judged against.
+	if want := ([4]uint32{0xffff, 0xffff, 0xffff, 0xffff}); px["a"] != want {
+		t.Fatalf("side a is rgba%v, want the REFERENCE's solid white %v — the a and b panes are swapped", px["a"], want)
+	}
+	if want := ([4]uint32{0, 0, 0xffff, 0xffff}); px["b"] != want {
+		t.Fatalf("side b is rgba%v, want the LATEST run's solid blue %v — the a and b panes are swapped", px["b"], want)
+	}
+	// diff paints every changed pixel pure red (pixel.Match); overlay is a
+	// copy of side B with magenta washed over it, so it still carries B's
+	// blue. Serving one for the other is a valid 200 PNG showing the
+	// reviewer the wrong picture.
+	if want := ([4]uint32{0xffff, 0, 0, 0xffff}); px["diff"] != want {
+		t.Fatalf("side diff is rgba%v, want pure red %v — every pixel of this checkpoint changed", px["diff"], want)
+	}
+	if px["overlay"] == px["diff"] || px["overlay"][2] == 0 {
+		t.Fatalf("side overlay is rgba%v — the overlay is side B under a magenta wash and must be neither the diff image nor a repeat of another pane", px["overlay"])
 	}
 
 	// web/login passes, so no diff image was written for it.
