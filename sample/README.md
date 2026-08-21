@@ -8,12 +8,11 @@ The full "brew" sample stack is spec'd in
 **Built:** all 7 backend services (`edge-gw`, `catalog-svc`, `user-svc`,
 `order-svc`, `notify-worker`, `storefront-bff`, `ops-bff`), all 4 storage
 backends (Postgres, MySQL, Redis, DynamoDB Local), the `payments` stub on
-the money path plus decorative `analytics`/`kms` stubs, and all 4 named
-seeds (`baseline`, `empty`, `bulk`, `outage`).
+the money path plus decorative `analytics`/`kms` stubs, all 4 named seeds
+(`baseline`, `empty`, `bulk`, `outage`), and the `web-app` (React/Vite)
+browser client.
 
-**Not built yet:** the `web-app` (React/Vite) and `rn-app` (Expo) clients —
-task 5.2, deferred so the backend money path could be finished and
-verified first. Everything below is driven with `curl`.
+**Not built yet:** the `rn-app` (Expo) client — the rest of task 5.2.
 
 Money path: `edge-gw` → `storefront-bff` → `order-svc` → (`catalog-svc` +
 `user-svc` + `payments` stub) → Redis → `notify-worker`. `ops-bff` is a
@@ -33,19 +32,23 @@ ensemble up -c ensemble.yaml --profile full  # + order-svc (needs a JDK)
 ensemble seed baseline                       # starter products + users
 ```
 
+`web` starts automatically with everything else — open
+`http://127.0.0.1:9087` for the browser client, or drive edge-gw directly:
+
 ```sh
 # browse the catalog (through edge-gw -> catalog-svc)
 curl -H "Authorization: Bearer demo-token" http://127.0.0.1:9080/products
 
-# add to cart (through edge-gw -> storefront-bff, DynamoDB-backed)
+# add to cart (through edge-gw -> storefront-bff, DynamoDB-backed).
+# 1 and 2 are the user ids baseline seeds — any other id 404s at checkout.
 curl -X POST -H "Authorization: Bearer demo-token" -H "content-type: application/json" \
   -d '{"product_id":1,"quantity":2}' \
-  http://127.0.0.1:9080/cart/42/items
+  http://127.0.0.1:9080/cart/1/items
 
 # checkout — cart -> order-svc -> catalog/user/payments -> redis -> notify.
 # Needs --profile full, else 503 "ordering unavailable".
 curl -X POST -H "Authorization: Bearer demo-token" \
-  http://127.0.0.1:9080/cart/42/checkout
+  http://127.0.0.1:9080/cart/1/checkout
 ```
 
 Then `open http://127.0.0.1:4700` and look at the trace for the checkout
@@ -89,14 +92,30 @@ ensemble latency reset   # clear it
   JSON, rather than assuming a failed `fetch()`/`HttpClient` call is the
   only way a downstream can be unreachable.
 
+## web-app
+
+A minimal React/Vite SPA (`clients/web-app`) that calls edge-gw's proxy
+port directly from the browser — browse, add to cart, remove, checkout, see
+the confirmed order. No state management library, no router: one `App.jsx`
+with `fetch`-backed handlers, matching the curl flow above one for one (see
+`src/api.js`). No tracing code either — edge-gw's proxy stamps a fresh
+`traceparent` on any request that doesn't already carry one, so a plain
+browser `fetch()` is a valid trace root.
+
+edge-gw is the only sample service that sets CORS headers
+(`withCORS` in `main.go`) — real edge/envoy layers own CORS the same way
+they own auth, so it belongs there rather than in the client.
+
 ## Layout
 
 ```
 sample/
 ├── ensemble.yaml              # the reference config for the full stack
 ├── seeds/                     # baseline.sql, users.sql, empty.sql, bulk.sql
+├── clients/
+│   └── web-app/                # React/Vite — browse/cart/checkout, no tracing code
 └── services/
-    ├── edge-gw/                # Go   — entry + auth stub, routes to storefront/catalog
+    ├── edge-gw/                # Go   — entry + auth stub + CORS, routes to storefront/catalog
     ├── catalog-svc/            # Go   — Postgres CRUD, calls payments stub
     ├── user-svc/               # Node — Postgres CRUD (users.accounts schema)
     ├── order-svc/               # Java/Spring/Gradle — MySQL, profile `full`
@@ -105,10 +124,10 @@ sample/
     └── ops-bff/                  # Node — read-only admin aggregator
 ```
 
-Each service is its own module (Go module, `package.json`, or Gradle
-project), deliberately outside the repo's `go.work` — that mirrors how a
-real company's services would actually be separate repos, and it means no
-service depends on anything in this monorepo (`core`, `ensemble`) to run.
-Go services' `build:` step in `ensemble.yaml` sets `GOWORK=off` because Go
-otherwise auto-detects the parent `go.work` and refuses to build a module
-that isn't listed in it.
+Each backend service is its own module (Go module, `package.json`, or
+Gradle project), deliberately outside the repo's `go.work` — that mirrors
+how a real company's services would actually be separate repos, and it
+means no service depends on anything in this monorepo (`core`, `ensemble`)
+to run. Go services' `build:` step in `ensemble.yaml` sets `GOWORK=off`
+because Go otherwise auto-detects the parent `go.work` and refuses to
+build a module that isn't listed in it.

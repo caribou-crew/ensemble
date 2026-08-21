@@ -6,8 +6,9 @@
 # rest of the stack runs and degrades gracefully without it (see
 # storefront-bff's checkout / ops-bff's /admin/orders 503 handling).
 #
-# Not built yet: the two clients (web-app, rn-app) — task 5.2. Everything
-# under 5.1 (services) is here.
+# Not built yet: the rn-app (Expo) client — task 5.2 remainder. web-app
+# (React/Vite) is here, served by its own Vite dev server and talking to
+# edge-gw's proxy port directly from the browser — see clients/web-app.
 services:
   edge:
     dir: ./services/edge-gw
@@ -120,6 +121,23 @@ services:
       ORDER_URL: "http://127.0.0.1:9083"
     health: /healthz
     depends_on: [catalog]
+
+  web:
+    dir: ./clients/web-app
+    build: npm install
+    run: npm run dev
+    port: 5173
+    proxy: 9087
+    env:
+      # Vite only exposes VITE_-prefixed env vars to the browser bundle
+      # (import.meta.env) — this is a genuine build/runtime input, not
+      # server-side config, so it goes through the same env: mechanism as
+      # every other service's config.
+      VITE_EDGE_URL: "http://127.0.0.1:9080"
+    # No health: path — vite's dev server has no /healthz route, so this
+    # falls back to gateHealth's plain TCP-dial check on port, which is
+    # exactly right for a plain HTTP server with no health endpoint.
+    depends_on: [edge]
 
 databases:
   postgres:

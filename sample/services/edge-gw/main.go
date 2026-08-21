@@ -34,7 +34,23 @@ func main() {
 	mux.Handle("/cart/", requireAuth(storefrontProxy))
 
 	log.Printf("edge-gw listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Fatal(http.ListenAndServe(":"+port, withCORS(mux)))
+}
+
+// withCORS lets web-app (served from its own dev-server origin) call edge-gw
+// directly from the browser — a real edge/envoy layer owns CORS the same
+// way it owns auth, so it belongs here rather than in every client.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // mustProxy builds a reverse proxy to the service named by the env var

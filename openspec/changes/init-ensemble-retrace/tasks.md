@@ -146,7 +146,9 @@ review UI exist.
       (Java/Spring/MySQL, profile `full`), notify-worker (Go/redis),
       storefront-bff + ops-bff (Node, dynamo cart), edge-gw (Go) — real CRUD,
       trace-header forwarding, /healthz each.
-- [ ] 5.2 Clients: web-app (React/Vite), rn-app (Expo). Order + browse flows.
+- [ ] 5.2 Clients: web-app (React/Vite) done — browse/cart/checkout against
+      edge-gw, wired into ensemble.yaml, live-tested against the seeded
+      stack. rn-app (Expo) not started.
 - [x] 5.3 `sample/ensemble.yaml` (the reference config: dbs incl. dynamodb,
       stubs payment/analytics/kms, profiles) + seeds
       (baseline/empty/bulk/outage). Uses DynamoDB Local directly rather than
