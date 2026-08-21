@@ -47,7 +47,6 @@ const DefaultGapThreshold = 60 * time.Second
 // something admitted by the mux reached retrace, and that is deliberately
 // never enough on its own to reach VerdictOK.
 type AssessInput struct {
-	ProxyConfigured     bool
 	ProxyFailure        *ProxyFailure
 	Hops                []trace.Hop
 	Checkpoints         int
@@ -63,10 +62,28 @@ type AssessInput struct {
 
 // Assess ranks every reason a capture might not be trustworthy and returns
 // the worst one. The empty AssessInput{} — every zero value at once — must
-// never rank as trace.VerdictOK: ProxyConfigured false is the only branch
-// that produces no reasons at all, and even then the returned Status is
-// still an explicit trace.VerdictOK, never the zero string (see
-// runs.WriteManifest's rejection of an empty Capture.Status).
+// never rank as trace.VerdictOK, never mind the zero string (see
+// runs.WriteManifest's rejection of an empty Capture.Status): with
+// len(Hops) == 0, ProxyFailure == nil and TestExitCode == 0, the zero-calls
+// branch below is ALWAYS entered and always adds a reason, so
+// AssessInput{} assesses as broken, the protective answer.
+//
+// Load-bearing invariant, restated because it used to live only as prose:
+// VerdictOK requires len(Hops) > 0. There used to be a ProxyConfigured bool
+// gating the zero-calls branch; its zero value (false) skipped the branch
+// entirely, so an all-zeros AssessInput read as a clean "ok" capture — worse
+// than the empty string, because "" is at least rejected at the manifest
+// seam while "ok" sails through it and past Task 10's quarantine. The field
+// carried no information (the only call site hardcoded it true) and only
+// risk, so it is gone rather than inverted.
+//
+// For Task 10/13/16 implementers: this invariant is about VerdictOK
+// specifically, not about VerdictBroken specifically. Do not key logic on
+// Status == VerdictBroken; key it on Status != VerdictOK, the same
+// distinction Task 10's quarantine already uses. RequestsSeen inflation
+// (see the zero-calls branch below) can demote broken to degraded, but
+// never promotes either one to ok — so "!= ok" is the only comparison
+// that stays correct as this function's evidence ranking evolves.
 func Assess(in AssessInput) runs.CaptureTrust {
 	threshold := in.GapThreshold
 	if threshold <= 0 {
@@ -124,7 +141,12 @@ func Assess(in AssessInput) runs.CaptureTrust {
 	//     reachability), never `broken`/proxy-never-reached. Pinned by the
 	//     "zero calls, reachability unknown" case in
 	//     TestAssessRanksTheWorstEvidence.
-	if in.ProxyConfigured && in.ProxyFailure == nil && len(in.Hops) == 0 && in.TestExitCode == 0 {
+	//
+	// This branch used to also require in.ProxyConfigured; that field is
+	// gone (see Assess's doc comment) precisely so this branch — the only
+	// thing standing between "no evidence at all" and "clean" — can never
+	// be skipped by a caller that forgot to set a bool.
+	if in.ProxyFailure == nil && len(in.Hops) == 0 && in.TestExitCode == 0 {
 		switch {
 		case in.RequestsSeen == 0:
 			add("proxy-never-reached", trace.VerdictBroken,
@@ -150,8 +172,21 @@ func Assess(in AssessInput) runs.CaptureTrust {
 	// ensemble already proved this one at the source (SessionManager names
 	// the service that dropped baggage). Carry its reasons verbatim rather
 	// than re-deriving a weaker version here.
+	//
+	// sessionStatus guards against SessionVerdict's own zero value: an empty
+	// trace.Verdict has no entry in verdictRank, so Worse would read it as
+	// rank 0 and never escalate status past ok — a proven propagation gap
+	// reported as a clean capture. Standalone's EndVerdict() never has
+	// SessionReasons to pair it with, so this only fires for a real
+	// ensemble-reported reason whose verdict was never set; VerdictSuspect
+	// (not broken/degraded) because "ensemble said something but did not
+	// rank it" is evidence, not a confirmed hard failure.
+	sessionStatus := in.SessionVerdict
+	if sessionStatus == "" {
+		sessionStatus = trace.VerdictSuspect
+	}
 	for _, r := range in.SessionReasons {
-		add("propagation-gap", in.SessionVerdict, r,
+		add("propagation-gap", sessionStatus, r,
 			"make the named service forward the `baggage` header alongside `traceparent`")
 	}
 	for _, n := range in.Notes {
@@ -196,12 +231,19 @@ func Assess(in AssessInput) runs.CaptureTrust {
 // quarantine reads the raw Status (excluding only VerdictOK), because
 // diffing against a `suspect` reference is still comparing against a run
 // nobody confirmed clean.
+//
+// The zero trace.Verdict ("") — a runs.CaptureTrust nobody ran through
+// Assess — is fatal BY CONSTRUCTION, not by relying on a manifest seam to
+// keep it unreachable. It used to fall through to `return false` (an
+// unassessed capture reading as "fine"), defended only by WriteManifest and
+// ReadManifest both rejecting an empty Capture.Status; that defence is
+// exactly what the zero-value constraint forbids — Fatal is exported from
+// this package, and the manifest seams do not stand between it and a
+// caller holding an in-memory CaptureTrust that never round-tripped
+// through a manifest (a read-failure fallback, a struct default, an
+// in-memory summary — Task 10/11/13/16 candidates all).
 func Fatal(c runs.CaptureTrust) bool {
-	switch c.Status {
-	case trace.VerdictBroken, trace.VerdictDegraded, trace.VerdictFailed:
-		return true
-	}
-	return false
+	return c.Status != trace.VerdictOK && c.Status != trace.VerdictSuspect
 }
 
 // FindGaps reports stretches where nothing was recorded for longer than

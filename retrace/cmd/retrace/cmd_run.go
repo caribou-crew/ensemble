@@ -375,12 +375,11 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 	groups []runs.Group, exitCode int) runs.CaptureTrust {
 	return capture.Assess(capture.AssessInput{
-		ProxyConfigured:     true,
 		ProxyFailure:        s.ProxyFailure(),
 		Hops:                hops,
 		Checkpoints:         len(cps),
 		ExpectedCheckpoints: expectedCheckpoints(s.Paths),
-		RequestsSeen:        s.RequestsSeen(),
+		RequestsSeen:        requestsSeenForTrust(s),
 		TestExitCode:        exitCode,
 		// Quiet intervals come from the SAME derived groups the manifest
 		// stores, so "the report says this stretch was deliberately quiet"
@@ -396,13 +395,62 @@ func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 	})
 }
 
+// requestsSeenForTrust is the mode branch Finding 1 requires: it is the
+// ONLY production call site of capture.AssessInput.RequestsSeen, so the
+// -1-vs-0 distinction has to be made HERE, not left to whatever
+// Session.RequestsSeen() happens to return.
+//
+// Session.RequestsSeen() (capture.go) counts marker-door hits plus, when
+// s.rec is non-nil, recorder snapshots. In ensemble-attached mode s.rec is
+// always nil — ensemble owns the client-edge listener, retrace's own proxy
+// is never in the request path — so RequestsSeen() there is marker-door
+// hits ONLY. A healthy attached flow that posts no markers (most flows
+// don't; markers are an opt-in checkpoint mechanism) returns 0 from that
+// method, indistinguishable from "the app never routed through retrace at
+// all". Reading that 0 as AssessInput.RequestsSeen would verdict a
+// perfectly good attached run `broken`/proxy-never-reached and get it
+// quarantined by Task 10 — the false accusation this function exists to
+// prevent.
+//
+// -1 unconditionally for attached mode, marker hits or not: a marker hit
+// proves the marker door was reached, not that the edge was, and Assess's
+// zero-calls branch needs "can this mode verify reachability at all", not
+// "did any signal arrive". Standalone owns the client-edge listener
+// outright, so its raw count IS the reachability signal Assess wants.
+//
+// This lives in cmd_run.go rather than inside RequestsSeen() itself
+// because RequestsSeen()'s existing contract — a raw count, mode-agnostic —
+// is depended on directly by
+// TestRequestsSeenAndHopsTolerateASessionWithNoLocalRecorder (asserts 3 for
+// an attached session with 3 marker hits) and by RequestsSeen()'s own doc
+// comment. Folding the -1 override into that method would conflate two
+// different questions — "how many things reached retrace" and "can this
+// mode use that count as a reachability signal" — inside one method, and
+// break a test that is protecting a real, separate contract. The mode
+// (runs.ModeEnsemble vs runs.ModeStandalone) is already available here at
+// the only call site, so the branch belongs here.
+func requestsSeenForTrust(s *capture.Session) int {
+	if s.Mode == runs.ModeEnsemble {
+		return -1
+	}
+	return s.RequestsSeen()
+}
+
 // expectedCheckpoints reads the previous run of the same app/flow — the run
 // directory immediately before this one in ListRuns' lexical (and, thanks
 // to NewRunID's timestamp-first encoding, chronological) order — and
 // returns the number of checkpoints its manifest recorded. It returns -1
 // when there is no history to compare against: a wire-only flow's first
-// ever run has no prior checkpoint count to fall short of, and -1 (not 0)
-// is what tells Assess "no comparison possible" from "compare against zero".
+// ever run has no prior checkpoint count to fall short of.
+//
+// Report accuracy note: Assess gates its no-screenshots reason on
+// `ExpectedCheckpoints > 0`, so -1 and 0 are behaviorally IDENTICAL there
+// today — the sentinel is documentation, not load-bearing. It exists to
+// match the -1-means-unknown convention this file uses elsewhere (see
+// AssessInput.RequestsSeen) and so a future comparison against "the last
+// run genuinely took zero checkpoints" can be told apart from "no history
+// at all" without adding another field, not because Assess currently
+// distinguishes them.
 func expectedCheckpoints(p runs.Paths) int {
 	runDir := filepath.Clean(p.RunDir)
 	flowDir := filepath.Dir(runDir)
