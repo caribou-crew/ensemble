@@ -391,10 +391,10 @@ func TestPostRuleRefusesAScopeItCannotHonour(t *testing.T) {
 // been two different operations — the API-first parity constraint, and the
 // same class R-N and R-F rule against, on the accept verb.
 //
-// rejectRequest.Out is the same shape one verb over: an --out the caller
-// names and the server ignores writes the repro bundle somewhere else and
-// answers 200 with a directory the caller did not ask for.
-func TestAcceptAndRejectHonourTheRunAndOutTheCallerNamed(t *testing.T) {
+// Run, unlike reject's Out (R-P), is safe to honour: it is not a path, and
+// runs.FindRun resolves it against the run ids already present under the
+// validated root rather than joining it into one.
+func TestAcceptHonoursTheRunTheCallerNamed(t *testing.T) {
 	cwd := threeFlowProject(t)
 	// A THIRD run, so "latest" and the run being named are unambiguously
 	// different: runC is newest, runB is the one the caller pins.
@@ -417,19 +417,86 @@ func TestAcceptAndRejectHonourTheRunAndOutTheCallerNamed(t *testing.T) {
 	if m.RunID != runB {
 		t.Fatalf("the promoted bundle on disk is run %q, want %q", m.RunID, runB)
 	}
+}
 
-	// reject --out: the bundle lands where the caller said, not in the
-	// default .retrace/repro.
-	out := t.TempDir()
-	doc = mustOK(t, post(t, ts, "/api/queue/web/cart/reject", `{"out":`+strconv.Quote(out)+`}`), "POST reject --out")
+// R-P. POST .../reject REFUSES a body carrying "out", and refuses it before
+// anything touches the filesystem.
+//
+// refs.Reject joins OutDir into a path, os.RemoveAll's the result and then
+// writes into it. App, Flow and RunID go through runs.ValidateComponents on
+// the way there; OutDir does not, and it needs no traversal to escape,
+// because filepath.Join honours an absolute path. Honouring a
+// request-supplied "out" would make this verb an arbitrary-directory
+// delete-and-write on a control plane that is unauthenticated and that
+// `--allow-host` can bind beyond loopback.
+//
+// The pin is on the SIDE EFFECT, not on the status code: the directory the
+// request named is created here first, with a file in it, so a refusal that
+// arrived after refs.Reject's RemoveAll would be caught even though the
+// response body looked identical.
+func TestPostRejectRefusesAnOutDirectoryAndTouchesNothingBeforeItDoes(t *testing.T) {
+	cwd := threeFlowProject(t)
+	ts := newServer(t, cwd)
+
+	// The directory refs.Reject would have removed and recreated, standing
+	// where a caller pointed it: outside the project, with a file inside.
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "web__cart__"+runB)
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatalf("creating the victim directory: %v", err)
+	}
+	canary := filepath.Join(victim, "important.txt")
+	if err := os.WriteFile(canary, []byte("DO NOT DELETE"), 0o600); err != nil {
+		t.Fatalf("writing the canary: %v", err)
+	}
+
+	r := post(t, ts, "/api/queue/web/cart/reject", `{"out":`+strconv.Quote(outside)+`}`)
+	if r.status != http.StatusBadRequest {
+		t.Fatalf("a reject body carrying \"out\": status = %d, want 400\n%s", r.status, r.body)
+	}
+	msg, _ := r.json(t)["error"].(string)
+	if !strings.Contains(msg, `"out"`) || !strings.Contains(msg, ".retrace/repro") {
+		t.Fatalf("the refusal does not name the field or say where the bundle actually goes: %q", msg)
+	}
+
+	// NOTHING WAS REMOVED. This is the assertion the ruling is about: a
+	// refusal that ran after the RemoveAll would answer 400 too.
+	b, err := os.ReadFile(canary)
+	if err != nil || string(b) != "DO NOT DELETE" {
+		t.Fatalf("the directory the request named was deleted or rewritten before the refusal: %v %q", err, b)
+	}
+	// And nothing was created — not the bundle at the named path, and not
+	// the bundle at the server's own default either. The refusal precedes
+	// every write on this path, including the diff images summaryFor
+	// generates on its way past.
+	for _, p := range []string{
+		filepath.Join(outside, "web__cart__"+runB, "manifest.json"),
+		filepath.Join(cwd, ".retrace", "repro"),
+		filepath.Join(cwd, ".retrace", "diffs"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("%s exists — the refusal happened after the filesystem work, not before it", p)
+		}
+	}
+
+	// The over-refusal mirror: the same verb WITHOUT "out" still succeeds,
+	// and still writes — where the server chose, under the project it was
+	// started in. A handler that refused every reject body would satisfy
+	// everything above.
+	doc := mustOK(t, post(t, ts, "/api/queue/web/cart/reject", ""), "POST reject with no out")
 	dir, _ := doc["repro"].(map[string]any)["dir"].(string)
-	rel, err := filepath.Rel(out, dir)
+	want := filepath.Join(cwd, ".retrace", "repro")
+	rel, err := filepath.Rel(want, dir)
 	if err != nil || strings.HasPrefix(rel, "..") {
-		t.Fatalf("reject wrote the repro bundle to %q, which is not under the --out the caller named (%q)", dir, out)
+		t.Fatalf("reject wrote the repro bundle to %q, which is not under the server's own %q", dir, want)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
-		t.Fatalf("the repro bundle named under --out is not on disk: %v", err)
+		t.Fatalf("the repro bundle is not on disk: %v", err)
 	}
+	// An empty "out" is not a caller asking for anything, so it is not
+	// refused: the refusal is on the value, not on the key's presence in a
+	// serialiser that always emits it.
+	mustOK(t, post(t, ts, "/api/queue/web/cart/reject", `{"out":""}`), "POST reject with an empty out")
 }
 
 // A flow with a committed reference bundle and no local run directory is

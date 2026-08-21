@@ -211,6 +211,29 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// rejectRequest is the optional body of POST .../reject.
+//
+// Out exists to be REFUSED, exactly as ruleRequest's Scope and Flow do, and
+// for a sharper reason (R-P). refs.Reject joins OutDir into a path and then
+// os.RemoveAll's it before writing (refs.go:732-742); App, Flow and RunID
+// all go through runs.ValidateComponents on the way there and OutDir does
+// not — and it needs no traversal to escape, because filepath.Join honours
+// an absolute path. Honouring a request-supplied Out would therefore make
+// this verb an arbitrary-directory delete-and-write primitive on an
+// UNAUTHENTICATED control plane that `--allow-host` can bind wide (R-K).
+//
+// The fix is to decline the input, not to sanitise it: rejecting absolute
+// paths, rejecting "..", confining under a root — that is a class of fix
+// notorious for being almost right, and here there is the option of not
+// accepting the value at all. Do not validate what you can decline to
+// accept. The server chooses the directory itself, deterministically,
+// under .retrace/ in the project it was started in.
+//
+// `retrace ref reject --out DIR` keeps the flag: the operator typing it is
+// standing in the project and is already trusted with rm. This is not the
+// two-faces-of-one-verb divergence R-N rules against — the CLI and the REST
+// call write the same bundle by the same code, and the flag that differs is
+// about who chose the path, not about what the operation can express.
 type rejectRequest struct {
 	Run string `json:"run"`
 	Out string `json:"out"`
@@ -223,6 +246,17 @@ func (s *server) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 	var req rejectRequest
 	if !decodeBody(w, r, &req) {
+		return
+	}
+	// BEFORE anything touches the filesystem — before FindRun, before
+	// summaryFor writes a diff image, and long before refs.Reject removes
+	// and recreates a directory. A refusal that merely changed the response
+	// after the RemoveAll had already run would be no refusal at all.
+	if strings.TrimSpace(req.Out) != "" {
+		writeErr(w, http.StatusBadRequest,
+			"\"out\" is not a dimension this endpoint accepts, and that is deliberate: it names a directory this server would then DELETE and write into, chosen by whoever sent the request rather than by the operator who started the server. "+
+				"This control plane is unauthenticated and `retrace serve --addr` can be bound beyond loopback, so honouring it would be an arbitrary-directory delete-and-write. "+
+				"The repro bundle is written under .retrace/repro/ in the project this server was started in; re-send without \"out\", or use `retrace ref reject --out DIR` at the CLI, where the operator typing the path is standing in the project.")
 		return
 	}
 	sel := req.Run
@@ -249,9 +283,12 @@ func (s *server) handleReject(w http.ResponseWriter, r *http.Request) {
 		warning = "no summary.json in this repro bundle — " + err.Error()
 	}
 
+	// No OutDir: refs.Reject defaults to <Cwd>/.retrace/repro, which is the
+	// point of R-P — the directory is the server's decision, derived from
+	// the project it was started in and from nothing the caller sent.
 	res, err := refs.Reject(refs.RejectOptions{
 		Cwd: d.Cwd, RunsRoot: runs.RunsRoot(d.Cwd), App: app, Flow: flow, RunID: runID,
-		OutDir: req.Out, Summary: summary,
+		Summary: summary,
 	})
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
