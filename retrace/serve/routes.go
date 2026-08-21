@@ -18,6 +18,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
+	"github.com/caribou-crew/ensemble/retrace/serve/ui"
 )
 
 // routes registers the REST surface, and it is the INVENTORY the route test
@@ -518,10 +519,21 @@ func checkpointNamed(s diff.Summary, name string) (diff.CheckpointVerdict, bool)
 
 // --- ui -----------------------------------------------------------------
 
-// handleUI serves the review UI at every non-/api path. Task 15 replaces
-// this body with the embedded retrace-ui bundle (an SPA fallback, the shape
-// ensemble/server/ui already has); the route exists now so the dispatch in
-// New — and the API's 405s that depend on it — are pinned from the start.
+// uiHandler is the embedded review UI, built once: ui.Handler walks the
+// embedded FS to build its file server, and doing that per request would be
+// the same work on every page load.
+var uiHandler = ui.Handler()
+
+// handleUI serves the review UI at every non-/api path — the retrace-ui
+// bundle embedded by retrace/serve/ui, as an SPA fallback so that
+// /?app=web&flow=checkout survives a hard refresh.
+//
+// It stays HERE, in the dispatch New makes, and is NOT registered as a
+// "GET /" pattern in the API mux: a catch-all in that mux would match every
+// API path no route matched, so GET on a POST-only verb would answer 200
+// carrying the app shell instead of ServeMux's 405, and an agent — the other
+// half of this API-first surface — would read HTML as success. See routes'
+// doc comment.
 //
 // GET and HEAD only: a POST to the app shell is not a page load, and
 // answering it 200 would make "the verb you used is not this route's verb"
@@ -532,9 +544,7 @@ func (s *server) handleUI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "the review UI answers GET and HEAD only")
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "retrace review server %s\n\nThe review UI is not built into this binary yet; the REST surface is at /api/queue.\n", s.deps().Version)
+	uiHandler.ServeHTTP(w, r)
 }
 
 // --- shared -------------------------------------------------------------
