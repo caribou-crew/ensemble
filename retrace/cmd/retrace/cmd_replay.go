@@ -253,36 +253,19 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 // exactly as it is: defence in depth for the Host header on a loopback
 // bind, not a licence to offer this one.
 func requireLoopback(addr string) error {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	// The determination itself lives in loopbackAddr (cmd_serve.go), which
+	// `serve` also consults — for a different DECISION (it may bind wide,
+	// behind an explicit --allow-host) but off the same fact. Two copies of
+	// "is this loopback" is two places for the 0.0.0.0 case, the name-that-
+	// resolves-both-ways case, or the IPv6 case to be got right once and
+	// wrong once. The refusal below, and its wording, stay here: they are
+	// this command's policy, not a shared one.
+	loopback, err := loopbackAddr(addr)
 	if err != nil {
-		return fmt.Errorf("--listen %q is not a host:port address: %v", addr, err)
+		return fmt.Errorf("--listen %v", err)
 	}
-	refuse := func() error {
+	if !loopback {
 		return fmt.Errorf("--listen %s is not a loopback address — a replay server answers with recorded traffic, which carries whatever the bundle recorded (tokens, cookies, personal data), so it binds 127.0.0.1 only; reach it from another host with an SSH tunnel (`ssh -L 9000:127.0.0.1:9000 host`) or a port-forward, not by widening the bind", addr)
-	}
-	// An empty host is 0.0.0.0/[::] — every interface. It is the widest
-	// bind there is, so it is refused rather than read as "unspecified,
-	// probably fine": the zero value here must be the refusing one.
-	if strings.TrimSpace(host) == "" {
-		return refuse()
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		if !ip.IsLoopback() {
-			return refuse()
-		}
-		return nil
-	}
-	// A NAME (localhost, or something that merely looks like it). Every
-	// address it resolves to must be loopback — one non-loopback answer is
-	// a bind on a real interface, whatever the name suggested.
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
-		return fmt.Errorf("--listen %s: cannot resolve %q, and an address that does not resolve cannot be shown to be loopback: %v", addr, host, err)
-	}
-	for _, ip := range ips {
-		if !ip.IsLoopback() {
-			return refuse()
-		}
 	}
 	return nil
 }
