@@ -12,7 +12,20 @@ import (
 // contain a real "$" isn't mistaken for a reference) and "${VAR}" /
 // "${VAR:-default}" (bash's ":-" operator: default applies when VAR is
 // unset OR set-but-empty, not only when it's absent).
+//
+// Only the braced form is recognized at this, top level — deliberately not
+// bare "$VAR" — because ensemble.yaml's `run:` commands routinely contain
+// legitimate shell-native "$VAR" text (e.g. `run: "$JAVA_HOME/bin/java
+// -jar app.jar"`) that's meant to be expanded by the shell when the
+// service actually starts, not by ensemble at config-load time. Bare form
+// IS supported, narrowly, inside a ${...:-default} fallback — see
+// expandDefault — since that's exactly where "$HOME/some/path"-style
+// defaults are wanted and there's no shell downstream to do it instead.
 var envPattern = regexp.MustCompile(`\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}`)
+
+// bareVarPattern matches "$$" and bare "$VAR" — used only by expandDefault,
+// never at the top level (see envPattern's comment for why).
+var bareVarPattern = regexp.MustCompile(`\$\$|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
 // expandEnvVars substitutes "${VAR}"/"${VAR:-default}" references in data
 // (ensemble.yaml's raw bytes, before YAML parsing — the same approach
@@ -38,16 +51,48 @@ func expandEnvVars(data []byte, lookup func(string) (string, bool)) ([]byte, err
 		if v, ok := lookup(name); ok && v != "" {
 			return v
 		}
-		if hasDefault {
-			return def
+		if !hasDefault {
+			firstErr = fmt.Errorf("env var %q is not set and has no default (use ${%s:-default} to allow one)", name, name)
+			return match
 		}
-		firstErr = fmt.Errorf("env var %q is not set and has no default (use ${%s:-default} to allow one)", name, name)
-		return match
+		expanded, err := expandDefault(def, lookup)
+		if err != nil {
+			firstErr = err
+			return match
+		}
+		return expanded
 	})
 	if firstErr != nil {
 		return nil, firstErr
 	}
 	return []byte(result), nil
+}
+
+// expandDefault resolves plain "$VAR" references (bash's ":-" default
+// doesn't itself support "${...}" braces, so neither does this — see
+// envPattern's comment) inside a ${OUTER:-default} fallback, e.g. the
+// "$HOME" in ${LOCAL_DIR:-$HOME/dev/local}. A referenced var with nothing
+// to resolve it is an error, same as an unfilled top-level ${VAR}.
+func expandDefault(def string, lookup func(string) (string, bool)) (string, error) {
+	var firstErr error
+	out := bareVarPattern.ReplaceAllStringFunc(def, func(match string) string {
+		if firstErr != nil {
+			return match
+		}
+		if match == "$$" {
+			return "$"
+		}
+		name := match[1:]
+		if v, ok := lookup(name); ok && v != "" {
+			return v
+		}
+		firstErr = fmt.Errorf("env var %q is not set (referenced from a ${...:-%s} default)", name, def)
+		return match
+	})
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return out, nil
 }
 
 // loadDotEnv parses a simple .env file (KEY=VALUE per line; blank lines and
