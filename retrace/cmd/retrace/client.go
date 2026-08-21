@@ -10,10 +10,20 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 )
+
+// clientTimeout bounds a single HTTP round trip (including reading the
+// response body) as a last-resort backstop: every call site also carries
+// its own call-scoped context deadline (see capture/ensemble.go's
+// controlTimeout and Drain's per-poll timeout), but this catches anything
+// that reaches net/http without one. A control plane that accepts the TCP
+// connection and never writes a response byte must not be able to hang a
+// call forever — see Major 1 of the Task 5 fix-round-1 review.
+const clientTimeout = 30 * time.Second
 
 // Client is a thin REST client over ensemble's /api control plane, modeled
 // on ensemble/cmd/ensemble/client.go and holding the same discipline: the
@@ -34,12 +44,12 @@ type Client struct {
 // lives here (the CLI), so package capture never learns what HTTP is.
 var _ capture.EnsembleClient = (*Client)(nil)
 
-// NewClient targets baseURL (e.g. "http://127.0.0.1:4700"). No request
-// timeout is set on the underlying http.Client — callers control per-call
-// deadlines via ctx, and Drain's hop polls are already bounded by their own
-// window.
+// NewClient targets baseURL (e.g. "http://127.0.0.1:4700"). The underlying
+// http.Client carries clientTimeout as a backstop; callers additionally
+// control a tighter per-call deadline via ctx (Drain's hop polls are bounded
+// by their own window on top of this).
 func NewClient(baseURL string) *Client {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{}}
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: clientTimeout}}
 }
 
 func (c *Client) client() *http.Client {

@@ -3,14 +3,17 @@ package capture
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -55,11 +58,22 @@ type fakeEnsemble struct {
 	// of how many hops were ever served — the shape of a hop that landed
 	// after the drain window closed. A value, not a sleep.
 	overreport int
+	// ended models the one ensemble behaviour this task exists to defend
+	// against (core/proxy/session.go's SessionManager.End): once set, the
+	// session is gone from ensemble's point of view. SessionHops and
+	// EndSession both refuse afterwards (mirroring the real 404 "session
+	// %q not found" — see routes.go's handleSessionHops/handleSessionEnd),
+	// and push becomes a no-op — a fake that keeps serving hops for an
+	// ended session cannot fail when a caller ends the session too early.
+	ended bool
 }
 
 func (f *fakeEnsemble) push(h trace.Hop) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ended {
+		return
+	}
 	f.hops = append(f.hops, h)
 }
 
@@ -76,6 +90,9 @@ func (f *fakeEnsemble) StartSession(_ context.Context, id, entry string) (string
 func (f *fakeEnsemble) SessionHops(_ context.Context, id string) ([]trace.Hop, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ended {
+		return nil, errors.New(`404: session "x" not found`)
+	}
 	f.polls++
 	if f.polls == 1 && f.late != nil {
 		f.hops = append(f.hops, *f.late)
@@ -91,11 +108,15 @@ func (f *fakeEnsemble) SessionHops(_ context.Context, id string) ([]trace.Hop, e
 func (f *fakeEnsemble) EndSession(_ context.Context, id string) (EndReport, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ended {
+		return EndReport{}, errors.New(`409: session "x" already ended`)
+	}
 	f.endCalled, f.hopsAtEnd = true, len(f.hops)
 	n := len(f.hops)
 	if f.overreport > 0 {
 		n = f.overreport
 	}
+	f.ended = true
 	return EndReport{Hops: n, Verdict: trace.VerdictOK}, nil
 }
 
@@ -329,5 +350,139 @@ func TestAttachedWritesArePushedThroughRetracesOwnRedactor(t *testing.T) {
 		if strings.Contains(string(b), "secret-value") {
 			t.Fatalf("%s holds the plaintext secret; every write path redacts at capture", path)
 		}
+	}
+}
+
+// --- Major 1: bounded calls to a wedged control plane ---
+
+// wedgedEnsemble's StartSession blocks until ctx is canceled, simulating a
+// control plane that accepted the connection and never answered — the
+// shape the fix-round-1 review measured "still blocked after 5s" against.
+type wedgedEnsemble struct{ fakeEnsemble }
+
+func (w *wedgedEnsemble) StartSession(ctx context.Context, id, entry string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestStartAttachedIsBoundedAgainstAWedgedControlPlane(t *testing.T) {
+	start := time.Now()
+	_, err := StartAttached(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, &wedgedEnsemble{}, "bff")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("StartAttached against a wedged control plane returned nil error; want it bounded and erroring")
+	}
+	if elapsed > 7*time.Second {
+		t.Fatalf("StartAttached took %s against a wedged control plane; StartSession must be bounded by controlTimeout (%s), not context.Background()", elapsed, controlTimeout)
+	}
+}
+
+// hopsWedgedEnsemble starts normally (so Drain has a session to run
+// against) but wedges every SessionHops poll — isolating Drain's own
+// per-poll bound from StartAttached's.
+type hopsWedgedEnsemble struct{ fakeEnsemble }
+
+func (w *hopsWedgedEnsemble) SessionHops(ctx context.Context, id string) ([]trace.Hop, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestDrainIsBoundedAgainstAWedgedControlPlane(t *testing.T) {
+	s, err := StartAttached(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, &hopsWedgedEnsemble{}, "bff")
+	if err != nil {
+		t.Fatalf("StartAttached: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	start := time.Now()
+	drainErr := s.Drain(context.Background())
+	elapsed := time.Since(start)
+	if drainErr == nil {
+		t.Fatal("Drain against a wedged control plane returned nil error; want it bounded and erroring")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Drain took %s against a wedged control plane; each poll must be bounded by its own %s deadline, not only between polls", elapsed, drainWindow)
+	}
+}
+
+// --- Major 2: EndSession must run even when writing hops fails ---
+
+func TestCloseStillEndsTheSessionWhenWritingHopsFails(t *testing.T) {
+	f := &fakeEnsemble{}
+	f.push(hop(1, "edge"))
+	s := attachedSessionFor(t, f)
+	if err := s.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	// Force writeHops to fail: point HopsPath at a directory that does not
+	// exist, so os.Create returns ENOENT before Close ever reaches
+	// EndSession under the old (pre-fix) ordering.
+	s.Paths.HopsPath = filepath.Join(t.TempDir(), "no-such-dir", "hops.jsonl")
+
+	err := s.Close()
+	if err == nil {
+		t.Fatal("Close with an unwritable HopsPath returned nil error; the write failure must be visible to the caller")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.endCalled {
+		t.Fatal("EndSession was never called after writeHops failed — the session leaks on ensemble (client-edge listener + m.sessions entry, Major 2)")
+	}
+}
+
+// --- Major 5, second clause: bodyLimit's non-positive normalization ---
+
+// cmd_run.go never sets Options.MaxBody, so it is always 0 in production.
+// Deleting this normalization silently drops trace.Redactor's cap (which
+// reads a non-positive limit as "no cap at all") and every attached
+// recording would write response bodies to disk uncapped.
+func TestBodyLimitNormalizesNonPositiveToTheProxyCap(t *testing.T) {
+	for _, n := range []int{0, -1, -1000} {
+		if got := bodyLimit(n); got != proxy.CaptureLimit {
+			t.Fatalf("bodyLimit(%d) = %d, want proxy.CaptureLimit (%d)", n, got, proxy.CaptureLimit)
+		}
+	}
+	if got := bodyLimit(42); got != 42 {
+		t.Fatalf("bodyLimit(42) = %d, want the explicit positive value passed through unchanged", got)
+	}
+}
+
+// --- Minor 6: WatchProxy's attached guard, proven with a live listener ---
+
+// TestAttachedSessionsNeverReportAProxyFailure's dial to 127.0.0.1:0 fails
+// fast whether or not the guard exists, so it cannot distinguish pass from
+// fail. This test stands a live listener in for ensemble's edge instead: if
+// WatchProxy's attached guard were ever removed, it would try to dial that
+// listener, and the dial would be observed below.
+func TestWatchProxyNeverDialsEnsemblesEdgeEvenWhenSomethingIsListening(t *testing.T) {
+	f := &fakeEnsemble{}
+	s := attachedSessionFor(t, f)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	dialed := make(chan struct{}, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			conn.Close()
+			select {
+			case dialed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	s.ProxyURL = "http://" + ln.Addr().String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	s.WatchProxy(ctx)
+
+	select {
+	case <-dialed:
+		t.Fatal("WatchProxy dialed ensemble's client edge; attached sessions must never probe it")
+	default:
 	}
 }

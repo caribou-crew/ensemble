@@ -140,7 +140,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	// never made, which is exactly the "unreachable and fine compare equal"
 	// trap the zero-value constraint is about.
 	var sess *capture.Session
-	if !*noEnsemble && cfg.Entry != "" {
+	switch {
+	case *noEnsemble:
+		// Explicit escape hatch — the user asked for standalone, so no note.
+	case cfg.Entry == "":
+		// retrace.yaml needing `entry:` is exactly the thing a new user
+		// forgets, and this is otherwise the one attach-vs-standalone
+		// decision that produced no signal at all (the manifest itself is
+		// still honest: mode: standalone). No health probe here — deciding
+		// to skip the attempt costs nothing and needs no network call.
+		fmt.Fprintf(stderr, "retrace: no `entry:` configured in retrace.yaml — recording the client edge only\n")
+	default:
 		c := NewClient(*ensembleURL)
 		hctx, cancel := context.WithTimeout(context.Background(), ensembleHealthTimeout)
 		healthErr := c.Health(hctx)
@@ -269,12 +279,17 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	//
 	// The order is the whole point of the attached path: hops are recorded
 	// at completion and ensemble drops a hop whose session has already
-	// ended, so every downstream call still in flight when the test command
-	// exited is lost unless we wait for the count to settle first. Drain is
-	// a no-op standalone. A drain error is a note, never a lost recording —
-	// whatever did arrive is still written by Close.
+	// ended, so a downstream call still in flight when the test command
+	// exited would otherwise be lost. Waiting for the count to settle first
+	// NARROWS that loss window; it does not close it — a hop routed after
+	// EndSession itself is still dropped, silently and uncounted, however
+	// long Drain waited (see capture.Session.Drain's doc). Drain is a no-op
+	// standalone. A drain error is noted (both to stderr and to the durable
+	// trust record below), never a lost recording — whatever did arrive is
+	// still written by Close.
 	if err := s.Drain(context.Background()); err != nil {
 		fmt.Fprintf(o.Stderr, "retrace: draining ensemble hops failed (%v) — the recording may be truncated\n", err)
+		s.NoteDrainFailure(err)
 	}
 	// Close flushes wire.jsonl and, in attached mode, writes hops.jsonl and
 	// wire.jsonl and then ends the ensemble session.
@@ -319,7 +334,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Checkpoints: checkpoints,
 		Groups:      groups,
 		Capture:     trust,
-		Wire:        runs.Counts{Calls: len(wireHops)},
+		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},
 		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
 		// Retrace is the recording binary's own version, from main.version
 		// (the `var version = "dev"` in main.go, stamped by -ldflags at
@@ -337,7 +352,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	// recorded", present-and-zero means "the chain was recorded and was
 	// empty". Task 5 sets it; standalone leaves it nil.
 	if s.Mode == runs.ModeEnsemble {
-		m.Hops = &runs.Counts{Calls: len(hops)}
+		m.Hops = &runs.Counts{Calls: len(hops), Recorded: true}
 	}
 	return m, runs.WriteManifest(s.Paths, &m)
 }

@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -198,6 +201,96 @@ func TestClientTranslatesTheServersErrorConvention(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `entry service "bff" not found`) {
 		t.Fatalf("error = %q, want the server's own message", err)
+	}
+}
+
+// Major 5: the zero-value clause. A 200 whose body omits edgeAddr is the
+// wire shape of "ensemble accepted the session but told us nothing usable" —
+// treating an empty edgeAddr as permissive would produce ProxyURL
+// "http://", and every request from the test command would die with
+// "http: no Host in request URL" while the manifest still said mode:
+// ensemble.
+func TestStartSessionRejectsAResponseWithNoEdgeAddr(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1"})
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL).StartSession(context.Background(), "run-1", "bff")
+	if err == nil {
+		t.Fatal("StartSession accepted a response with no edgeAddr")
+	}
+}
+
+// --- Major 1, full stack: bounded calls through the real net/http client ---
+//
+// These reproduce the review's probes A and B: a handler that accepts the
+// TCP connection and never writes a response byte. The capture-package
+// tests (ensemble_test.go) pin the same bound through an in-process fake;
+// these prove it end to end through client.go's actual http.Client.
+//
+// Deliberately NOT httptest.NewServer: its Close waits (via a WaitGroup)
+// for every outstanding handler to return, and canceling a client's request
+// context does not reliably cancel r.Context() on the still-blocked
+// handler goroutine for a request that never got a response — so a
+// deferred srv.Close() here would itself hang for the rest of the test
+// binary's life. wedgedServer instead owns a raw listener that Cleanup
+// simply closes (no wait), leaving the (harmless, single) blocked handler
+// goroutine to die with the test process.
+func wedgedServer(t *testing.T, mux *http.ServeMux) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = ln.Close() })
+	return "http://" + ln.Addr().String()
+}
+
+func TestStartAttachedDoesNotHangOnAWedgedControlPlane(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // accepts the connection, never answers
+	})
+	url := wedgedServer(t, mux)
+
+	start := time.Now()
+	_, err := capture.StartAttached(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, NewClient(url), "bff")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("StartAttached against a wedged control plane returned nil error; want it bounded and erroring")
+	}
+	if elapsed > 8*time.Second {
+		t.Fatalf("StartAttached took %s against a wedged control plane (a POST that never answers); it must be bounded by a context deadline, not context.Background()", elapsed)
+	}
+}
+
+func TestDrainDoesNotHangOnAWedgedControlPlane(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:1"})
+	})
+	mux.HandleFunc("GET /api/sessions/{id}/hops", func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // accepts the connection, never answers
+	})
+	url := wedgedServer(t, mux)
+
+	s, err := capture.StartAttached(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, NewClient(url), "bff")
+	if err != nil {
+		t.Fatalf("StartAttached: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	start := time.Now()
+	drainErr := s.Drain(context.Background())
+	elapsed := time.Since(start)
+	if drainErr == nil {
+		t.Fatal("Drain against a wedged hops endpoint returned nil error; want it bounded and erroring")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Drain took %s against a wedged hops endpoint; the drain window must bind during a poll, not only between polls", elapsed)
 	}
 }
 
