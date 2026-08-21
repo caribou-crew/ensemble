@@ -576,3 +576,44 @@ func TestExportShipsTheSameSummaryTheReviewApiServes(t *testing.T) {
 		t.Fatalf("summary.json is not the document the review API serves:\n got: %s\nwant: %s", gotJSON, wantJSON)
 	}
 }
+
+// An app whose flow listing fails is a row BuildQueue emits with no flow at
+// all — brokenItem(app, "", err). It is a reachable state (an unreadable app
+// directory), and it must not take the whole report down: one app that
+// cannot be read is not a reason to publish nothing, and a row silently
+// missing from a report is indistinguishable from a flow that passed.
+//
+// It also has no directory the export can safely name, so it appears on the
+// overview and links to nothing — rather than linking to a page that is not
+// there, which under file:// is a dead click with no explanation.
+func TestExportKeepsARowForAnAppWhoseFlowsCannotBeListed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode bits do not deny anything")
+	}
+	cwd := threeFlowProject(t)
+	appDir := filepath.Join(runs.RunsRoot(cwd), "web")
+	if err := os.Chmod(appDir, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(appDir, 0o755) })
+
+	res, out := exportTo(t, cwd, "", "")
+	index := readText(t, out, "index.html")
+	row := rowFor(t, index, "web/")
+	if !strings.Contains(row, "could not be evaluated") {
+		t.Fatalf("the unreadable app's row does not say it was never compared:\n%s", row)
+	}
+	if strings.Contains(row, "<a class=\"row__flow\"") {
+		t.Fatalf("the unreadable app's row links to a page that was never written:\n%s", row)
+	}
+	if strings.Contains(row, "row__counts") || strings.Contains(row, "row__runs") {
+		t.Fatalf("a row for an app nobody could read prints measurements:\n%s", row)
+	}
+	// The rest of the project still published.
+	if _, err := os.Stat(filepath.Join(out, "admin", "login", "index.html")); err != nil {
+		t.Fatalf("one unreadable app took the whole report down: %v", err)
+	}
+	if res.ExitCode != 2 {
+		t.Fatalf("exit code = %d, want 2 — an app nobody could read is not a passing export", res.ExitCode)
+	}
+}
