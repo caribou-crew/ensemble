@@ -90,22 +90,23 @@ func CheckOpenAPI(hops []trace.Hop, specPath string) ([]ConformanceFinding, erro
 }
 
 // matchOpenAPIPath finds the paths entry matching urlPath: a literal
-// (exact-string) match wins first, then the most specific templated match
-// — fewest "{...}" segments, i.e. the most literal segments pinned — where
-// each "{...}" pattern segment matches any one path segment.
+// (exact-string) match wins first; otherwise every templated pattern that
+// matches is ranked by pathPatternIsMoreSpecific's three-key total order
+// (fewest template segments, then leftmost literal, then sorted-key
+// order), where each "{...}" pattern segment matches any one path segment.
 //
 // paths is a Go map, so iterating it directly is a genuine bug, not a
-// style nit: whenever two templated patterns of the same segment count
-// both match (e.g. "/users/{id}" and "/{entity}/{id}" both match
-// "/users/42"), Go's randomized map-iteration order would return a
-// different winner — and with it a different operation, responses map,
-// and Detail string — on every run of the same binary against the same
-// input. A CI gate that flips at random on unchanged input is worse than
-// one that is simply wrong: the first flake teaches the team to ignore
-// the plane. Sorting candidates and picking by specificity (ties broken
-// by the sorted key order, itself deterministic) makes the result a pure
-// function of (spec, hop) again, and happens to match OpenAPI's own
-// concrete-before-templated resolution convention.
+// style nit: whenever two templated patterns both match (e.g. "/users/{id}"
+// and "/{entity}/{id}" both match "/users/42"), Go's randomized
+// map-iteration order would return a different winner — and with it a
+// different operation, responses map, and Detail string — on every run of
+// the same binary against the same input. A CI gate that flips at random on
+// unchanged input is worse than one that is simply wrong: the first flake
+// teaches the team to ignore the plane. Sorting the candidate keys before
+// iterating, and ranking them with an explicit total order rather than
+// "first match wins" over that sorted iteration, makes the result a pure
+// function of (spec, hop) — see pathPatternIsMoreSpecific for why sorted
+// key order alone is not that function.
 func matchOpenAPIPath(paths map[string]any, urlPath string) (pattern string, item map[string]any, ok bool) {
 	bare := stripQueryAndFragment(urlPath)
 
@@ -122,7 +123,7 @@ func matchOpenAPIPath(paths map[string]any, urlPath string) (pattern string, ite
 	}
 	sort.Strings(keys)
 
-	bestSpecificity := -1
+	var bestSegs []string
 	for _, p := range keys {
 		m, isMap := paths[p].(map[string]any)
 		if !isMap {
@@ -132,13 +133,67 @@ func matchOpenAPIPath(paths map[string]any, urlPath string) (pattern string, ite
 		if !templatePathMatch(pSegs, segs) {
 			continue
 		}
-		spec := countTemplateSegments(pSegs)
-		if bestSpecificity == -1 || spec < bestSpecificity {
+		if !ok || pathPatternIsMoreSpecific(pSegs, bestSegs) {
 			pattern, item, ok = p, m, true
-			bestSpecificity = spec
+			bestSegs = pSegs
 		}
 	}
 	return pattern, item, ok
+}
+
+// pathPatternIsMoreSpecific reports whether candidate ranks strictly ahead
+// of current under the three-key total order matchOpenAPIPath uses to pick
+// among templated patterns that all match the same URL. Both slices are
+// known equal length — templatePathMatch already checked that before
+// either was accepted as a candidate.
+//
+//  1. Fewer "{...}" segments wins — a pattern that pins more of the path
+//     literally is a closer match than one that leaves more of it open.
+//  2. Leftmost literal wins. Walking segments left to right, at the first
+//     position where the two patterns disagree (one literal, one
+//     template), the literal one wins. This is the key that makes the
+//     ranking a real routing rule instead of an accident of string
+//     sorting: sorted-key order alone picks the winner by comparing raw
+//     bytes — "{" is 0x7B, which sorts above every alphanumeric ASCII
+//     literal, so a literal segment happens to sort first only while every
+//     competing literal's first byte is below '{'. It is not: "/~user/user"
+//     against "/{tenant}/user" and "/~user/{id}" ties on key 1 (one
+//     template segment each), and ascending sort puts "/{tenant}/user"
+//     first ('{' 0x7B < '~' 0x7E) — sort order alone would pick the
+//     template over the literal. Key 2 picks "/~user/{id}" instead, correctly,
+//     because its segment 0 ("~user") is literal where "/{tenant}/user"'s
+//     is a template. Any non-ASCII literal segment (e.g. "/über/{id}")
+//     breaks the byte-sort coincidence the same way.
+//  3. Sorted-key ascending order, for two candidates identical in
+//     literal/template shape at every position — handled by NOT returning
+//     true here and leaving matchOpenAPIPath's already-sorted iteration
+//     order to decide. This is a live branch, not a theoretical one:
+//     "/{a}/orders" and "/{b}/orders" both match "/x/orders" and are
+//     template-at-every-position, so neither key 1 nor key 2 separates
+//     them. There is no OpenAPI rule for ranking two same-shape
+//     all-template patterns against each other, so the choice here is
+//     arbitrary — but it is stable, because sort.Strings makes it a pure
+//     function of the spec's own path strings rather than of Go's
+//     randomized map order.
+func pathPatternIsMoreSpecific(candidate, current []string) bool {
+	candidateSpec := countTemplateSegments(candidate)
+	currentSpec := countTemplateSegments(current)
+	if candidateSpec != currentSpec {
+		return candidateSpec < currentSpec
+	}
+	for i := range candidate {
+		candidateIsTemplate := isTemplateSegment(candidate[i])
+		currentIsTemplate := isTemplateSegment(current[i])
+		if candidateIsTemplate == currentIsTemplate {
+			continue
+		}
+		return !candidateIsTemplate // literal (false) beats template (true)
+	}
+	return false // identical shape: key 3 (sorted-key order) decides, not this function
+}
+
+func isTemplateSegment(s string) bool {
+	return strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}")
 }
 
 func templatePathMatch(pattern, path []string) bool {
@@ -146,7 +201,7 @@ func templatePathMatch(pattern, path []string) bool {
 		return false
 	}
 	for i, seg := range pattern {
-		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+		if isTemplateSegment(seg) {
 			continue
 		}
 		if seg != path[i] {
@@ -159,7 +214,7 @@ func templatePathMatch(pattern, path []string) bool {
 func countTemplateSegments(segs []string) int {
 	n := 0
 	for _, s := range segs {
-		if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+		if isTemplateSegment(s) {
 			n++
 		}
 	}

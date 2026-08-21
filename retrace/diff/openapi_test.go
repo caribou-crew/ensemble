@@ -199,6 +199,110 @@ func TestALiteralPathWinsOverATemplateThatAlsoMatches(t *testing.T) {
 	}
 }
 
+// TestLeftmostLiteralSegmentWinsOverATemplateAtTheSamePosition pins R1
+// (fix round 2): two templated patterns tie on specificity (one template
+// segment each) — "/{tenant}/user" and "/~user/{id}" both match
+// "/~user/user". Sorted-key order ALONE would pick "/{tenant}/user": '{' is
+// 0x7B, which sorts below '~' (0x7E), so ascending sort.Strings puts the
+// template-first pattern first. That is the wrong answer — the byte-sort
+// coincidence the doc comment on pathPatternIsMoreSpecific describes. The
+// correct rule (leftmost literal wins) picks "/~user/{id}", whose segment 0
+// is the literal "~user" where "/{tenant}/user"'s segment 0 is a template.
+// Proven by content, the same way TestALiteralPathWinsOverATemplateThatAlsoMatches
+// is: the two patterns document different required fields, so only the
+// actually-selected pattern's requirement is enforced.
+func TestLeftmostLiteralSegmentWinsOverATemplateAtTheSamePosition(t *testing.T) {
+	specPath := writeTempSpec(t, `{
+		"paths": {
+			"/{tenant}/user": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["tenantField"] }
+								}
+							}
+						}
+					}
+				}
+			},
+			"/~user/{id}": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["idField"] }
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"components": { "schemas": {} }
+	}`)
+
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/~user/user", 200, `{"idField":1}`)}, specPath)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("the leftmost-literal pattern /~user/{id} must win over /{tenant}/user; got %+v", findings)
+	}
+}
+
+// TestAllTemplateTieFallsBackToSortedKeyOrder pins key 3 of
+// pathPatternIsMoreSpecific: "/{a}/orders" and "/{b}/orders" both match
+// "/x/orders", tie on specificity (one template segment each) AND on
+// leftmost-literal (both patterns are template-at-every-position, so key 2
+// never finds a differing literal/template position). This is a live
+// branch — not the "should not occur for well-formed specs" case it might
+// look like — and the ruling is that key 3 (sorted-key ascending order)
+// decides it, arbitrarily but stably: "/{a}/orders" sorts first.
+func TestAllTemplateTieFallsBackToSortedKeyOrder(t *testing.T) {
+	specPath := writeTempSpec(t, `{
+		"paths": {
+			"/{a}/orders": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["aField"] }
+								}
+							}
+						}
+					}
+				}
+			},
+			"/{b}/orders": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["bField"] }
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"components": { "schemas": {} }
+	}`)
+
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/x/orders", 200, `{"aField":1}`)}, specPath)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("an all-template tie must fall back to sorted-key order, picking /{a}/orders (sorts before /{b}/orders); got %+v", findings)
+	}
+}
+
 func TestDefaultResponseCoversAnUndocumentedStatus(t *testing.T) {
 	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/orders", 503, `{"orderId":"o1"}`)}, openAPIFixture)
 	if err != nil {
