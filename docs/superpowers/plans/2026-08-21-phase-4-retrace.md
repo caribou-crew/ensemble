@@ -5028,7 +5028,22 @@ git commit -m "feat(retrace): wire diff with similarity pairing, field-level rul
       Method string `json:"method"`
       Path   string `json:"path"`
       Status int    `json:"status"`
-      Kind   string `json:"kind"` // "unknown-path"|"unknown-method"|"undocumented-status"|"missing-required-field"
+      // Kind: "unknown-path" | "unknown-method" | "undocumented-status" |
+      //       "missing-required-field" | "unchecked"
+      //
+      // "unchecked" was added after Task 9's review and is load-bearing: it
+      // is how the checker says "I could not verify this", which must never
+      // serialize identically to "this passed". Emit it for a `$ref` that
+      // cannot be resolved (the doc comment always promised
+      // checked-what-we-could, never a silent pass), for a response body
+      // that fails json.Unmarshal, and for a TRUNCATED body — trace.Redactor
+      // caps bodies at maxBody and sets Payload.Truncated, so every
+      // redaction-truncated response would otherwise report as fully
+      // conformant. Detail carries what could not be checked and why.
+      //
+      // Task 10: "unchecked" is reported and NEVER satisfies conformance.
+      // It must not count toward a pass in the exit-code contract.
+      Kind   string `json:"kind"`
       Detail string `json:"detail"`
   }
   func CheckOpenAPI(hops []trace.Hop, specPath string) ([]ConformanceFinding, error)
@@ -5169,8 +5184,26 @@ func TestDeriveBudgetUsesObservedMaxTimesMargin(t *testing.T) {
 func TestDeriveBudgetRejectsAnEmptySample(t *testing.T)
 func TestAnUnsetBudgetReportsUnsetNotOk(t *testing.T)
 ```
-`TotalCallDurationMs` sums `hop.T.DoneMs`. `DerivePerfBudget` defaults
-`marginFactor` to 1.5 when zero.
+`TotalCallDurationMs` sums `hop.T.DoneMs` **over folded logical hops —
+`trace.CollapseRelays(hops, true)`, taking `LogicalHop.Hop.T.DoneMs`, the
+outer leg.** `DerivePerfBudget` defaults `marginFactor` to 1.5 when zero.
+
+**Corrected after Task 9's review; the earlier text said to sum raw legs and
+that was wrong.** `core/trace`'s collapse code documents the nesting —
+`out.T.DoneMs = l.Hop.T.DoneMs // the outer leg's wall clock contains the
+inner` — so on a `client → edge → bff` topology the client→edge leg already
+contains the edge→bff leg. Measured: the same one logical call totals 100
+direct and **205 relayed**. Putting a transparent relay in front of a
+service roughly doubles the measured total and trips the budget, which is
+exactly the false-positive class Step 1's relay-folding ruling exists to
+eliminate — it folded routes and service counts and then left the perf plane
+summing raw legs.
+
+**Always fold; do NOT add a `collapse bool` here.** `CollapseRelays` is the
+identity on a run with no relays, so folding is universally safe, and there
+is no legitimate reason to sum nested legs — double-counting is a bug, not a
+preference. An option whose wrong setting silently produces false budget
+failures should not exist when one answer is always right.
 
 - [ ] **Step 4: openapi.go, test first**
 
@@ -6879,7 +6912,7 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
     requiredFailures?: RouteFailure[]; hopRequireConfigured: boolean }
   export interface PerfResult { status: 'ok'|'over'|'unset'; measuredMs: number; budgetMs: number }
   export interface ConformanceFinding { method: string; path: string; status: number;
-    kind: 'unknown-path'|'unknown-method'|'undocumented-status'|'missing-required-field'; detail: string }
+    kind: 'unknown-path'|'unknown-method'|'undocumented-status'|'missing-required-field'|'unchecked'; detail: string }
   export interface Summary { schema: string; app: string; flow: string; verdict: 'pass'|'changed'|'failed';
     a: RunRef; b: RunRef;
     checkpoints: CheckpointVerdict[];
