@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -450,10 +451,16 @@ func runBrokenRecording(t *testing.T, bin, cwd, upstreamURL string) string {
 //
 // The defaults are asymmetric on purpose: `--a` is the accepted REFERENCE
 // and `--b` is the LATEST run. Swapping them, or dropping either guard, is
-// invisible to a test that names both sides. Resolving "reference" is Task
-// 11's; until it lands the selector reports "none", and the contract this
-// pins is that "none" is refused with a message telling the operator what
-// to do — not passed into Build to fail later as an unreadable directory.
+// invisible to a test that names both sides. The contract pinned here is
+// that "none" is refused with a message telling the operator what to do —
+// not passed into Build to fail later as an unreadable directory.
+//
+// Task 11 made "reference" resolve for real (refs.Resolve: the committed
+// bundle, else the newest ELIGIBLE run), so producing a "none" now takes a
+// flow whose runs are all ineligible. `git init` with nothing committed is
+// the cheapest honest way: every run records Git.Dirty, and a dirty tree is
+// not reproducible from a sha. That is a real ineligibility reason, not a
+// stub — which is the point of keeping this test after the stub is gone.
 func TestEachSelectorDefaultsToItsOwnSideOfTheComparison(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"ok":true}`))
@@ -463,6 +470,7 @@ func TestEachSelectorDefaultsToItsOwnSideOfTheComparison(t *testing.T) {
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "app: web\n")
+	gitInitDirty(t, cwd)
 	aID := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
 	runOnce(t, bin, cwd, "web", "checkout", upstream.URL) // the "latest" run
 
@@ -501,4 +509,19 @@ func TestEachSelectorDefaultsToItsOwnSideOfTheComparison(t *testing.T) {
 			t.Fatalf("stderr = %q, want a real comparison against the latest run", res.stderr)
 		}
 	})
+}
+
+// gitInitDirty makes cwd a git repository with nothing committed, so
+// capture.GitInfo records Git.Dirty == true for every run recorded in it.
+// A dirty tree is not reproducible from a sha, so refs.Resolve rules every
+// such run ineligible and reports "none" — which is how a test reaches the
+// "no reference" arm now that the selector genuinely resolves.
+func gitInitDirty(t *testing.T, cwd string) {
+	t.Helper()
+	if out, err := exec.Command("git", "-C", cwd, "init").CombinedOutput(); err != nil {
+		t.Skipf("git init unavailable: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", cwd, "status", "--porcelain").Output(); err != nil || len(out) == 0 {
+		t.Fatalf("expected an untracked-file dirty tree, got %q (err %v)", out, err)
+	}
 }

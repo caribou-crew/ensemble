@@ -20,7 +20,7 @@ Usage:
   retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
-  retrace ref accept|reject|list --flow NAME [--app NAME] [--run SELECTOR]
+  retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
   retrace serve [--addr 127.0.0.1:4800] [--open]
   retrace export --out DIR [--flow NAME] [--app NAME]
   retrace --version
@@ -61,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRun(args[1:], stdout, stderr)
 	case "diff":
 		return cmdDiff(args[1:], stdout, stderr)
+	case "ref":
+		return cmdRef(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}

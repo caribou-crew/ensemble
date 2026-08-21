@@ -10,6 +10,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -22,10 +23,8 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	var (
 		flow = fs.String("flow", "", "flow name to diff (required)")
 		app  = fs.String("app", "", "app name (default: config app, else the directory name)")
-		// aSel defaults to "reference" — the accepted baseline bundle. Until
-		// Task 11 lands, that selector is a stub (see resolveSide) and
-		// always errors; pass an explicit run selector (an exact run id, a
-		// git sha prefix, or "latest") to compare two recorded runs today.
+		// aSel defaults to "reference" — the accepted baseline bundle, or
+		// the newest run eligible to stand in for one. See resolveSide.
 		aSel          = fs.String("a", "reference", "side A selector: \"reference\", \"latest\", an exact run id, or a git sha prefix")
 		bSel          = fs.String("b", "latest", "side B selector: \"latest\", an exact run id, or a git sha prefix")
 		asJSON        = fs.Bool("json", false, "emit the Summary as JSON on stdout")
@@ -62,15 +61,18 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
+	// "none" means "I could not compare", NEVER "nothing differed". Exit 3
+	// (could not evaluate), naming the verb that fixes it — never a diff
+	// against an empty directory, which would report every call as missing.
 	if a.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle: run `retrace ref accept` first")
+		return fail(stderr, "diff: no reference bundle for side a: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(cwd, appName, *flow), *flow)
 	}
 	b, err := resolveSide(cwd, appName, *flow, *bSel)
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
 	if b.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle: run `retrace ref accept` first")
+		return fail(stderr, "diff: no reference bundle for side b: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(cwd, appName, *flow), *flow)
 	}
 
 	opts, err := diff.OptionsFor(cfg, a.Manifest, b.Manifest)
@@ -126,13 +128,16 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 
 // resolveSide resolves one --a/--b selector to a RunRef.
 //
-// TODO(task-11): replace with refs.Resolve. Until then the default
-// selector errors — see Task 11, which owns this line.
+// "reference" goes through refs.Resolve — the committed bundle, else the
+// newest eligible run, else nothing with a reason. The returned Reference
+// maps onto a RunRef by copying Kind straight through: both use
+// "bundle" | "run" | "none", one vocabulary, nothing to translate.
 func resolveSide(cwd, app, flow, selector string) (diff.RunRef, error) {
-	if selector == "reference" {
-		return diff.RunRef{Kind: "none"}, nil
-	}
 	root := runs.RunsRoot(cwd)
+	if selector == "reference" {
+		r := refs.Resolve(cwd, root, app, flow)
+		return diff.RunRef{RunID: r.RunID, Kind: r.Kind, Dir: r.Dir, Manifest: r.Manifest}, nil
+	}
 	id := runs.FindRun(root, app, flow, selector)
 	if id == "" {
 		return diff.RunRef{}, fmt.Errorf("no run matches %q for %s/%s", selector, app, flow)
@@ -146,4 +151,16 @@ func resolveSide(cwd, app, flow, selector string) (diff.RunRef, error) {
 		return diff.RunRef{}, fmt.Errorf("reading manifest for %s/%s/%s: %w", app, flow, id, err)
 	}
 	return diff.RunRef{RunID: id, Kind: "run", Dir: p.RunDir, Manifest: m}, nil
+}
+
+// noneReason re-asks refs.Resolve for the explanation behind a "none", so
+// the refusal names the runs it tried instead of only saying there is no
+// reference. Resolving twice is cheap (a few Stats and one JSON decode) and
+// keeps resolveSide's return type the RunRef every other caller wants.
+func noneReason(cwd, app, flow string) string {
+	r := refs.Resolve(cwd, runs.RunsRoot(cwd), app, flow)
+	if r.Reason == "" {
+		return "no reference resolved"
+	}
+	return r.Reason
 }
