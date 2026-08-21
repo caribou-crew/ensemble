@@ -309,6 +309,9 @@ func Load(path string) (*Config, error) {
 	c.Dir = filepath.Dir(path)
 	c.Loaded = true
 	applyDefaults(&c)
+	if err := validateThresholds(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	for i := range c.PathNormalize {
 		re, err := regexp.Compile(c.PathNormalize[i].Pattern)
 		if err != nil {
@@ -344,6 +347,38 @@ func validateWireIgnore(c *Config) error {
 		}
 	}
 	return nil
+}
+
+// validateThresholds rejects thresholds.gate or thresholds.fine outside the
+// open interval (0, 1) (F6). thresholds.gate is overloaded across two unit
+// systems: retrace/diff/pixel.Match uses it as a per-pixel YIQ
+// colour-distance threshold (maxDelta = maxYIQDelta * gate * gate), while
+// retrace/diff/summary.go compares the same configured value against DiffPct
+// as a percent of pixels. The two coincide near the 0.1 default and diverge
+// completely at gate >= 1: at any threshold >= 1, maxDelta >= maxYIQDelta, so
+// |delta| > maxDelta is unsatisfiable and every checkpoint reports 0.00%
+// forever — the pixel plane is permanently green. A user writing `gate: 5`
+// meaning "5% of pixels may differ" gets exactly that, silently, with no
+// error and a clean-looking report.
+//
+// This runs AFTER applyDefaults, so the 0 it might see has already been
+// substituted with DefaultGate/DefaultFine — 0 continues to mean "unset,
+// use the default" and is never rejected here, only the effective value is
+// checked. Splitting the overloaded key into two distinct settings is the
+// real fix and belongs to Phase 4b; this guard only stops the silent pass
+// shipping in the meantime.
+func validateThresholds(c *Config) error {
+	check := func(key string, v float64) error {
+		if v > 0 && v < 1 {
+			return nil
+		}
+		return fmt.Errorf("thresholds.%s: %v is outside the valid range (0, 1) — thresholds.%s doubles as a per-pixel colour-distance threshold (pixel.Match) and as the fraction of pixels allowed to differ (summary), so %v cannot mean %q; use a fraction like 0.1, not a percentage",
+			key, v, key, v, fmt.Sprintf("%v%%", v))
+	}
+	if err := check("gate", c.Thresholds.Gate); err != nil {
+		return err
+	}
+	return check("fine", c.Thresholds.Fine)
 }
 
 // Discover loads <cwd>/retrace.yaml plus the machine-owned overlay. A

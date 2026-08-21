@@ -150,6 +150,90 @@ func TestZeroThresholdsAreTreatedAsUnsetNotAsZeroGate(t *testing.T) {
 	}
 }
 
+// TestThresholdsGateAboveOneFailsLoadNamingTheKey pins F6: thresholds.gate
+// is overloaded between pixel.Match's per-pixel colour-distance threshold
+// and summary.go's percent-of-pixels comparison. They coincide near the 0.1
+// default and diverge completely at gate >= 1, where every checkpoint
+// silently reports 0.00% forever (the pixel plane is permanently green). A
+// user writing `gate: 5` meaning "5% of pixels may differ" is the plausible
+// mistake this guards against, not an arbitrary out-of-range number.
+func TestThresholdsGateAboveOneFailsLoadNamingTheKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\nthresholds:\n  gate: 5\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("thresholds.gate: 5 must fail Load, not silently ship a gate that never fires")
+	}
+	if !strings.Contains(err.Error(), "thresholds.gate") {
+		t.Fatalf("error must name the offending key, got: %v", err)
+	}
+}
+
+// TestThresholdsFineAboveOneFailsLoadNamingTheKey mutates the other arm of
+// TestThresholdsGateAboveOneFailsLoadNamingTheKey (fine, not gate) — per the
+// global constraints' fixture-symmetry rule, a guard proven only on Gate
+// could still have a Fine copy that drifted or was never wired up.
+func TestThresholdsFineAboveOneFailsLoadNamingTheKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\nthresholds:\n  fine: 5\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("thresholds.fine: 5 must fail Load, not silently ship a threshold that never fires")
+	}
+	if !strings.Contains(err.Error(), "thresholds.fine") {
+		t.Fatalf("error must name the offending key, got: %v", err)
+	}
+}
+
+// TestThresholdsGateBoundaryIsExclusiveOfOne pins the boundary in both
+// directions: 0.99 is a valid fraction and must load; 1 is out of the open
+// interval (0, 1) and must not.
+func TestThresholdsGateBoundaryIsExclusiveOfOne(t *testing.T) {
+	dir := t.TempDir()
+
+	okPath := filepath.Join(dir, "ok.yaml")
+	os.WriteFile(okPath, []byte("app: web\nthresholds:\n  gate: 0.99\n"), 0o644)
+	cfg, err := Load(okPath)
+	if err != nil {
+		t.Fatalf("thresholds.gate: 0.99 must load, got error: %v", err)
+	}
+	if cfg.Thresholds.Gate != 0.99 {
+		t.Fatalf("Thresholds.Gate = %v, want 0.99", cfg.Thresholds.Gate)
+	}
+
+	badPath := filepath.Join(dir, "bad.yaml")
+	os.WriteFile(badPath, []byte("app: web\nthresholds:\n  gate: 1\n"), 0o644)
+	if _, err := Load(badPath); err == nil {
+		t.Fatal("thresholds.gate: 1 must fail Load — the open interval (0, 1) excludes 1")
+	}
+}
+
+// TestThresholdsGateOmittedStillLoadsAndDefaults pins that the new guard
+// does not disturb the existing zero-means-unset behavior: a retrace.yaml
+// with no thresholds: block at all must still load cleanly and yield
+// DefaultGate/DefaultFine, not an error from the new range check seeing a
+// zero value.
+func TestThresholdsGateOmittedStillLoadsAndDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\n"), 0o644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with no thresholds: block must succeed, got: %v", err)
+	}
+	if cfg.Thresholds.Gate != DefaultGate {
+		t.Fatalf("Thresholds.Gate = %v, want DefaultGate (%v)", cfg.Thresholds.Gate, DefaultGate)
+	}
+	if cfg.Thresholds.Fine != DefaultFine {
+		t.Fatalf("Thresholds.Fine = %v, want DefaultFine (%v)", cfg.Thresholds.Fine, DefaultFine)
+	}
+}
+
 // TestConcurrentAppendWireRuleProducesNRulesWithNoLoss pins the CRITICAL
 // finding: AppendWireRule's read-modify-write must be serialized. Before the
 // fix, 8 concurrent appends on a fresh directory left 2 rules on disk (6
