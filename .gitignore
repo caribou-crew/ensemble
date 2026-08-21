@@ -31,6 +31,16 @@ dist/
 coverage/
 bin/
 
+# `ensemble up`'s own run-time state (hop log, build staleness stamps, pid
+# files) — generated fresh by every run, wherever ensemble.yaml lives.
+.ensemble/
+
+# sample/ services are standalone Go modules (not part of go.work); `go
+# build ./...` in each one drops an extensionless binary named after the
+# module right next to main.go.
+sample/services/*/catalog-svc
+sample/services/*/edge-gw
+
 # Subagent-driven-development scratch: ledgers, briefs, reports, review
 # packages. Local coordination state, never part of the source tree.
 .superpowers/
