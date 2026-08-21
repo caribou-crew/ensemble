@@ -10,6 +10,8 @@ package diff
 // renderer no test constrains.
 
 import (
+	"bytes"
+	"github.com/caribou-crew/ensemble/retrace/capture"
 	"image/color"
 	"strings"
 	"testing"
@@ -436,4 +438,89 @@ func TestAPixelPlaneWithCheckpointsStillEmitsItsGate(t *testing.T) {
 	if !closeTo(g.Observed, 1, 0.05) || !g.Failed {
 		t.Fatalf("pixel Gate = %+v, want Observed ~1%% over a 0.1%% budget and Failed=true", *g)
 	}
+}
+
+// TestAllowDegradedDropsThePixelGateAndKeepsTheNoScreenshotsReason pins the
+// one case where "no evidence, no gate" and "checkpoints went missing"
+// overlap, so that it is explicit rather than accidental.
+//
+// Normally the two never meet. capture/trust.go raises no-screenshots at
+// VerdictDegraded when checkpoints were expected and none arrived, so
+// quarantineCheck refuses that run and budgetsOf is never reached —
+// suppressing the pixel gate can only ever drop a plane with no subject.
+// Under --allow-degraded the degraded side DOES reach budgetsOf, and there
+// the expected-but-missing run loses its pixel gate too.
+//
+// That is the intended trade. The operator opted into proceeding despite
+// degradation, and the information is not lost: the no-screenshots reason
+// still rides in the capture-trust banner, where "captured no screenshots"
+// is a truer statement than a budget line reading "0.00% ok". What this
+// test forbids is the third possibility — the gate reappearing as a pass.
+//
+// The trust value is produced by the real capture.Assess rather than
+// hand-built, so the test fails if that upstream classification moves.
+func TestAllowDegradedDropsThePixelGateAndKeepsTheNoScreenshotsReason(t *testing.T) {
+	degraded := capture.Assess(capture.AssessInput{
+		Hops:                []trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)},
+		Checkpoints:         0,
+		ExpectedCheckpoints: 3, // the last good run took three
+		TestExitCode:        0,
+		RequestsSeen:        1,
+	})
+	if degraded.Status != trace.VerdictDegraded {
+		t.Fatalf("capture.Assess ranked this %q, want degraded — the premise of this test is that expected-but-missing screenshots are caught upstream", degraded.Status)
+	}
+	if !hasReason(degraded, "no-screenshots") {
+		t.Fatalf("capture reasons = %+v, want a no-screenshots entry", degraded.Reasons)
+	}
+
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, degraded)}
+	cfg := baseConfig(t)
+	cfg.Gates["pixel"] = gatePct(0.1)
+
+	// Without the flag the run never reaches budgetsOf at all.
+	q := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if q.Verdict != "quarantined" {
+		t.Fatalf("verdict = %q, want quarantined — a degraded side is refused before any gate is computed", q.Verdict)
+	}
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
+	if s.Verdict == "quarantined" {
+		t.Fatalf("verdict = quarantined even under AllowDegraded")
+	}
+	if g := gateFor(s, "pixel"); g != nil {
+		t.Fatalf("pixel Gate = %+v, want none — under --allow-degraded the missing screenshots cost this run its pixel gate, deliberately; what they must never do is come back as a passing budget", *g)
+	}
+	if !hasReason(s.Capture.B, "no-screenshots") {
+		t.Fatalf("Capture.B reasons = %+v, want no-screenshots to survive into the banner — dropping the gate is only acceptable because this fact still reaches the report", s.Capture.B.Reasons)
+	}
+	// The human-facing banner carries the SUBSTANCE, not the code string:
+	// "capture b: degraded — the test passed but captured no screenshots".
+	// That prose is the whole justification for dropping the gate, so it is
+	// asserted here rather than assumed.
+	var buf bytes.Buffer
+	RenderText(&buf, s)
+	if !strings.Contains(buf.String(), "captured no screenshots") {
+		t.Fatalf("RenderText does not say the screenshots were missing, so dropping the pixel gate would lose the fact entirely:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "capture b: degraded") {
+		t.Fatalf("RenderText does not flag side B's capture as degraded:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "BUDGET: pixel") {
+		t.Fatalf("RenderText still prints a pixel budget line:\n%s", buf.String())
+	}
+}
+
+func hasReason(c runs.CaptureTrust, code string) bool {
+	for _, r := range c.Reasons {
+		if r.Code == code {
+			return true
+		}
+	}
+	return false
 }
