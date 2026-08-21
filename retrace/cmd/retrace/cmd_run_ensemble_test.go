@@ -229,32 +229,42 @@ func TestStartSessionRejectsAResponseWithNoEdgeAddr(t *testing.T) {
 // tests (ensemble_test.go) pin the same bound through an in-process fake;
 // these prove it end to end through client.go's actual http.Client.
 //
-// Deliberately NOT httptest.NewServer: its Close waits (via a WaitGroup)
-// for every outstanding handler to return, and canceling a client's request
-// context does not reliably cancel r.Context() on the still-blocked
-// handler goroutine for a request that never got a response — so a
-// deferred srv.Close() here would itself hang for the rest of the test
-// binary's life. wedgedServer instead owns a raw listener that Cleanup
-// simply closes (no wait), leaving the (harmless, single) blocked handler
-// goroutine to die with the test process.
-func wedgedServer(t *testing.T, mux *http.ServeMux) string {
+// Deliberately NOT httptest.NewServer, and deliberately NOT
+// `<-r.Context().Done()` to model "never answers": httptest.Server.Close
+// waits (via a WaitGroup) for every outstanding handler to return before it
+// ever force-closes a connection, and canceling a request's context is not
+// a reliable way to unblock a handler that never touches the connection
+// itself (measured: even a forced http.Server.Close() left the handler
+// goroutine, and the leaked connection, alive — accumulating across
+// `-race -count=20` until an unrelated later test starved on the pile-up
+// and hung the whole package). wedgedServer instead hands the handler an
+// explicit release channel that Cleanup closes directly, so "never
+// answers" lasts exactly as long as the test does — no dependence on
+// net/http's connection/context plumbing at all.
+func wedgedServer(t *testing.T, register func(mux *http.ServeMux, release <-chan struct{})) string {
 	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	mux := http.NewServeMux()
+	register(mux, release)
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(func() { _ = srv.Close() })
 	return "http://" + ln.Addr().String()
 }
 
 func TestStartAttachedDoesNotHangOnAWedgedControlPlane(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done() // accepts the connection, never answers
+	url := wedgedServer(t, func(mux *http.ServeMux, release <-chan struct{}) {
+		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+			<-release // accepts the connection, never answers
+		})
 	})
-	url := wedgedServer(t, mux)
 
 	start := time.Now()
 	_, err := capture.StartAttached(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, NewClient(url), "bff")
@@ -268,14 +278,14 @@ func TestStartAttachedDoesNotHangOnAWedgedControlPlane(t *testing.T) {
 }
 
 func TestDrainDoesNotHangOnAWedgedControlPlane(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:1"})
+	url := wedgedServer(t, func(mux *http.ServeMux, release <-chan struct{}) {
+		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+			writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:1"})
+		})
+		mux.HandleFunc("GET /api/sessions/{id}/hops", func(w http.ResponseWriter, r *http.Request) {
+			<-release // accepts the connection, never answers
+		})
 	})
-	mux.HandleFunc("GET /api/sessions/{id}/hops", func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done() // accepts the connection, never answers
-	})
-	url := wedgedServer(t, mux)
 
 	s, err := capture.StartAttached(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout"}, NewClient(url), "bff")
 	if err != nil {
