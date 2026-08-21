@@ -5546,6 +5546,19 @@ gate; that is intended, and the `no-screenshots` reason still prints in the
 capture-trust banner, which is a truer statement than a gate reading
 `0.00% ok`.
 
+**Array-valued fields on the wire types marshal as arrays, never `null` and
+never absent.** Initialise the slices; carry no `omitempty` on an array
+field. `null`, absent and `[]` are three encodings of one meaning here —
+"no entries" — and the distinction a consumer would null-guard for is not
+actually carried: `budgetsOf` returns nil both when no gates are configured
+and when gates are configured but none are measurable. The cost of the three
+encodings is a branch in every consumer, and the consumer that forgets it
+crashes rather than misbehaving quietly — `summary.budgets.map(...)` throws.
+Since "no evidence, no gate" applies to all four planes, an ordinary API-only
+flow now reaches that case. Pin it with a test that marshals a **fully
+empty** `Summary` and asserts every array field encodes as `[]`; a golden
+built from hand-populated slices cannot reach it.
+
 `--no-fail` computes and reports every gate exactly as above but forces
 `ExitCode` to `0` for the verdicts `changed` and `failed` — for a reporting
 run that must not break the build.
@@ -7040,13 +7053,35 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
   export interface PerfResult { status: 'ok'|'over'|'unset'; measuredMs: number; budgetMs: number }
   export interface ConformanceFinding { method: string; path: string; status: number;
     kind: 'unknown-path'|'unknown-method'|'undocumented-status'|'missing-required-field'|'unchecked'; detail: string }
-  export interface Summary { schema: string; app: string; flow: string; verdict: 'pass'|'changed'|'failed';
+  export interface Gate { plane: 'pixel'|'wire'|'hop'|'perf'; threshold: number; observed: number; failed: boolean }
+  export interface Quarantine { side: 'a'|'b'; reason: string }
+  export interface Summary { schema: string; app: string; flow: string;
+    verdict: 'pass'|'changed'|'failed'|'quarantined';
     a: RunRef; b: RunRef;
+    quarantined: Quarantine[];
     checkpoints: CheckpointVerdict[];
     wire: { paired: Entry[]; missing: Call[]; extra: Call[]; groups?: GroupNames };
     sections: Section[]; hops: HopDiff; unexpectedStatuses: StatusFinding[]; perf: PerfResult;
-    conformance: ConformanceFinding[]; capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts; gates: string[] }
+    conformance: ConformanceFinding[]; capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts;
+    gates: string[]; budgets: Gate[] }
   ```
+
+  **Three of those were missing and are corrections, not additions.** An
+  earlier draft of this interface omitted `budgets` and `quarantined`
+  entirely, and typed `verdict` as a three-value union. Task 10 emits four
+  verdicts: `quarantined` is the "could not evaluate" state that a signal-
+  killed or untrustworthy run takes, and it is the one an exhaustive switch
+  in this UI most needs to handle, because it is the case where every other
+  field is empty *on purpose*. `Gate` had no mirror at all despite
+  `Summary.Budgets` being part of the wire since Task 10.
+
+  **Array-valued fields are always arrays — never `null`, never absent — so
+  none of them is typed optional or nullable here.** Task 10 initialises
+  every slice and carries no `omitempty` on an array field, so
+  `summary.budgets.map(...)` is safe on an API-only flow that produced no
+  gates at all. This is a real case, not a theoretical one: since "no
+  evidence, no gate" applies to all four planes, a flow with no checkpoints
+  and no paired wire entries emits an empty `budgets`.
 
   **These names are not a guess — they are the `json:` tags from Tasks 8
   and 10, transcribed.** If a Go type here gains a field, its tag is the
