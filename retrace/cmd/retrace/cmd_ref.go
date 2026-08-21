@@ -208,6 +208,11 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 	res, err := refs.Accept(refs.AcceptOptions{
 		Cwd: p.cwd, RunsRoot: p.runsRoot, App: p.app, Flow: *flow, RunID: runID,
 		MasksFor: p.masksFor(*flow), Force: *force,
+		// The entries, not just the lookup: MasksFor cannot report a
+		// checkpoint name this project spelled wrong, and a mask entry that
+		// matches nothing publishes exactly the pixels it was written to
+		// hide. See AcceptOptions.MaskedCheckpoints.
+		MaskedCheckpoints: p.cfg.MaskEntryCheckpoints(*flow),
 	})
 	if err != nil {
 		return fail(stderr, "ref accept: %v", err)

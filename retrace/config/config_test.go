@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -864,5 +865,91 @@ func TestMalformedOverlayJSONFailsDiscoverNamingThePath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wire-rules.json") {
 		t.Fatalf("error must name the overlay path, got: %v", err)
+	}
+}
+
+// TestMaskEntryCheckpointsEnumeratesBothMapsAndSkipsTheWildcard pins the
+// enumeration `retrace ref accept` needs to detect a misspelt mask entry.
+// MasksFor cannot do it: a lookup returns nil for a name it does not hold,
+// which is indistinguishable from "this screen needs no mask", so the
+// promotion copies the shot through unredacted and exits 0.
+func TestMaskEntryCheckpointsEnumeratesBothMapsAndSkipsTheWildcard(t *testing.T) {
+	c := &Config{
+		Masks: map[string][]Rect{"*": {{Width: 1}}, "cart": {{Width: 2}}},
+		Flows: map[string]Flow{
+			"checkout": {Masks: map[string][]Rect{"receipt": {{Width: 3}}, "cart": {{Width: 4}}}},
+			"login":    {Masks: map[string][]Rect{"password": {{Width: 5}}}},
+		},
+	}
+	got := strings.Join(c.MaskEntryCheckpoints("checkout"), ",")
+	// cart appears in both maps and must appear once; "*" names no
+	// checkpoint, so it can never be a typo; login's entries belong to
+	// another flow's scope and are not in this one.
+	if got != "cart,receipt" {
+		t.Fatalf("MaskEntryCheckpoints(checkout) = %q, want %q — both maps, deduplicated, sorted, without the wildcard", got, "cart,receipt")
+	}
+	if got := strings.Join(c.MaskEntryCheckpoints("login"), ","); got != "cart,password" {
+		t.Fatalf("MaskEntryCheckpoints(login) = %q, want %q — the top-level map applies to every flow", got, "cart,password")
+	}
+	if got := len((&Config{}).MaskEntryCheckpoints("checkout")); got != 0 {
+		t.Fatalf("a config with no masks declared %d entries, want 0 — an invented entry would refuse a correct promotion", got)
+	}
+}
+
+// TestConcurrentGoroutinesWithNoFileLockLandEveryRule is the WINDOWS
+// configuration, run on this machine: lockOverlayFn stubbed to a no-op is
+// exactly what overlaylock_other.go compiles to, and there overlayMu is the
+// only serialization AppendWireRule has left.
+//
+// It is deliberately NOT a duplicate of
+// TestNSeparateProcessesAppendingConcurrentlyLandNRules, and the two must
+// not be merged. That test measures the flock and SURVIVES the removal of
+// overlayMu — which is the control proving it is not secretly testing the
+// mutex. This test is the other half: it dies when overlayMu is removed and
+// says nothing about the flock. Deleting either one leaves a real platform
+// unprotected with a green suite.
+func TestConcurrentGoroutinesWithNoFileLockLandEveryRule(t *testing.T) {
+	real := lockOverlayFn
+	lockOverlayFn = func(string) (func(), error) { return func() {}, nil }
+	t.Cleanup(func() { lockOverlayFn = real })
+
+	dir := t.TempDir()
+	const goroutines, per = 8, 12
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			<-start // one starting gun, so every goroutine contends at once
+			for i := 0; i < per; i++ {
+				r := rules.Raw{Path: "/g" + strconv.Itoa(g) + "/rule" + strconv.Itoa(i), Headers: map[string]any{"date": "http-date"}}
+				if err := AppendWireRule(dir, r); err != nil {
+					errs[g] = err
+					return
+				}
+			}
+		}(g)
+	}
+	close(start)
+	wg.Wait()
+	for g, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: AppendWireRule: %v", g, err)
+		}
+	}
+
+	got, err := readOverlay(filepath.Join(dir, OverlayPath))
+	if err != nil {
+		t.Fatalf("readOverlay: %v", err)
+	}
+	// Every rule is DISTINCT, so the idempotent dedupe cannot account for a
+	// shortfall: a missing rule was lost by a read-modify-write race, and
+	// every lost append returned a nil error.
+	if len(got) != goroutines*per {
+		t.Fatalf("overlay holds %d rules, want %d — %d appends were silently lost between goroutines, each returning nil; on a platform with no file lock overlayMu is the ONLY thing that prevents this",
+			len(got), goroutines*per, goroutines*per-len(got))
 	}
 }

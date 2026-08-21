@@ -10,6 +10,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -658,4 +661,146 @@ func TestRefRejectRefusesToDiffTheRejectedRunAgainstItself(t *testing.T) {
 	if !strings.Contains(res.stderr, "itself") {
 		t.Fatalf("stderr = %q, want it to say the only reference available was the rejected run itself", res.stderr)
 	}
+}
+
+// --- masks, end to end through the binary -------------------------------
+//
+// The three tests below drive a REAL retrace.yaml through the REAL
+// `retrace ref accept` and assert on decoded pixels in the committed
+// bundle. That is deliberate and is the whole point: the redaction logic
+// itself is pinned thoroughly one layer down in retrace/refs, and every one
+// of those tests stays green while `cmd_ref.go` passes `MasksFor: nil` and
+// promotes every screenshot in the project unredacted. The defect is the
+// WIRING, so the test has to cross it — a reference bundle is committed, so
+// this is the one failure in the task that cannot be taken back.
+
+// maskConfig is a retrace.yaml whose flow masks one checkpoint. The Date
+// rule is the same tolerance every other test in this file needs.
+const maskConfig = `app: web
+flows:
+  checkout:
+    masks:
+      cart:
+        - x: 0
+          y: 0
+          width: 20
+          height: 20
+          why: "the card number panel"
+wire_rules:
+  - headers:
+      date: http-date
+`
+
+func TestRefAcceptRedactsConfiguredMasksIntoTheCommittedBundle(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, maskConfig)
+	// shot-b paints a red 5..24 square on a 40x40 field, so the mask
+	// (0,0)-(20,20) covers PART of the red square and none of the field
+	// beyond it: "masked nothing", "masked everything" and "masked the
+	// wrong rectangle" are three distinguishable failures.
+	runShot(t, bin, cwd, "web", "checkout", upstream.URL, "shot-b")
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web")
+	if res.code != 0 {
+		t.Fatalf("ref accept: exit = %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	bundle, err := refs.BundleDir(cwd, "web", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := decodeShot(t, filepath.Join(bundle, "shots", "cart.png"))
+	if got := shot.RGBAAt(10, 10); got != (color.RGBA{0, 0, 0, 255}) {
+		t.Fatalf("the committed bundle's cart.png at (10,10) = %v, want opaque black — retrace.yaml masks that region and the bundle is committed to git, so this is the pixel data reaching repository history unredacted", got)
+	}
+	if got := shot.RGBAAt(22, 22); got != (color.RGBA{R: 250, A: 255}) {
+		t.Fatalf("cart.png at (22,22) = %v, want the captured red — the mask covers 0..19 and Accept redacted past it", got)
+	}
+	if got := shot.RGBAAt(30, 30); got != (color.RGBA{R: 10, G: 20, B: 30, A: 255}) {
+		t.Fatalf("cart.png at (30,30) = %v, want the captured background — Accept redacted a region no mask names", got)
+	}
+}
+
+func TestRefAcceptRefusesAMaskEntryThatMatchesNoCheckpoint(t *testing.T) {
+	// The same config with the checkpoint name misspelt. config.MasksFor is
+	// a LOOKUP, so it returns nil for "crat" exactly as it would for a
+	// screen that needs no mask: the shot takes the plain-copy path, the
+	// command exits 0, and the pixels the entry was written to hide are in
+	// git. Only the declared entries can tell the two apart.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, strings.Replace(maskConfig, "      cart:", "      crat:", 1))
+	runShot(t, bin, cwd, "web", "checkout", upstream.URL, "shot-b")
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web")
+	if res.code == 0 {
+		t.Fatalf("ref accept exited 0 with a mask configured for a checkpoint that does not exist\nstdout: %s\nstderr: %s", res.stdout, res.stderr)
+	}
+	for _, want := range []string{"crat", "cart"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("stderr = %q, want it to name the unmatched entry and the checkpoints that do exist (%q)", res.stderr, want)
+		}
+	}
+	bundle, err := refs.BundleDir(cwd, "web", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(bundle); !os.IsNotExist(err) {
+		t.Fatalf("a refused promotion still wrote a bundle at %s (stat err %v)", bundle, err)
+	}
+}
+
+// TestRefAcceptStillPromotesAWildcardMask is the over-refusal mirror: "*"
+// names no checkpoint, so it can never be a typo, and a project that masks
+// every screen through the wildcard must keep promoting — and keep being
+// redacted.
+func TestRefAcceptStillPromotesAWildcardMask(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\nmasks:\n  \"*\":\n    - x: 0\n      y: 0\n      width: 20\n      height: 20\n      why: \"every screen carries the header clock\"\nwire_rules:\n  - headers:\n      date: http-date\n")
+	runShot(t, bin, cwd, "web", "checkout", upstream.URL, "shot-b")
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web")
+	if res.code != 0 {
+		t.Fatalf("ref accept refused a wildcard mask: exit = %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	bundle, err := refs.BundleDir(cwd, "web", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := decodeShot(t, filepath.Join(bundle, "shots", "cart.png"))
+	if got := shot.RGBAAt(10, 10); got != (color.RGBA{0, 0, 0, 255}) {
+		t.Fatalf("the committed bundle's cart.png at (10,10) = %v, want opaque black — a wildcard mask must redact every checkpoint it covers", got)
+	}
+}
+
+// decodeShot reads a PNG out of a bundle and returns it as RGBA, so the
+// assertions above are on decoded PIXELS — not on a log line, a byte count
+// or a file size, none of which can tell a redacted shot from a copied one.
+func decodeShot(t *testing.T, path string) *image.RGBA {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the bundle's shot: %v", err)
+	}
+	img, err := pixel.Decode(b)
+	if err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	return img
 }

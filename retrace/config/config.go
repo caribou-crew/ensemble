@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -31,6 +32,16 @@ import (
 // atomically (temp file + rename), so a concurrent reader never observes a
 // partially-written file either.
 var overlayMu sync.Mutex
+
+// lockOverlayFn is the cross-process lock AppendWireRule takes, behind one
+// level of indirection so a test can run the function in the configuration
+// the NON-UNIX build actually ships: lockOverlay is a no-op there (see
+// overlaylock_other.go), which makes overlayMu the entire protection on
+// windows. Without this seam the unix flock masks the mutex in every test,
+// removing overlayMu turns nothing red, and the next reader deletes it as
+// "redundant, the flock covers this" — green everywhere, and windows loses
+// its only serialization. See TestConcurrentGoroutinesWithNoFileLockLandEveryRule.
+var lockOverlayFn = lockOverlay
 
 const OverlayPath = ".retrace/wire-rules.json"
 
@@ -456,6 +467,40 @@ func (c *Config) MasksFor(flow, checkpoint string) []Rect {
 	return nil
 }
 
+// MaskEntryCheckpoints names every checkpoint a mask ENTRY is written for
+// in this flow's scope: the flow's own map plus the project-wide top-level
+// one, deduplicated and sorted. It is the enumeration MasksFor cannot give
+// — a lookup keyed on a checkpoint name returns nil for a name it does not
+// hold, so a misspelt entry is indistinguishable from a screen that needs
+// no mask, and `retrace ref accept` would promote the pixels the entry was
+// written to hide.
+//
+// The "*" wildcard is excluded: it names no checkpoint, so it can never be
+// a typo, and a flow it does not happen to cover is not a defect.
+//
+// Both maps are reported because MasksFor consults both. A top-level entry
+// is project-wide, so in a multi-flow project one written for another
+// flow's screen shows up here too; the consumer's refusal says which entry
+// and which checkpoints exist, and the remedy — move it under
+// flows.<flow>.masks — is a line of YAML.
+func (c *Config) MaskEntryCheckpoints(flow string) []string {
+	seen := map[string]bool{}
+	for _, m := range []map[string][]Rect{c.Flows[flow].Masks, c.Masks} {
+		for name := range m {
+			if name == "*" {
+				continue
+			}
+			seen[name] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // NormalizePath applies PathNormalize in order, each rewrite feeding the
 // next.
 func (c *Config) NormalizePath(path string) string {
@@ -498,7 +543,14 @@ func (c *Config) NormalizePath(path string) string {
 // portable file lock, and the portable alternative was ruled out for
 // wedging on a crash. There, this function keeps exactly its pre-Task-11
 // guarantee: safe within one process, and two writer processes can still
-// lose an append. See overlaylock_other.go.
+// lose an append. See overlaylock_other.go. There overlayMu is the ONLY
+// serialization left, so it has a test of its own —
+// TestConcurrentGoroutinesWithNoFileLockLandEveryRule runs this function
+// with lockOverlayFn stubbed to a no-op, which is that build exactly. On
+// unix the flock alone is enough, which is why deleting overlayMu leaves
+// the multi-process test green: an intended survivor, and the control
+// proving that test measures the flock rather than the mutex. The two
+// tests prove different things and must not be merged into one.
 //
 // dir is a working-directory ROOT, exactly like runs.PathsFor's root — it
 // is intentionally not validated as a path component; only a
@@ -524,7 +576,7 @@ func AppendWireRule(dir string, r rules.Raw) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	unlock, err := lockOverlay(path)
+	unlock, err := lockOverlayFn(path)
 	if err != nil {
 		return err
 	}
