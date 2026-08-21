@@ -29,8 +29,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -187,25 +189,71 @@ type reportRow struct {
 }
 
 type reportIndex struct {
-	Version string
-	Empty   string
-	Rows    []reportRow
-	Total   int
-	Failing int
+	Version   string
+	Generated string
+	Empty     string
+	Rows      []reportRow
+	Total     int
+	Failing   int
 }
 
 type reportItem struct {
-	Row     reportRow
-	Summary *diff.Summary // nil when nothing was compared
-	Shots   []reportShot
+	Generated string
+	Row       reportRow
+	Summary   *diff.Summary // nil when nothing was compared
+	Shots     []reportShot
+	// UnmeasuredGates names the planes this project's config GATES and
+	// whose budget this comparison could not evaluate. It exists because
+	// diff.budgetsOf deliberately emits no Gate row for an unmeasurable
+	// plane — by the same code path as a plane nobody configured — so
+	// Summary.Budgets alone cannot tell "not gated" from "gated, and the
+	// run had no evidence to measure it against". Without this the page
+	// answers "did my wire gate run on this build?" with "wire is not
+	// gated", which is a claim about CONFIGURATION, and configuration is
+	// the one thing a reader of a CI artifact cannot check for themselves.
+	UnmeasuredGates []string
 }
 
 type reportShot struct {
 	Name    string
 	Verdict string
 	Cp      diff.CheckpointVerdict
+	// Measured is true only for the two verdicts that come from actually
+	// comparing two images. "missing", "added" and "unreadable" leave
+	// DiffPct and NumDiff at their zero values, and "0.00% of pixels
+	// differ · 0 pixels" under one of those is a MEASUREMENT THIS REPORT
+	// INVENTED — the most reassuring possible rendering of a checkpoint no
+	// pixel of which was ever read. RenderText, the sibling face of this
+	// same Summary, already draws the line here (summary.go's checkpoint
+	// switch prints the word for the non-comparing verdicts and the number
+	// only for ok/changed); two faces of one report must not disagree.
+	Measured bool
+	// Why says what happened instead, for the verdicts where Measured is
+	// false. Empty when Measured is true.
+	Why     string
 	Sides   []reportShotSide
 	Missing []string // sides the summary named that are not in this export
+}
+
+// checkpointMeasurement mirrors RenderText's switch on cp.Verdict. The
+// default arm is not defensive padding: a verdict this report does not
+// recognise must fall to the NOT-measured side, because the failure mode
+// being guarded is a zero rendering as a clean measurement, and an
+// unrecognised verdict is exactly the case where nobody has checked which
+// side of that line it belongs on.
+func checkpointMeasurement(verdict string) (measured bool, why string) {
+	switch verdict {
+	case "ok", "changed":
+		return true, ""
+	case "missing":
+		return false, "This checkpoint is in the reference and was not captured on this run. No pixels were compared, so there is no percentage below."
+	case "added":
+		return false, "This checkpoint is new on this run and is not in the reference. No pixels were compared, so there is no percentage below."
+	case "unreadable":
+		return false, "One of the two images could not be read, so no pixels were compared."
+	default:
+		return false, fmt.Sprintf("This report does not recognise the verdict %q as the result of a comparison, so it shows no measurement for it.", verdict)
+	}
 }
 
 type reportShotSide struct {
@@ -257,7 +305,7 @@ func Export(o ExportOptions) (ExportResult, error) {
 		return ExportResult{}, fmt.Errorf("no recorded flow matches %s: nothing under %s matched, so there is nothing to export — check the name, or run `retrace run` first", filterDesc(o.App, o.Flow), runs.RunsRoot(o.Deps.Cwd))
 	}
 
-	e := &exporter{opts: o, root: o.OutDir}
+	e := &exporter{opts: o, root: o.OutDir, generated: o.Deps.now().UTC().Format(time.RFC3339)}
 	rows := make([]reportRow, 0, len(items))
 	worst := 0
 	for _, it := range items {
@@ -271,6 +319,22 @@ func Export(o ExportOptions) (ExportResult, error) {
 		rows = append(rows, row)
 	}
 
+	// R-Y ruled on which VERDICT maps to which code and not on the set with
+	// no verdicts in it, where max is 0. An export with no rows would
+	// therefore exit as a pass, on the command whose stated design is to be
+	// the only step in a CI job — a green build over a report that compared
+	// nothing. Both renderings below are honest (the overview says "nothing
+	// recorded", never "all clear", and the CLI warns on stderr) and neither
+	// helps: CI branches on the number.
+	//
+	// An empty export is an INABILITY TO RUN, not a finding, which is what
+	// "quarantined" already means and what exitUsage already is at the CLI.
+	// It goes through the same one mapping — no second verdict→code rule
+	// appears here.
+	if len(rows) == 0 {
+		worst = exitCodeFor("quarantined")
+	}
+
 	failing := 0
 	for _, r := range rows {
 		if r.Score > 0 {
@@ -282,11 +346,12 @@ func Export(o ExportOptions) (ExportResult, error) {
 	// "all-clear" is the reassuring one, which has to be earned. Re-deriving
 	// it here from len(rows) would hand out the reassuring answer for free.
 	idx := reportIndex{
-		Version: o.Deps.Version,
-		Empty:   EmptyReasonFor(items),
-		Rows:    rows,
-		Total:   len(rows),
-		Failing: failing,
+		Version:   o.Deps.Version,
+		Generated: e.generated,
+		Empty:     EmptyReasonFor(items),
+		Rows:      rows,
+		Total:     len(rows),
+		Failing:   failing,
 	}
 	if err := e.render("index.html", "index", idx); err != nil {
 		return ExportResult{}, err
@@ -325,9 +390,15 @@ func filterQueue(items []Item, app, flow string) []Item {
 // --- one flow ------------------------------------------------------------
 
 type exporter struct {
-	opts  ExportOptions
-	root  string
-	files []string
+	opts ExportOptions
+	root string
+	// generated is stamped ONCE, at the top of Export, and every page in
+	// the artifact carries the same value. A CI artifact is read weeks
+	// later out of a build store, often beside another copy of itself, and
+	// a report with no date is a report a reader assumes is current. Per
+	// page it would also let one export claim two times.
+	generated string
+	files     []string
 }
 
 // item writes one flow's directory and returns its overview row.
@@ -368,7 +439,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 
 	if unEvaluable(it) {
 		row.WhyNot = whyNotAssessed
-		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row})
+		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Generated: e.generated, Row: row})
 	}
 
 	sum, err := SummaryFor(e.opts.Deps, it.App, it.Flow)
@@ -383,7 +454,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 		row.Capture = broken.Capture
 		row.Reasons = append(append([]runs.TrustReason{}, broken.Capture.A.Reasons...), broken.Capture.B.Reasons...)
 		row.WhyNot = whyNotReproduced
-		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row})
+		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Generated: e.generated, Row: row})
 	}
 
 	// A quarantined Summary has empty Counts and no Checkpoints by
@@ -393,7 +464,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 	// nothing here may be reported as clean.
 	if sum.Verdict == "quarantined" {
 		row.WhyNot = "could not be evaluated — the comparison was refused because a side's capture was not trusted"
-		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row, Summary: &sum})
+		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Generated: e.generated, Row: row, Summary: &sum})
 	}
 
 	row.Compared = true
@@ -408,7 +479,10 @@ func (e *exporter) item(it Item) (reportRow, error) {
 	if err != nil {
 		return row, err
 	}
-	return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Row: row, Summary: &sum, Shots: shots})
+	return row, e.render(path.Join(dir, "index.html"), "item", reportItem{
+		Generated: e.generated, Row: row, Summary: &sum, Shots: shots,
+		UnmeasuredGates: unmeasuredGates(e.opts.Deps.Cfg, sum),
+	})
 }
 
 // shots copies every checkpoint image the comparison produced into the
@@ -427,6 +501,7 @@ func (e *exporter) shots(dir string, sum diff.Summary) ([]reportShot, error) {
 	out := make([]reportShot, 0, len(sum.Checkpoints))
 	for _, cp := range sum.Checkpoints {
 		shot := reportShot{Name: cp.Name, Verdict: cp.Verdict, Cp: cp}
+		shot.Measured, shot.Why = checkpointMeasurement(cp.Verdict)
 		for _, side := range shotSides {
 			switch side {
 			case "a":
@@ -518,8 +593,58 @@ func countsStrip(c diff.Counts) string {
 // comparedStrip says what was actually LOOKED AT, which is the other half of
 // an empty countsStrip: "no differences" over three checkpoints and eight
 // wire calls is a result, and "no differences" over nothing is not.
+//
+// Counts.Checkpoints is the UNION of both manifests, so it includes
+// checkpoints that were missing, added or unreadable — no pixel of which
+// was compared. Reporting that union as "compared" is the same fabricated
+// measurement reportShot.Measured exists to stop, one line higher up: a
+// reader is told the pixel plane covered evidence it never saw. The
+// unpaired wire calls are named apart for the same reason; a call that
+// appears on one side only was seen, not compared.
 func comparedStrip(s diff.Summary) string {
-	return fmt.Sprintf("%d checkpoints · %d wire calls compared", s.Counts.Checkpoints, s.Counts.WirePaired+s.Counts.WireMissing+s.Counts.WireExtra)
+	out := fmt.Sprintf("%d of %d checkpoints compared · %d wire calls paired",
+		comparedCheckpoints(s), len(s.Checkpoints), s.Counts.WirePaired)
+	if n := s.Counts.WireMissing + s.Counts.WireExtra; n > 0 {
+		out += fmt.Sprintf(" · %d unpaired", n)
+	}
+	return out
+}
+
+func comparedCheckpoints(s diff.Summary) int {
+	n := 0
+	for _, cp := range s.Checkpoints {
+		if measured, _ := checkpointMeasurement(cp.Verdict); measured {
+			n++
+		}
+	}
+	return n
+}
+
+// unmeasuredGates names the planes cfg gates and s has no Budget row for.
+//
+// It is derived from the CONFIG's own keys and the Summary's own rows —
+// there is no plane list here to drift out of step with diff.budgetsOf's.
+// A plane appears here when the project asked for it to be gated and the
+// run carried no evidence to measure it against, which is the state the
+// Summary encodes as an absence and prose would otherwise report as "not
+// gated".
+func unmeasuredGates(cfg *config.Config, s diff.Summary) []string {
+	if cfg == nil {
+		return nil
+	}
+	measured := map[string]bool{}
+	for _, g := range s.Budgets {
+		measured[g.Plane] = true
+	}
+	var out []string
+	for plane, g := range cfg.Gates {
+		if g.BudgetPct == nil || measured[plane] {
+			continue
+		}
+		out = append(out, plane)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // --- writing -------------------------------------------------------------
