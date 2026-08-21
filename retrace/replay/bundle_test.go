@@ -260,3 +260,44 @@ func TestLoadBundleRefusesATruncatedRecordedRequestBody(t *testing.T) {
 		t.Fatalf("an untruncated bundle did not load: %v", err)
 	}
 }
+
+func TestLoadBundleRefusesATruncatedRecordedResponseBody(t *testing.T) {
+	// The other half of the same fact. trace.Redactor.Hop caps BOTH
+	// payloads (`h.Req = r.Payload(h.Req); h.Resp = r.Payload(h.Resp)`),
+	// and the cap sets Truncated on whichever it shortened — so a
+	// `max_body` small enough to truncate a request body truncates a
+	// response body on the next hop. Refusing only the request side left
+	// the QUIETER half live: a client that cannot decode a body complains,
+	// while a short body does not. Truncated JSON sometimes still parses
+	// and truncated text still renders, so the app under test proceeds
+	// against a response the upstream never sent, and `retrace replay`
+	// counts it as a hit and exits 0.
+	h := hop(1, "GET", "/cart", "", 200, `{"items":[{"sku":"a"},{"sku":`)
+	h.Resp.Truncated = true
+	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
+
+	_, err := LoadBundle(dir)
+	if err == nil {
+		t.Fatal("LoadBundle accepted a truncated recorded response body — replay would serve a knowingly-short body as if it were the complete recorded response")
+	}
+	if !strings.Contains(err.Error(), "TRUNCATED response") || !strings.Contains(err.Error(), "/cart") {
+		t.Fatalf("error %q does not name the problem and the exchange", err)
+	}
+
+	// THE MIRROR, and it is the point: a refusal widened one field at a
+	// time is how the ordinary case eventually stops loading. The same
+	// hop, the same body, not truncated — loads AND serves.
+	whole := hop(1, "GET", "/cart", "", 200, `{"items":[{"sku":"a"}]}`)
+	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole}))
+	if err != nil {
+		t.Fatalf("an untruncated response body did not load: %v", err)
+	}
+	_, url := serve(t, b, Options{}, "")
+	resp := do(t, "GET", url+"/cart", "", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want the recorded 200 — the refusal swallowed the ordinary case", resp.StatusCode)
+	}
+	if got := readBody(t, resp); got != `{"items":[{"sku":"a"}]}` {
+		t.Fatalf("body = %q, want the recorded body served in full", got)
+	}
+}

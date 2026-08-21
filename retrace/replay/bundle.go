@@ -103,6 +103,13 @@ type Bundle struct {
 //     body) or as a prefix (a wildcard with extra steps, since a client
 //     that merely starts the same way is accepted). Neither is a contract,
 //     so the bundle is refused instead;
+//   - a TRUNCATED recorded response body — reachable by exactly the same
+//     route (trace.Redactor.Hop caps BOTH payloads), and the quieter of
+//     the two: truncated JSON sometimes still parses, truncated HTML or
+//     text renders, and the app under test proceeds against a response the
+//     upstream never sent. `retrace diff` already treats Resp.Truncated as
+//     significant (diff/openapi.go's required-field check refuses to run
+//     against one); a strict mock has no weaker reading available to it;
 //   - a recorded response carrying Content-Encoding — the bytes in the
 //     bundle are NOT what that header describes. core/proxy forwards the
 //     client's Accept-Encoding verbatim and Go's transport only
@@ -150,14 +157,23 @@ func LoadBundle(dir string) (*Bundle, error) {
 	return b, nil
 }
 
-// refuse reports the recorded hops this package will not replay. Both
-// cases are recordings whose BYTES no longer describe what the headers or
-// the matcher would claim about them, and in both the honest answer is a
+// refuse reports the recorded hops this package will not replay. Every
+// case is a recording whose BYTES no longer describe what the headers or
+// the matcher would claim about them, and in each the honest answer is a
 // loud refusal at load rather than a plausible answer at request time.
+//
+// The two truncation arms are ONE fact about the recording, not two:
+// trace.Redactor.Hop runs Redactor.Payload over both payloads and the cap
+// sets Truncated on whichever it shortened, so a `max_body` small enough
+// to reach one payload reaches the other on the next hop. A refusal that
+// covered only the request side would leave the quieter half live.
 func refuse(h trace.Hop) error {
 	where := strings.ToUpper(h.Method) + " " + h.Path
 	if h.Req.Truncated {
 		return fmt.Errorf("hop %d (%s) recorded a TRUNCATED request body — a capped body has no trustworthy tail, so it can neither be matched verbatim (every correct client would be reported as a deviation) nor treated as no constraint (every client body would match); re-record the flow with a larger capture cap", h.Seq, where)
+	}
+	if h.Resp.Truncated {
+		return fmt.Errorf("hop %d (%s) recorded a TRUNCATED response body — the capture cut it at the size cap, so replaying it would hand the client a knowingly-short body as if it were the complete recorded response, and a short body is the QUIET failure: truncated JSON sometimes still parses and truncated text still renders, so the test proceeds against a response the upstream never sent; re-record the flow with a larger capture cap", h.Seq, where)
 	}
 	if enc := contentEncoding(h.Resp.Headers); enc != "" {
 		return fmt.Errorf("hop %d (%s) recorded Content-Encoding: %s — the recorded body is no longer those bytes (the capture wrote them through JSON, which replaces every invalid UTF-8 byte), so replaying that header would hand the client a body it cannot decode; re-record the flow with the client sending `Accept-Encoding: identity`", h.Seq, where, enc)
