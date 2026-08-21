@@ -34,12 +34,19 @@ state are in `openspec/changes/init-ensemble-retrace/tasks.md`.
 
 ## Try it
 
-Requires Go 1.25, and Docker only if your config declares databases.
+Requires Go 1.25 and [pnpm](https://pnpm.io), and Docker only if your config
+declares databases.
+
+The dashboard (`dashboard/ensemble-ui`) is embedded into the `ensemble`
+binary at compile time, so its JS build has to run **before** the Go build —
+otherwise you get a binary that starts fine but serves a "UI not built" page.
+`make` handles the ordering:
 
 ```sh
 git clone https://github.com/caribou-crew/ensemble
 cd ensemble
-go install ./ensemble/cmd/ensemble   # installs to $(go env GOPATH)/bin
+make deps      # pnpm install
+make install   # builds the dashboard, then `go install`s ensemble + retrace
 ```
 
 Make sure `$(go env GOPATH)/bin` is on your `PATH` (add
@@ -47,8 +54,20 @@ Make sure `$(go env GOPATH)/bin` is on your `PATH` (add
 found after installing). Once it is, `ensemble` runs from anywhere — no need
 to `cd` into the repo or reference a local binary path.
 
-Prefer a local binary instead? `go build -o ensemble ./ensemble/cmd/ensemble`
-works the same way, just scoped to the repo directory (run it as `./ensemble`).
+Prefer local binaries instead? `make build` does the same thing but leaves
+`./ensemble` and `./retrace` in the repo root rather than installing them.
+
+Without `make`, the equivalent by hand is:
+
+```sh
+pnpm install
+pnpm -r build                              # must run first — see above
+go build -o ensemble ./ensemble/cmd/ensemble
+```
+
+If you ever see "UI not built" in the dashboard, it means the Go binary was
+built (or reinstalled) without a preceding `pnpm -r build` — rerun `make
+install`/`make build`.
 
 Write an `ensemble.yaml` describing your stack:
 
