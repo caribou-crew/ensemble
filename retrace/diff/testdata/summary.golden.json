@@ -1,0 +1,156 @@
+{
+  "schema": "retrace-diff/1",
+  "app": "shop",
+  "flow": "checkout",
+  "a": {
+    "runId": "reference",
+    "kind": "bundle",
+    "dir": "/runs/a",
+    "manifest": {
+      "schema": "",
+      "app": "",
+      "flow": "",
+      "runId": "",
+      "mode": "",
+      "git": {
+        "sha": "",
+        "branch": "",
+        "dirty": false
+      },
+      "startedAt": "0001-01-01T00:00:00Z",
+      "finishedAt": "0001-01-01T00:00:00Z",
+      "checkpoints": null,
+      "groups": null,
+      "capture": {
+        "status": "",
+        "summary": ""
+      },
+      "wire": {
+        "calls": 0,
+        "recorded": false
+      },
+      "test": {
+        "command": "",
+        "exitCode": 0,
+        "durationMs": 0
+      },
+      "env": {
+        "go": "",
+        "platform": "",
+        "retrace": ""
+      }
+    }
+  },
+  "b": {
+    "runId": "20240101T000000Z-abc1234",
+    "kind": "run",
+    "dir": "/runs/b",
+    "manifest": {
+      "schema": "",
+      "app": "",
+      "flow": "",
+      "runId": "",
+      "mode": "",
+      "git": {
+        "sha": "",
+        "branch": "",
+        "dirty": false
+      },
+      "startedAt": "0001-01-01T00:00:00Z",
+      "finishedAt": "0001-01-01T00:00:00Z",
+      "checkpoints": null,
+      "groups": null,
+      "capture": {
+        "status": "",
+        "summary": ""
+      },
+      "wire": {
+        "calls": 0,
+        "recorded": false
+      },
+      "test": {
+        "command": "",
+        "exitCode": 0,
+        "durationMs": 0
+      },
+      "env": {
+        "go": "",
+        "platform": "",
+        "retrace": ""
+      }
+    }
+  },
+  "verdict": "changed",
+  "checkpoints": [
+    {
+      "name": "cart",
+      "verdict": "changed",
+      "diffPct": 1.5,
+      "diffPctFine": 2.1,
+      "numDiff": 12,
+      "images": {
+        "a": "shots/cart.png",
+        "b": "shots/cart.png",
+        "diff": "diff/shots/cart.png"
+      }
+    }
+  ],
+  "wire": {
+    "paired": [],
+    "missing": [],
+    "extra": []
+  },
+  "sections": [
+    {
+      "name": "",
+      "entries": [],
+      "counts": {}
+    }
+  ],
+  "hops": {
+    "serviceCounts": null,
+    "newRoutes": [],
+    "goneRoutes": [],
+    "hopRequireConfigured": false
+  },
+  "unexpectedStatuses": null,
+  "perf": {
+    "status": "unset",
+    "measuredMs": 0,
+    "budgetMs": 0
+  },
+  "conformance": null,
+  "capture": {
+    "a": {
+      "status": "ok",
+      "summary": "capture looks complete"
+    },
+    "b": {
+      "status": "ok",
+      "summary": "capture looks complete"
+    }
+  },
+  "counts": {
+    "checkpoints": 1,
+    "pixelChanged": 1,
+    "wirePaired": 0,
+    "wireChanged": 0,
+    "wireMoved": 0,
+    "wireMissing": 0,
+    "wireExtra": 0,
+    "violations": 0,
+    "hopNew": 0,
+    "hopGone": 0,
+    "unexpectedStatuses": 0,
+    "conformance": 0
+  },
+  "gates": [],
+  "budgets": [
+    {
+      "plane": "pixel",
+      "threshold": 0.1,
+      "observed": 1.5,
+      "failed": true
+    }
+  ]
+}
