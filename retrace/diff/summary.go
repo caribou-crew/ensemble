@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
@@ -603,25 +604,40 @@ func budgetsOf(s Summary, cfg *config.Config) []Gate {
 		if !ok || g.BudgetPct == nil {
 			continue
 		}
-		// perf's percentage is only meaningful once a budget exists to be
-		// a percentage OF. BudgetMs == 0 (DerivePerfBudget never
-		// configured one) means "no perf gate", the same "not gated" vs
-		// "gated at a threshold of zero" distinction Summary.Budgets'
-		// own doc comment states for cfg.Gates itself — appending a Gate
-		// here would divide by zero (Inf/NaN) or, worse, silently read as
-		// "0% over budget": clean. Neither is the zero value this project
-		// can afford; skip the plane entirely instead.
-		if plane == "perf" && s.Perf.BudgetMs == 0 {
+		// An UNMEASURABLE plane gets no Gate — the same rule, and now the
+		// same code path, as a plane cfg.Gates never mentions. observedFor
+		// divides for three of the four planes, and an empty denominator
+		// is "I have no data", not "0% changed": a wire plane that paired
+		// nothing, a hop plane with no ServiceCounts, and a perf plane
+		// with no BudgetMs would each otherwise report a CLEAN gate on the
+		// run with the least evidence in it. Perf already refused to emit
+		// one; wire and hop returned a reassuring zero instead, which is
+		// the zero-value constraint's third clause exactly — a plausible
+		// value is worse than an empty one, because it sails through every
+		// downstream seam. There is exactly ONE guard now, inside
+		// observedFor, rather than a skip here and a defensive early
+		// return there that could drift apart.
+		observed, measurable := observedFor(s, plane)
+		if !measurable {
 			continue
 		}
 		threshold := *g.BudgetPct
-		observed := observedFor(s, plane)
 		out = append(out, Gate{Plane: plane, Threshold: threshold, Observed: observed, Failed: observed > threshold})
 	}
 	return out
 }
 
-func observedFor(s Summary, plane string) float64 {
+// observedFor derives one plane's Observed percentage AND reports whether
+// that plane is measurable at all. The second return is not a convenience:
+// three of the four planes divide, and "0, false" versus "0, true" is the
+// difference between "nothing was measured" and "measured, and nothing
+// changed" — which a bare float64 cannot carry. Returning a bare 0 for an
+// empty denominator is what made a run that paired no wire entries report a
+// clean wire budget.
+//
+// pixel does not divide: it is the worst per-checkpoint DiffPct, a max over
+// a set, so it has no denominator to be empty.
+func observedFor(s Summary, plane string) (observed float64, measurable bool) {
 	switch plane {
 	case "pixel":
 		var worst float64
@@ -630,16 +646,16 @@ func observedFor(s Summary, plane string) float64 {
 				worst = cp.DiffPct
 			}
 		}
-		return worst
+		return worst, true
 	case "wire":
 		if s.Counts.WirePaired == 0 {
-			return 0
+			return 0, false
 		}
-		return 100 * float64(s.Counts.WireChanged) / float64(s.Counts.WirePaired)
+		return 100 * float64(s.Counts.WireChanged) / float64(s.Counts.WirePaired), true
 	case "hop":
 		total := len(s.Hops.ServiceCounts)
 		if total == 0 {
-			return 0
+			return 0, false
 		}
 		deviating := 0
 		for _, svc := range s.Hops.ServiceCounts {
@@ -647,17 +663,17 @@ func observedFor(s Summary, plane string) float64 {
 				deviating++
 			}
 		}
-		return 100 * float64(deviating) / float64(total)
+		return 100 * float64(deviating) / float64(total), true
 	case "perf":
-		// Callers route through budgetsOf, which already skips this plane
-		// when BudgetMs == 0; guarded again here so a direct call (e.g.
-		// from a test) never divides by zero.
+		// BudgetMs == 0 means DerivePerfBudget never configured one: there
+		// is no budget for a percentage to be OVER, so the plane is
+		// unmeasurable rather than "0% over budget: clean".
 		if s.Perf.BudgetMs == 0 {
-			return 0
+			return 0, false
 		}
-		return 100 * (s.Perf.MeasuredMs - s.Perf.BudgetMs) / s.Perf.BudgetMs
+		return 100 * (s.Perf.MeasuredMs - s.Perf.BudgetMs) / s.Perf.BudgetMs, true
 	default:
-		return 0
+		return 0, false
 	}
 }
 
@@ -774,5 +790,46 @@ func RenderText(w io.Writer, s Summary) {
 		fmt.Fprintf(w, "BUDGET: %s %.2f%% → %.2f%% %s\n", b.Plane, b.Threshold, b.Observed, status)
 	}
 
+	renderConformance(w, s.Conformance)
+
 	fmt.Fprintf(w, "VERDICT: %s\n", s.Verdict)
+}
+
+// renderConformance prints the conformance section of the human-facing
+// report, with "unchecked" findings on their own labelled lines.
+//
+// Task 9 added ConformanceFinding.Kind "unchecked" for exactly one reason:
+// an unresolvable $ref, a body that fails json.Unmarshal, or a body the
+// Redactor truncated at capture must NEVER read as a verified pass. Until
+// this function existed, --json carried that finding and RenderText did
+// not — so in the default human-facing view, everything that is not
+// --json, an unchecked finding was invisible and "VERDICT: pass" was the
+// whole story. That is a producer fixed and a consumer unwritten, which
+// puts the silent pass back one layer down.
+//
+// Nothing is printed when there are no findings. "CONFORMANCE: 0 findings"
+// would be the same reassuring-value trap in a new costume: a clean-looking
+// line on a run where no spec was configured and no check ever ran. An
+// absent section says "nothing to report"; it does not claim "verified".
+func renderConformance(w io.Writer, findings []ConformanceFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	unchecked := 0
+	for _, f := range findings {
+		if f.Kind == "unchecked" {
+			unchecked++
+		}
+	}
+	header := fmt.Sprintf("CONFORMANCE: %d finding(s)", len(findings))
+	if unchecked > 0 {
+		header += fmt.Sprintf(", %d unchecked — an unchecked finding was NOT verified and is not a pass", unchecked)
+	}
+	fmt.Fprintln(w, header)
+	for _, f := range findings {
+		// The Kind leads the line, upper-cased, so UNCHECKED reads
+		// differently from every real violation at a glance and cannot be
+		// mistaken for one — nor for the silence of a pass.
+		fmt.Fprintf(w, "  %-22s %s %s %d — %s\n", strings.ToUpper(f.Kind), f.Method, f.Path, f.Status, f.Detail)
+	}
 }

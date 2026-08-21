@@ -104,9 +104,22 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	// ExitCode(s) returns, it does not change s or ExitCode itself, so
 	// --json output is identical with or without it — a reporting run must
 	// not also blind the reader to what it found.
+	//
+	// It suppresses FINDINGS, not INABILITY TO RUN. "changed" and "failed"
+	// are findings, and a report-only CI job legitimately does not want the
+	// build broken by them. "quarantined" is not a finding: nothing was
+	// compared, so there is nothing to report as clean, and forcing 0 there
+	// would let a job announce success for a run that was never evaluated —
+	// the zero-value trap wearing a command-line flag. The same class of
+	// "could not evaluate" already exits 3 through fail() above (a bad
+	// flag, an unreadable config, an I/O failure) whether or not the flag
+	// was passed, so exempting quarantine also makes the two consistent.
 	code := diff.ExitCode(s)
 	if *noFail {
-		code = exitOK
+		switch s.Verdict {
+		case "changed", "failed":
+			code = exitOK
+		}
 	}
 	return code
 }
