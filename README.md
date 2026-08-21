@@ -105,11 +105,17 @@ inlining it.
 
 Any value in `ensemble.yaml` can reference an environment variable with
 `${VAR}` or, with a fallback, `${VAR:-default}` — e.g. `port:
-${BFF_PORT:-8003}`. `${VAR}` with no default and nothing set for it is a
-load error, not a silent empty string. A `.env` file next to `ensemble.yaml`
-is loaded automatically if present (`KEY=VALUE` per line, `#` comments,
-optionally quoted values) as a source of values for that substitution — it's
-entirely optional, and a real environment variable always wins over `.env`.
+${BFF_PORT:-8003}`, or `dir: ${LOCAL_STACK_DIR:-$HOME/dev/local-stack}` (a
+bare `$VAR` inside the `:-default` itself is resolved too, so defaults can
+build on other env vars like `$HOME`). `${VAR}` with no default and nothing
+set for it is a load error, not a silent empty string. Bare `$VAR` is
+recognized only inside a `:-default` fallback, not elsewhere in the file —
+a `run:` command's own `$JAVA_HOME`-style references are left alone for the
+shell to expand when the service actually starts. A `.env` file next to
+`ensemble.yaml` is loaded automatically if present (`KEY=VALUE` per line,
+`#` comments, optionally quoted values) as a source of values for that
+substitution — it's entirely optional, and a real environment variable
+always wins over `.env`.
 
 Then:
 
