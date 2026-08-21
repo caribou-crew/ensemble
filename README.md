@@ -107,7 +107,7 @@ Then:
 
 ```sh
 ./ensemble up                     # starts everything, serves the dashboard
-open http://127.0.0.1:4700        # topology, live traffic, latency, inspector
+./ensemble dashboard              # opens it in your browser: topology, live traffic, latency, inspector
 ./ensemble traffic --follow       # or tail the hops from the terminal
 ./ensemble down
 ```
@@ -130,6 +130,7 @@ measured duration stays honest — the true wall-clock is the sum of the two.
 
 ```
 ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700]
+ensemble dashboard [--no-open]
 ensemble status | down | seed <name>
 ensemble latency list | set | reset | arm-all
 ensemble traffic [--since N] [--errors-only] [--follow]
