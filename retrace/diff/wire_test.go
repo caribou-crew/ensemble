@@ -1044,14 +1044,17 @@ func TestATruncatedBodyStillFallsBackEvenWhenSyntacticallyValidJSON(t *testing.T
 func TestNilDeviationsToleratesNothing(t *testing.T) {
 	a := []trace.Hop{hop(1, "GET", "/only-a", 200, "", ""), hop(2, "GET", "/x", 200, "", "")}
 	b := []trace.Hop{hop(1, "GET", "/only-b", 200, "", ""), hop(2, "GET", "/x", 200, "", "")}
-	// A populated Deviations list is still a no-op in Task 8 — Task 11 owns
-	// applying the ledger. This must hold whether Deviations is nil or set.
-	dev := []Deviation{{ID: "d1", Status: "approved", Apps: [2]string{"a", "b"}, Method: "GET", Path: "/only-a", Reason: "expected"}}
-	for _, deviations := range [][]Deviation{nil, dev} {
+	// The ZERO VALUE of Options.Deviations must be the refusing one: an
+	// empty ledger tolerates nothing, so a diff that forgot to load one
+	// reports every difference rather than silently sanctioning it. Task 11
+	// added the applying half (see deviations_test.go's
+	// TestASanctionedDeviationAnnotatesButDoesNotHide); this pins that the
+	// absence of a ledger never becomes a tolerance.
+	for _, deviations := range [][]Deviation{nil, {}} {
 		w := DiffWire(a, b, Options{Deviations: deviations})
 		for _, c := range append(append([]Call{}, w.Missing...), w.Extra...) {
 			if c.Tolerated != nil {
-				t.Fatalf("Call.Tolerated = %+v, want nil — Task 8 must not consume Options.Deviations", c.Tolerated)
+				t.Fatalf("Call.Tolerated = %+v, want nil — an empty ledger must tolerate nothing", c.Tolerated)
 			}
 		}
 	}
