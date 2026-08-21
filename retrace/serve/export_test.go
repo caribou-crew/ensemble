@@ -15,8 +15,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -572,6 +574,15 @@ func TestExportOfAProjectWithNoRunsSaysSoRatherThanAllClear(t *testing.T) {
 	if res.Items != 0 {
 		t.Fatalf("exported %d items from an empty project", res.Items)
 	}
+	// R-Y's gap: max over an EMPTY SET is 0, so an export that compared
+	// nothing would exit as a pass — on the command whose stated design is
+	// to be the only step in a CI job, where the number is the build result
+	// and the prose on the page is not. An export with no rows is an
+	// INABILITY TO RUN, not a finding, and it carries the code the rest of
+	// this CLI already uses for that.
+	if res.ExitCode != 3 {
+		t.Fatalf("an export that compared nothing exits %d — CI reads that as a pass over a report with nothing in it", res.ExitCode)
+	}
 	index := readText(t, out, "index.html")
 	if strings.Contains(strings.ToLower(index), "all clear") {
 		t.Fatalf("a project with no runs exports an all-clear report:\n%s", index)
@@ -701,7 +712,649 @@ func TestExportKeepsARowForAnAppWhoseFlowsCannotBeListed(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "admin", "login", "index.html")); err != nil {
 		t.Fatalf("one unreadable app took the whole report down: %v", err)
 	}
-	if res.ExitCode != 2 {
-		t.Fatalf("exit code = %d, want 2 — an app nobody could read is not a passing export", res.ExitCode)
+	// 3, not 2: an app nobody could read produced no comparison, which is
+	// "could not evaluate" and not "a gate failed". `retrace diff` answers
+	// the same fact with the same number.
+	if res.ExitCode != 3 {
+		t.Fatalf("exit code = %d, want 3 — an app nobody could read was not evaluated, and that is not a gate failure", res.ExitCode)
+	}
+}
+
+// --- item pages ---------------------------------------------------------
+//
+// Everything above this line reads index.html. The lower half of an ITEM
+// page — checkpoints, wire, hops, conformance, performance, gate budgets —
+// is where this report says the most, and where a wrong sentence is least
+// checkable: a reader of an artifact cannot re-run anything to correct it.
+//
+// Every assertion below is TWO-ARMED on purpose: the same section rendered
+// from a comparison that evaluated the plane, and from one that did not.
+// Each of these sentences is TRUE of one of the two arms, so a one-armed
+// fixture pins neither reading — it passes just as happily when the page
+// prints the evaluated wording over an unevaluated plane.
+
+// itemPages exports cwd whole and returns every flow's page body keyed
+// "<app>/<flow>". Two arms out of ONE export, rather than two exports that
+// could differ for a second reason.
+func itemPages(t *testing.T, cwd string) map[string]string {
+	t.Helper()
+	res, out := exportTo(t, cwd, "", "")
+	pages := map[string]string{}
+	for _, f := range res.Files {
+		if !strings.HasSuffix(f, "/index.html") || strings.Count(f, "/") != 2 {
+			continue
+		}
+		pages[strings.TrimSuffix(f, "/index.html")] = readText(t, out, filepath.FromSlash(f))
+	}
+	if len(pages) == 0 {
+		t.Fatalf("the export wrote no item pages at all: %v", res.Files)
+	}
+	return pages
+}
+
+// pageSection is one <h2> section of an item page, from that heading to the
+// next. A "the hops plane says X" assertion that searched the whole page
+// would pass on an X rendered under Wire.
+func pageSection(t *testing.T, page, heading string) string {
+	t.Helper()
+	h := "<h2>" + heading + "</h2>"
+	start := strings.Index(page, h)
+	if start < 0 {
+		t.Fatalf("no %s section on this page:\n%s", h, page)
+	}
+	rest := page[start+len(h):]
+	if next := strings.Index(rest, "<h2>"); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
+}
+
+// checkpointBlock is one checkpoint's block inside the Checkpoints section.
+func checkpointBlock(t *testing.T, page, name string) string {
+	t.Helper()
+	sec := pageSection(t, page, "Checkpoints")
+	start := strings.Index(sec, "<h3>"+name+" ")
+	if start < 0 {
+		t.Fatalf("no block for checkpoint %q in:\n%s", name, sec)
+	}
+	rest := sec[start:]
+	if next := strings.Index(rest[1:], "<h3>"); next >= 0 {
+		rest = rest[:next+1]
+	}
+	return rest
+}
+
+func writeFileAt(t *testing.T, cwd, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(cwd, name), []byte(body), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
+	}
+}
+
+// writeChain adds hops.jsonl — the full cross-service chain `retrace run`
+// records in ensemble mode — to an already-recorded run, through the
+// manifest writer production uses. The hop plane is absent on a standalone
+// run and present on an ensemble one, which is what makes it the cleanest
+// plane on which to build both arms out of real recordings.
+func writeChain(t *testing.T, p runs.Paths, hops []trace.Hop) {
+	t.Helper()
+	var buf bytes.Buffer
+	for _, h := range hops {
+		b, err := json.Marshal(h)
+		if err != nil {
+			t.Fatalf("marshalling a fixture chain hop: %v", err)
+		}
+		buf.Write(append(b, '\n'))
+	}
+	if err := os.WriteFile(filepath.Join(p.RunDir, "hops.jsonl"), buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("writing hops.jsonl: %v", err)
+	}
+	m, err := runs.ReadManifest(p.ManifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	m.Mode = runs.ModeEnsemble
+	m.Hops = &runs.Counts{Calls: len(hops), Recorded: true}
+	if err := runs.WriteManifest(p, &m); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+}
+
+// gatedProject is the fixture the item-page assertions share: ONE config,
+// gating pixel and wire, configuring an OpenAPI spec and a per-flow perf
+// budget — and three flows that give that one config three different
+// amounts of evidence to work with.
+//
+//	web/paired  — every plane evaluated and CLEAN: a checkpoint's worth of
+//	              pixels, a paired wire call, a recorded hop chain, a perf
+//	              budget it meets, and a spec its call conforms to.
+//	web/silent  — shots and nothing else: no wire call to pair, no hop
+//	              chain, and no perf budget configured for this flow.
+//	web/nothing — no evidence at all, so not even the pixel plane (which
+//	              every project gates, by config default) is measurable.
+//
+// One config across all three flows is the whole point. "This plane is not
+// gated" is a claim about the CONFIG; a fixture with one flow per config
+// cannot tell a config claim from a run claim, and would call the false
+// sentence true.
+func gatedProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	writeFileAt(t, cwd, "openapi.json", `{"paths": {"/paired": {"get": {"responses": {"200": {}}}}}}`)
+	writeFileAt(t, cwd, "retrace.yaml", `app: web
+openapi: openapi.json
+gates:
+  pixel:
+    budget_pct: 5
+  wire:
+    budget_pct: 5
+flows:
+  paired:
+    perf_budget_ms: 5000
+`)
+	calls := []trace.Hop{hop(1, "GET", "/paired", 200, `{"ok":true}`)}
+	for _, id := range []string{runA, runB} {
+		p := recordRun(t, cwd, "web", "paired", id, map[string][]byte{"home": shotPNG(t, white)}, calls)
+		writeChain(t, p, calls)
+		recordRun(t, cwd, "web", "silent", id, map[string][]byte{"home": shotPNG(t, white)}, nil)
+		recordRun(t, cwd, "web", "nothing", id, nil, nil)
+		if id == runA {
+			for _, flow := range []string{"paired", "silent", "nothing"} {
+				acceptRef(t, cwd, "web", flow, runA)
+			}
+		}
+	}
+	return cwd
+}
+
+// F-1. budgetsOf emits NO Gate for a plane it could not measure, by the
+// same code path as a plane nobody configured — so an absent row means one
+// of two very different things and only the config separates them. The page
+// used to state the reassuring one in prose the Summary never claimed:
+// "a plane with no row here is not gated at all". A reader asking "did my
+// wire gate run on this build?" was told the wire plane is ungated.
+//
+// This is the inverted shape of this phase's defect class: not a
+// distinction dying in the transcribing layer, but the transcribing layer
+// ASSERTING ONE AWAY. It ranks highest because it is an affirmative claim
+// about configuration, and configuration is the one thing a reader of a CI
+// artifact cannot check from the artifact.
+func TestAGatedPlaneThatCouldNotBeMeasuredIsNeverReportedAsUngated(t *testing.T) {
+	pages := itemPages(t, gatedProject(t))
+
+	measured := pageSection(t, pages["web/paired"], "Gate budgets")
+	for _, plane := range []string{"pixel", "wire"} {
+		if !strings.Contains(measured, "<td>"+plane+"</td>") {
+			t.Fatalf("test setup: the %s gate has no budget row on a flow with evidence for it:\n%s", plane, measured)
+		}
+	}
+	if strings.Contains(measured, "NOT evaluated") {
+		t.Fatalf("a flow that evaluated every gate it configures says a gate was not evaluated:\n%s", measured)
+	}
+
+	// web/silent gates wire and paired no calls, so wire is CONFIGURED and
+	// UNMEASURED. The page must say that, in those terms.
+	partial := pageSection(t, pages["web/silent"], "Gate budgets")
+	if !strings.Contains(partial, "<td>pixel</td>") {
+		t.Fatalf("test setup: pixel was measurable here and has no row:\n%s", partial)
+	}
+	if strings.Contains(partial, "<td>wire</td>") {
+		t.Fatalf("test setup: wire paired nothing here, so diff must emit no budget row for it:\n%s", partial)
+	}
+	if !strings.Contains(partial, "NOT evaluated") || !strings.Contains(partial, "<code>wire</code>") {
+		t.Fatalf("this project GATES wire and this run could not measure it, and the page does not say so — a reader asking whether their wire gate ran on this build reads the absent row as \"wire is not gated\":\n%s", partial)
+	}
+
+	// web/nothing measures nothing at all, so the "no plane is gated"
+	// wording must not appear either: pixel is gated in every project, by
+	// config default, whether or not a run gave it anything to measure.
+	none := pageSection(t, pages["web/nothing"], "Gate budgets")
+	if strings.Contains(none, "<td>") {
+		t.Fatalf("test setup: nothing was measurable here and a budget row was emitted:\n%s", none)
+	}
+	if strings.Contains(none, "No plane is gated") {
+		t.Fatalf("this project gates pixel and wire and this page says no plane is gated:\n%s", none)
+	}
+	for _, plane := range []string{"<code>pixel</code>", "<code>wire</code>"} {
+		if !strings.Contains(none, plane) {
+			t.Fatalf("a gate this run could not evaluate (%s) is not named on the page at all:\n%s", plane, none)
+		}
+	}
+
+	// The premise the "no gated plane at all" arm rests on, pinned:
+	// applyDefaults gates "pixel" in EVERY project, so at least one of the
+	// two lists above is always non-empty and that arm is unreachable.
+	// Mutating its wording survives — an equivalent mutant for as long as
+	// this holds, and this is what makes it hold.
+	cfg, err := config.Discover(t.TempDir())
+	if err != nil {
+		t.Fatalf("config.Discover: %v", err)
+	}
+	if g, ok := cfg.Gates["pixel"]; !ok || g.BudgetPct == nil {
+		t.Fatalf("a project with no config gates no plane (%+v) — the Gate budgets section can now render its unreachable arm, and nothing asserts what that arm says", cfg.Gates)
+	}
+
+	// The clarifying sentence is itself load-bearing: without it, an
+	// absent row is once again just an absence, and the reassuring reading
+	// is the one a reader supplies.
+	for _, key := range []string{"web/paired", "web/silent"} {
+		sec := pageSection(t, pages[key], "Gate budgets")
+		if !strings.Contains(sec, "A plane named in neither list above is not gated at all") {
+			t.Fatalf("%s lists gates and never says what an absent plane means:\n%s", key, sec)
+		}
+	}
+
+	// The sentence itself, in the words that made it false. Pinned as a
+	// string because deleting the fix must turn this red, and a reworded
+	// version of the same claim would otherwise slip back in unnoticed.
+	for key, page := range pages {
+		if strings.Contains(page, "A plane with no row here is not gated at all") {
+			t.Fatalf("%s states that an absent budget row means the plane is ungated; budgetsOf withholds a row from a gated-but-unmeasurable plane too", key)
+		}
+	}
+}
+
+// F-4. Every other plane on this page has an explicit "nothing was
+// evaluated here" arm. Hops rendered its <h2> and then, for a standalone
+// run, nothing at all — and a heading over an empty section reads as
+// "nothing to report", which is the measured-and-clean reading again.
+// observedFor draws exactly this line at len(ServiceCounts) == 0.
+func TestAStandaloneRunSaysItsHopPlaneWasNeverRecorded(t *testing.T) {
+	pages := itemPages(t, gatedProject(t))
+
+	recorded := pageSection(t, pages["web/paired"], "Hops")
+	if !strings.Contains(recorded, "<td>api</td>") {
+		t.Fatalf("test setup: a run with a recorded chain has no per-service counts:\n%s", recorded)
+	}
+	if strings.Contains(recorded, "No hop chain was recorded") {
+		t.Fatalf("a run WITH a recorded hop chain says it has none:\n%s", recorded)
+	}
+
+	absent := pageSection(t, pages["web/silent"], "Hops")
+	if strings.Contains(absent, "<td>") {
+		t.Fatalf("test setup: a standalone run produced per-service counts:\n%s", absent)
+	}
+	if !strings.Contains(absent, "No hop chain was recorded") {
+		t.Fatalf("no hop chain was recorded on either side and this section is a heading over nothing, which reads as \"every service behaved\":\n%s", absent)
+	}
+	// The hopRequire gate is part of the hop plane: with no chain there is
+	// nothing to confirm a required route against, so the section must not
+	// carry the wording that belongs to a chain it does not have.
+	if strings.Contains(absent, "was confirmed on this run") {
+		t.Fatalf("a run with no hop chain claims a required route was confirmed:\n%s", absent)
+	}
+}
+
+// F-5, the planes whose "not evaluated" arms had no fixture at all. Each
+// pair is the same section from the flow that evaluated the plane and the
+// flow that did not; the sentence under test is true of exactly one of them.
+func TestAPlaneThatWasNotEvaluatedNeverRendersAsEvaluatedAndClean(t *testing.T) {
+	gated := itemPages(t, gatedProject(t))
+
+	bare := t.TempDir() // no retrace.yaml at all, so no spec is configured
+	changedFlow(t, bare, "web", "cart", "home")
+	unconfigured := itemPages(t, bare)["web/cart"]
+
+	for _, tc := range []struct {
+		section          string
+		evaluated, blank string
+		want, notWant    string
+	}{{
+		// M3: a flow with no perf budget must not share the wording of one
+		// that met its budget.
+		section:   "Performance",
+		evaluated: gated["web/paired"],
+		blank:     gated["web/silent"],
+		want:      "No performance budget is configured",
+		notWant:   "ms budget",
+	}, {
+		// M1: OpenAPIConfigured is the ONLY thing separating "no spec" from
+		// "a spec, and every call conformed" — both encode as an empty list.
+		section:   "OpenAPI conformance",
+		evaluated: gated["web/paired"],
+		blank:     unconfigured,
+		want:      "No OpenAPI spec is configured",
+		notWant:   "conformed to the configured spec",
+	}, {
+		// M8: a flow with no checkpoints on either side must say so rather
+		// than render an empty Checkpoints section.
+		section:   "Checkpoints",
+		evaluated: gated["web/paired"],
+		blank:     gated["web/nothing"],
+		want:      "No checkpoints were captured on either side",
+		notWant:   "% of pixels differ",
+	}} {
+		t.Run(tc.section, func(t *testing.T) {
+			yes := pageSection(t, tc.evaluated, tc.section)
+			if !strings.Contains(yes, tc.notWant) {
+				t.Fatalf("test setup: the evaluated arm of %q does not contain %q:\n%s", tc.section, tc.notWant, yes)
+			}
+			if strings.Contains(yes, tc.want) {
+				t.Fatalf("the arm that DID evaluate %q says it did not:\n%s", tc.section, yes)
+			}
+			no := pageSection(t, tc.blank, tc.section)
+			if strings.Contains(no, tc.notWant) {
+				t.Fatalf("%q was never evaluated for this flow and the page reports it as evaluated (%q):\n%s", tc.section, tc.notWant, no)
+			}
+			if !strings.Contains(no, tc.want) {
+				t.Fatalf("%q was never evaluated for this flow and the page does not say so — an empty section reads as \"nothing to report\":\n%s", tc.section, no)
+			}
+		})
+	}
+}
+
+// missingCheckpointProject records two checkpoints, accepts them, then
+// records a run that captured only one of them. Every other pixel fixture
+// in this suite records the SAME checkpoint names on both sides, so the
+// non-comparing verdicts ("missing", "added", "unreadable") were never
+// constructed and their rendering was never seen.
+func missingCheckpointProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	calls := []trace.Hop{hop(1, "GET", "/receipts", 200, `{"ok":true}`)}
+	recordRun(t, cwd, "web", "receipts", runA, map[string][]byte{
+		"home": shotPNG(t, white), "receipt": shotPNG(t, white),
+	}, calls)
+	acceptRef(t, cwd, "web", "receipts", runA)
+	recordRun(t, cwd, "web", "receipts", runB, map[string][]byte{"home": shotPNG(t, white)}, calls)
+	return cwd
+}
+
+// F-2. "missing", "added" and "unreadable" leave DiffPct and NumDiff at
+// zero, and the page printed "0.00% of pixels differ · 0 pixels" for all of
+// them: a measurement this report invented, and the most reassuring one
+// available, for a checkpoint no pixel of which was ever read. RenderText —
+// the other face of the same Summary — has always drawn this line, printing
+// the word for the non-comparing verdicts and the number only for
+// ok/changed. Two faces of one report must not disagree.
+func TestACheckpointThatWasNeverComparedShowsNoMeasurement(t *testing.T) {
+	pages := itemPages(t, missingCheckpointProject(t))
+	page := pages["web/receipts"]
+
+	never := checkpointBlock(t, page, "receipt")
+	if !strings.Contains(never, "<h3>receipt — missing</h3>") {
+		t.Fatalf("test setup: the checkpoint dropped on side B is not rendered as missing:\n%s", never)
+	}
+	if strings.Contains(never, "% of pixels differ") || strings.Contains(never, "pixels</p>") {
+		t.Fatalf("a checkpoint that was never compared prints a pixel measurement, and every number in it is a zero this report supplied:\n%s", never)
+	}
+	if !strings.Contains(never, "was not captured on this run") {
+		t.Fatalf("a checkpoint that was never compared does not say what happened instead:\n%s", never)
+	}
+	// A blank comparison pane reads as "identical" — the hazard shots()'s
+	// own Missing list exists to prevent, reached here by a path that does
+	// not populate it.
+	if strings.Contains(never, `<div class="shots">`) {
+		t.Fatalf("an uncompared checkpoint renders a shots container with nothing in it, and an empty pane reads as \"identical\":\n%s", never)
+	}
+	if !strings.Contains(never, "No image is shown for this checkpoint") {
+		t.Fatalf("an uncompared checkpoint shows no images and does not say why:\n%s", never)
+	}
+
+	// The counter-arm: the checkpoint that WAS compared still measures.
+	compared := checkpointBlock(t, page, "home")
+	if !strings.Contains(compared, "<h3>home — ok</h3>") {
+		t.Fatalf("test setup: the checkpoint captured on both sides is not rendered as ok:\n%s", compared)
+	}
+	if !strings.Contains(compared, "% of pixels differ") {
+		t.Fatalf("a checkpoint that WAS compared shows no measurement:\n%s", compared)
+	}
+	if !strings.Contains(compared, `<div class="shots">`) {
+		t.Fatalf("a compared checkpoint shows no shots:\n%s", compared)
+	}
+
+}
+
+// The other half of F-2, on the overview: Counts.Checkpoints is the UNION
+// of both manifests, so a strip built from it reports the pixel plane as
+// having covered a checkpoint no pixel of which was read.
+func TestTheOverviewCountsOnlyTheCheckpointsThatWereActuallyCompared(t *testing.T) {
+	_, out := exportTo(t, missingCheckpointProject(t), "", "")
+	row := rowFor(t, readText(t, out, "index.html"), "web/receipts")
+	if !strings.Contains(row, "1 of 2 checkpoints compared") {
+		t.Fatalf("this run captured one of the reference's two checkpoints, and the row does not say so:\n%s", row)
+	}
+}
+
+// paneRe and detailsRe read the caption a pane actually carries next to the
+// file it actually points at. Asserting the two together is the point: a
+// label swap and a file swap are separately silent, and either one inverts
+// what a reviewer concludes.
+var (
+	paneRe    = regexp.MustCompile(`<figure class="shot"><img src="([^"]+)" alt="[^"]*"><figcaption>([^<]+)</figcaption></figure>`)
+	detailsRe = regexp.MustCompile(`<details class="shot"><summary>([^<]+)</summary><img src="([^"]+)"`)
+)
+
+func panesIn(block string) map[string]string {
+	out := map[string]string{}
+	for _, m := range paneRe.FindAllStringSubmatch(block, -1) {
+		out[m[1]] = m[2]
+	}
+	for _, m := range detailsRe.FindAllStringSubmatch(block, -1) {
+		out[m[2]] = m[1]
+	}
+	return out
+}
+
+// F-3. Nothing said which run's pixels are in the `a` pane. Task 13's
+// swapped-shot-panes finding lives in a document this artifact's reader
+// cannot re-query, and summary.json's own images.a resolves into this
+// export's a/ — so a swap inverts the human reading AND the machine one,
+// and an agent reaches the same wrong conclusion with more confidence.
+//
+// The fixture already discriminated and the assertion threw it away:
+// changedFlow records side A white and side B blue, and the shot test
+// asserted only the PNG magic. Bytes and captions, together.
+func TestTheReferencePaneHoldsTheReferenceRunsPixels(t *testing.T) {
+	cwd := t.TempDir()
+	changedFlow(t, cwd, "web", "cart", "home")
+	res, out := exportTo(t, cwd, "", "")
+	if res.Items != 1 {
+		t.Fatalf("test setup: exported %d items, want 1", res.Items)
+	}
+
+	// A is the accepted reference (white); B is the run under review (blue).
+	for _, tc := range []struct {
+		side string
+		want []byte
+	}{{"a", shotPNG(t, white)}, {"b", shotPNG(t, blue)}} {
+		got, err := os.ReadFile(filepath.Join(out, "web", "cart", tc.side, "shots", "home.png"))
+		if err != nil {
+			t.Fatalf("reading the %s pane: %v", tc.side, err)
+		}
+		if !bytes.Equal(got, tc.want) {
+			other := "b"
+			if tc.side == "b" {
+				other = "a"
+			}
+			t.Fatalf("the %q pane does not hold the pixels of the run it names; the two sides are swapped, so every reviewer reads this flow's change backwards (and so does summary.json, whose images.%s resolves here). It holds the %s side's bytes: %v", tc.side, tc.side, other, bytes.Equal(got, shotPNG(t, blue)))
+		}
+	}
+
+	block := checkpointBlock(t, readText(t, out, "web", "cart", "index.html"), "home")
+	want := map[string]string{
+		"a/shots/home.png":       "reference",
+		"b/shots/home.png":       "this run",
+		"diff/shots/home.png":    "changed pixels",
+		"overlay/shots/home.png": "overlay",
+	}
+	got := panesIn(block)
+	for src, label := range want {
+		if got[src] != label {
+			t.Fatalf("the pane pointing at %s is captioned %q, want %q — a caption is the only thing telling a reviewer which run they are looking at:\n%s", src, got[src], label, block)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("this checkpoint rendered %d panes, want %d: %v", len(got), len(want), got)
+	}
+}
+
+// hopRequireProject configures a required route AND records the hop chain
+// that can confirm it — the counter-arm to gatedProject, where no
+// hopRequire route is configured at all.
+func hopRequireProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	writeFileAt(t, cwd, "retrace.yaml", `app: web
+hop_require:
+  - method: GET
+    path: /orders
+    status: 200
+`)
+	calls := []trace.Hop{hop(1, "GET", "/orders", 200, `{"ok":true}`)}
+	for _, id := range []string{runA, runB} {
+		p := recordRun(t, cwd, "web", "orders", id, map[string][]byte{"home": shotPNG(t, white)}, calls)
+		writeChain(t, p, calls)
+		if id == runA {
+			acceptRef(t, cwd, "web", "orders", runA)
+		}
+	}
+	return cwd
+}
+
+// uncheckedProject records a call whose response body was truncated at
+// capture against a spec that documents a required field. The
+// required-field check then genuinely cannot run, which Task 9 gave its own
+// finding kind ("unchecked") precisely so it could never be counted as a
+// pass — and the same recording carries the wire plane's truncation note.
+func uncheckedProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	writeFileAt(t, cwd, "openapi.json", `{"paths": {"/orders": {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"type": "object", "required": ["id"]}}}}}}}}}`)
+	writeFileAt(t, cwd, "retrace.yaml", "app: web\nopenapi: openapi.json\n")
+	h := hop(1, "GET", "/orders", 200, `{"id":1,`)
+	h.Resp.Truncated = true
+	for _, id := range []string{runA, runB} {
+		recordRun(t, cwd, "web", "orders", id, map[string][]byte{"home": shotPNG(t, white)}, []trace.Hop{h})
+		if id == runA {
+			acceptRef(t, cwd, "web", "orders", runA)
+		}
+	}
+	return cwd
+}
+
+// The remaining F-5 arms: a configured hopRequire gate, a conformance check
+// that could not run, and a body the capture truncated. Each is a state the
+// Go models explicitly and the page had no fixture for, so the arm that
+// says "this was not checked" and the arm that says "this was checked and
+// is fine" were interchangeable from inside the suite.
+func TestTheReportDistinguishesACheckThatRanFromOneThatCouldNot(t *testing.T) {
+	t.Run("a configured hopRequire route versus none", func(t *testing.T) {
+		configured := pageSection(t, itemPages(t, hopRequireProject(t))["web/orders"], "Hops")
+		if !strings.Contains(configured, "was confirmed on this run") {
+			t.Fatalf("a configured hopRequire route was confirmed and the page does not say so:\n%s", configured)
+		}
+		if strings.Contains(configured, "No <code>hopRequire</code> routes are configured") {
+			t.Fatalf("this project configures a hopRequire route and the page says none is configured:\n%s", configured)
+		}
+
+		none := pageSection(t, itemPages(t, gatedProject(t))["web/paired"], "Hops")
+		if strings.Contains(none, "was confirmed on this run") {
+			t.Fatalf("no hopRequire route is configured here and the page reports one confirmed — an ungated build reading as a gate that passed:\n%s", none)
+		}
+		if !strings.Contains(none, "No <code>hopRequire</code> routes are configured") {
+			t.Fatalf("no hopRequire route is configured here and the page does not say so:\n%s", none)
+		}
+	})
+
+	t.Run("a conformance check that could not run is not a pass", func(t *testing.T) {
+		page := itemPages(t, uncheckedProject(t))["web/orders"]
+		conformance := pageSection(t, page, "OpenAPI conformance")
+		if !strings.Contains(conformance, `<span class="note">unchecked</span>`) {
+			t.Fatalf("the required-field check could not run for this call and the finding is not marked unchecked:\n%s", conformance)
+		}
+		if !strings.Contains(conformance, "is not a pass") {
+			t.Fatalf("an unchecked conformance entry is listed with no note saying it is not a pass — a reader counts it as one:\n%s", conformance)
+		}
+		if strings.Contains(conformance, "conformed to the configured spec") {
+			t.Fatalf("a call the spec check could not run on is reported as conforming:\n%s", conformance)
+		}
+	})
+
+	t.Run("a body truncated at capture says so on the wire row", func(t *testing.T) {
+		truncated := pageSection(t, itemPages(t, uncheckedProject(t))["web/orders"], "Wire")
+		if !strings.Contains(truncated, "body truncated at capture") {
+			t.Fatalf("both payloads were truncated at capture and the wire row does not say so — a row with no differences over a body nobody has all of:\n%s", truncated)
+		}
+		whole := pageSection(t, itemPages(t, gatedProject(t))["web/paired"], "Wire")
+		if strings.Contains(whole, "body truncated at capture") {
+			t.Fatalf("no payload here was truncated and the wire row says one was:\n%s", whole)
+		}
+	})
+}
+
+// M7. A side the Summary named and the export could not copy must be
+// CALLED OUT, never quietly dropped: an omitted pane and a pane that
+// matched are the same empty space on the page.
+//
+// The state is reachable because the two steps are not atomic: SummaryFor
+// reads the reference bundle to build the comparison, and the copy happens
+// afterwards, so anything that removes a committed PNG in between (a
+// checkout on the same worktree, an LFS prune — the shape refs.go's own
+// comment names) leaves a summary naming an image that is no longer there.
+// It is driven here at the seam rather than through Export, because a
+// fixture cannot sit inside that window from the outside.
+func TestAShotSideTheExportCouldNotCopyIsNamedRatherThanOmitted(t *testing.T) {
+	cwd := t.TempDir()
+	changedFlow(t, cwd, "web", "cart", "home")
+	d := deps(t, cwd)
+	sum, err := SummaryFor(d, "web", "cart")
+	if err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	if sum.Checkpoints[0].Images.A == "" {
+		t.Fatalf("test setup: the summary names no reference image: %+v", sum.Checkpoints[0])
+	}
+	if err := os.Remove(filepath.Join(sum.A.Dir, "shots", "home.png")); err != nil {
+		t.Fatalf("removing the reference shot: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "report")
+	e := &exporter{opts: ExportOptions{Deps: d, OutDir: out}, root: out}
+	shots, err := e.shots("web/cart", sum)
+	if err != nil {
+		t.Fatalf("shots: %v", err)
+	}
+	if len(shots) != 1 || !slicesContains(shots[0].Missing, "a") {
+		t.Fatalf("the reference image was gone at copy time and the export does not record it as missing: %+v", shots)
+	}
+	for _, side := range shots[0].Sides {
+		if side.Side == "a" {
+			t.Fatalf("the export references a reference pane whose file it never copied — a broken <img> renders as a blank pane, and a blank comparison pane reads as \"identical\"")
+		}
+	}
+
+	var page bytes.Buffer
+	if err := reportTemplate.ExecuteTemplate(&page, "item", reportItem{
+		Row:   reportRow{Key: "web/cart", Verdict: "changed", Compared: true},
+		Shots: shots, Summary: &sum,
+	}); err != nil {
+		t.Fatalf("rendering the item page: %v", err)
+	}
+	block := checkpointBlock(t, page.String(), "home")
+	if !strings.Contains(block, "Not in this export: a ") {
+		t.Fatalf("the page shows three of four panes and never says the fourth is absent:\n%s", block)
+	}
+}
+
+// An artifact is read out of a build store weeks later, frequently beside
+// another copy of itself, and nothing in it says which run produced it. An
+// undated report is one a reader takes for the current one.
+func TestEveryPageSaysWhenTheExportWasProduced(t *testing.T) {
+	cwd := t.TempDir()
+	changedFlow(t, cwd, "web", "cart", "home")
+	out := filepath.Join(t.TempDir(), "report")
+	d := deps(t, cwd)
+	d.Now = func() time.Time { return time.Date(2026, 8, 21, 9, 30, 0, 0, time.UTC) }
+	res, err := Export(ExportOptions{Deps: d, OutDir: out})
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = res
+	for _, page := range htmlFilesIn(t, out) {
+		body := readText(t, page)
+		if !strings.Contains(body, "2026-08-21T09:30:00Z") {
+			t.Fatalf("%s carries no produced-at stamp, so a reader cannot tell this report from a newer one:\n%s", page, body)
+		}
 	}
 }

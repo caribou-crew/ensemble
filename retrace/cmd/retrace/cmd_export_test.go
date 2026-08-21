@@ -221,16 +221,20 @@ func TestExportOfAFlowThatDoesNotExistExitsCouldNotEvaluate(t *testing.T) {
 }
 
 // A project that has recorded nothing exports a valid, empty report — and
-// says so where a CI log will show it. The exit code below it is 0 because
-// no flow contributed anything worse; the sentence is what keeps that 0 from
-// reading as "everything passed".
-func TestExportOfAProjectWithNothingRecordedSaysSoOnStderr(t *testing.T) {
+// exits 3, "could not evaluate".
+//
+// This is the case R-Y did not name: it ruled on which verdict maps to which
+// code and never on the set with no verdicts in it, where `max` is 0. A
+// green CI job over a report that compared nothing is the most reassuring
+// wrong answer this command can give, and the honest sentences on the page
+// and on stderr do not help — CI branches on the number.
+func TestExportOfAProjectWithNothingRecordedExitsCouldNotEvaluate(t *testing.T) {
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
 	out := filepath.Join(t.TempDir(), "report")
 	res := runRetrace(t, bin, cwd, "", "export", "--out", out)
-	if res.code != exitOK {
-		t.Fatalf("exit = %d, want %d\nstderr: %s", res.code, exitOK, res.stderr)
+	if res.code != exitUsage {
+		t.Fatalf("exit = %d, want %d — an export that compared nothing must not exit like one that passed\nstderr: %s", res.code, exitUsage, res.stderr)
 	}
 	if !strings.Contains(res.stderr, "contains no flows") {
 		t.Fatalf("an empty export said nothing about being empty: %q", res.stderr)

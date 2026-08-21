@@ -154,8 +154,9 @@ func diffDir(cwd, app, flow string) string {
 // and never an error that takes the whole queue down with it. One broken
 // flow silently missing from a review queue is indistinguishable from a
 // flow that passed, which is the failure this whole surface exists to
-// prevent; the item carries verdict "failed" and a gate naming what went
-// wrong, so it sorts to the top and says why.
+// prevent; the item carries verdict "quarantined" — a comparison that could
+// not be made — and a gate naming what went wrong, so it sorts to the top
+// and says why.
 //
 // The only error returned is the one that makes the queue itself
 // meaningless: the runs root cannot be read. An empty slice from a
@@ -324,16 +325,39 @@ func notAssessed(reason string) runs.CaptureTrust {
 	}
 }
 
-// brokenItem is the queue line for a flow that could not be diffed. The
-// verdict is "failed" — not "pass" with an empty Counts, which is what
-// dropping the error would produce, and which would announce a clean flow
-// on the strength of never having looked at it — and the capture says it was
-// never assessed rather than carrying the zero value. See notAssessed.
+// brokenItem is the queue line for a flow that could not be diffed.
+//
+// The verdict is "quarantined", because that is what this row IS: a
+// comparison that could not be made. It is emphatically NOT "pass" with an
+// empty Counts — which is what dropping the error would produce, and which
+// would announce a clean flow on the strength of never having looked at it —
+// and the capture says it was never assessed rather than carrying the zero
+// value (see notAssessed).
+//
+// It was "failed" until Task 16's fix round 1. That reasoning was an argument
+// against "pass" and never weighed "failed" against "quarantined"; the cost
+// showed up when the second consumer arrived. `retrace diff` on a flow with
+// no reference exits 3 (could not evaluate) and `retrace export` exited 2
+// (hard gate failed) for the SAME fact, because diff.ExitCode maps "failed"
+// to 2 — two faces of one report returning different CI codes, which is the
+// divergence ruleRequest's own doc comment rules against by name.
+//
+// Everything downstream already handles it, and none of it needed changing:
+// diff.ExitCode gives 3, ScoreOf scores "quarantined" with "failed" at 1000
+// so the row still sorts to the top of the queue where an un-evaluable row
+// belongs, and Task 15's verdictTone is total over the verdict vocabulary
+// with a "quarantined" arm.
+//
+// Summary.Quarantined stays EMPTY on purpose. That field names the sides a
+// comparison refused and why; here neither side was examined at all, so
+// naming one would assert an examination that never happened. The reason
+// travels as a gate, and the machine-readable half is the capture banner's
+// capture-not-assessed code.
 func brokenItem(app, flow string, err error) Item {
 	trust := notAssessed(err.Error())
 	return itemOf(diff.Summary{
 		Schema: diff.SummarySchema, App: app, Flow: flow,
-		Verdict: "failed",
+		Verdict: "quarantined",
 		Gates:   []string{err.Error()},
 		Capture: diff.CaptureBanner{A: trust, B: trust},
 	})

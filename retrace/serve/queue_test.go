@@ -342,7 +342,8 @@ func TestAFlowWithNoReferenceAppearsWithAReasonNotSilentlyMissing(t *testing.T) 
 }
 
 // One broken flow must not take the whole queue down — it becomes an item
-// whose Verdict is "failed" and whose Gates name the read error.
+// whose Verdict is "quarantined" (a comparison that could not be made, which
+// is what this row is) and whose Gates name the read error.
 func TestQueueSurvivesAnUnreadableRunDirectory(t *testing.T) {
 	cwd := threeFlowProject(t)
 
@@ -375,8 +376,11 @@ func TestQueueSurvivesAnUnreadableRunDirectory(t *testing.T) {
 			broke = it
 		}
 	}
-	if broke.Verdict != "failed" {
-		t.Fatalf("the broken flow's verdict = %q, want \"failed\"", broke.Verdict)
+	// "quarantined", not "failed": nothing was compared, and diff.ExitCode
+	// maps the two to different CI codes (3 vs 2). `retrace diff` on this
+	// same flow exits 3, and two faces of one report must not disagree.
+	if broke.Verdict != "quarantined" {
+		t.Fatalf("the broken flow's verdict = %q, want \"quarantined\"", broke.Verdict)
 	}
 	joined := strings.Join(broke.Gates, " ")
 	if !strings.Contains(joined, "manifest") {
@@ -415,8 +419,8 @@ func TestQueueSurvivesARunDirectoryTheProcessCannotRead(t *testing.T) {
 			broke = it
 		}
 	}
-	if broke.Verdict != "failed" || len(broke.Gates) == 0 {
-		t.Fatalf("the unreadable flow = %+v, want verdict \"failed\" with a gate naming the error", broke)
+	if broke.Verdict != "quarantined" || len(broke.Gates) == 0 {
+		t.Fatalf("the unreadable flow = %+v, want verdict \"quarantined\" with a gate naming the error", broke)
 	}
 }
 
@@ -843,7 +847,7 @@ func TestARowNobodyCouldEvaluateSaysItsCaptureWasNeverAssessed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildQueue: %v", err)
 	}
-	if len(items) != 1 || items[0].Verdict != "failed" {
+	if len(items) != 1 || items[0].Verdict != "quarantined" {
 		t.Fatalf("expected one un-evaluable row, got %+v", items)
 	}
 

@@ -69,7 +69,7 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 </head>
 <body>
 <h1>retrace review report</h1>
-<p class="meta">retrace {{.Version}} · {{.Total}} flow(s) · {{.Failing}} needing attention · worst first, by the review queue's own score</p>
+<p class="meta">retrace {{.Version}} · produced {{.Generated}} · {{.Total}} flow(s) · {{.Failing}} needing attention · worst first, by the review queue's own score</p>
 
 {{- /* The two empty worlds render DIFFERENTLY, and neither is derived from
     the row count here: EmptyReasonFor decided, and this renders what it
@@ -126,6 +126,11 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 <h1>{{.Row.Key}}</h1>
 <p><span class="badge badge--{{.Row.Verdict}}">{{.Row.Verdict}}</span> <span class="meta">score {{score .Row.Score}}</span></p>
 {{if .Row.Compared}}
+{{- /* The (none recorded) arm is defensive and is expected never to
+    render: SummaryFor refuses to compare a flow with no reference, so a
+    row that reached Compared always has one. It stays because the
+    alternative is an empty <code></code>, and an empty run id beside the
+    words "vs reference" reads as a reference that exists. */ -}}
 <p class="meta">run <code>{{.Row.RunID}}</code> vs reference <code>{{if .Row.RefRunID}}{{.Row.RefRunID}}{{else}}(none recorded){{end}}</code> · {{.Row.Compare}}</p>
 {{else}}
 <p class="row__whynot">{{.Row.WhyNot}}</p>
@@ -149,10 +154,20 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{if .Shots}}
 {{range .Shots}}
 <h3>{{.Name}} — {{.Verdict}}</h3>
+{{- /* The measurement is printed ONLY for the two verdicts that came from
+    comparing two images. "missing", "added" and "unreadable" leave DiffPct
+    and NumDiff at zero, and "0.00% of pixels differ" under one of those is
+    a measurement this page invented for a checkpoint no pixel of which was
+    read. See reportShot.Measured. */ -}}
+{{if .Measured}}
 <p class="meta">{{pct .Cp.DiffPct}}% of pixels differ{{if ne .Cp.DiffPctFine .Cp.DiffPct}} (fine {{pct .Cp.DiffPctFine}}%){{end}} · {{.Cp.NumDiff}} pixels</p>
 {{if .Cp.Mismatch}}<p class="note">The two shots differ in SIZE. The percentage above is inflated by padding.{{if .Cp.Overlap}} Over the overlapping content it is {{pct .Cp.Overlap.DiffPct}}%, with {{pct .Cp.Overlap.PaddingPct}}% padding.{{end}}</p>
 {{else if .Cp.Overlap}}<p class="note">The compared images differed in size after trimming; over the overlap {{pct .Cp.Overlap.DiffPct}}% of pixels differ.</p>{{end}}
+{{else}}
+<p class="unmeasured">{{.Why}}</p>
+{{end}}
 {{if .Missing}}<p class="note">Not in this export: {{range .Missing}}{{.}} {{end}}— the summary named these images and the files were not on disk. They are omitted rather than shown as blank panes, because a blank comparison pane reads as "identical".</p>{{end}}
+{{if .Sides}}
 <div class="shots">
 {{- /* The overlay is the one pane that is only occasionally wanted, so it
     is a <details> rather than a script-driven toggle. There is no
@@ -161,6 +176,9 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
     context that does not exist. */ -}}
 {{range .Sides}}{{if eq .Side "overlay"}}<details class="shot"><summary>{{.Label}}</summary><img src="{{.Src}}" alt="{{.Label}} shot"></details>{{else}}<figure class="shot"><img src="{{.Src}}" alt="{{.Label}} shot"><figcaption>{{.Label}}</figcaption></figure>{{end}}{{end}}
 </div>
+{{else if not .Missing}}
+<p class="note">No image is shown for this checkpoint: the comparison produced none. An empty pane is left out rather than drawn, because a blank comparison pane reads as "identical".</p>
+{{end}}
 {{end}}
 {{else}}
 <p class="unmeasured">No checkpoints were captured on either side, so nothing was compared on the pixel plane.</p>
@@ -192,16 +210,24 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{if .Wire.Extra}}<h3>Extra on this run</h3><ul>{{range .Wire.Extra}}<li><code>{{.Method}} {{.Path}}</code> #{{.Seq}} → {{.Status}}{{if .Tolerated}} <span class="meta">(tolerated: {{.Tolerated.ID}} — {{.Tolerated.Reason}})</span>{{end}}</li>{{end}}</ul>{{end}}
 
 <h2>Hops</h2>
+{{- /* ServiceCounts is empty exactly when no hop chain was read on either
+    side (DiffHops never ran) — the same test observedFor uses to call the
+    hop plane unmeasurable. Without this arm the section is a heading over
+    nothing, and a heading over nothing reads as "nothing to report". */ -}}
+{{if .Hops.ServiceCounts}}
 {{if .Hops.NewRoutes}}<h3>New routes</h3><ul>{{range .Hops.NewRoutes}}<li><code>{{.Method}} {{.Path}}</code> → {{.To}}{{if .Via}} via {{range .Via}}{{.}} {{end}}{{end}}</li>{{end}}</ul>{{end}}
 {{if .Hops.GoneRoutes}}<h3>Gone routes</h3><ul>{{range .Hops.GoneRoutes}}<li><code>{{.Method}} {{.Path}}</code> → {{.To}}{{if .Via}} via {{range .Via}}{{.}} {{end}}{{end}}</li>{{end}}</ul>{{end}}
 {{if .Hops.NewErrors}}<h3>New errors</h3><ul>{{range .Hops.NewErrors}}<li><code>{{.Method}} {{.Path}}</code> → {{.Status}} <span class="meta">(this run, #{{.Seq}})</span></li>{{end}}</ul>{{end}}
 {{if .Hops.GoneErrors}}<h3>Errors that stopped happening</h3><ul>{{range .Hops.GoneErrors}}<li><code>{{.Method}} {{.Path}}</code> → {{.Status}} <span class="meta">(reference, #{{.Seq}})</span></li>{{end}}</ul>{{end}}
-{{if .Hops.ServiceCounts}}<table><tr><th>service</th><th>reference</th><th>this run</th></tr>{{range .Hops.ServiceCounts}}<tr><td>{{.Service}}</td><td>{{.A}}</td><td>{{.B}}{{if .Deviates}} <span class="note">deviates</span>{{end}}</td></tr>{{end}}</table>{{end}}
+<table><tr><th>service</th><th>reference</th><th>this run</th></tr>{{range .Hops.ServiceCounts}}<tr><td>{{.Service}}</td><td>{{.A}}</td><td>{{.B}}{{if .Deviates}} <span class="note">deviates</span>{{end}}</td></tr>{{end}}</table>
 {{if .Hops.HopRequireConfigured}}
 {{if .Hops.RequiredRouteFailures}}<h3>Required routes that did not happen</h3><ul>{{range .Hops.RequiredRouteFailures}}<li><code>{{.Method}} {{.Path}}</code> expected {{.ExpectedStatus}}, {{.Reason}}{{if .ActualStatus}} (saw {{.ActualStatus}}){{end}}</li>{{end}}</ul>
 {{else}}<p>Every configured <code>hopRequire</code> route was confirmed on this run.</p>{{end}}
 {{else}}
 <p class="unmeasured">No <code>hopRequire</code> routes are configured, so this gate was not evaluated — that is different from a gate that passed.</p>
+{{end}}
+{{else}}
+<p class="unmeasured">No hop chain was recorded on either side, so nothing on this plane was compared: not the routes between services, not the per-service call counts, and not any configured <code>hopRequire</code> route. A standalone run records only its own edge of the wire.</p>
 {{end}}
 
 {{if .UnexpectedStatuses}}
@@ -226,17 +252,36 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{end}}
 
 <h2>Gate budgets</h2>
+{{- /* A plane the config GATES and the run could not measure gets no row
+    in .Budgets — diff.budgetsOf refuses to emit the reassuring zero, by
+    the same code path as a plane nobody configured. So the absence of a
+    row means one of two very different things, and only the config can
+    tell them apart. $.UnmeasuredGates carries that second list; saying
+    "not gated" over it would be this page asserting away a distinction the
+    Go deliberately preserved. */ -}}
 {{if .Budgets}}
 <table><tr><th>plane</th><th>threshold</th><th>observed</th><th></th></tr>
 {{range .Budgets}}<tr><td>{{.Plane}}</td><td>{{pct .Threshold}}%</td><td>{{pct .Observed}}%</td><td>{{if .Failed}}<span class="note">over</span>{{else}}within{{end}}</td></tr>{{end}}
 </table>
-<p class="meta">A plane with no row here is not gated at all, which is different from being gated at a threshold of zero.</p>
+{{end}}
+{{if $.UnmeasuredGates}}
+<p class="unmeasured">Gated by this project's config and NOT evaluated on this run: {{range $.UnmeasuredGates}}<code>{{.}}</code> {{end}}— this run carried no evidence to measure {{if eq (len $.UnmeasuredGates) 1}}that plane{{else}}those planes{{end}} against, so no budget was computed for {{if eq (len $.UnmeasuredGates) 1}}it{{else}}them{{end}}. That is not a gate that passed.</p>
+{{end}}
+{{if or .Budgets $.UnmeasuredGates}}
+<p class="meta">A plane named in neither list above is not gated at all, which is different from being gated at a threshold of zero.</p>
 {{else}}
-<p class="unmeasured">No plane is gated by <code>gates:</code> in this project's config, so no budget was evaluated.</p>
+{{- /* Not reachable through config.Discover today: applyDefaults gates
+    "pixel" in every project, so a plane is always either measured (a row)
+    or configured-and-unmeasured (named above). It stays, worded as a
+    refusal rather than an all-clear, so that a config path that did leave
+    Gates empty could never turn this section into a bare heading — the
+    F-4 shape. */ -}}
+<p class="unmeasured">This report could not name a single gated plane for this project, so it makes no claim about any budget.</p>
 {{end}}
 
 <h2>The document itself</h2>
 <p><a href="summary.json">summary.json</a> is the exact <code>diff.Summary</code> the review UI consumes, byte for byte. Every image path inside it resolves relative to this directory.</p>
+<p class="meta">Produced {{$.Generated}}. A CI artifact is read out of a build store long after the run, often beside another copy of itself; an undated report is one a reader takes for the current one.</p>
 {{end}}
 {{end}}
 </body>
