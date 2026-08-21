@@ -216,6 +216,87 @@ func TestQueueIsWorstFirstWithPassingFlowsLast(t *testing.T) {
 	if items[0].RunID != runB || items[0].RefRunID != runA {
 		t.Fatalf("runId/refRunId = %q/%q, want %q/%q", items[0].RunID, items[0].RefRunID, runB, runA)
 	}
+	// Counts and Capture are the two fields the Zero-Value Global Constraint
+	// names by name, and the score is computed from the Summary rather than
+	// from the Item — so replacing either with its zero value leaves the row
+	// sorted to the top, still saying "failed", while reporting that nothing
+	// changed and that both captures are fine. Counts{} marshals to "wire
+	// recorded, none seen" and CaptureBanner{} to two empty verdicts, and an
+	// empty verdict ranks equal to "ok". Both are affirmatively reassuring,
+	// which is the costume the third clause exists for.
+	if items[0].Counts.UnexpectedStatuses != 1 {
+		t.Fatalf("web/cart counts.unexpectedStatuses = %d, want 1 — the row says \"failed\" and reports that nothing was wrong: %+v", items[0].Counts.UnexpectedStatuses, items[0].Counts)
+	}
+	if items[1].Counts.PixelChanged != 1 {
+		t.Fatalf("web/search counts.pixelChanged = %d, want 1 — the changed checkpoint did not reach the row: %+v", items[1].Counts.PixelChanged, items[1].Counts)
+	}
+	if items[0].Capture.A.Status != trace.VerdictOK || items[0].Capture.B.Status != trace.VerdictOK {
+		t.Fatalf("web/cart capture = %+v, want both sides %q — an empty verdict ranks equal to ok, so an unassessed run would gate as clean", items[0].Capture, trace.VerdictOK)
+	}
+}
+
+// informative reports whether a decoded JSON value carries anything at all:
+// a non-empty string, a non-zero number, true, a non-empty array, or an
+// object with at least one informative leaf.
+func informative(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	case bool:
+		return x
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		for _, e := range x {
+			if informative(e) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// Every field the failing row carries must actually carry something.
+//
+// This walks the MARSHALLED item rather than listing the fields it checks,
+// per global-constraints.md: a test that names its own inventory can only
+// ever cover the fields its author remembered, and this one covers a field
+// added to Item long after it was written, on the day it appears. Every
+// key that is not omitempty is present precisely because it is supposed to
+// mean something on every row — a key whose value is the type's zero is a
+// key that reads as "measured, and fine".
+func TestEveryFieldTheWorstRowCarriesIsPopulated(t *testing.T) {
+	items, err := BuildQueue(deps(t, threeFlowProject(t)))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	b, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshalling the worst row: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(b, &row); err != nil {
+		t.Fatalf("the worst row is not a JSON object: %v\n%s", err, b)
+	}
+	// score is the one exception the walk cannot make: a passing row's
+	// score is legitimately 0. items[0] is the FAILING row, so it is not.
+	for key, val := range row {
+		if !informative(val) {
+			t.Fatalf("the failing row's %q is %v — every non-omitempty field on a queue row is there because it means something on every row, and a zero one reads as \"measured, and fine\"\n%s", key, val, b)
+		}
+	}
+	// And the walk is measuring what it thinks it is: the fields that carry
+	// data are all present, not omitted into vacuous success.
+	for _, key := range []string{"app", "flow", "verdict", "score", "runId", "counts", "capture", "gates"} {
+		if _, ok := row[key]; !ok {
+			t.Fatalf("the failing row has no %q — the tags are the REST contract: %s", key, b)
+		}
+	}
 }
 
 // A flow whose reference cannot be resolved must be a ROW WITH A REASON.
@@ -335,6 +416,123 @@ func TestQueueSurvivesARunDirectoryTheProcessCannotRead(t *testing.T) {
 	}
 	if broke.Verdict != "failed" || len(broke.Gates) == 0 {
 		t.Fatalf("the unreadable flow = %+v, want verdict \"failed\" with a gate naming the error", broke)
+	}
+}
+
+// patchedPNG is a solid image with a small square of a second colour in the
+// top-left, so two flows that both "changed" do not produce the same diff
+// mask. Solid-to-solid on both would give two byte-identical all-red diff
+// images, which is value symmetry one level down: it would make the two
+// flows' generated images indistinguishable even when they are correctly
+// kept apart.
+func patchedPNG(t *testing.T, base, patch color.RGBA, size int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	for y := 0; y < 40; y++ {
+		for x := 0; x < 40; x++ {
+			if x < size && y < size {
+				img.Set(x, y, patch)
+			} else {
+				img.Set(x, y, base)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encoding a fixture shot: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// Checkpoint names are not globally unique — nothing stops web/login and
+// admin/login both having a checkpoint called "login". diffDir keys the
+// generated images on app AND flow for exactly that reason; drop either and
+// the last flow diffed wins, and GET /api/shots/{app}/{flow}/diff/{name}
+// serves another flow's image with a 200 and a valid PNG.
+//
+// The shared fixture masks this: the only two flows there that share a
+// checkpoint name are the two that PASS, so neither writes a diff image at
+// all. This one gives the name to two CHANGED flows, which is the fixture
+// the property actually needs.
+//
+// It drives BuildQueue — the production writer, and what GET /api/queue
+// runs — and then reads the two files, because a per-flow GET regenerates
+// its own images on the way past and would look correct either way.
+func TestTwoChangedFlowsSharingACheckpointNameDoNotShareADiffImage(t *testing.T) {
+	cwd := t.TempDir()
+	// Both apps have a flow "login" with a checkpoint "login", and both
+	// changed — differently, so their diff masks are not the same picture.
+	for _, c := range []struct {
+		app string
+		b   []byte
+	}{
+		{"web", shotPNG(t, blue)},                 // every pixel changed
+		{"admin", patchedPNG(t, white, blue, 10)}, // only a 10x10 corner
+	} {
+		recordRun(t, cwd, c.app, "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+			[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+		acceptRef(t, cwd, c.app, "login", runA)
+		recordRun(t, cwd, c.app, "login", runB, map[string][]byte{"login": c.b},
+			[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	}
+
+	if _, err := BuildQueue(deps(t, cwd)); err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+
+	webDir, adminDir := diffDir(cwd, "web", "login"), diffDir(cwd, "admin", "login")
+	if webDir == adminDir {
+		t.Fatalf("web/login and admin/login share the diff directory %s — the last flow diffed wins and every later read serves the other flow's image", webDir)
+	}
+	// And each file is the picture its OWN flow's comparison produced: away
+	// from the corner, web changed (red) and admin did not (grey).
+	webPx := diskPixel(t, filepath.Join(webDir, "diff", "shots", "login.png"), 30, 30)
+	adminPx := diskPixel(t, filepath.Join(adminDir, "diff", "shots", "login.png"), 30, 30)
+	if want := ([4]uint32{0xffff, 0, 0, 0xffff}); webPx != want {
+		t.Fatalf("web/login's diff at (30,30) is rgba%v, want red %v — every pixel of that checkpoint changed", webPx, want)
+	}
+	if adminPx == webPx {
+		t.Fatalf("admin/login's diff at (30,30) is rgba%v, identical to web/login's — one flow's generated image was overwritten by the other's", adminPx)
+	}
+}
+
+func diskPixel(t *testing.T, path string, x, y int) [4]uint32 {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	img, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	cr, cg, cb, ca := img.At(x, y).RGBA()
+	return [4]uint32{cr, cg, cb, ca}
+}
+
+// The tie-break between two flows of the SAME app at the SAME score. Two
+// rows that compare equal must appear in the same order on every reload, or
+// a reviewer's queue reshuffles under them between two reads that found
+// nothing new. Inverting `a.Flow < b.Flow` turns this red; the app-level
+// tie-break is pinned by the shared fixture's admin/web pair.
+func TestFlowsOfOneAppAtTheSameScoreAreOrderedByFlowName(t *testing.T) {
+	cwd := t.TempDir()
+	for _, flow := range []string{"alpha", "omega"} {
+		recordRun(t, cwd, "web", flow, runA, map[string][]byte{"cp": shotPNG(t, white)},
+			[]trace.Hop{hop(1, "GET", "/"+flow, 200, `{"ok":true}`)})
+		acceptRef(t, cwd, "web", flow, runA)
+		recordRun(t, cwd, "web", flow, runB, map[string][]byte{"cp": shotPNG(t, white)},
+			[]trace.Hop{hop(1, "GET", "/"+flow, 200, `{"ok":true}`)})
+	}
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 2 || items[0].Score != items[1].Score {
+		t.Fatalf("the fixture no longer produces two flows at one score: %+v", items)
+	}
+	if got := queueOrder(items); strings.Join(got, ",") != "web/alpha,web/omega" {
+		t.Fatalf("queue order = %v, want [web/alpha web/omega] — two rows at one score must not reshuffle between reads", got)
 	}
 }
 
