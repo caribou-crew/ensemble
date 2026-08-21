@@ -16,6 +16,16 @@ version: 2
 
 project_name: ensemble
 
+# The dashboard is embedded into the ensemble binary at compile time via
+# go:embed (see ensemble/server/ui/ui.go); without building it first, the
+# release binary ships the committed placeholder ("UI not built ..."). The
+# release workflow (.github/workflows/release.yml) sets up pnpm/node before
+# invoking goreleaser so these hooks can run.
+before:
+  hooks:
+    - pnpm install --frozen-lockfile
+    - pnpm -r build
+
 builds:
   - id: ensemble
     dir: ensemble
