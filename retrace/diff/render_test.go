@@ -10,6 +10,7 @@ package diff
 // renderer no test constrains.
 
 import (
+	"image/color"
 	"strings"
 	"testing"
 
@@ -369,4 +370,70 @@ func gateFor(s Summary, plane string) *Gate {
 		}
 	}
 	return nil
+}
+
+// TestAPixelPlaneWithNoCheckpointsEmitsNoGateAtAll is the fourth plane of
+// the no-evidence-no-gate rule. Pixel is the one plane that does not divide
+// — it takes a max over Checkpoints — but a max over nothing is 0, and 0
+// here means "no pixels changed", not "nothing was compared".
+//
+// It also matters more than the other three: applyDefaults fills gates.pixel
+// from thresholds.gate whenever the key is absent, so unlike wire and hop
+// the pixel gate is emitted on essentially every run. A run that captured no
+// screenshots reported "BUDGET: pixel 0.10% → 0.00% ok".
+//
+// This cannot mask a broken capture: capture/trust.go raises no-screenshots
+// at VerdictDegraded when checkpoints were expected and none arrived, and
+// quarantineCheck refuses that run before budgetsOf is ever reached. What is
+// suppressed here is only a plane with no subject.
+func TestAPixelPlaneWithNoCheckpointsEmitsNoGateAtAll(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	// No screenshots on either side: a flow whose adapter takes none, which
+	// is an ordinary shape, not an exotic one.
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+	// The gate must be CONFIGURED, or this fixture passes whatever
+	// observedFor does — budgetsOf emits nothing for an unmentioned plane
+	// and the assertion below would hold with the guard deleted. In
+	// production applyDefaults fills this key from thresholds.gate on every
+	// run, so the configured case is the only one that ships.
+	cfg.Gates["pixel"] = gatePct(0.1)
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if len(s.Checkpoints) != 0 {
+		t.Fatalf("test setup: Checkpoints = %+v, want none", s.Checkpoints)
+	}
+	if g := gateFor(s, "pixel"); g != nil {
+		t.Fatalf("Budgets contains a pixel entry (%+v) though no checkpoint was compared — a max over zero checkpoints is an absence of evidence, not a clean screen", *g)
+	}
+}
+
+func TestAPixelPlaneWithCheckpointsStillEmitsItsGate(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	base := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+	// 20x20 of 200x200 = 1% of the pixels.
+	cpA := writeShot(t, dirA, "cart", solidPNG(t, 200, 200, base))
+	cpB := writeShot(t, dirB, "cart", rectPNG(t, 200, 200, base, 0, 0, 20, 20, color.RGBA{R: 250, A: 255}))
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", []runs.Checkpoint{cpA}, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", []runs.Checkpoint{cpB}, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Gates["pixel"] = gatePct(0.1)
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	g := gateFor(s, "pixel")
+	if g == nil {
+		t.Fatalf("pixel Gate is missing; Budgets = %+v", s.Budgets)
+	}
+	if !closeTo(g.Observed, 1, 0.05) || !g.Failed {
+		t.Fatalf("pixel Gate = %+v, want Observed ~1%% over a 0.1%% budget and Failed=true", *g)
+	}
 }
