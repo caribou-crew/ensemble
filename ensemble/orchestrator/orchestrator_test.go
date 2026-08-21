@@ -125,6 +125,58 @@ func TestUpHealthGateFailure(t *testing.T) {
 	}
 }
 
+// TestUpContinuesPastFailedNodeAndSkipsDependents pins the "one bad service
+// shouldn't take the whole stack down" fix: a failed node must not abort
+// the rest of Up. An unrelated, independent node still comes up healthy,
+// and a node that depends on the failed one is marked failed and skipped
+// — never actually started, not just health-gated and given up on — so it
+// doesn't sit out its own timeout only to fail for the same reason.
+func TestUpContinuesPastFailedNodeAndSkipsDependents(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"bad":       {Run: "sleep 30", Port: freePort(t), Health: "/healthz"},
+			"good":      {Run: "sleep 30"},
+			"dependent": {Run: "sleep 30", DependsOn: []string{"bad"}},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{HealthTimeout: 200 * time.Millisecond})
+
+	err := o.Up(context.Background())
+	defer o.Down()
+
+	if err == nil {
+		t.Fatal("expected Up to return a non-nil joined error naming the failed/skipped nodes")
+	}
+	if !strings.Contains(err.Error(), "bad") {
+		t.Fatalf("Up error doesn't name the failed service: %v", err)
+	}
+
+	badSt, ok := o.Service("bad")
+	if !ok || badSt.Status != StatusFailed {
+		t.Fatalf("bad state = %+v, ok=%v, want StatusFailed", badSt, ok)
+	}
+
+	goodSt, ok := o.Service("good")
+	if !ok || goodSt.Status != StatusHealthy {
+		t.Fatalf("good state = %+v, ok=%v, want StatusHealthy — an unrelated node must not be taken down by bad's failure", goodSt, ok)
+	}
+
+	depSt, ok := o.Service("dependent")
+	if !ok {
+		t.Fatal("expected a state for dependent")
+	}
+	if depSt.Status != StatusFailed {
+		t.Fatalf("dependent status = %q, want %q (skipped because its dependency failed)", depSt.Status, StatusFailed)
+	}
+	if !strings.Contains(depSt.LastErr, "skipped") || !strings.Contains(depSt.LastErr, "bad") {
+		t.Fatalf("dependent LastErr = %q, want it to explain it was skipped because bad failed", depSt.LastErr)
+	}
+	if depSt.PID != 0 {
+		t.Fatalf("dependent PID = %d, want 0 — it must never actually be started", depSt.PID)
+	}
+}
+
 // TestUpHealthGateHonorsPerServiceStartupTimeout pins config.Service.
 // StartupTimeoutS: a service whose health endpoint takes longer to come up
 // than the orchestrator-wide default (Opts.HealthTimeout) must still
