@@ -227,6 +227,21 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	// The test command's own exit code wins: a failing test must fail the
 	// pipeline. retrace's 0/1/2/3 contract only applies when the command
 	// itself succeeded.
+	//
+	// A signal-killed child is the one case that does not fit that rule:
+	// exec.ExitError.ExitCode() reports -1 for a process terminated by a
+	// signal (never for "still running" here — cmd.Run already returned),
+	// and passing -1 straight to os.Exit gets silently truncated to 255 by
+	// the OS, outside the run/diff 0/1/2/3 contract entirely. A CI timeout
+	// or a Ctrl-C mid-test is then indistinguishable from garbage rather
+	// than a defined "could not evaluate" status. Task 10 owns the whole
+	// exit contract, including the codes this command does not itself
+	// produce — see diff/summary.go's ExitCode doc — so it maps this one
+	// case explicitly: 3, alongside config/IO failures, since a run that
+	// never completed found nothing to report, changed or otherwise.
+	if m.Test.ExitCode < 0 {
+		return exitUsage
+	}
 	return m.Test.ExitCode
 }
 

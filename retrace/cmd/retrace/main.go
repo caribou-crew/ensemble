@@ -55,6 +55,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "run":
 		return cmdRun(args[1:], stdout, stderr)
+	case "diff":
+		return cmdDiff(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}
