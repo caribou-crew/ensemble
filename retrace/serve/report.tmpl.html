@@ -1,0 +1,239 @@
+{{- /*
+report.tmpl.html is the whole static report: the overview and the item
+screen, embedded by export.go.
+
+Three rules hold everywhere in this file.
+
+ 1. NOTHING derived from a recording reaches a script or a style context.
+    There is no <script> tag at all — the shot comparison is a <details>
+    pair, which needs none — and the <style> block below is a literal. A
+    body, a header value and a checkpoint name are attacker-influenced data
+    in any real stack; html/template escapes them contextually, and
+    template.HTML is never used on any of them.
+ 2. NOTHING is referenced that is not inside the export. Every href and src
+    is relative: the reader opens this with file:// from a CI artifact, and
+    an absolute URL resolves against nothing.
+ 3. A value that was never measured is never printed as a measurement. The
+    Compared flag decides that once, in export.go, for both of the states
+    that produce an all-zero Counts.
+*/ -}}
+
+{{define "style"}}<style>
+:root { color-scheme: light dark; }
+body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 0 auto; max-width: 62rem; padding: 2rem 1rem 4rem; }
+h1, h2, h3 { line-height: 1.2; }
+h2 { margin-top: 2.5rem; border-bottom: 1px solid #8884; padding-bottom: .3rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+.meta { color: #666; }
+.rows { display: flex; flex-direction: column; gap: .5rem; }
+.row { border: 1px solid #8884; border-left-width: 4px; border-radius: 4px; padding: .6rem .8rem; }
+.row--not-compared { border-left-color: #b45309; background: #b4530910; }
+.row__flow { font-weight: 600; font-size: 1.05rem; }
+.row__runs, .row__counts, .row__whynot { display: block; color: #555; }
+.row__whynot { color: #b45309; font-weight: 600; }
+.badge { border-radius: 999px; padding: .05rem .55rem; font-size: .8rem; border: 1px solid currentColor; }
+.badge--failed, .badge--quarantined { color: #b91c1c; }
+.badge--changed { color: #b45309; }
+.badge--pass { color: #15803d; }
+.gates li, .reasons li { margin: .2rem 0; }
+.capture { border: 1px solid #b91c1c; border-radius: 4px; padding: .4rem .6rem; margin: .5rem 0; }
+.shots { display: flex; flex-wrap: wrap; gap: 1rem; }
+.shot figure { margin: 0; }
+.shot img { max-width: 18rem; border: 1px solid #8884; display: block; }
+figcaption { font-size: .8rem; color: #555; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; vertical-align: top; font-size: .9rem; }
+.note { color: #b45309; }
+.unmeasured { color: #666; font-style: italic; }
+</style>{{end}}
+
+{{- /* The capture-trust banner. It renders only the sides whose verdict is
+    not "ok": a banner that always shows is a banner nobody reads. It is the
+    one field that says the comparison below it may be built on a recording
+    that is missing calls. */ -}}
+{{define "capture"}}{{range .CaptureSides}}<div class="capture">
+  <strong>capture {{.Label}}: {{.Status}}</strong>
+  <div>{{.Trust.Summary}}</div>
+  {{if .Trust.Hint}}<div class="note">{{.Trust.Hint}}</div>{{end}}
+  {{if .Trust.Reasons}}<ul class="reasons">{{range .Trust.Reasons}}<li><code>{{.Code}}</code> {{.Detail}}{{if .Hint}} — {{.Hint}}{{end}}</li>{{end}}</ul>{{end}}
+  {{if .Trust.Gaps}}<ul class="reasons">{{range .Trust.Gaps}}<li>{{.Seconds}}s with nothing recorded, {{.From}} → {{.To}}</li>{{end}}</ul>{{end}}
+</div>{{end}}{{end}}
+
+{{define "index"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>retrace report</title>
+{{template "style" .}}
+</head>
+<body>
+<h1>retrace review report</h1>
+<p class="meta">retrace {{.Version}} · {{.Total}} flow(s) · {{.Failing}} needing attention · worst first, by the review queue's own score</p>
+
+{{- /* The two empty worlds render DIFFERENTLY, and neither is derived from
+    the row count here: EmptyReasonFor decided, and this renders what it
+    decided. "all-clear" is the reassuring one and it has to be EARNED — at
+    least one flow, compared, every one of them scoring zero. It is NOT
+    keyed on an empty row list, because a fully-reviewed project still
+    produces one row per flow; keying on the list would make "all-clear" a
+    state production cannot construct, and would hand out the reassuring
+    answer to a project that has recorded nothing. */ -}}
+{{if eq .Empty "all-clear"}}
+<p><span class="badge badge--pass">all clear</span></p>
+<p>Every recorded flow was compared against its reference and none of them needs attention.</p>
+{{else if eq .Empty "no-runs"}}
+<p><span class="badge badge--changed">nothing recorded</span></p>
+<p>No runs have been recorded yet, so nothing has been compared and this report can say nothing about whether the project is healthy.</p>
+<p>Record a flow with <code>retrace run --flow &lt;flow&gt;</code>, then bless a known-good one with <code>retrace ref accept --flow &lt;flow&gt;</code>. Until both have happened there is nothing here to review.</p>
+{{else if eq .Total 0}}
+{{- /* "" is the zero value and it promises nothing. Reaching it with no
+    rows means the export did not say which world this is, and the one
+    thing this page must not do is guess the reassuring one. */ -}}
+<p><span class="badge">no rows</span></p>
+<p>This export produced no rows and did not say why.</p>
+{{end}}
+
+<div class="rows">
+{{range .Rows}}<section class="row {{if .Compared}}row--compared{{else}}row--not-compared{{end}}" data-flow="{{.Key}}" data-score="{{score .Score}}">
+  <a class="row__flow" href="{{.Href}}">{{.Key}}</a>
+  <span class="badge badge--{{.Verdict}}">{{.Verdict}}</span>
+  {{if .Compared}}
+  <span class="row__runs">run <code>{{.RunID}}</code> vs reference <code>{{if .RefRunID}}{{.RefRunID}}{{else}}(none recorded){{end}}</code></span>
+  <span class="row__counts">{{if .Counts}}{{.Counts}}{{else}}no differences{{end}} — {{.Compare}}</span>
+  {{else}}
+  <span class="row__whynot">{{.WhyNot}}</span>
+  {{end}}
+  {{if .Gates}}<ul class="gates">{{range .Gates}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{template "capture" .}}
+</section>
+{{end}}
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "item"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Row.Key}} — retrace report</title>
+{{template "style" .}}
+</head>
+<body>
+<p><a href="../../index.html">← every flow</a></p>
+<h1>{{.Row.Key}}</h1>
+<p><span class="badge badge--{{.Row.Verdict}}">{{.Row.Verdict}}</span> <span class="meta">score {{score .Row.Score}}</span></p>
+{{if .Row.Compared}}
+<p class="meta">run <code>{{.Row.RunID}}</code> vs reference <code>{{if .Row.RefRunID}}{{.Row.RefRunID}}{{else}}(none recorded){{end}}</code> · {{.Row.Compare}}</p>
+{{else}}
+<p class="row__whynot">{{.Row.WhyNot}}</p>
+<p class="unmeasured">No plane was computed for this flow, so every count, every checkpoint and every wire call is absent from this page rather than reported as zero. There is no summary.json beside this file, because there is no comparison to describe.</p>
+{{end}}
+
+{{template "capture" .Row}}
+
+{{if .Row.Gates}}<h2>Why this flow needs attention</h2><ul class="gates">{{range .Row.Gates}}<li>{{.}}</li>{{end}}</ul>{{end}}
+
+{{with .Summary}}
+{{if .Quarantined}}
+<h2>Quarantined</h2>
+<p>This comparison was refused: a side's capture-trust verdict was not "ok", and a diff computed from a recording nobody trusts is confident nonsense.</p>
+<ul class="reasons">{{range .Quarantined}}<li>side {{.Side}}: {{.Reason}}</li>{{end}}</ul>
+{{end}}
+{{end}}
+
+{{if .Row.Compared}}
+<h2>Checkpoints</h2>
+{{if .Shots}}
+{{range .Shots}}
+<h3>{{.Name}} — {{.Verdict}}</h3>
+<p class="meta">{{pct .Cp.DiffPct}}% of pixels differ{{if ne .Cp.DiffPctFine .Cp.DiffPct}} (fine {{pct .Cp.DiffPctFine}}%){{end}} · {{.Cp.NumDiff}} pixels</p>
+{{if .Cp.Mismatch}}<p class="note">The two shots differ in SIZE. The percentage above is inflated by padding.{{if .Cp.Overlap}} Over the overlapping content it is {{pct .Cp.Overlap.DiffPct}}%, with {{pct .Cp.Overlap.PaddingPct}}% padding.{{end}}</p>
+{{else if .Cp.Overlap}}<p class="note">The compared images differed in size after trimming; over the overlap {{pct .Cp.Overlap.DiffPct}}% of pixels differ.</p>{{end}}
+{{if .Missing}}<p class="note">Not in this export: {{range .Missing}}{{.}} {{end}}— the summary named these images and the files were not on disk. They are omitted rather than shown as blank panes, because a blank comparison pane reads as "identical".</p>{{end}}
+<div class="shots">
+{{range .Sides}}<figure class="shot"><img src="{{.Src}}" alt="{{.Label}} shot"><figcaption>{{.Label}}</figcaption></figure>{{end}}
+</div>
+{{end}}
+{{else}}
+<p class="unmeasured">No checkpoints were captured on either side, so nothing was compared on the pixel plane.</p>
+{{end}}
+
+{{with .Summary}}
+<h2>Wire</h2>
+{{if .Wire.Paired}}
+<table>
+<tr><th>call</th><th>what differs</th></tr>
+{{range .Wire.Paired}}<tr>
+<td><code>{{.Method}} {{.NormalizedPath}}</code><br><span class="meta">a #{{.SeqA}} → b #{{.SeqB}}{{if .Moved}} · reordered{{end}}{{if .Truncated}} · body truncated at capture{{end}}</span></td>
+<td>
+{{if .StatusChange}}<div>status {{.StatusChange.A}} → {{.StatusChange.B}}</div>{{end}}
+{{range .BodyViolations}}<div><strong>violation</strong> <code>{{.Path}}</code>: {{value .A}} → {{value .B}}{{if .Matcher}} (matcher {{.Matcher}}){{end}}</div>{{end}}
+{{range .BodyDiff}}<div><code>{{.Path}}</code> {{.Type}}: {{value .A}} → {{value .B}}</div>{{end}}
+{{range .OrderingChanges}}<div>reordered <code>{{.Path}}</code>: {{value .A}} → {{value .B}}</div>{{end}}
+{{range .HeaderDiff}}<div>header <code>{{.Name}}</code> ({{.Scope}}) {{.Type}}: {{.A}} → {{.B}}</div>{{end}}
+{{range .BodyTolerated}}<div class="meta">tolerated <code>{{.Path}}</code>: {{value .A}} → {{value .B}}</div>{{end}}
+{{range .BodyIgnored}}<div class="meta">ignored by a rule <code>{{.Path}}</code>: {{value .A}} → {{value .B}}</div>{{end}}
+{{if and (not .StatusChange) (not .BodyDiff) (not .BodyViolations) (not .HeaderDiff) (not .OrderingChanges)}}<span class="meta">nothing</span>{{end}}
+</td>
+</tr>{{end}}
+</table>
+{{else}}
+<p class="unmeasured">No calls were paired between the two runs.</p>
+{{end}}
+{{if .Wire.Missing}}<h3>Missing on this run</h3><ul>{{range .Wire.Missing}}<li><code>{{.Method}} {{.Path}}</code> #{{.Seq}} → {{.Status}}{{if .Tolerated}} <span class="meta">(tolerated: {{.Tolerated.ID}} — {{.Tolerated.Reason}})</span>{{end}}</li>{{end}}</ul>{{end}}
+{{if .Wire.Extra}}<h3>Extra on this run</h3><ul>{{range .Wire.Extra}}<li><code>{{.Method}} {{.Path}}</code> #{{.Seq}} → {{.Status}}{{if .Tolerated}} <span class="meta">(tolerated: {{.Tolerated.ID}} — {{.Tolerated.Reason}})</span>{{end}}</li>{{end}}</ul>{{end}}
+
+<h2>Hops</h2>
+{{if .Hops.NewRoutes}}<h3>New routes</h3><ul>{{range .Hops.NewRoutes}}<li><code>{{.Method}} {{.Path}}</code> → {{.To}}{{if .Via}} via {{range .Via}}{{.}} {{end}}{{end}}</li>{{end}}</ul>{{end}}
+{{if .Hops.GoneRoutes}}<h3>Gone routes</h3><ul>{{range .Hops.GoneRoutes}}<li><code>{{.Method}} {{.Path}}</code> → {{.To}}{{if .Via}} via {{range .Via}}{{.}} {{end}}{{end}}</li>{{end}}</ul>{{end}}
+{{if .Hops.NewErrors}}<h3>New errors</h3><ul>{{range .Hops.NewErrors}}<li><code>{{.Method}} {{.Path}}</code> → {{.Status}} <span class="meta">(this run, #{{.Seq}})</span></li>{{end}}</ul>{{end}}
+{{if .Hops.GoneErrors}}<h3>Errors that stopped happening</h3><ul>{{range .Hops.GoneErrors}}<li><code>{{.Method}} {{.Path}}</code> → {{.Status}} <span class="meta">(reference, #{{.Seq}})</span></li>{{end}}</ul>{{end}}
+{{if .Hops.ServiceCounts}}<table><tr><th>service</th><th>reference</th><th>this run</th></tr>{{range .Hops.ServiceCounts}}<tr><td>{{.Service}}</td><td>{{.A}}</td><td>{{.B}}{{if .Deviates}} <span class="note">deviates</span>{{end}}</td></tr>{{end}}</table>{{end}}
+{{if .Hops.HopRequireConfigured}}
+{{if .Hops.RequiredRouteFailures}}<h3>Required routes that did not happen</h3><ul>{{range .Hops.RequiredRouteFailures}}<li><code>{{.Method}} {{.Path}}</code> expected {{.ExpectedStatus}}, {{.Reason}}{{if .ActualStatus}} (saw {{.ActualStatus}}){{end}}</li>{{end}}</ul>
+{{else}}<p>Every configured <code>hopRequire</code> route was confirmed on this run.</p>{{end}}
+{{else}}
+<p class="unmeasured">No <code>hopRequire</code> routes are configured, so this gate was not evaluated — that is different from a gate that passed.</p>
+{{end}}
+
+{{if .UnexpectedStatuses}}
+<h2>Unexpected statuses</h2>
+<ul>{{range .UnexpectedStatuses}}<li><code>{{.Method}} {{.Path}}</code> → {{.Status}} <span class="meta">#{{.Seq}}</span></li>{{end}}</ul>
+{{end}}
+
+<h2>OpenAPI conformance</h2>
+{{if .OpenAPIConfigured}}
+{{if .Conformance}}<ul>{{range .Conformance}}<li>{{if eq .Kind "unchecked"}}<span class="note">unchecked</span>{{else}}<strong>{{.Kind}}</strong>{{end}} <code>{{.Method}} {{.Path}}</code> → {{.Status}}: {{.Detail}}</li>{{end}}</ul>
+<p class="meta">An <em>unchecked</em> entry is not a pass: the required-field check genuinely could not run for that call.</p>
+{{else}}<p>Every recorded call conformed to the configured spec.</p>{{end}}
+{{else}}
+<p class="unmeasured">No OpenAPI spec is configured, so nothing was checked against one — that is different from every call conforming.</p>
+{{end}}
+
+<h2>Performance</h2>
+{{if or (eq .Perf.Status "unset") (eq .Perf.Status "")}}
+<p class="unmeasured">No performance budget is configured, so nothing was measured against one.</p>
+{{else}}
+<p>{{pct .Perf.MeasuredMs}}ms of backend work against a {{pct .Perf.BudgetMs}}ms budget — {{.Perf.Status}}.</p>
+{{end}}
+
+<h2>Gate budgets</h2>
+{{if .Budgets}}
+<table><tr><th>plane</th><th>threshold</th><th>observed</th><th></th></tr>
+{{range .Budgets}}<tr><td>{{.Plane}}</td><td>{{pct .Threshold}}%</td><td>{{pct .Observed}}%</td><td>{{if .Failed}}<span class="note">over</span>{{else}}within{{end}}</td></tr>{{end}}
+</table>
+<p class="meta">A plane with no row here is not gated at all, which is different from being gated at a threshold of zero.</p>
+{{else}}
+<p class="unmeasured">No plane is gated by <code>gates:</code> in this project's config, so no budget was evaluated.</p>
+{{end}}
+
+<h2>The document itself</h2>
+<p><a href="summary.json">summary.json</a> is the exact <code>diff.Summary</code> the review UI consumes, byte for byte. Every image path inside it resolves relative to this directory.</p>
+{{end}}
+{{end}}
+</body>
+</html>
+{{end}}

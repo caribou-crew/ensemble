@@ -21,6 +21,7 @@ import (
 	"github.com/caribou-crew/ensemble/ensemble/inspector"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 	"github.com/caribou-crew/ensemble/ensemble/server"
+	"github.com/caribou-crew/ensemble/ensemble/tui"
 )
 
 // upOptions configures one `ensemble up` run.
@@ -29,6 +30,7 @@ type upOptions struct {
 	Profiles   []string
 	Variants   map[string]string // per-service variant overrides (--variant svc=name)
 	Addr       string            // control-plane API listen address, e.g. ":4700"
+	TUI        bool              // enter the terminal UI once the stack is up, instead of blocking silently
 	// Positional profile names (`ensemble up lane2`): added to a running
 	// stack if one answers at the client URL, else folded into Profiles
 	// for a cold start — see cmdUp.
@@ -64,6 +66,7 @@ func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 	profile := fs.String("profile", "", "comma-separated active profiles")
 	variant := fs.String("variant", "", "comma-separated service=variant overrides of each service's default variant")
 	addr := fs.String("api", defaultAPIAddr, "control-plane API listen address")
+	tuiFlag := fs.Bool("tui", false, "enter the terminal UI once the stack is up, instead of blocking silently")
 	if err := fs.Parse(args); err != nil {
 		return upOptions{}, err
 	}
@@ -72,7 +75,7 @@ func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 		fmt.Fprintf(stderr, "ensemble: up: %v\n", err)
 		return upOptions{}, err
 	}
-	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr, Positional: fs.Args()}, nil
+	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr, TUI: *tuiFlag, Positional: fs.Args()}, nil
 }
 
 // parseVariantFlag parses --variant's "svc=name,svc2=name2" form.
@@ -283,13 +286,31 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return serveErr
 	}
 
+	// --tui: hand off to the terminal UI in place of blocking silently.
+	// It runs against shutdownCtx, so an external shutdown (SIGINT/SIGTERM,
+	// POST /api/shutdown) makes its tea.Program exit on its own (see
+	// tui.Run's tea.WithContext); either that or the user quitting the TUI
+	// itself (q/ctrl+c) reaches this same cancelShutdown() call, which is
+	// exactly the trigger the select below already knows how to wait on —
+	// so the rest of the shutdown path (stopping orch, closing stubs) runs
+	// unchanged whether the stack was watched via the TUI or not.
+	if opts.TUI {
+		go func() {
+			if tuiErr := tui.Run(shutdownCtx, tuiAPIURL(opts.Addr)); tuiErr != nil {
+				fmt.Fprintf(stderr, "ensemble: tui: %v\n", tuiErr)
+			}
+			cancelShutdown()
+		}()
+	}
+
 	// Two ways this stops waiting: a normal shutdown (SIGINT/SIGTERM
-	// canceled ctx, or POST /api/shutdown called cancelShutdown), or Serve
-	// returning on its own — which only happens on a bind failure, since a
-	// clean shutdown's Serve return is instead observed via shutdownCtx.Done
-	// racing it. Without this second case, a bind failure (e.g. the address
-	// is already in use) left the error sitting unread in serveErrCh
-	// forever: services and stubs kept running, and runUp never returned.
+	// canceled ctx, or POST /api/shutdown called cancelShutdown, or the TUI
+	// above exiting), or Serve returning on its own — which only happens on
+	// a bind failure, since a clean shutdown's Serve return is instead
+	// observed via shutdownCtx.Done racing it. Without this second case, a
+	// bind failure (e.g. the address is already in use) left the error
+	// sitting unread in serveErrCh forever: services and stubs kept
+	// running, and runUp never returned.
 	select {
 	case <-shutdownCtx.Done():
 		fmt.Fprintln(stdout, "ensemble: shutting down")
@@ -388,6 +409,21 @@ func dbReadyProbe(insp *inspector.Inspector) orchestrator.DBReadyFunc {
 		}
 		return conn.Close()
 	}
+}
+
+// tuiAPIURL builds the URL `up --tui` connects its terminal UI to for a
+// control plane bound at addr (opts.Addr — typically loopback per
+// defaultAPIAddr, but --api can override it, including to a wildcard bind
+// like ":4700"). The TUI always talks to it over loopback: it runs in the
+// same process/host as the stack it's watching, so there's never a reason
+// to route through whatever non-loopback host a wildcard or explicit bind
+// also happens to answer on.
+func tuiAPIURL(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		port = "4700"
+	}
+	return "http://127.0.0.1:" + port
 }
 
 // apiHostPolicy translates a --api bind address into the browser guard's
