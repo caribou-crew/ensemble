@@ -139,7 +139,12 @@ func Encode(img *image.RGBA) ([]byte, error) {
 // colorDelta is pixelmatch's perceptual difference. yOnly returns the
 // brightness delta alone, which is what antialias detection compares.
 // Semi-transparent pixels are blended against white first, so an alpha
-// change is not silently free.
+// change is not silently free — but pixelmatch's blend formula assumes
+// STRAIGHT (non-premultiplied) channels, as produced by a canvas
+// getImageData. image.RGBA (what Decode always returns) is premultiplied,
+// so this blend runs against an already-premultiplied value: correct for
+// fully opaque pixels (the overwhelming case for browser screenshots,
+// where alpha is always 255), not faithful for a semi-transparent one.
 func colorDelta(a, b []uint8, k, m int, yOnly bool) float64 {
 	r1, g1, b1, a1 := float64(a[k]), float64(a[k+1]), float64(a[k+2]), float64(a[k+3])
 	r2, g2, b2, a2 := float64(b[m]), float64(b[m+1]), float64(b[m+2]), float64(b[m+3])
@@ -320,11 +325,11 @@ func RectsFrom(rs []config.Rect) []Rect {
 func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error) {
 	aImg, err := Decode(aPNG)
 	if err != nil {
-		return Result{}, Images{}, fmt.Errorf("%w: %v", ErrDecodeA, err)
+		return Result{}, Images{}, fmt.Errorf("%w: %w", ErrDecodeA, err)
 	}
 	bImg, err := Decode(bPNG)
 	if err != nil {
-		return Result{}, Images{}, fmt.Errorf("%w: %v", ErrDecodeB, err)
+		return Result{}, Images{}, fmt.Errorf("%w: %w", ErrDecodeB, err)
 	}
 
 	// A zero threshold means "unset", exactly like config.Thresholds: there
@@ -347,8 +352,20 @@ func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error) {
 		HeightB: bImg.Bounds().Dy(),
 	}
 
+	// Masks are applied HERE, before any trim or size reconciliation, in
+	// the ORIGINAL screenshot's coordinate space — the only frame in which
+	// a mask rect means what its author meant. Applying masks after Trim
+	// (as the brief's step order literally reads) is wrong: A and B are
+	// trimmed independently, so a mask authored for the untrimmed shot
+	// would land on different content on each side, or on none at all.
+	// This ordering also means Overlap (computed below, on masked
+	// workA/workB) correctly excludes masked regions instead of counting
+	// them as real content change.
+	ApplyMasks(aImg, o.Masks)
+	ApplyMasks(bImg, o.Masks)
+
 	// workA/workB are what Compare actually measures; aImg/bImg (and their
-	// original dimensions recorded above) are never overwritten.
+	// original dimensions recorded above) are never overwritten again.
 	workA, workB := aImg, bImg
 	if o.Trim {
 		if cropped, kept, ok := TrimUniformBorder(aImg); ok {
@@ -401,9 +418,6 @@ func Compare(aPNG, bPNG []byte, o Options) (Result, Images, error) {
 	} else {
 		cmpA, cmpB = workA, workB
 	}
-
-	ApplyMasks(cmpA, o.Masks)
-	ApplyMasks(cmpB, o.Masks)
 
 	res.Width, res.Height = cmpA.Bounds().Dx(), cmpA.Bounds().Dy()
 	area := res.Width * res.Height
