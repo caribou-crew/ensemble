@@ -5482,15 +5482,38 @@ one containing a single non-`unchecked` finding verdicts `changed`.
 **Gate budgets are computed once, per plane, not per call site.** For each
 plane `retrace.yaml`'s `gates:` map configures (`cfg.Gates`, Task 3's
 shape — Task 10 reads it, does not redefine it), `Build` derives `Observed`
-from that plane's own data (the worst per-checkpoint `DiffPct` for
-`"pixel"`, `Wire`'s change count for `"wire"`, and so on), sets
+from that plane's own data, sets
 `Failed = Observed > Threshold`, and appends one `Gate` to `Budgets`. A
 plane `gates:` never mentions gets no `Gate` at all — not a `Gate` with
 `Threshold: 0` — so "unconfigured" and "configured to zero tolerance" stay
 distinguishable, per the Global Constraint on zero values. `cfg.FailOn`
 (also read, not redefined) names which plane budgets can move `Verdict`;
 the rest surface in `Budgets`/`--json` for a reader to see but cannot fail
-the build on their own. `--no-fail` computes and reports every gate exactly
+the build on their own.
+
+**`Observed` is a percentage on every plane, because `Threshold` always is.**
+`Threshold` comes from `budget_pct`, so a plane whose `Observed` is a raw
+count makes `Failed = Observed > Threshold` compare a count against a
+percentage — under that reading three changed wire entries out of a thousand
+fail a `budget_pct: 2` gate. An earlier draft of this task specified exactly
+that for `"wire"`; Task 10's implementer caught it. The four planes:
+
+- `"pixel"` → the worst per-checkpoint `DiffPct`.
+- `"wire"` → changed entries / total entries × 100.
+- `"hop"` → `ServiceCounts` entries with `Deviates == true`, as a percentage
+  of all entries.
+- `"perf"` → percent **over** budget, `(MeasuredMs - BudgetMs) / BudgetMs *
+  100`, so `0` means "exactly at budget" and `budget_pct: 10` means "10%
+  over is allowed". Not `Measured/Budget*100`, which would put "at budget" at
+  100 and force every threshold on this one plane to be written around 100
+  while the other three are written near 0.
+- `BudgetMs` absent or zero emits **no perf gate at all** — never a `Gate`
+  carrying `Inf`, `NaN`, or a `0` that reads as clean.
+
+Pin the unit with a fixture on which the count reading and the percentage
+reading disagree: **3 changed wire entries out of 1000 against
+`budget_pct: 2` must PASS**. A 3-of-4 fixture fails under both readings and
+therefore pins neither. `--no-fail` computes and reports every gate exactly
 as above but forces `ExitCode` to `0` regardless of `Verdict` — for a
 reporting run that must not break the build.
 
@@ -5506,11 +5529,31 @@ produce as well.** Task 4's review found that a **signal-killed child**
 surfaces as `-1` (or `255` once the shell has it), which is outside the
 0/1/2/3 contract entirely — so a test run killed by CI's timeout or by
 Ctrl-C is indistinguishable from garbage rather than reporting a defined
-status. Map it explicitly: a child terminated by a signal is a run that
-did not complete, not a diff result. Decide and state which code it takes
-(`3`, alongside config/IO failures, is the natural home since it is a
-"could not evaluate" rather than a "found differences"), and pin it with a
-test that kills a child and asserts the mapped code.
+status.
+
+**The signal reaches this task as data, not as a process status.**
+`retrace diff` execs nothing, so there is no child here to kill — an earlier
+draft asked for "a test that kills a child", which in this task's scope
+would only kill the `retrace` binary itself and prove nothing. What actually
+happens is that `cmd_run.go` sets `exitCode = ee.ExitCode()`, which is `-1`
+for a signal-killed test command, and writes it straight into the manifest
+as `runs.Test{ExitCode: ...}`. A run killed by CI's timeout or by Ctrl-C
+therefore sits on disk as a manifest with a **negative `Test.ExitCode`**,
+and this task reads those manifests.
+
+Such a run's hop stream is truncated at the moment of the kill, so diffing
+it against a complete reference reports every un-run hop as a "gone" hop — a
+screenful of fabricated regressions from a run that never finished. That is
+the false-positive class that teaches a team to ignore the plane.
+
+Ruling: a manifest carrying a negative `Test.ExitCode` did not complete. It
+takes the **quarantine / could-not-evaluate** path, never the normal diff
+path, and `retrace diff` exits **3** on it — "could not evaluate", alongside
+config and I/O failure, never `1`, which would assert that differences were
+found. Pin it with a **fixture manifest** carrying `ExitCode: -1`; no child
+process is involved. `retrace run`'s own pass-through of the test command's
+code is Task 4's deliberate decision and stays as it is — see the follow-up
+below.
 
 Two constraints on that test, both already paid for once in this project:
 assert through a **BUILT binary** (`go run` collapses every non-zero status
