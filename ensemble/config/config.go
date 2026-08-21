@@ -144,17 +144,35 @@ type SeedHTTP struct {
 // Load reads, parses, and validates the ensemble.yaml at path. Dir is set to
 // the directory containing path, for resolving relative references (e.g.
 // SeedSQL.File) in later stages.
+//
+// Before parsing, Load expands "${VAR}"/"${VAR:-default}" references
+// anywhere in the file (see expandEnvVars) — so ports, images, env values,
+// anything, can vary per developer/environment without hand-editing
+// ensemble.yaml. A ".env" file next to path is loaded first (see
+// loadDotEnv) if one exists, purely as a source of values for that
+// expansion; it's entirely optional, and the real process environment
+// always takes precedence over it.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 
+	dir := filepath.Dir(path)
+	dotenv, err := loadDotEnv(filepath.Join(dir, ".env"))
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	data, err = expandEnvVars(data, envLookup(dotenv))
+	if err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	c.Dir = filepath.Dir(path)
+	c.Dir = dir
 
 	if err := c.Validate(); err != nil {
 		return nil, err
