@@ -1,4 +1,4 @@
-# company-stack-template
+# templates/company-stack
 
 A starting point for sharing an ensemble setup across a team, so the second
 person to set up your local stack spends five minutes instead of thirty.
