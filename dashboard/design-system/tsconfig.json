@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // primitives.tsx does `import './primitives.css'` for its side effect, and
+    // the ambient `*.css` module declaration that makes that legal lives in
+    // vite/client. ensemble-ui gets it from src/vite-env.d.ts; the design
+    // system has no src/ to hang a reference file on, so it is named here.
+    // Without it primitives.tsx cannot be typechecked by its OWN package —
+    // only through a consumer — which is the hole R-S closes.
+    "types": ["vite/client"]
+  },
+  "include": ["*.ts", "*.tsx"]
+}

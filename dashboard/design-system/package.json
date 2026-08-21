@@ -11,7 +11,7 @@
     "./useAsync": "./useAsync.ts"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "tsc --noEmit -p tsconfig.json && vitest run"
   },
   "peerDependencies": {
     "react": "*"
@@ -22,6 +22,7 @@
     "happy-dom": "^20.11.6",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
   }
