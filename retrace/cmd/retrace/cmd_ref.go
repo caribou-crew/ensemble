@@ -14,6 +14,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
 	"github.com/caribou-crew/ensemble/retrace/refs"
+	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -23,6 +24,7 @@ Usage:
   retrace ref list   [--app NAME] [--flow NAME] [--json]
   retrace ref accept --flow NAME [--app NAME] [--run SELECTOR] [--json]
   retrace ref reject --flow NAME [--app NAME] [--run SELECTOR] [--out DIR] [--json]
+  retrace ref rule   --flow NAME --scope req|resp --field PATH --matcher NAME [--method M] [--path GLOB]
 `
 
 // cmdRef dispatches the `ref` verbs. Every one of them is also a REST call
@@ -43,6 +45,8 @@ func cmdRef(args []string, stdout, stderr io.Writer) int {
 		return cmdRefAccept(args[1:], stdout, stderr)
 	case "reject":
 		return cmdRefReject(args[1:], stdout, stderr)
+	case "rule":
+		return cmdRefRule(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown ref verb %q\n\n%s", args[0], refUsage)
 	}
@@ -281,6 +285,14 @@ func rejectSummary(p project, flow, runID string) (*diff.Summary, string) {
 	if a.Kind == "none" {
 		return nil, "there is no reference to compare against yet; run `retrace ref accept` once this flow has a good run"
 	}
+	// With no committed bundle, "reference" falls back to the newest
+	// ELIGIBLE run — which, for the run being rejected, is often that same
+	// run. Diffing it against itself would write a summary.json saying
+	// "pass" into a bundle whose whole reason for existing is that something
+	// went wrong: a plausible value that is worse than an absent one.
+	if a.Kind == "run" && a.RunID == runID {
+		return nil, fmt.Sprintf("the only reference available is %s itself — the run being rejected; run `retrace ref accept` on a known-good run first", runID)
+	}
 	b, err := resolveSide(p.cwd, p.app, flow, runID)
 	if err != nil {
 		return nil, fmt.Sprintf("side B did not resolve: %v", err)
@@ -299,4 +311,90 @@ func rejectSummary(p project, flow, runID string) (*diff.Summary, string) {
 		return nil, fmt.Sprintf("the diff could not be computed: %v", err)
 	}
 	return &s, ""
+}
+
+// cmdRefRule appends one machine-owned wire rule to the overlay, through
+// config.AppendWireRule — the SAME code path the review queue's `rule` verb
+// uses, so the CLI and the UI cannot drift into two rule writers with two
+// idempotency rules and two locks.
+//
+// --scope and --flow are accepted, validated, and REPORTED BACK as wider
+// than they read. The wire-rule dialect has neither dimension: rules.Raw
+// carries method/path/headers/body, config.WireRules is top-level with no
+// per-flow list, and rules.Resolve keys on method plus normalized path
+// alone — diffBodyScope("req", ...) and diffBodyScope("resp", ...) consult
+// exactly the same globs. So a rule minted here from a response field also
+// covers the identical path in a request body, and a rule minted "for the
+// checkout flow" covers every flow in the project.
+//
+// The flags are kept rather than dropped because they are the vocabulary
+// the review queue presses on (a FieldDiff has a scope; a queue entry has a
+// flow) and the input a future scoped dialect would need. What is NOT
+// acceptable is honouring them silently, so the confirmation line says
+// plainly what the rule actually covers.
+func cmdRefRule(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ref rule", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	flow := fs.String("flow", "", "flow the rule was raised from (required; see below — wire rules are not flow-scoped)")
+	scope := fs.String("scope", "", "req|resp — which body the field was seen in (required; see below — wire rules are not scope-scoped)")
+	field := fs.String("field", "", "dotted body field-path glob, e.g. \"items[*].requestId\" (required)")
+	matcher := fs.String("matcher", "", "matcher name: exact, ignore, uuid, etag, semver, iso8601, http-date, integer (required)")
+	method := fs.String("method", "", "limit the rule to one HTTP method (default: any)")
+	pathGlob := fs.String("path", "", "limit the rule to a URL path glob (default: any)")
+	asJSON := fs.Bool("json", false, "emit the appended rule as JSON on stdout")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	for _, req := range []struct{ name, val string }{
+		{"--flow", *flow}, {"--scope", *scope}, {"--field", *field}, {"--matcher", *matcher},
+	} {
+		if strings.TrimSpace(req.val) == "" {
+			return fail(stderr, "ref rule: %s is required", req.name)
+		}
+	}
+	if *scope != "req" && *scope != "resp" {
+		return fail(stderr, "ref rule: --scope is %q, want \"req\" or \"resp\"", *scope)
+	}
+	p, err := resolveProject("")
+	if err != nil {
+		return fail(stderr, "ref rule: %v", err)
+	}
+
+	r := rules.Raw{Method: *method, Path: *pathGlob, Body: map[string]any{*field: *matcher}}
+	// AppendWireRule validates the rule (an unknown matcher fails the
+	// append rather than bricking every later Discover), is idempotent, and
+	// holds the cross-process lock. Nothing here re-implements any of that.
+	if err := config.AppendWireRule(p.cwd, r); err != nil {
+		return fail(stderr, "ref rule: %v", err)
+	}
+
+	// Said once, plainly, on the channel a human and a CI log both see. A
+	// reviewer who believes this rule is scoped to one flow or one direction
+	// has been misled by the flags, and that is exactly what this prevents.
+	fmt.Fprintf(stderr, "retrace: note: wire rules are not scoped by flow or by request/response — this rule applies to %s %s in BOTH bodies, in EVERY flow, not only to --scope %s of --flow %s\n",
+		methodLabel(*method), pathLabel(*pathGlob), *scope, *flow)
+
+	if *asJSON {
+		if err := writeJSON(stdout, r); err != nil {
+			return fail(stderr, "ref rule: %v", err)
+		}
+		return exitOK
+	}
+	fmt.Fprintf(stdout, "appended to %s\n  %s %s body[%s] = %s\n", filepath.Join(p.cwd, config.OverlayPath),
+		methodLabel(*method), pathLabel(*pathGlob), *field, *matcher)
+	return exitOK
+}
+
+func methodLabel(m string) string {
+	if m == "" {
+		return "(any method)"
+	}
+	return strings.ToUpper(m)
+}
+
+func pathLabel(p string) string {
+	if p == "" {
+		return "(any path)"
+	}
+	return p
 }
