@@ -3725,7 +3725,14 @@ git commit -m "feat(retrace): ensemble-attached capture with drain-before-end ho
   // re-declare it — same package, one declaration.
   //   type ProxyFailure struct { Phase, Message string }  // Phase: "running"
   type AssessInput struct {
-      ProxyConfigured     bool
+      // NO ProxyConfigured field. An earlier draft had one; its zero value
+      // (false) skipped the whole reachability branch, so Assess(AssessInput{})
+      // returned "ok"/"capture looks complete" — the zero value reading as
+      // fine, and worse than the empty Status, because "ok" sails through both
+      // manifest seams AND past Task 10's quarantine while "" is rejected.
+      // Its only call site hardcoded true, so it carried no information and
+      // only risk. Do not reintroduce it. If a mode ever genuinely has no
+      // proxy, add ProxyNotConfigured so the zero value stays protective.
       ProxyFailure        *ProxyFailure
       Hops                []trace.Hop
       Checkpoints         int
@@ -3818,15 +3825,15 @@ func TestAssessRanksTheWorstEvidence(t *testing.T) {
 		want trace.Verdict
 		code string
 	}{
-		{"clean run", AssessInput{ProxyConfigured: true, Hops: hops(3), Checkpoints: 2, RequestsSeen: 3}, trace.VerdictOK, ""},
-		{"failed test outranks everything", AssessInput{TestExitCode: 1, ProxyConfigured: true, Hops: hops(3), RequestsSeen: 3}, trace.VerdictFailed, "test-failed"},
-		{"proxy died mid-run", AssessInput{ProxyConfigured: true, ProxyFailure: &ProxyFailure{Phase: "running", Message: "closed"}, Hops: hops(1), RequestsSeen: 1}, trace.VerdictBroken, "proxy-died"},
-		{"zero calls AND zero requests", AssessInput{ProxyConfigured: true, RequestsSeen: 0}, trace.VerdictBroken, "proxy-never-reached"},
-		{"zero calls but requests seen", AssessInput{ProxyConfigured: true, RequestsSeen: 4}, trace.VerdictDegraded, "no-calls"},
-		{"zero calls, reachability unknown", AssessInput{ProxyConfigured: true, RequestsSeen: -1}, trace.VerdictDegraded, "no-calls"},
-		{"screenshots vanished", AssessInput{ProxyConfigured: true, Hops: hops(2), RequestsSeen: 2, Checkpoints: 0, ExpectedCheckpoints: 5}, trace.VerdictDegraded, "no-screenshots"},
-		{"ensemble reported a propagation gap", AssessInput{ProxyConfigured: true, Hops: hops(2), RequestsSeen: 2, SessionVerdict: trace.VerdictDegraded, SessionReasons: []string{"propagation gap at bff: traceparent forwarded but baggage dropped before catalog"}}, trace.VerdictDegraded, "propagation-gap"},
-		{"drain shortfall", AssessInput{ProxyConfigured: true, Hops: hops(2), RequestsSeen: 2, Notes: []string{"1 hop(s) arrived after the drain window"}}, trace.VerdictSuspect, "capture-note"},
+		{"clean run", AssessInput{Hops: hops(3), Checkpoints: 2, RequestsSeen: 3}, trace.VerdictOK, ""},
+		{"failed test outranks everything", AssessInput{TestExitCode: 1, Hops: hops(3), RequestsSeen: 3}, trace.VerdictFailed, "test-failed"},
+		{"proxy died mid-run", AssessInput{ProxyFailure: &ProxyFailure{Phase: "running", Message: "closed"}, Hops: hops(1), RequestsSeen: 1}, trace.VerdictBroken, "proxy-died"},
+		{"zero calls AND zero requests", AssessInput{RequestsSeen: 0}, trace.VerdictBroken, "proxy-never-reached"},
+		{"zero calls but requests seen", AssessInput{RequestsSeen: 4}, trace.VerdictDegraded, "no-calls"},
+		{"zero calls, reachability unknown", AssessInput{RequestsSeen: -1}, trace.VerdictDegraded, "no-calls"},
+		{"screenshots vanished", AssessInput{Hops: hops(2), RequestsSeen: 2, Checkpoints: 0, ExpectedCheckpoints: 5}, trace.VerdictDegraded, "no-screenshots"},
+		{"ensemble reported a propagation gap", AssessInput{Hops: hops(2), RequestsSeen: 2, SessionVerdict: trace.VerdictDegraded, SessionReasons: []string{"propagation gap at bff: traceparent forwarded but baggage dropped before catalog"}}, trace.VerdictDegraded, "propagation-gap"},
+		{"drain shortfall", AssessInput{Hops: hops(2), RequestsSeen: 2, Notes: []string{"1 hop(s) arrived after the drain window"}}, trace.VerdictSuspect, "capture-note"},
 	}
 	// each: Assess(in).Status == want, and want=="" or a reason with that Code exists
 }
@@ -3857,7 +3864,7 @@ func TestFindGapsSubtractsDeclaredQuietIntervals(t *testing.T) {
 // every run is how a real warning gets tuned out.
 func TestAWireOnlyFlowIsNeverNaggedAboutScreenshots(t *testing.T) {
 	got := Assess(AssessInput{
-		ProxyConfigured: true, Hops: hops(1), RequestsSeen: 1,
+		Hops: hops(1), RequestsSeen: 1,
 		Checkpoints: 0, ExpectedCheckpoints: 0,
 	})
 	if got.Status != trace.VerdictOK {
@@ -3869,7 +3876,7 @@ func TestAWireOnlyFlowIsNeverNaggedAboutScreenshots(t *testing.T) {
 // thing: the screenshots are missing BECAUSE the test died.
 func TestNoScreenshotReasonIsSuppressedWhenTheTestFailed(t *testing.T) {
 	got := Assess(AssessInput{
-		ProxyConfigured: true, Hops: hops(1), RequestsSeen: 1,
+		Hops: hops(1), RequestsSeen: 1,
 		Checkpoints: 0, ExpectedCheckpoints: 3, TestExitCode: 1,
 	})
 	if got.Status != trace.VerdictFailed {
@@ -3949,7 +3956,7 @@ func Assess(in AssessInput) runs.CaptureTrust {
 	// never routed through us" look identical. RequestsSeen (markers
 	// included, a strictly broader count) tells them apart; -1 means we
 	// could not verify, which must say so rather than read as either.
-	if in.ProxyConfigured && in.ProxyFailure == nil && len(in.Hops) == 0 && in.TestExitCode == 0 {
+	if in.ProxyFailure == nil && len(in.Hops) == 0 && in.TestExitCode == 0 {
 		if in.RequestsSeen == 0 {
 			add("proxy-never-reached", trace.VerdictBroken,
 				"zero calls AND zero requests of any kind reached retrace — the app almost certainly never routed through it",
@@ -4093,7 +4100,6 @@ call site**; `runFlow` already stores the result in `Manifest.Capture`:
 func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 	groups []runs.Group, exitCode int) runs.CaptureTrust {
 	return capture.Assess(capture.AssessInput{
-		ProxyConfigured:     true,
 		ProxyFailure:        s.ProxyFailure(),
 		Hops:                hops,
 		Checkpoints:         len(cps),
