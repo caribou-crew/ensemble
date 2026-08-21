@@ -310,6 +310,48 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// ProfileNames returns every profile the config mentions — each distinct
+// Service.Profile value and each top-level Profiles group — sorted.
+func (c *Config) ProfileNames() []string {
+	seen := map[string]bool{}
+	for _, svc := range c.Services {
+		if svc.Profile != "" {
+			seen[svc.Profile] = true
+		}
+	}
+	for group := range c.Profiles {
+		seen[group] = true
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ProfileMembers returns, sorted, the services that require profile name
+// by either mechanism (own Profile field or top-level group listing).
+func (c *Config) ProfileMembers(name string) []string {
+	seen := map[string]bool{}
+	for svcName, svc := range c.Services {
+		if svc.Profile == name {
+			seen[svcName] = true
+		}
+	}
+	for _, member := range c.Profiles[name] {
+		if _, ok := c.Services[member]; ok {
+			seen[member] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ServicesForProfiles returns the services that should be active given the
 // set of active profile names.
 //

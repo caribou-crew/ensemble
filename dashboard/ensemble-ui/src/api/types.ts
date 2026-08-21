@@ -131,3 +131,15 @@ export interface SeedStepResult {
   err?: string;
   durationMs: number;
 }
+
+/** GET /api/profiles — every configured profile with its members and live state. */
+export interface ProfileInfo {
+  name: string;
+  services: string[];
+  active: boolean;
+}
+
+export interface ProfilesState {
+  active: string[];
+  profiles: ProfileInfo[];
+}

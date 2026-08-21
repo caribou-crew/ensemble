@@ -83,6 +83,13 @@ type Orchestrator struct {
 	// declares any: seeded from Opts.Variants, else the config default,
 	// and changed by SetVariant. Read through currentVariant.
 	variants map[string]string
+	// active is the live profile set, seeded from Opts.Profiles and changed
+	// by UpProfiles/DownProfiles; every "which services exist right now"
+	// question goes through activeServices.
+	active map[string]bool
+	// wired records services whose intercept listener is bound, so
+	// UpProfiles re-adding a lane never tries to rebind it.
+	wired map[string]bool
 
 	// serviceLocks holds one mutex per service name, serializing Flip,
 	// Restart, and Down's per-service teardown against each other for a
@@ -159,10 +166,181 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		procs:                 map[string]*exec.Cmd{},
 		dockerNodes:           map[string]bool{},
 		variants:              variantsFrom(cfg, opts.Variants),
+		active:                profileSet(opts.Profiles),
+		wired:                 map[string]bool{},
 		serviceLocks:          map[string]*sync.Mutex{},
 		killGroup:             killProcessGroup,
 		removeDockerContainer: dockerRemove,
 	}
+}
+
+func profileSet(names []string) map[string]bool {
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
+}
+
+// activeProfiles is the live profile set, sorted.
+func (o *Orchestrator) activeProfiles() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]string, 0, len(o.active))
+	for n := range o.active {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// activeServices is the service set the live profiles select — see
+// config.Config.ServicesForProfiles for the any-active-profile rule that
+// makes a service shared by two lanes stay up while either is active.
+func (o *Orchestrator) activeServices() map[string]config.Service {
+	return o.cfg.ServicesForProfiles(o.activeProfiles())
+}
+
+// ProfileInfo is one configured profile and its live state.
+type ProfileInfo struct {
+	Name     string   `json:"name"`
+	Services []string `json:"services"`
+	Active   bool     `json:"active"`
+}
+
+// ProfilesState is the full profile picture: every profile the config
+// mentions, with members and whether it's active right now.
+type ProfilesState struct {
+	Active   []string      `json:"active"`
+	Profiles []ProfileInfo `json:"profiles"`
+}
+
+// Profiles reports every configured profile with its live state.
+func (o *Orchestrator) Profiles() ProfilesState {
+	active := o.activeProfiles()
+	activeSet := profileSet(active)
+	st := ProfilesState{Active: active, Profiles: []ProfileInfo{}}
+	for _, name := range o.cfg.ProfileNames() {
+		st.Profiles = append(st.Profiles, ProfileInfo{Name: name, Services: o.cfg.ProfileMembers(name), Active: activeSet[name]})
+	}
+	return st
+}
+
+func (o *Orchestrator) checkProfiles(names []string) error {
+	known := profileSet(o.cfg.ProfileNames())
+	for _, n := range names {
+		if !known[n] {
+			return fmt.Errorf("orchestrator: unknown profile %q (have %s)", n, strings.Join(o.cfg.ProfileNames(), ", "))
+		}
+	}
+	return nil
+}
+
+// running reports whether name has a tracked process or container.
+func (o *Orchestrator) running(name string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, hasProc := o.procs[name]
+	return hasProc || o.dockerNodes[name]
+}
+
+// UpProfiles activates names and starts — in dependency order, exactly as
+// Up does — every service or database the enlarged set covers that isn't
+// already running. Services already up (shared between lanes, or
+// always-on) are untouched. The first failure stops the walk and is
+// returned; the profiles stay active so a Restart can recover the
+// offender.
+func (o *Orchestrator) UpProfiles(ctx context.Context, names []string) error {
+	if err := o.checkProfiles(names); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	for _, n := range names {
+		o.active[n] = true
+	}
+	o.mu.Unlock()
+
+	active := o.activeServices()
+	order, err := o.topoOrder(active)
+	if err != nil {
+		return err
+	}
+	for _, name := range order {
+		if o.running(name) {
+			continue
+		}
+		if _, ok := active[name]; ok {
+			svc, err := o.resolve(name)
+			if err != nil {
+				o.fail(name, err)
+				return fmt.Errorf("orchestrator: %s: %w", name, err)
+			}
+			o.logf("orchestrator: starting service %s", name)
+			if err := o.startService(ctx, name, svc); err != nil {
+				return err
+			}
+			if err := o.wireProxy(name, svc); err != nil {
+				return err
+			}
+			continue
+		}
+		if db, ok := o.cfg.Databases[name]; ok {
+			o.logf("orchestrator: starting database %s", name)
+			if err := o.startDatabase(ctx, name, db); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// DownProfiles deactivates names and stops, dependents first, every
+// running service the remaining active set no longer covers. A service
+// another active profile still names, or one with no profile at all, keeps
+// running; databases are never touched. Proxy listeners stay bound — a
+// 502 hop is an honest "that lane is down". Teardown errors are collected
+// and joined rather than aborting the walk.
+func (o *Orchestrator) DownProfiles(names []string) error {
+	if err := o.checkProfiles(names); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	for _, n := range names {
+		delete(o.active, n)
+	}
+	o.mu.Unlock()
+
+	keep := o.activeServices()
+	order, err := o.topoOrder(o.cfg.Services)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for i := len(order) - 1; i >= 0; i-- {
+		name := order[i]
+		if _, isSvc := o.cfg.Services[name]; !isSvc {
+			continue
+		}
+		if _, ok := keep[name]; ok || !o.running(name) {
+			continue
+		}
+		func() {
+			unlock := o.lockService(name)
+			defer unlock()
+			o.logf("orchestrator: stopping service %s", name)
+			if _, _, err := o.stopCurrent(name); err != nil {
+				o.fail(name, err)
+				errs = append(errs, fmt.Errorf("%s: %w", name, err))
+				return
+			}
+			o.setState(name, func(s *ServiceState) {
+				s.Status = StatusStopped
+				s.PID = 0
+				s.LastErr = ""
+			})
+		}()
+	}
+	return errors.Join(errs...)
 }
 
 // variantsFrom seeds the per-service variant choice: the override when one
@@ -303,11 +481,11 @@ func (o *Orchestrator) lockService(name string) func() {
 // returned naming the offending node; nodes already started are left
 // running (call Down to tear them down).
 func (o *Orchestrator) Up(ctx context.Context) error {
-	order, err := o.topoOrder()
+	active := o.activeServices()
+	order, err := o.topoOrder(active)
 	if err != nil {
 		return err
 	}
-	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
 
 	// Gateways bind first: every upstream is a static 127.0.0.1:<port>, so
 	// nothing about service readiness matters, and a port that can't bind
@@ -419,8 +597,7 @@ func (o *Orchestrator) Down() error {
 // starting a replacement over a possibly-still-live predecessor on the
 // same port.
 func (o *Orchestrator) Restart(ctx context.Context, name string) error {
-	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
-	if _, ok := active[name]; !ok {
+	if _, ok := o.activeServices()[name]; !ok {
 		return fmt.Errorf("orchestrator: restart %q: not an active service", name)
 	}
 	svc, err := o.resolve(name)
@@ -615,6 +792,12 @@ func (o *Orchestrator) wireProxy(name string, svc config.Service) error {
 	if svc.Proxy <= 0 {
 		return nil
 	}
+	o.mu.Lock()
+	already := o.wired[name]
+	o.mu.Unlock()
+	if already {
+		return nil
+	}
 	upstream := fmt.Sprintf("http://127.0.0.1:%d", svc.Port)
 	if _, err := o.px.Serve(proxy.Target{
 		Name:     name,
@@ -624,6 +807,9 @@ func (o *Orchestrator) wireProxy(name string, svc config.Service) error {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: proxy wiring: %w", name, err)
 	}
+	o.mu.Lock()
+	o.wired[name] = true
+	o.mu.Unlock()
 	return nil
 }
 
@@ -820,12 +1006,11 @@ func touchStamp(path string) error {
 
 // --- dependency ordering ---
 
-// topoOrder returns active services and databases in dependency-first
-// order (a dependency always precedes its dependents). A depends_on cycle
-// is reported as an error naming every service in the cycle.
-func (o *Orchestrator) topoOrder() ([]string, error) {
-	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
-
+// topoOrder returns the given services plus every database in
+// dependency-first order (a dependency always precedes its dependents). A
+// depends_on cycle is reported as an error naming every service in the
+// cycle.
+func (o *Orchestrator) topoOrder(active map[string]config.Service) ([]string, error) {
 	nodes := map[string]bool{}
 	for name := range active {
 		nodes[name] = true

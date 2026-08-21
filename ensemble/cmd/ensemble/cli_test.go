@@ -832,3 +832,78 @@ func TestParseVariantFlag(t *testing.T) {
 		}
 	}
 }
+
+// fakeProfileServer answers the health + profile routes the CLI's
+// attach fork uses, recording which profile switches it received.
+func fakeProfileServer(t *testing.T, healthy bool) (*httptest.Server, *[]string) {
+	t.Helper()
+	var calls []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		if !healthy {
+			http.Error(w, "nope", 503)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("POST /api/profiles/{name}/{verb}", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.PathValue("verb")+" "+r.PathValue("name"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"active":   []string{"lane1", "lane2"},
+			"profiles": []map[string]any{{"name": "lane2", "services": []string{"b1"}, "active": true}},
+		})
+	})
+	mux.HandleFunc("GET /api/profiles", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"active": []string{"lane1"}, "profiles": []map[string]any{{"name": "lane1", "services": []string{"a1"}, "active": true}}})
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, &calls
+}
+
+func TestCLI_UpWithProfileAttachesToRunningStack(t *testing.T) {
+	ts, calls := fakeProfileServer(t, true)
+	t.Setenv("ENSEMBLE_API", ts.URL)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"up", "lane2", "ops"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if got := strings.Join(*calls, ","); got != "up lane2,up ops" {
+		t.Errorf("calls = %q", got)
+	}
+	if !strings.Contains(stdout.String(), "attached to "+ts.URL) || !strings.Contains(stdout.String(), "lane2") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+func TestCLI_DownWithProfileDeactivatesOnly(t *testing.T) {
+	ts, calls := fakeProfileServer(t, true)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"down", "--api-url", ts.URL, "lane2"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if got := strings.Join(*calls, ","); got != "down lane2" {
+		t.Errorf("calls = %q", got)
+	}
+}
+
+func TestCLI_ProfilesList(t *testing.T) {
+	ts, _ := fakeProfileServer(t, true)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"profiles", "--api-url", ts.URL}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "lane1") || !strings.Contains(stdout.String(), "yes") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+func TestParseUpOptionsPositionalProfiles(t *testing.T) {
+	opts, err := parseUpOptions([]string{"--profile", "ops", "lane1", "lane2"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(opts.Positional, ",") != "lane1,lane2" || strings.Join(opts.Profiles, ",") != "ops" {
+		t.Errorf("opts = %+v", opts)
+	}
+}

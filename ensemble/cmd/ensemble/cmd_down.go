@@ -8,7 +8,9 @@ import (
 )
 
 // cmdDown sends the SIGINT-equivalent POST /api/shutdown to a running
-// `ensemble up` process (see server.Deps.Shutdown / handleShutdown).
+// `ensemble up` process (see server.Deps.Shutdown / handleShutdown). With
+// profile names as positional args it instead deactivates just those
+// profiles (POST /api/profiles/{name}/down) and leaves the stack running.
 func cmdDown(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -19,6 +21,9 @@ func cmdDown(args []string, stdout, stderr io.Writer) int {
 	}
 
 	c := NewClient(*apiURL)
+	if fs.NArg() > 0 {
+		return switchProfiles(c, fs.Args(), false, *jsonOut, stdout, stderr)
+	}
 	res, err := c.Shutdown(context.Background())
 	if err != nil {
 		fmt.Fprintf(stderr, "ensemble: down: %v\n", err)

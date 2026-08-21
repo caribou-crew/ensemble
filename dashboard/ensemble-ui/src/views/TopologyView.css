@@ -283,3 +283,41 @@
   flex: 1;
   min-width: 0;
 }
+
+.topo-view__profiles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  font-size: 0.85em;
+}
+
+.topo-view__profiles-label {
+  opacity: 0.7;
+  margin-right: 0.25rem;
+}
+
+.topo-view__profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.4));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.topo-view__profile--active {
+  background: var(--topo-cat-edge, #199e70);
+  border-color: transparent;
+  color: #fff;
+}
+
+.topo-view__profile:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}

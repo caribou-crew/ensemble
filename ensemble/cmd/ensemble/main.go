@@ -26,10 +26,12 @@ var version = "dev"
 const usage = `ensemble — local backend orchestrator CLI
 
 Usage:
-  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--variant svc=name,...] [--api 127.0.0.1:4700]
+  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--variant svc=name,...] [--api 127.0.0.1:4700] [profile...]
+                 (with profile names: adds them to a running stack, else cold-starts with them active)
   ensemble dashboard [--api-url URL] [--no-open]
   ensemble status [--api-url URL] [--json]
-  ensemble down [--api-url URL] [--json]
+  ensemble down [--api-url URL] [--json] [profile...]   (with profile names: deactivates just those)
+  ensemble profiles [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
   ensemble variant <service> <variant> [--api-url URL] [--json]
   ensemble latency list [--api-url URL] [--json]
@@ -77,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdSeed(args[1:], stdout, stderr)
 	case "variant":
 		return cmdVariant(args[1:], stdout, stderr)
+	case "profiles":
+		return cmdProfiles(args[1:], stdout, stderr)
 	case "latency":
 		return cmdLatency(args[1:], stdout, stderr)
 	case "traffic":

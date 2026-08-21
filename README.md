@@ -103,6 +103,27 @@ stubs:                            # dependencies you can't run locally
 A stub response can also read its body from a file (`body_file:`) instead of
 inlining it.
 
+### Profiles as lanes
+
+A stack usually has a couple of verticals, and most days you need one.
+Put the optional services in a profile (`profile: lane2` on the service, or
+a top-level `profiles: { lane2: [b1, b2] }` group — both work, and a
+service named by two profiles stays up while either is active). Services
+in no profile are the always-on spine; databases are always on.
+
+```sh
+ensemble up                 # spine only (plus whatever --profile names)
+ensemble up lane2           # stack already running? lane2 joins it, in dependency order.
+                            # nothing running? cold-starts with lane2 active.
+ensemble down lane2         # stops lane2's services — and only the ones no other
+                            # active lane needs — freeing the memory; proxy ports stay bound
+ensemble down               # the whole stack, as before
+ensemble profiles           # PROFILE / ACTIVE / SERVICES
+```
+
+The same switches are `POST /api/profiles/{name}/up|down` and a toggle
+strip on the dashboard's topology view.
+
 ### Variants: a stub or the real thing behind one service
 
 Sometimes a service is backed by a 10 MB Go stub that implements the slice

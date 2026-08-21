@@ -9,6 +9,7 @@ import type {
   LogicalHop,
   ServiceState,
   Topology,
+  ProfilesState,
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
@@ -172,6 +173,24 @@ export const api = {
   flip(name: string): Promise<ServiceState> {
     return request<ServiceState>(
       `/api/services/${encodeURIComponent(name)}/flip`,
+      jsonInit("POST"),
+    );
+  },
+
+  profiles(): Promise<ProfilesState> {
+    return request<ProfilesState>("/api/profiles");
+  },
+
+  profileUp(name: string): Promise<ProfilesState> {
+    return request<ProfilesState>(
+      `/api/profiles/${encodeURIComponent(name)}/up`,
+      jsonInit("POST"),
+    );
+  },
+
+  profileDown(name: string): Promise<ProfilesState> {
+    return request<ProfilesState>(
+      `/api/profiles/${encodeURIComponent(name)}/down`,
       jsonInit("POST"),
     );
   },
