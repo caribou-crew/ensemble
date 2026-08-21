@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/caribou-crew/ensemble/retrace/refs"
@@ -203,9 +204,13 @@ func TestRefListNamesEveryCandidateItRejected(t *testing.T) {
 }
 
 func TestRefRejectWritesAReproBundleCarryingTheDiffThatMotivatedIt(t *testing.T) {
-	body := `{"ok":true}`
+	// atomic, not a plain string: the handler runs on the httptest server's
+	// own goroutines while the test body swaps the payload between runs, and
+	// -race is a gate this repo runs on every commit.
+	var body atomic.Value
+	body.Store(`{"ok":true}`)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(body))
+		w.Write([]byte(body.Load().(string)))
 	}))
 	defer upstream.Close()
 
@@ -219,7 +224,7 @@ func TestRefRejectWritesAReproBundleCarryingTheDiffThatMotivatedIt(t *testing.T)
 	// The candidate run genuinely differs from the reference, so the
 	// summary this bundle carries is a real finding rather than an empty
 	// document that would pass whatever the diff did.
-	body = `{"ok":false}`
+	body.Store(`{"ok":false}`)
 	bad := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
 
 	res := runRetrace(t, bin, cwd, "", "ref", "reject", "--flow", "checkout", "--app", "web", "--json")
