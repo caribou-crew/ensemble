@@ -1,0 +1,734 @@
+// Package diff compares two retrace runs across the wire (this file) and
+// pixel (pixel/) planes. wire.go pairs requests between run A and run B by
+// similarity, diffs paired calls field by field under retrace/rules, and
+// detects array reorders. order.go turns the paired result into LIS-based
+// hop-level reorder detection and grouped sections.
+package diff
+
+import (
+	"encoding/json"
+	"math"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/rules"
+	"github.com/caribou-crew/ensemble/retrace/runs"
+)
+
+// Options configures one DiffWire call. Normalize is a behaviour, not a
+// config object, precisely so this package never imports retrace/config —
+// nothing here needs anything else config.Config carries.
+type Options struct {
+	WireIgnore []string
+	Rules      []rules.Rule
+	Normalize  func(path string) string // config.NormalizePath
+	GroupsA    []runs.Group
+	GroupsB    []runs.Group
+	Deviations []Deviation
+}
+
+// Pair is one call matched between run A and run B by PairCalls.
+type Pair struct {
+	Method         string
+	NormalizedPath string
+	A, B           trace.Hop
+}
+
+// CallSimilarity weights: status carries real weight because a 304 cache
+// hit and a 200 with a body are not the same event — which is exactly the
+// pair a positional zip invents.
+func CallSimilarity(a, b trace.Hop) float64 {
+	s := 0.0
+	if a.Status == b.Status {
+		s += 0.3
+	}
+	return s + 0.5*bodySimilarity(a.Resp.Body, b.Resp.Body) + 0.2*bodySimilarity(a.Req.Body, b.Req.Body)
+}
+
+// bodySimilarity scores two raw body strings from 0 (nothing alike) to 1
+// (identical). JSON bodies are compared on their canonical form first so
+// key order never lowers the score; everything else (including bodies that
+// aren't JSON) falls back to a Sørensen–Dice coefficient over character
+// bigrams, which gives partial credit for "mostly the same string" without
+// an O(n·m) edit-distance computation. This exact formula is not specified
+// by the brief beyond CallSimilarity's own weights — a documented judgment
+// call, not a port of anything.
+func bodySimilarity(a, b string) float64 {
+	ca, cb := canonicalBodyForSimilarity(a), canonicalBodyForSimilarity(b)
+	if ca == cb {
+		return 1
+	}
+	return diceBigram(ca, cb)
+}
+
+func canonicalBodyForSimilarity(s string) string {
+	var v any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &v); err == nil {
+		return canonicalJSON(v)
+	}
+	return s
+}
+
+func diceBigram(a, b string) float64 {
+	if len(a) < 2 || len(b) < 2 {
+		if a == b {
+			return 1
+		}
+		return 0
+	}
+	bigrams := func(s string) map[string]int {
+		m := map[string]int{}
+		for i := 0; i+2 <= len(s); i++ {
+			m[s[i:i+2]]++
+		}
+		return m
+	}
+	ma, mb := bigrams(a), bigrams(b)
+	inter, total := 0, 0
+	for k, va := range ma {
+		if vb, ok := mb[k]; ok {
+			if va < vb {
+				inter += va
+			} else {
+				inter += vb
+			}
+		}
+		total += va
+	}
+	for _, vb := range mb {
+		total += vb
+	}
+	if total == 0 {
+		return 1
+	}
+	return 2 * float64(inter) / float64(total)
+}
+
+// align is Needleman-Wunsch with a zero gap score: a pair is made whenever
+// it beats leaving both sides unmatched, and the BEST available match wins.
+// Order-preserving, so it never pairs across a reorder — that is the
+// reorder detector's job (order.go), not the aligner's.
+func align(as, bs []trace.Hop) (pairs [][2]trace.Hop, aOnly, bOnly []trace.Hop) {
+	n, m := len(as), len(bs)
+	if n == 0 || m == 0 {
+		return nil, as, bs
+	}
+	score := make([][]float64, n+1)
+	for i := range score {
+		score[i] = make([]float64, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			diag := CallSimilarity(as[i], bs[j]) + score[i+1][j+1]
+			score[i][j] = math.Max(diag, math.Max(score[i+1][j], score[i][j+1]))
+		}
+	}
+	i, j := 0, 0
+	for i < n && j < m {
+		diag := CallSimilarity(as[i], bs[j]) + score[i+1][j+1]
+		switch {
+		case diag >= score[i+1][j] && diag >= score[i][j+1]:
+			pairs = append(pairs, [2]trace.Hop{as[i], bs[j]})
+			i, j = i+1, j+1
+		case score[i+1][j] >= score[i][j+1]:
+			aOnly = append(aOnly, as[i])
+			i++
+		default:
+			bOnly = append(bOnly, bs[j])
+			j++
+		}
+	}
+	aOnly = append(aOnly, as[i:]...)
+	bOnly = append(bOnly, bs[j:]...)
+	return pairs, aOnly, bOnly
+}
+
+// SplitPath splits trace.Hop.Path (RequestURI(), so query included) on the
+// first '?'.
+func SplitPath(hopPath string) (path, rawQuery string) {
+	path, rawQuery, _ = strings.Cut(hopPath, "?")
+	return path, rawQuery
+}
+
+// NormalizeQuery sorts a raw query string's "k=v" pairs so that
+// "?b=2&a=1" and "?a=1&b=2" produce the same bucket key. Pairs are sorted
+// as opaque tokens, not decoded — pairing needs a stable canonical form,
+// not a fully-parsed query.
+func NormalizeQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	parts := strings.Split(rawQuery, "&")
+	sort.Strings(parts)
+	return strings.Join(parts, "&")
+}
+
+func bucketKey(h trace.Hop, normalize func(string) string) string {
+	path, rawQuery := SplitPath(h.Path)
+	return h.Method + " " + normalize(path) + "?" + NormalizeQuery(rawQuery)
+}
+
+// PairCalls buckets calls by method + normalized path + normalized query,
+// then aligns each bucket independently. Bucket keys are visited in
+// first-seen order (all of a's calls, in a's order, then any key that only
+// appears in b, in b's order) — never map order — so the output is
+// deterministic across runs of the same two inputs.
+func PairCalls(a, b []trace.Hop, normalize func(string) string) (pairs []Pair, missing, extra []trace.Hop) {
+	if normalize == nil {
+		normalize = func(p string) string { return p }
+	}
+	type bucket struct{ as, bs []trace.Hop }
+	buckets := map[string]*bucket{}
+	var order []string
+	get := func(k string) *bucket {
+		bk, ok := buckets[k]
+		if !ok {
+			bk = &bucket{}
+			buckets[k] = bk
+			order = append(order, k)
+		}
+		return bk
+	}
+	for _, h := range a {
+		bk := get(bucketKey(h, normalize))
+		bk.as = append(bk.as, h)
+	}
+	for _, h := range b {
+		bk := get(bucketKey(h, normalize))
+		bk.bs = append(bk.bs, h)
+	}
+	for _, k := range order {
+		bk := buckets[k]
+		aligned, aOnly, bOnly := align(bk.as, bk.bs)
+		for _, pr := range aligned {
+			path, _ := SplitPath(pr[0].Path)
+			pairs = append(pairs, Pair{
+				Method:         pr[0].Method,
+				NormalizedPath: normalize(path),
+				A:              pr[0],
+				B:              pr[1],
+			})
+		}
+		missing = append(missing, aOnly...)
+		extra = append(extra, bOnly...)
+	}
+	return pairs, missing, extra
+}
+
+// FieldDiff is one leaf-level difference found in a request or response
+// body, or the whole-body fallback when a body couldn't be parsed as JSON.
+type FieldDiff struct {
+	Scope   string `json:"scope"` // "req" | "resp"
+	Path    string `json:"path"`  // dotted field path; array elements are "items[0].sku"
+	Type    string `json:"type"`  // "changed" | "added" | "removed"
+	A       any    `json:"a"`
+	B       any    `json:"b"`
+	Matcher string `json:"matcher,omitempty"`
+	Glob    string `json:"glob,omitempty"`
+}
+
+type HeaderDiff struct {
+	Scope   string `json:"scope"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	A       string `json:"a"`
+	B       string `json:"b"`
+	Matcher string `json:"matcher,omitempty"`
+}
+
+type StatusChange struct {
+	A int `json:"a"`
+	B int `json:"b"`
+}
+
+type Entry struct {
+	Method          string        `json:"method"`
+	NormalizedPath  string        `json:"normalizedPath"`
+	SeqA            uint64        `json:"seqA"`
+	SeqB            uint64        `json:"seqB"`
+	PosA            int           `json:"posA"`
+	PosB            int           `json:"posB"`
+	GroupA          string        `json:"groupA,omitempty"`
+	GroupB          string        `json:"groupB,omitempty"`
+	Moved           bool          `json:"moved,omitempty"`
+	Truncated       bool          `json:"truncated,omitempty"`
+	Classes         []string      `json:"classes,omitempty"`
+	StatusChange    *StatusChange `json:"statusChange,omitempty"`
+	BodyDiff        []FieldDiff   `json:"bodyDiff,omitempty"`
+	BodyTolerated   []FieldDiff   `json:"bodyTolerated,omitempty"`
+	BodyViolations  []FieldDiff   `json:"bodyViolations,omitempty"`
+	BodyIgnored     []FieldDiff   `json:"bodyIgnored,omitempty"`
+	OrderingChanges []FieldDiff   `json:"orderingChanges,omitempty"`
+	HeaderDiff      []HeaderDiff  `json:"headerDiff,omitempty"`
+}
+
+type Wire struct {
+	Paired  []Entry     `json:"paired"`
+	Missing []Call      `json:"missing"`
+	Extra   []Call      `json:"extra"`
+	Groups  *GroupNames `json:"groups,omitempty"`
+}
+
+type Call struct {
+	Method    string         `json:"method"`
+	Path      string         `json:"path"`
+	Seq       uint64         `json:"seq"`
+	Status    int            `json:"status"`
+	Group     string         `json:"group,omitempty"`
+	Tolerated *ToleratedNote `json:"tolerated,omitempty"`
+}
+
+// GroupNames lists the distinct flow-part names declared on each side, in
+// first-seen order. One tag per field: A and B cannot share a struct tag
+// string.
+type GroupNames struct {
+	A []string `json:"a"`
+	B []string `json:"b"`
+}
+
+// diffCtx bundles the two sources of "is this difference OK": per-call
+// resolved rules.Rule matchers, and Options.WireIgnore — a flat list of
+// dotted field-path globs (same glob syntax as a rule's body globs) that
+// silence a field diff everywhere, without needing a per-call rule. This is
+// the implementer's reading of WireIgnore — the brief gives only the
+// field's type, not its semantics, and no listed test exercises it — kept
+// deliberately minimal: same glob dialect as rules.BodyRule, same
+// last-word-wins-over-nothing precedence (a rule match wins if both a rule
+// and a WireIgnore glob apply, since rules are checked first), same
+// "only reported in BodyIgnored when it actually silenced a difference"
+// behaviour as a rule-level ignore.
+type diffCtx struct {
+	res    rules.Resolved
+	ignore []string
+}
+
+func resolveField(ctx diffCtx, path string) (m rules.Matcher, glob string, matched bool) {
+	for i := len(ctx.res.Body) - 1; i >= 0; i-- {
+		if rules.MatchFieldGlob(ctx.res.Body[i].Glob, path) {
+			return ctx.res.Body[i].Matcher, ctx.res.Body[i].Glob, true
+		}
+	}
+	for _, g := range ctx.ignore {
+		if rules.MatchFieldGlob(g, path) {
+			return rules.Matcher{Kind: rules.KindIgnore}, g, true
+		}
+	}
+	return rules.Matcher{}, "", false
+}
+
+// bodyAcc accumulates one call's body-diff findings by outcome. A FieldDiff
+// is only ever appended when walk found an actual difference — never
+// pre-emptively for a field a rule covers, which is what keeps BodyIgnored
+// from listing fields whose values already matched (see
+// TestAnIgnoreIsOnlyRecordedWhenItActuallySuppressedADifference).
+type bodyAcc struct {
+	Diff       []FieldDiff
+	Tolerated  []FieldDiff
+	Violations []FieldDiff
+	Ignored    []FieldDiff
+	Ordering   []FieldDiff
+}
+
+func (acc *bodyAcc) record(scope, path, typ string, a, b any, ctx diffCtx) {
+	bothPresent := typ == "changed"
+	m, glob, matched := resolveField(ctx, path)
+	outcome := rules.Classify(m, a, b, bothPresent)
+	fd := FieldDiff{Scope: scope, Path: path, Type: typ, A: a, B: b}
+	if matched {
+		fd.Matcher = m.Label()
+		fd.Glob = glob
+	}
+	switch outcome {
+	case rules.Ignored:
+		acc.Ignored = append(acc.Ignored, fd)
+	case rules.Tolerated:
+		acc.Tolerated = append(acc.Tolerated, fd)
+	case rules.Violation:
+		acc.Violations = append(acc.Violations, fd)
+	default:
+		acc.Diff = append(acc.Diff, fd)
+	}
+}
+
+func joinPath(parent, key string) string {
+	if parent == "" {
+		return key
+	}
+	return parent + "." + key
+}
+
+func elemPath(parent string, i int) string {
+	return parent + "[" + strconv.Itoa(i) + "]"
+}
+
+// parseBody parses a payload's body as JSON. It reports (nil, false) — not
+// an error — when the body is truncated (a size-capped body has no
+// trustworthy tail to parse) or the body is empty or not valid JSON. The
+// caller is what decides what "not both ok" means (whole-string fallback),
+// per the brief: never a field tree over half-parsed data.
+func parseBody(p trace.Payload) (any, bool) {
+	if p.Truncated {
+		return nil, false
+	}
+	s := strings.TrimSpace(p.Body)
+	if s == "" {
+		return nil, false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+func diffBodyScope(scope string, aPayload, bPayload trace.Payload, ctx diffCtx, acc *bodyAcc) {
+	av, aok := parseBody(aPayload)
+	bv, bok := parseBody(bPayload)
+	if !aok || !bok {
+		if aPayload.Body != bPayload.Body {
+			acc.record(scope, "", "changed", aPayload.Body, bPayload.Body, ctx)
+		}
+		return
+	}
+	walk(scope, "", av, bv, ctx, acc)
+}
+
+// walk recurses a decoded JSON value pair, dispatching to diffObjects or
+// diffArrays when both sides share that shape, and comparing scalars (or
+// mismatched shapes) directly otherwise.
+func walk(scope, path string, a, b any, ctx diffCtx, acc *bodyAcc) {
+	if aArr, aok := a.([]any); aok {
+		if bArr, bok := b.([]any); bok {
+			diffArrays(scope, path, aArr, bArr, ctx, acc)
+			return
+		}
+	}
+	if aObj, aok := a.(map[string]any); aok {
+		if bObj, bok := b.(map[string]any); bok {
+			diffObjects(scope, path, aObj, bObj, ctx, acc)
+			return
+		}
+	}
+	if !reflect.DeepEqual(a, b) {
+		acc.record(scope, path, "changed", a, b, ctx)
+	}
+}
+
+func diffObjects(scope, path string, a, b map[string]any, ctx diffCtx, acc *bodyAcc) {
+	keys := map[string]bool{}
+	for k := range a {
+		keys[k] = true
+	}
+	for k := range b {
+		keys[k] = true
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		childPath := joinPath(path, k)
+		av, aok := a[k]
+		bv, bok := b[k]
+		switch {
+		case aok && bok:
+			walk(scope, childPath, av, bv, ctx, acc)
+		case aok:
+			acc.record(scope, childPath, "removed", av, nil, ctx)
+		default:
+			acc.record(scope, childPath, "added", nil, bv, ctx)
+		}
+	}
+}
+
+// diffArrays handles a JSON array pair. Same-length arrays are checked for
+// a pure reorder first: blankTolerated neutralises any field a rule would
+// tolerate or ignore, and if the two sides become the same MULTISET under
+// that blanking (but are not already positionally identical), the whole
+// array is reported as one OrderingChanges entry instead of N field
+// changes. Otherwise — different lengths, or no rule bridges what
+// differs — every position is walked and any length difference beyond the
+// shorter side is reported as added/removed at that index.
+func diffArrays(scope, path string, a, b []any, ctx diffCtx, acc *bodyAcc) {
+	n, m := len(a), len(b)
+	if n == m {
+		blankedA := make([]string, n)
+		blankedB := make([]string, n)
+		identical := true
+		for i := range n {
+			blankedA[i] = canonicalJSON(blankTolerated(a[i], ctx, elemPath(path, i)))
+			blankedB[i] = canonicalJSON(blankTolerated(b[i], ctx, elemPath(path, i)))
+			if blankedA[i] != blankedB[i] {
+				identical = false
+			}
+		}
+		if !identical && sameMultiset(blankedA, blankedB) {
+			acc.Ordering = append(acc.Ordering, FieldDiff{Scope: scope, Path: path, Type: "changed", A: a, B: b})
+			return
+		}
+		for i := range n {
+			walk(scope, elemPath(path, i), a[i], b[i], ctx, acc)
+		}
+		return
+	}
+	minLen := min(n, m)
+	for i := range minLen {
+		walk(scope, elemPath(path, i), a[i], b[i], ctx, acc)
+	}
+	for i := minLen; i < n; i++ {
+		acc.record(scope, elemPath(path, i), "removed", a[i], nil, ctx)
+	}
+	for i := minLen; i < m; i++ {
+		acc.record(scope, elemPath(path, i), "added", nil, b[i], ctx)
+	}
+}
+
+func sameMultiset(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, s := range a {
+		counts[s]++
+	}
+	for _, s := range b {
+		counts[s]--
+	}
+	for _, c := range counts {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// blankTolerated returns a copy of v with every leaf whose resolved field
+// matcher is an ignore or a value matcher (named/pattern — anything that
+// COULD excuse a difference) replaced by a fixed placeholder. It never
+// looks at a second value: it is applied independently to each side, which
+// is what lets diffArrays detect "same content, reordered" even when a
+// tolerated field (e.g. a per-element uuid) legitimately differs in every
+// element — see TestAReorderIsDetectedEvenThoughAToleratedFieldDiffersInEveryElement.
+// A field with no rule (the zero/exact matcher) is never blanked, so an
+// unruled differentiator correctly defeats multiset matching — see
+// TestWithoutARuleTheSameReorderStillReportsPositionalChanges.
+const blankedPlaceholder = "xretrace:blanked"
+
+func blankTolerated(v any, ctx diffCtx, path string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = blankTolerated(val, ctx, joinPath(path, k))
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = blankTolerated(val, ctx, elemPath(path, i))
+		}
+		return out
+	default:
+		m, _, matched := resolveField(ctx, path)
+		if matched && (m.Kind == rules.KindIgnore || m.Kind == rules.KindNamed || m.Kind == rules.KindPattern) {
+			return blankedPlaceholder
+		}
+		return v
+	}
+}
+
+// canonicalJSON renders v with object keys sorted at every level, so
+// structurally identical values compare equal regardless of source key
+// order. json.Marshal on a map[string]any already sorts that map's own
+// keys, but does nothing for maps nested inside a []any — hence the
+// explicit recursive form rather than relying on the marshaller.
+func canonicalJSON(v any) string {
+	var b strings.Builder
+	writeCanonical(&b, v)
+	return b.String()
+}
+
+func writeCanonical(b *strings.Builder, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			kb, _ := json.Marshal(k)
+			b.Write(kb)
+			b.WriteByte(':')
+			writeCanonical(b, t[k])
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range t {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writeCanonical(b, e)
+		}
+		b.WriteByte(']')
+	default:
+		vb, _ := json.Marshal(t)
+		b.Write(vb)
+	}
+}
+
+func lowerHeaders(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[strings.ToLower(k)] = v
+	}
+	return out
+}
+
+// DiffHeaders compares two header maps case-insensitively. Equal values are
+// omitted entirely (they're not a difference). An outcome of Ignored — from
+// either a rules.Rule header matcher or, same as body fields, a value that
+// simply never differed — is silenced: it never appears in the result, on
+// an add/remove/change alike. Tolerated and Violation outcomes both still
+// appear (never silently dropped, matching this package's "tolerated is
+// still reported" rule for deviations), carrying the matcher's Label() so a
+// consumer can tell "this was excused" from "this was never explained" —
+// Classify never returns Tolerated for a one-sided (add/remove) header, so
+// Matcher is only ever populated on a "changed" entry.
+func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []HeaderDiff {
+	la, lb := lowerHeaders(a), lowerHeaders(b)
+	seen := map[string]bool{}
+	var names []string
+	for k := range la {
+		if !seen[k] {
+			seen[k] = true
+			names = append(names, k)
+		}
+	}
+	for k := range lb {
+		if !seen[k] {
+			seen[k] = true
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+
+	var out []HeaderDiff
+	for _, name := range names {
+		av, aok := la[name]
+		bv, bok := lb[name]
+		if aok && bok && av == bv {
+			continue
+		}
+		bothPresent := aok && bok
+		m := res.ForHeader(name)
+		outcome := rules.Classify(m, av, bv, bothPresent)
+		if outcome == rules.Ignored {
+			continue
+		}
+		hd := HeaderDiff{Scope: scope, Name: name, A: av, B: bv}
+		switch {
+		case bothPresent:
+			hd.Type = "changed"
+		case aok:
+			hd.Type = "removed"
+		default:
+			hd.Type = "added"
+		}
+		if outcome == rules.Tolerated || outcome == rules.Violation {
+			hd.Matcher = m.Label()
+		}
+		out = append(out, hd)
+	}
+	return out
+}
+
+func buildEntry(p Pair, res rules.Resolved, o Options) Entry {
+	e := Entry{
+		Method:         p.Method,
+		NormalizedPath: p.NormalizedPath,
+		SeqA:           p.A.Seq,
+		SeqB:           p.B.Seq,
+	}
+	if p.A.Status != p.B.Status {
+		e.StatusChange = &StatusChange{A: p.A.Status, B: p.B.Status}
+	}
+	e.Truncated = p.A.Req.Truncated || p.B.Req.Truncated || p.A.Resp.Truncated || p.B.Resp.Truncated
+	if !e.Truncated {
+		ctx := diffCtx{res: res, ignore: o.WireIgnore}
+		acc := &bodyAcc{}
+		diffBodyScope("req", p.A.Req, p.B.Req, ctx, acc)
+		diffBodyScope("resp", p.A.Resp, p.B.Resp, ctx, acc)
+		e.BodyDiff = acc.Diff
+		e.BodyTolerated = acc.Tolerated
+		e.BodyViolations = acc.Violations
+		e.BodyIgnored = acc.Ignored
+		e.OrderingChanges = acc.Ordering
+	}
+	e.HeaderDiff = append(
+		DiffHeaders(p.A.Req.Headers, p.B.Req.Headers, res, "req"),
+		DiffHeaders(p.A.Resp.Headers, p.B.Resp.Headers, res, "resp")...,
+	)
+	return e
+}
+
+func callsFrom(hops []trace.Hop, groups []runs.Group) []Call {
+	out := make([]Call, len(hops))
+	for i, h := range hops {
+		path, _ := SplitPath(h.Path)
+		out[i] = Call{
+			Method: h.Method,
+			Path:   path,
+			Seq:    h.Seq,
+			Status: h.Status,
+			Group:  runs.GroupAt(groups, h.T.Start),
+		}
+	}
+	return out
+}
+
+// DiffWire pairs a's and b's calls, diffs every pair field by field, and
+// annotates the paired result with per-side ordinals and reorder detection
+// (order.go). Options.Deviations is not consulted here — Task 11 owns
+// applying the ledger to Call.Tolerated; a nil (or even populated) value is
+// a no-op in this task, so a run before Task 11 exists never tolerates
+// anything through this path.
+func DiffWire(a, b []trace.Hop, o Options) Wire {
+	normalize := o.Normalize
+	if normalize == nil {
+		normalize = func(p string) string { return p }
+	}
+	pairs, missingHops, extraHops := PairCalls(a, b, normalize)
+
+	entries := make([]Entry, len(pairs))
+	for i, p := range pairs {
+		res := rules.Resolve(o.Rules, p.Method, p.NormalizedPath)
+		e := buildEntry(p, res, o)
+		e.GroupA = runs.GroupAt(o.GroupsA, p.A.T.Start)
+		e.GroupB = runs.GroupAt(o.GroupsB, p.B.T.Start)
+		entries[i] = e
+	}
+	entries = annotate(entries)
+
+	var groupsPtr *GroupNames
+	namesA, namesB := runs.GroupNames(o.GroupsA), runs.GroupNames(o.GroupsB)
+	if len(namesA) > 0 || len(namesB) > 0 {
+		groupsPtr = &GroupNames{A: namesA, B: namesB}
+	}
+
+	return Wire{
+		Paired:  entries,
+		Missing: callsFrom(missingHops, o.GroupsA),
+		Extra:   callsFrom(extraHops, o.GroupsB),
+		Groups:  groupsPtr,
+	}
+}
