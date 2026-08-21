@@ -558,8 +558,8 @@ func TestWireIgnoreAcceptsBareStringAndObjectForm(t *testing.T) {
 	yamlSrc := "app: web\n" +
 		"wire_ignore:\n" +
 		"  - \"date\"\n" +
-		"  - path: \"/health\"\n" +
-		"    why: \"polled by the load balancer\"\n"
+		"  - path: \"items[*].requestId\"\n" +
+		"    why: \"regenerated on every request\"\n"
 	os.WriteFile(path, []byte(yamlSrc), 0o644)
 
 	cfg, err := Load(path)
@@ -572,8 +572,32 @@ func TestWireIgnoreAcceptsBareStringAndObjectForm(t *testing.T) {
 	if cfg.WireIgnore[0].Path != "date" || cfg.WireIgnore[0].Why != "" {
 		t.Fatalf("bare-scalar wire_ignore entry = %+v, want Path=date Why=\"\"", cfg.WireIgnore[0])
 	}
-	if cfg.WireIgnore[1].Path != "/health" || cfg.WireIgnore[1].Why != "polled by the load balancer" {
+	if cfg.WireIgnore[1].Path != "items[*].requestId" || cfg.WireIgnore[1].Why != "regenerated on every request" {
 		t.Fatalf("object-form wire_ignore entry = %+v", cfg.WireIgnore[1])
+	}
+}
+
+// TestWireIgnoreRejectsAURLPathEntry pins F13: config.go's own doc comment
+// used to give "/health" — a URL path — as the WireIgnoreEntry example,
+// under semantics where wire_ignore matches body field-path globs. A user
+// following that example got a mask that silently matched nothing. Load
+// must now reject any wire_ignore entry whose Path starts with "/", naming
+// the offender.
+func TestWireIgnoreRejectsAURLPathEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"wire_ignore:\n" +
+		"  - path: \"/health\"\n" +
+		"    why: \"polled by the load balancer\"\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("a wire_ignore entry starting with '/' must fail Load, not silently ship a mask that matches nothing")
+	}
+	if !strings.Contains(err.Error(), "/health") {
+		t.Fatalf("error must name the offending path, got: %v", err)
 	}
 }
 
@@ -589,7 +613,7 @@ func TestWireIgnoreObjectFormRejectsATypoedWhyKey(t *testing.T) {
 	path := filepath.Join(dir, "retrace.yaml")
 	yamlSrc := "app: web\n" +
 		"wire_ignore:\n" +
-		"  - path: \"/health\"\n" +
+		"  - path: \"items[*].requestId\"\n" +
 		"    whyy: \"typo\"\n"
 	os.WriteFile(path, []byte(yamlSrc), 0o644)
 

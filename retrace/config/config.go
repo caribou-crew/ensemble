@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -169,13 +170,21 @@ type Rect struct {
 // shapes:
 //
 //	wire_ignore:
-//	  - "date"                      # bare scalar: Path only, Why empty
-//	  - path: "/health"
-//	    why: "polled by the load balancer"
+//	  - "date"                            # bare scalar: Path only, Why empty
+//	  - path: "items[*].requestId"
+//	    why: "regenerated on every request"
 //
 // The bare-scalar form must keep working: every existing config and test in
 // this repo uses it. UnmarshalYAML is what makes both shapes parse into the
 // same Go type instead of requiring a schema-breaking change.
+//
+// F13: Path is a body field-path glob (retrace/rules.MatchFieldGlob's
+// dialect — "**.requestId", "items[*].sku"), NOT a URL path. An earlier
+// version of this comment gave "/health" as the example, which is
+// unambiguously a URL path; under the settled semantics that entry silently
+// matched nothing. Load rejects any entry whose Path begins with "/" so a
+// config that repeats that mistake fails loudly instead of shipping a mask
+// that does nothing.
 type WireIgnoreEntry struct {
 	Path string `yaml:"path"`
 	Why  string `yaml:"why"`
@@ -315,7 +324,26 @@ func Load(path string) (*Config, error) {
 	if err := validatePlanes(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if err := validateWireIgnore(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &c, nil
+}
+
+// validateWireIgnore rejects a wire_ignore entry that looks like a URL path
+// (leading '/') rather than the body field-path glob the settled semantics
+// require (F13). Left unchecked, a user following this file's own former
+// doc-comment example ("path: /health") gets a mask that cannot match
+// anything and no error — as misleading as an empty mask, per the
+// zero-value rule's spirit.
+func validateWireIgnore(c *Config) error {
+	for i, e := range c.WireIgnore {
+		if strings.HasPrefix(e.Path, "/") {
+			return fmt.Errorf("wire_ignore[%d]: %q looks like a URL path, not a body field-path glob (e.g. %q) — wire_ignore matches JSON body fields, not request paths",
+				i, e.Path, "items[*].requestId")
+		}
+	}
+	return nil
 }
 
 // Discover loads <cwd>/retrace.yaml plus the machine-owned overlay. A
