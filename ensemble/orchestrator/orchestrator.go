@@ -182,6 +182,14 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 	}
 	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
 
+	// Gateways bind first: every upstream is a static 127.0.0.1:<port>, so
+	// nothing about service readiness matters, and a port that can't bind
+	// fails Up before any process is spawned. Like wireProxy this runs
+	// once per Up — Restart/Flip never touch it.
+	if err := o.wireGateways(); err != nil {
+		return err
+	}
+
 	for _, name := range order {
 		if o.testStartHook != nil {
 			o.testStartHook(name)
@@ -472,6 +480,44 @@ func (o *Orchestrator) wireProxy(name string, svc config.Service) error {
 	}); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: proxy wiring: %w", name, err)
+	}
+	return nil
+}
+
+// wireGateways binds one routing listener per configured gateway, each
+// route forwarding onto the target's resolved port (config.RoutablePort:
+// proxy port if any, else real port; stub port). Gateways are static
+// listeners, not supervised nodes, so they have no ServiceState.
+func (o *Orchestrator) wireGateways() error {
+	names := make([]string, 0, len(o.cfg.Gateways))
+	for name := range o.cfg.Gateways {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		gw := o.cfg.Gateways[name]
+		routes := make([]proxy.Route, 0, len(gw.Routes))
+		for _, r := range gw.Routes {
+			port, _, ok := o.cfg.RoutablePort(r.Service)
+			if !ok {
+				// Validate rejects this; guard anyway so a hand-built
+				// Config can't produce a route to port 0.
+				return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
+			}
+			routes = append(routes, proxy.Route{
+				Prefix:      r.Prefix,
+				Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
+				StripPrefix: r.StripPrefix,
+			})
+		}
+		if _, err := o.px.Serve(proxy.Target{
+			Name:   name,
+			Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
+			Routes: routes,
+		}); err != nil {
+			return fmt.Errorf("orchestrator: gateway %s: wiring: %w", name, err)
+		}
+		o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (%d routes)", name, gw.Port, len(routes))
 	}
 	return nil
 }

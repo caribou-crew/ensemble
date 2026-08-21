@@ -132,6 +132,11 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 			entries = append(entries, name)
 		}
 	}
+	// A gateway is always an entry: clients call it directly, so unstamped
+	// traffic arriving there is ambient, not a propagation gap.
+	for name := range cfg.Gateways {
+		entries = append(entries, name)
+	}
 	sessions := proxy.NewSessionManager(px, rec, entries)
 	defer sessions.Close()
 

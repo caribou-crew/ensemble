@@ -24,3 +24,15 @@ stubs:
           status: 201
           headers: { content-type: application/json }
           body: '{"id":"ch_1","status":"succeeded"}'
+
+# One public port routed by path prefix onto the services above (and the
+# payments stub) — the built-in edge router. Routes forward onto each
+# target's proxy port, so gateway -> service hops are captured too. Point
+# your client at 127.0.0.1:9000 instead of the individual proxy ports.
+gateways:
+  public:
+    port: 9000
+    routes:
+      - { prefix: /products, service: catalog }
+      - { prefix: /pay,      service: payments, strip_prefix: true }
+      - { prefix: /,         service: edge }

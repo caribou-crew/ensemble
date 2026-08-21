@@ -152,12 +152,12 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"services": s.Orch.States()})
 }
 
-// TopologyNode is one node in the topology graph: a service, database, or
-// stub, with its live status (when the orchestrator tracks it) and whether
-// clients call it directly.
+// TopologyNode is one node in the topology graph: a service, database,
+// stub, or gateway, with its live status (when the orchestrator tracks it)
+// and whether clients call it directly.
 type TopologyNode struct {
 	Name     string `json:"name"`
-	Category string `json:"category"` // "service" | "database" | "stub"
+	Category string `json:"category"` // "service" | "database" | "stub" | "gateway"
 	Status   string `json:"status"`
 	Entry    bool   `json:"entry,omitempty"`
 }
@@ -198,12 +198,16 @@ func (s *server) buildTopology() TopologyResponse {
 	for name := range cfg.Stubs {
 		nodeNames[name] = true
 	}
+	for name := range cfg.Gateways {
+		nodeNames[name] = true
+	}
 
 	svcNames := sortedKeys(cfg.Services)
 	dbNames := sortedKeys(cfg.Databases)
 	stubNames := sortedKeys(cfg.Stubs)
+	gwNames := sortedKeys(cfg.Gateways)
 
-	nodes := make([]TopologyNode, 0, len(svcNames)+len(dbNames)+len(stubNames))
+	nodes := make([]TopologyNode, 0, len(svcNames)+len(dbNames)+len(stubNames)+len(gwNames))
 	for _, name := range svcNames {
 		svc := cfg.Services[name]
 		nodes = append(nodes, TopologyNode{Name: name, Category: "service", Status: statusFor(name), Entry: svc.Entry})
@@ -216,6 +220,12 @@ func (s *server) buildTopology() TopologyResponse {
 		// (Task 2.2/2.3 never starts them) — "static" says so rather than
 		// borrowing a lifecycle Status that doesn't apply.
 		nodes = append(nodes, TopologyNode{Name: name, Category: "stub", Status: "static"})
+	}
+	for _, name := range gwNames {
+		// A gateway is a static listener the proxy binds at Up, not a
+		// supervised node — same lifecycle story as a stub. Clients call
+		// it directly by definition, so it is always an entry.
+		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true})
 	}
 
 	// portToService resolves an env-wired "127.0.0.1:<port>" reference back
@@ -253,6 +263,13 @@ func (s *server) buildTopology() TopologyResponse {
 				if strings.Contains(v, fmt.Sprintf("127.0.0.1:%d", port)) {
 					addEdge(name, target)
 				}
+			}
+		}
+	}
+	for _, name := range gwNames {
+		for _, route := range cfg.Gateways[name].Routes {
+			if nodeNames[route.Service] {
+				addEdge(name, route.Service)
 			}
 		}
 	}
@@ -551,16 +568,24 @@ func (s *server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "id and entry are required")
 		return
 	}
-	svc, ok := s.Cfg.Services[req.Entry]
-	if !ok {
-		writeErr(w, http.StatusNotFound, fmt.Sprintf("entry service %q not found", req.Entry))
-		return
+	// The entry is whatever the client would call directly: a service's
+	// intercept port, or a gateway's port.
+	var entryPort int
+	if gw, ok := s.Cfg.Gateways[req.Entry]; ok {
+		entryPort = gw.Port
+	} else {
+		svc, ok := s.Cfg.Services[req.Entry]
+		if !ok {
+			writeErr(w, http.StatusNotFound, fmt.Sprintf("entry service %q not found", req.Entry))
+			return
+		}
+		if svc.Proxy <= 0 {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("entry service %q has no proxy port", req.Entry))
+			return
+		}
+		entryPort = svc.Proxy
 	}
-	if svc.Proxy <= 0 {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("entry service %q has no proxy port", req.Entry))
-		return
-	}
-	upstream := fmt.Sprintf("http://127.0.0.1:%d", svc.Proxy)
+	upstream := fmt.Sprintf("http://127.0.0.1:%d", entryPort)
 	ses, err := s.Sessions.Start(req.ID, req.Entry, upstream)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())

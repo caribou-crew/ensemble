@@ -22,6 +22,12 @@ type Target struct {
 	// request through this listener — how a session's client-edge port
 	// stamps retrace-run without the client knowing anything about it.
 	InjectBaggage map[string]string
+	// Routes, when non-empty, makes this listener a gateway: the upstream
+	// is chosen per request by longest path-prefix match (see Route) and
+	// Upstream is unused. A request matching no route is answered 404 and
+	// still recorded as a hop, so a mis-routed client shows up in the
+	// traffic stream rather than vanishing.
+	Routes []Route
 }
 
 // CaptureLimit caps how much request/response body is *captured* (never how
@@ -203,7 +209,25 @@ func (p *Proxy) handler(t Target) http.Handler {
 			reqBody = io.TeeReader(r.Body, reqCap)
 		}
 
-		upReq, err := http.NewRequestWithContext(r.Context(), r.Method, t.Upstream+r.URL.RequestURI(), reqBody)
+		upstream, forwardPath := t.Upstream, r.URL.RequestURI()
+		if len(t.Routes) > 0 {
+			up, fwd, ok := t.resolve(r.URL.Path)
+			if !ok {
+				hop.Status, hop.Err = http.StatusNotFound, "no route for "+r.URL.Path
+				hop.Req.Headers = flatHeaders(r.Header)
+				hop.T.DoneMs = msSince(forwardStart)
+				p.rec.Record(hop)
+				http.Error(w, hop.Err, http.StatusNotFound)
+				return
+			}
+			upstream = up
+			forwardPath = fwd
+			if r.URL.RawQuery != "" {
+				forwardPath += "?" + r.URL.RawQuery
+			}
+		}
+
+		upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream+forwardPath, reqBody)
 		if err != nil {
 			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
 			hop.T.DoneMs = msSince(forwardStart)

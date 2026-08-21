@@ -10,9 +10,10 @@
 // old stack's binary up/down, and starting is a state worth distinguishing from unknown (no
 // status data yet) rather than collapsing into it.
 
-export type CategoryId = 'service' | 'database' | 'stub' | 'other';
+export type CategoryId = "gateway" | "service" | "database" | "stub" | "other";
 
-export type Health = 'up-native' | 'up-container' | 'starting' | 'down' | 'unknown';
+export type Health =
+  "up-native" | "up-container" | "starting" | "down" | "unknown";
 
 export interface Point {
   x: number;
