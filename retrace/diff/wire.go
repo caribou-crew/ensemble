@@ -360,14 +360,14 @@ type Entry struct {
 	GroupB          string        `json:"groupB,omitempty"`
 	Moved           bool          `json:"moved,omitempty"`
 	Truncated       bool          `json:"truncated,omitempty"`
-	Classes         []string      `json:"classes,omitempty"`
+	Classes         []string      `json:"classes"`
 	StatusChange    *StatusChange `json:"statusChange,omitempty"`
-	BodyDiff        []FieldDiff   `json:"bodyDiff,omitempty"`
-	BodyTolerated   []FieldDiff   `json:"bodyTolerated,omitempty"`
-	BodyViolations  []FieldDiff   `json:"bodyViolations,omitempty"`
-	BodyIgnored     []FieldDiff   `json:"bodyIgnored,omitempty"`
-	OrderingChanges []FieldDiff   `json:"orderingChanges,omitempty"`
-	HeaderDiff      []HeaderDiff  `json:"headerDiff,omitempty"`
+	BodyDiff        []FieldDiff   `json:"bodyDiff"`
+	BodyTolerated   []FieldDiff   `json:"bodyTolerated"`
+	BodyViolations  []FieldDiff   `json:"bodyViolations"`
+	BodyIgnored     []FieldDiff   `json:"bodyIgnored"`
+	OrderingChanges []FieldDiff   `json:"orderingChanges"`
+	HeaderDiff      []HeaderDiff  `json:"headerDiff"`
 }
 
 type Wire struct {

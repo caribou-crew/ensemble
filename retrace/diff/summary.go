@@ -119,9 +119,26 @@ type Summary struct {
 	UnexpectedStatuses []StatusFinding      `json:"unexpectedStatuses"`
 	Perf               PerfResult           `json:"perf"`
 	Conformance        []ConformanceFinding `json:"conformance"`
-	Capture            CaptureBanner        `json:"capture"`
-	Counts             Counts               `json:"counts"`
-	Gates              []string             `json:"gates"` // human-readable reasons the verdict is "failed"
+	// OpenAPIConfigured says whether a spec was configured for this run, so
+	// an empty Conformance can be read. Without it, "no spec configured" and
+	// "spec configured and every call conformed" are the same empty array —
+	// and never-checked would read as checked-and-clean, which is exactly
+	// the defect Task 9's "unchecked" finding kind exists to prevent, one
+	// level up: at plane scale instead of finding scale.
+	//
+	// Stated rather than encoded in the absence of data. Same shape as
+	// HopDiff.HopRequireConfigured.
+	//
+	// true implies the plane was actually checked on any non-quarantined
+	// Summary: a spec that fails to load makes CheckOpenAPI error, Build
+	// returns no Summary at all, and `retrace diff` exits 3. On a
+	// QUARANTINED Summary it does not, because Build returns before any
+	// plane is computed — but there every field is empty on purpose, which
+	// Verdict says explicitly, and conformance is not special among them.
+	OpenAPIConfigured bool          `json:"openApiConfigured"`
+	Capture           CaptureBanner `json:"capture"`
+	Counts            Counts        `json:"counts"`
+	Gates             []string      `json:"gates"` // human-readable reasons the verdict is "failed"
 	// Budgets is the configurable CI-gate wire contract: one entry per
 	// PLANE that retrace.yaml's `gates:` key names, never one per plane
 	// that merely exists. A plane `gates:` does not mention gets no entry
@@ -331,6 +348,10 @@ func writePNG(path string, img *image.RGBA) error {
 func Build(in BuildInput) (Summary, error) {
 	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B}
 	s.Capture = CaptureBanner{A: in.A.Manifest.Capture, B: in.B.Manifest.Capture}
+	// Set BEFORE the quarantine exits: this is a fact about configuration,
+	// not about what got computed, and reporting false here for a run that
+	// did configure a spec would be untrue.
+	s.OpenAPIConfigured = in.Cfg.OpenAPI != ""
 
 	// --- incomplete, checked first and unconditionally (not even
 	// --allow-degraded gets past it — see incompleteCheck's doc comment). A
@@ -887,9 +908,52 @@ func (s *Summary) ensureArrays() {
 	if s.Quarantined == nil {
 		s.Quarantined = []Quarantine{}
 	}
+	// Flattened like every other plane. What an empty Conformance MEANS is
+	// carried by OpenAPIConfigured, which states the fact instead of hiding
+	// it in the difference between null and [].
+	if s.Conformance == nil {
+		s.Conformance = []ConformanceFinding{}
+	}
+
+	// runs.Manifest rides along inside Summary.A/B, so its arrays are part
+	// of this contract — but a manifest is a PERSISTED artifact. Retagging
+	// it would fix only runs recorded from today and leave every bundle
+	// already on disk decoding to nil, so it is normalised here, on the
+	// Summary side, where old and new manifests are fixed alike and no
+	// stored format changes.
+	for _, m := range []*runs.Manifest{&s.A.Manifest, &s.B.Manifest} {
+		if m.Checkpoints == nil {
+			m.Checkpoints = []runs.Checkpoint{}
+		}
+		if m.Groups == nil {
+			m.Groups = []runs.Group{}
+		}
+	}
 
 	if s.Wire.Paired == nil {
 		s.Wire.Paired = []Entry{}
+	}
+	// An UNCHANGED paired call is the most common Entry in any summary, and
+	// it is the one where all seven of these are empty — so this is the
+	// highest-traffic row the always-arrays rule has to cover, not an edge
+	// case. Entries live in two places on the Summary and both are walked.
+	//
+	// Measured: today either loop alone would do, because BuildSections
+	// slices Wire.Paired rather than copying it, so Sections[i].Entries[j]
+	// and Wire.Paired[k] are literally the same memory — dropping either
+	// loop is an equivalent mutant, and both were confirmed to survive for
+	// that reason and no other. Both are kept anyway: the aliasing is an
+	// implementation detail of BuildSections, not a promise it makes, and a
+	// future copy there would silently leave one arm unnormalised. A
+	// guarantee that holds only through someone else's aliasing is not a
+	// guarantee.
+	for i := range s.Wire.Paired {
+		ensureEntryArrays(&s.Wire.Paired[i])
+	}
+	for i := range s.Sections {
+		for j := range s.Sections[i].Entries {
+			ensureEntryArrays(&s.Sections[i].Entries[j])
+		}
 	}
 	if s.Wire.Missing == nil {
 		s.Wire.Missing = []Call{}
@@ -938,5 +1002,33 @@ func (s *Summary) ensureArrays() {
 		if s.Hops.GoneRoutes[i].Via == nil {
 			s.Hops.GoneRoutes[i].Via = []string{}
 		}
+	}
+}
+
+// ensureEntryArrays is the Entry half of ensureArrays. Separate because an
+// Entry appears in two places on the Summary — Wire.Paired and every
+// Section's Entries — and one body for both is the only way they cannot
+// drift apart.
+func ensureEntryArrays(e *Entry) {
+	if e.Classes == nil {
+		e.Classes = []string{}
+	}
+	if e.BodyDiff == nil {
+		e.BodyDiff = []FieldDiff{}
+	}
+	if e.BodyTolerated == nil {
+		e.BodyTolerated = []FieldDiff{}
+	}
+	if e.BodyViolations == nil {
+		e.BodyViolations = []FieldDiff{}
+	}
+	if e.BodyIgnored == nil {
+		e.BodyIgnored = []FieldDiff{}
+	}
+	if e.OrderingChanges == nil {
+		e.OrderingChanges = []FieldDiff{}
+	}
+	if e.HeaderDiff == nil {
+		e.HeaderDiff = []HeaderDiff{}
 	}
 }

@@ -606,19 +606,6 @@ func TestEveryArrayFieldOnAnEmptySummaryMarshalsAsAnArray(t *testing.T) {
 		"wire.groups": "a nil *GroupNames means this flow has no group structure at all, " +
 			"which is not the same as having groups that are empty — and it says so with a " +
 			"pointer, the honest way to encode absent, rather than with the emptiness of an array",
-
-		"conformance": "PENDING A RULING. nil currently means BOTH \"no OpenAPI spec configured\" " +
-			"and \"spec configured and every call conforms\". Those are different facts and " +
-			"neither is carried today, so flattening to [] would make \"never checked\" read as " +
-			"\"checked and clean\" — I4's defect one level up, at plane scale instead of finding scale",
-
-		// runs.Manifest belongs to retrace/runs, which this task must not
-		// modify. Listed rather than silently skipped so the boundary is
-		// visible: these are the fields the array rule has NOT reached.
-		"a.manifest.checkpoints": "runs.Manifest — out of scope for this task",
-		"b.manifest.checkpoints": "runs.Manifest — out of scope for this task",
-		"a.manifest.groups":      "runs.Manifest — out of scope for this task",
-		"b.manifest.groups":      "runs.Manifest — out of scope for this task",
 	}
 
 	var walk func(path string, v any)
@@ -712,4 +699,175 @@ func TestBuildsOwnExitsAllProduceArrays(t *testing.T) {
 		}
 		arraysOf(t, s)
 	})
+}
+
+// TestAnEmptyConformancePlaneSaysWhetherItWasCheckedAtAll pins the fix for
+// the one field in the array sweep where the empty value was genuinely
+// ambiguous.
+//
+// conformance now flattens to [] like every other plane, so what an empty
+// array MEANS has to be said rather than encoded in the difference between
+// null and []. Without OpenAPIConfigured, "no spec configured" and "spec
+// configured and every call conformed" are the same wire value, and
+// never-checked reads as checked-and-clean — Task 9 added the "unchecked"
+// finding kind to stop exactly that at finding scale, and this is the same
+// failure at plane scale.
+func TestAnEmptyConformancePlaneSaysWhetherItWasCheckedAtAll(t *testing.T) {
+	clean := `{"paths": {"/cart": {"get": {"responses": {"200": {}}}}}}`
+
+	t.Run("a spec configured and every call conforming", func(t *testing.T) {
+		aRef, bRef := twoRuns(t,
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)},
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)}, nil, nil)
+		cfg := baseConfig(t)
+		cfg.Dir = ""
+		cfg.OpenAPI = writeSpecFile(t, clean)
+
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: cfg})
+		if len(s.Conformance) != 0 {
+			t.Fatalf("test setup: Conformance = %+v, want empty", s.Conformance)
+		}
+		if !s.OpenAPIConfigured {
+			t.Fatal("OpenAPIConfigured is false though a spec was configured — an empty conformance plane is then indistinguishable from one that was never checked")
+		}
+	})
+
+	t.Run("no spec configured at all", func(t *testing.T) {
+		aRef, bRef := twoRuns(t,
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)},
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)}, nil, nil)
+
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
+		if s.OpenAPIConfigured {
+			t.Fatal("OpenAPIConfigured is true though no spec was configured — this run's clean conformance plane would read as a verified pass")
+		}
+	})
+
+	t.Run("both encode conformance as an array, so only the flag separates them", func(t *testing.T) {
+		aRef, bRef := twoRuns(t,
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)},
+			[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)}, nil, nil)
+		cfg := baseConfig(t)
+		cfg.Dir = ""
+		cfg.OpenAPI = writeSpecFile(t, clean)
+
+		for name, in := range map[string]BuildInput{
+			"configured":     {App: "a", Flow: "f", A: aRef, B: bRef, Cfg: cfg},
+			"not configured": {App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)},
+		} {
+			b, err := json.Marshal(mustBuild(t, in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tree map[string]any
+			if err := json.Unmarshal(b, &tree); err != nil {
+				t.Fatal(err)
+			}
+			if tree["conformance"] == nil {
+				t.Errorf("%s: conformance marshalled as null, want []", name)
+			}
+		}
+	})
+}
+
+// TestAQuarantinedSummaryDoesNotClaimAnyPlaneWasChecked is the one path
+// where OpenAPIConfigured being true does NOT imply the plane was checked:
+// Build returns at the quarantine exit before any plane is computed.
+//
+// That is not a defect in the flag — the flag is a fact about
+// configuration, and reporting false for a run that did configure a spec
+// would be untrue. It is covered by the contract that already governs a
+// quarantined Summary: every field is empty on purpose, and Verdict says so
+// explicitly. This test exists so that contract is pinned rather than
+// assumed, because it is the assumption the flag leans on.
+func TestAQuarantinedSummaryDoesNotClaimAnyPlaneWasChecked(t *testing.T) {
+	aRef, bRef := twoRuns(t,
+		[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)},
+		[]trace.Hop{hop(1, "GET", "/cart", 200, "", `{}`)}, nil, nil)
+	bRef.Manifest.Capture = runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the proxy never started"}
+	cfg := baseConfig(t)
+	cfg.Dir = ""
+	cfg.OpenAPI = writeSpecFile(t, `{"paths": {"/cart": {"get": {"responses": {"200": {}}}}}}`)
+
+	s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: cfg})
+	if s.Verdict != "quarantined" {
+		t.Fatalf("test setup: verdict = %q, want quarantined", s.Verdict)
+	}
+	if len(s.Quarantined) == 0 {
+		t.Fatal("a quarantined Summary must carry its reasons — that is what tells a consumer the empty planes are empty on purpose")
+	}
+	if len(s.Conformance) != 0 || len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 {
+		t.Fatalf("a quarantined Summary computed a plane: conformance=%d checkpoints=%d paired=%d",
+			len(s.Conformance), len(s.Checkpoints), len(s.Wire.Paired))
+	}
+}
+
+// TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild is the wiring
+// test for ensureEntryArrays. The contract test in wire_test.go calls that
+// helper directly, which pins the helper and nothing else — three mutations
+// survived it: dropping BodyDiff's initialisation, and dropping EITHER of
+// the two loops that reach Entries at all.
+//
+// Entries live in two places on the Summary and both are populated from the
+// same diff, so a fixture that checks one arm cannot see the other go
+// missing. This asserts through Build, on the JSON, for both.
+func TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild(t *testing.T) {
+	// Identical on both sides: the unchanged paired call, the most common
+	// row in any summary and the one where all seven arrays are empty.
+	h := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
+	aRef, bRef := twoRuns(t, []trace.Hop{h}, []trace.Hop{h}, nil, nil)
+
+	s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
+	if len(s.Wire.Paired) == 0 {
+		t.Fatalf("test setup: nothing paired")
+	}
+	if len(s.Sections) == 0 || len(s.Sections[0].Entries) == 0 {
+		t.Fatalf("test setup: no section entries; Sections = %+v", s.Sections)
+	}
+
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(b, &tree); err != nil {
+		t.Fatal(err)
+	}
+
+	keys := []string{"classes", "bodyDiff", "bodyTolerated", "bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff"}
+	check := func(where string, raw any) {
+		t.Helper()
+		e, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("%s is not an object: %v", where, raw)
+		}
+		for _, k := range keys {
+			v, present := e[k]
+			if !present {
+				t.Errorf("%s.%s is ABSENT — an unchanged paired call must still carry every array key, or entry.%s.map(...) throws on the commonest row in the report", where, k, k)
+				continue
+			}
+			if v == nil {
+				t.Errorf("%s.%s marshalled as null, want []", where, k)
+			}
+		}
+	}
+
+	wire, _ := tree["wire"].(map[string]any)
+	paired, _ := wire["paired"].([]any)
+	if len(paired) == 0 {
+		t.Fatalf("wire.paired is empty in the JSON")
+	}
+	check("wire.paired[0]", paired[0])
+
+	sections, _ := tree["sections"].([]any)
+	if len(sections) == 0 {
+		t.Fatalf("sections is empty in the JSON")
+	}
+	sec0, _ := sections[0].(map[string]any)
+	entries, _ := sec0["entries"].([]any)
+	if len(entries) == 0 {
+		t.Fatalf("sections[0].entries is empty in the JSON")
+	}
+	check("sections[0].entries[0]", entries[0])
 }
