@@ -244,9 +244,20 @@ Then:
 ```sh
 ./ensemble up                     # starts everything, serves the dashboard
 ./ensemble dashboard              # opens it in your browser: topology, live traffic, latency, inspector
-./ensemble traffic --follow       # or tail the hops from the terminal
+./ensemble tui                    # or watch it from the terminal instead: services, traffic, latency, profiles
+./ensemble up --tui                # ...or go straight into the terminal UI once the stack is up
+./ensemble traffic --follow       # or tail the hops from the terminal, non-interactively
 ./ensemble down
 ```
+
+`ensemble tui` (and `ensemble up --tui`) is a terminal client of the same
+control-plane API the web dashboard uses — handy over SSH or when you'd
+rather not leave the terminal. It covers Services (health, restart, flip
+variant, seed), Traffic (a live-scrolling hop feed with a detail pane and
+errors-only filter), Latency (arm/disarm/reset rules), and Profiles
+(bring profiles up/down); `tab`/`shift+tab` or `1`-`4` switch panels, `q`
+quits. It doesn't cover the dashboard's topology graph or database/entity
+inspection — those stay browser-only.
 
 Send your app's traffic at the **proxy** ports (`9080` above) rather than the
 service ports, and every hop between your services is captured with its trace
@@ -265,8 +276,9 @@ measured duration stays honest — the true wall-clock is the sum of the two.
 ### CLI
 
 ```
-ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700]
+ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700] [--tui]
 ensemble dashboard [--no-open]
+ensemble tui
 ensemble status | down | seed <name>
 ensemble latency list | set | reset | arm-all
 ensemble traffic [--since N] [--errors-only] [--follow]

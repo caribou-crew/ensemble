@@ -2,11 +2,8 @@
 // over the control-plane API server.New serves (see ensemble/server), plus
 // the `up` subcommand that wires the whole binary together (config ->
 // recorder/proxy/latency/sessions -> orchestrator -> stubs -> server) and
-// runs it until interrupted.
-//
-// Scope ruling (task 2.6 brief): the Ink-style TUI cockpit is Phase
-// 3-adjacent and deferred — this ships the flag-based CLI only, no
-// bubbletea dependency.
+// runs it until interrupted. The `tui` subcommand (and `up --tui`) render
+// that same API as a terminal UI — see ensemble/tui.
 package main
 
 import (
@@ -26,9 +23,10 @@ var version = "dev"
 const usage = `ensemble — local backend orchestrator CLI
 
 Usage:
-  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--variant svc=name,...] [--api 127.0.0.1:4700] [profile...]
+  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--variant svc=name,...] [--api 127.0.0.1:4700] [--tui] [profile...]
                  (with profile names: adds them to a running stack, else cold-starts with them active)
   ensemble dashboard [--api-url URL] [--no-open]
+  ensemble tui [--api-url URL]
   ensemble status [--api-url URL] [--json]
   ensemble down [--api-url URL] [--json] [profile...]   (with profile names: deactivates just those)
   ensemble profiles [--api-url URL] [--json]
@@ -71,6 +69,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdUp(args[1:], stdout, stderr)
 	case "dashboard":
 		return cmdDashboard(args[1:], stdout, stderr)
+	case "tui":
+		return cmdTUI(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
 	case "down":

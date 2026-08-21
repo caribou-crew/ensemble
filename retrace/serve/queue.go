@@ -316,7 +316,7 @@ func notAssessed(reason string) runs.CaptureTrust {
 		Summary: "capture not assessed — this flow could not be compared at all, so neither side's recording was ever examined",
 		Hint:    "this is not a verdict about the capture; it is the absence of one. Fix the reason above and the row will carry a real capture verdict.",
 		Reasons: []runs.TrustReason{{
-			Code:   "capture-not-assessed",
+			Code:   CaptureNotAssessed,
 			Status: trace.VerdictFailed,
 			Detail: reason,
 			Hint:   "no capture trust was computed for either side, because the comparison that would have read them never ran",
