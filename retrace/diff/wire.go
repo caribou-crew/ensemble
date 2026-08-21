@@ -79,14 +79,22 @@ func diceBigram(a, b string) float64 {
 		}
 		return 0
 	}
-	bigrams := func(s string) map[string]int {
-		m := map[string]int{}
-		for i := 0; i+2 <= len(s); i++ {
-			m[s[i:i+2]]++
-		}
-		return m
+	return diceFromBigrams(bigramCounts(a), bigramCounts(b))
+}
+
+// bigramCounts and diceFromBigrams split diceBigram's string-based work
+// (build a bigram map) from its comparison (score two maps), so a caller
+// that already has bigram maps for both sides — align's per-hop
+// precomputation below — can skip rebuilding them per pair.
+func bigramCounts(s string) map[string]int {
+	m := map[string]int{}
+	for i := 0; i+2 <= len(s); i++ {
+		m[s[i:i+2]]++
 	}
-	ma, mb := bigrams(a), bigrams(b)
+	return m
+}
+
+func diceFromBigrams(ma, mb map[string]int) float64 {
 	inter, total := 0, 0
 	for k, va := range ma {
 		if vb, ok := mb[k]; ok {
@@ -107,28 +115,125 @@ func diceBigram(a, b string) float64 {
 	return 2 * float64(inter) / float64(total)
 }
 
+// hopSim is a hop's precomputed similarity ingredients: the canonicalized
+// req/resp bodies and their bigram maps, built once per hop instead of
+// once per (i,j) pair.
+//
+// F12: align used to call CallSimilarity(as[i], bs[j]) once per DP cell in
+// the fill loop AND AGAIN for the same (i,j) in the traceback loop — each
+// call re-json.Unmarshal-ing and re-canonicalizing both bodies and
+// rebuilding two bigram maps from scratch. For a 120x120 grid with 20KB
+// bodies that's up to n*m*2 canonicalizations of a value with only n+m
+// distinct inputs (measured at 9.5s; see TestAlignPerformanceOnAShapedInput
+// for the after number). Precomputing per hop and scoring each pair
+// exactly once (see pairSimilarity/the sim matrix in align) collapses the
+// canonicalization work back down to O(n+m) and the scoring work to
+// exactly n*m calls total instead of up to 2*n*m.
+type hopSim struct {
+	status                  int
+	reqCanon, respCanon     string
+	reqBigrams, respBigrams map[string]int
+}
+
+func prepHopSim(h trace.Hop) hopSim {
+	hs := hopSim{
+		status:    h.Status,
+		reqCanon:  canonicalBodyForSimilarity(h.Req.Body),
+		respCanon: canonicalBodyForSimilarity(h.Resp.Body),
+	}
+	if len(hs.reqCanon) >= 2 {
+		hs.reqBigrams = bigramCounts(hs.reqCanon)
+	}
+	if len(hs.respCanon) >= 2 {
+		hs.respBigrams = bigramCounts(hs.respCanon)
+	}
+	return hs
+}
+
+// pairSimilarityHook, when non-nil, is called once per pairSimilarity
+// invocation. Test-only counting seam — see
+// TestAlignScoresEachPairAtMostOnce — left as a no-op check in production.
+var pairSimilarityHook func()
+
+// pairSimilarity scores two hops' precomputed ingredients. It is the exact
+// same formula as CallSimilarity/bodySimilarity/diceBigram (same weights,
+// same canonical-form-equality and len<2 short-circuits) — see those for
+// the rationale — just fed from hopSim's precomputed fields instead of
+// recomputing them from raw bodies. TestPairSimilarityMatchesCallSimilarity
+// pins that the two never diverge.
+func pairSimilarity(a, b hopSim) float64 {
+	if pairSimilarityHook != nil {
+		pairSimilarityHook()
+	}
+	s := 0.0
+	if a.status == b.status {
+		s += 0.3
+	}
+	return s + 0.5*canonSimilarity(a.respCanon, a.respBigrams, b.respCanon, b.respBigrams) +
+		0.2*canonSimilarity(a.reqCanon, a.reqBigrams, b.reqCanon, b.reqBigrams)
+}
+
+// canonSimilarity mirrors bodySimilarity's post-canonicalization logic
+// (equal canonical forms score 1; otherwise fall back to the bigram dice
+// coefficient, with diceBigram's own len<2 short-circuit — unequal short
+// strings score 0, since the equal case is already handled above).
+func canonSimilarity(ca string, ma map[string]int, cb string, mb map[string]int) float64 {
+	if ca == cb {
+		return 1
+	}
+	if len(ca) < 2 || len(cb) < 2 {
+		return 0
+	}
+	return diceFromBigrams(ma, mb)
+}
+
 // align is Needleman-Wunsch with a zero gap score: a pair is made whenever
 // it beats leaving both sides unmatched, and the BEST available match wins.
 // Order-preserving, so it never pairs across a reorder — that is the
 // reorder detector's job (order.go), not the aligner's.
+//
+// Every (i,j) pair's similarity is precomputed once into sim before the DP
+// fill loop, then read (not recomputed) by both the fill loop and the
+// traceback loop — see hopSim/pairSimilarity above (F12). This changes
+// nothing about evaluation order: the fill and traceback loops still walk
+// i/j in exactly the same directions and compare the same score[][]
+// entries with the same >= tie-break as before, so which of two
+// equal-scoring candidates wins is unaffected — only where the diag value
+// comes from (a lookup instead of a live call) changed.
 func align(as, bs []trace.Hop) (pairs [][2]trace.Hop, aOnly, bOnly []trace.Hop) {
 	n, m := len(as), len(bs)
 	if n == 0 || m == 0 {
 		return nil, as, bs
 	}
+	aSim := make([]hopSim, n)
+	for i, h := range as {
+		aSim[i] = prepHopSim(h)
+	}
+	bSim := make([]hopSim, m)
+	for j, h := range bs {
+		bSim[j] = prepHopSim(h)
+	}
+	sim := make([][]float64, n)
+	for i := range sim {
+		sim[i] = make([]float64, m)
+		for j := range sim[i] {
+			sim[i][j] = pairSimilarity(aSim[i], bSim[j])
+		}
+	}
+
 	score := make([][]float64, n+1)
 	for i := range score {
 		score[i] = make([]float64, m+1)
 	}
 	for i := n - 1; i >= 0; i-- {
 		for j := m - 1; j >= 0; j-- {
-			diag := CallSimilarity(as[i], bs[j]) + score[i+1][j+1]
+			diag := sim[i][j] + score[i+1][j+1]
 			score[i][j] = math.Max(diag, math.Max(score[i+1][j], score[i][j+1]))
 		}
 	}
 	i, j := 0, 0
 	for i < n && j < m {
-		diag := CallSimilarity(as[i], bs[j]) + score[i+1][j+1]
+		diag := sim[i][j] + score[i+1][j+1]
 		switch {
 		case diag >= score[i+1][j] && diag >= score[i][j+1]:
 			pairs = append(pairs, [2]trace.Hop{as[i], bs[j]})
