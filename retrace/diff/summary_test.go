@@ -820,6 +820,63 @@ func TestAPerfBudgetOf0MsEmitsNoGateAtAll(t *testing.T) {
 	}
 }
 
+// TestAPerfBudgetOverARunThatRecordedNoCallsEmitsNoGateAtAll is the OTHER
+// empty-denominator case on this plane, and the one budgetsOf's own doc
+// comment already claimed was covered: MeasuredMs is TotalCallDurationMs
+// over side B's hops, so a run that recorded NO calls measures 0ms, lands
+// at -100% of any budget, and reported a clean gate on the run with the
+// least evidence in it. With fail_on: [perf] that is a green CI job over a
+// run that made no calls.
+//
+// observedFor was the one plane of four that never tested its own
+// denominator: wire refuses on WirePaired == 0, hop on no ServiceCounts,
+// pixel on no checkpoints, and perf asked only whether a BUDGET existed.
+//
+// Both arms, because "refuse always" satisfies the first one alone.
+func TestAPerfBudgetOverARunThatRecordedNoCallsEmitsNoGateAtAll(t *testing.T) {
+	call := hop(1, "GET", "/cart", 200, "", `{}`)
+
+	for _, tc := range []struct {
+		name         string
+		wireA, wireB []trace.Hop
+		wantGate     bool
+	}{
+		{"neither side recorded a call", nil, nil, false},
+		// A budget is about the run under review, so side B is what
+		// decides: a reference that made calls cannot lend evidence to a
+		// candidate that made none.
+		{"only the reference recorded a call", []trace.Hop{call}, nil, false},
+		{"this run recorded a call", []trace.Hop{call}, []trace.Hop{call}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			aRef, bRef := twoRuns(t, tc.wireA, tc.wireB, nil, nil)
+			cfg := baseConfig(t)
+			cfg.Gates["perf"] = gatePct(10)
+			cfg.Flows = map[string]config.Flow{"flow": {PerfBudgetMs: 5000}}
+
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+			if s.Perf.BudgetMs != 5000 {
+				t.Fatalf("test setup: Perf.BudgetMs = %v, want 5000", s.Perf.BudgetMs)
+			}
+			var gate *Gate
+			for i, g := range s.Budgets {
+				if g.Plane == "perf" {
+					gate = &s.Budgets[i]
+				}
+			}
+			if tc.wantGate {
+				if gate == nil {
+					t.Fatalf("this run recorded a call and its perf budget emitted no Gate — refusing always is not the fix; Budgets = %+v", s.Budgets)
+				}
+				return
+			}
+			if gate != nil {
+				t.Fatalf("this run recorded no call and its perf budget reported %+v — a gate that says \"within budget\" over a run with no backend work in it, and with fail_on: [perf] a green CI job over it", *gate)
+			}
+		})
+	}
+}
+
 // TestAPerfBudgetIsPercentOverNotPercentOf pins the perf half of the units
 // ruling: Observed is percent OVER budget, (Measured-Budget)/Budget*100 —
 // 0 means "exactly at budget" — not percent OF budget consumed

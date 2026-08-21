@@ -747,6 +747,25 @@ func observedFor(s Summary, plane string) (observed float64, measurable bool) {
 		if s.Perf.BudgetMs == 0 {
 			return 0, false
 		}
+		// ...and a budget with nothing to measure against it is the same
+		// empty-evidence case the other three planes already refuse, which
+		// this one did not: MeasuredMs is TotalCallDurationMs over side
+		// B's hops, so a run that recorded NO calls measures 0ms, lands at
+		// -100% of any budget, and reported a CLEAN gate on the run with
+		// the least evidence in it — the exact sentence budgetsOf's own
+		// comment claims cannot happen. With fail_on: [perf] that is a
+		// green CI job over a run that made no calls.
+		//
+		// The test is the CALL COUNT, not MeasuredMs == 0: a genuinely
+		// fast run can measure at or near zero and must still be gated.
+		// Paired + Extra is exactly side B's hops — every hop in hopsB
+		// lands in one of the two — so it counts the same calls
+		// TotalCallDurationMs summed. Extra is read with len() rather than
+		// through Counts.WireExtra, which subtracts tolerated calls: a
+		// tolerated call still took time and is still evidence.
+		if len(s.Wire.Paired)+len(s.Wire.Extra) == 0 {
+			return 0, false
+		}
 		return 100 * (s.Perf.MeasuredMs - s.Perf.BudgetMs) / s.Perf.BudgetMs, true
 	default:
 		return 0, false
