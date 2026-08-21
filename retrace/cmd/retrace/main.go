@@ -17,7 +17,7 @@ const usage = `retrace — record / replay / diff / review flows
 
 Usage:
   retrace run --flow NAME [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--json] [--no-config] -- <test command>
-  retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json]
+  retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref accept|reject|list --flow NAME [--app NAME] [--run SELECTOR]
@@ -26,7 +26,11 @@ Usage:
   retrace --version
 
 Exit codes:
-  0 no differences   1 differences to review   2 hard gate failed   3 usage/IO error
+  0 no differences        1 differences to review   2 hard gate failed
+  3 could not evaluate: a quarantined side, bad flags, unreadable config, or I/O failure
+
+  --no-fail forces 0 for a "changed" or "failed" verdict. It does NOT zero a
+  quarantine: 3 means nothing was compared, which is not a finding to suppress.
 
 Env:
   RETRACE_RUN_DIR     set by ` + "`retrace run`" + ` for adapters (checkpoints, markers)
