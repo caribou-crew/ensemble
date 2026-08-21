@@ -5220,6 +5220,14 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
       DiffPct     float64          `json:"diffPct"`
       DiffPctFine float64          `json:"diffPctFine"`
       NumDiff     int              `json:"numDiff"`
+      // Mismatch reports that the two SHOTS differed in size — copied from
+      // pixel.Result.Mismatch, which Task 7's review pinned to the real
+      // pre-trim geometry. Overlap is non-nil whenever the COMPARED images
+      // differed in size, which independently trimmed same-size shots also
+      // trigger. **So overlap != nil does NOT imply mismatch == true, and
+      // code must not treat them as one signal.** When they disagree,
+      // DiffPct is inflated by padding and overlap.paddingPct is how much;
+      // overlap.diffPct is the honest content number.
       Mismatch    bool             `json:"mismatch,omitempty"`
       Overlap     *pixel.Overlap   `json:"overlap,omitempty"`
       // Trimmed reports the rects Compare actually used when the
