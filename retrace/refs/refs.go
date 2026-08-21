@@ -147,10 +147,22 @@ func Resolve(cwd, runsRoot, app, flow string) Reference {
 	if err != nil {
 		return Reference{Kind: "none", Reason: err.Error()}
 	}
-	if m, err := runs.ReadManifest(filepath.Join(dir, "manifest.json")); err == nil {
+	bundleManifest := filepath.Join(dir, "manifest.json")
+	m, berr := runs.ReadManifest(bundleManifest)
+	switch {
+	case berr == nil:
 		// RunID keeps the PROVENANCE of the run the bundle was promoted
 		// from; the directory is the literal "reference".
 		return Reference{Kind: "bundle", Dir: dir, RunID: m.RunID, Manifest: m}
+	case !errors.Is(berr, fs.ErrNotExist):
+		// The bundle EXISTS and cannot be read. Falling through to a local
+		// run here would silently compare against something other than what
+		// is committed — the operator would see "run" and never learn that
+		// the artifact in git is broken. A bundle is hand-editable by
+		// construction (it is committed), so this is a reachable state and
+		// it is refused loudly.
+		return Reference{Kind: "none", Reason: fmt.Sprintf(
+			"the committed reference bundle at %s cannot be read: %v — fix or delete it; falling back to a local run would compare against something other than what is in git", dir, berr)}
 	}
 
 	ids, err := runs.ListRunsErr(runsRoot, app, flow)
@@ -465,6 +477,11 @@ func Reject(o RejectOptions) (RejectResult, error) {
 	if err != nil {
 		return RejectResult{}, err
 	}
+	// Validated again, deliberately: PathsFor guarded the RUN-side join, and
+	// the line below builds a SECOND path out of the same three components.
+	// A function that joins a caller-supplied component into a filesystem
+	// path validates that component at the seam; relying on PathsFor having
+	// been called first would make this guard a property of statement order.
 	if err := runs.ValidateComponents(o.App, o.Flow, o.RunID); err != nil {
 		return RejectResult{}, err
 	}

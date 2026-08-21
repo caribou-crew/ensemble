@@ -693,3 +693,27 @@ func TestRejectCarriesTheMissesFileAcceptDrops(t *testing.T) {
 		t.Fatalf("repro bundle is missing misses.jsonl: %v", err)
 	}
 }
+
+// TestACorruptCommittedBundleIsRefusedNotSilentlySkipped — a bundle is a
+// committed, hand-editable artifact, so "present but unreadable" is a
+// reachable state. Falling back to a local run there would let a diff
+// compare against something other than what is in git while reporting a
+// perfectly ordinary "run", which is the same class of silent substitution
+// as a zero value reading as "fine".
+func TestACorruptCommittedBundleIsRefusedNotSilentlySkipped(t *testing.T) {
+	cwd := t.TempDir()
+	root := runs.RunsRoot(cwd)
+	writeRun(t, root, "web", "checkout", "20260821T100000Z-aaa1111") // an eligible fallback exists
+	dir := writeBundle(t, cwd, "web", "checkout", "20260101T000000Z-bbb2222")
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"schema":"retrace/0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Resolve(cwd, root, "web", "checkout")
+	if got.Kind != "none" {
+		t.Fatalf("Kind = %q, want \"none\" — a corrupt bundle must not silently degrade into a local-run comparison", got.Kind)
+	}
+	if !strings.Contains(got.Reason, dir) {
+		t.Fatalf("Reason = %q, want it to name the bundle that cannot be read", got.Reason)
+	}
+}
