@@ -103,6 +103,14 @@ stubs:                            # dependencies you can't run locally
 A stub response can also read its body from a file (`body_file:`) instead of
 inlining it.
 
+Any value in `ensemble.yaml` can reference an environment variable with
+`${VAR}` or, with a fallback, `${VAR:-default}` — e.g. `port:
+${BFF_PORT:-8003}`. `${VAR}` with no default and nothing set for it is a
+load error, not a silent empty string. A `.env` file next to `ensemble.yaml`
+is loaded automatically if present (`KEY=VALUE` per line, `#` comments,
+optionally quoted values) as a source of values for that substitution — it's
+entirely optional, and a real environment variable always wins over `.env`.
+
 Then:
 
 ```sh
