@@ -44,10 +44,12 @@ bin/
 /ensemble/ensemble
 /retrace/retrace
 
-# sample/ services each build into their own bin/ (already covered by the
-# blanket bin/ rule above) rather than dropping an extensionless binary
-# next to main.go — avoids enumerating a new entry here every time a
-# service is added.
+# sample/ Go services are standalone modules (not part of go.work); `go
+# build -o <name> .` in each one drops an extensionless binary named after
+# the module right next to main.go (see each one's build: in ensemble.yaml).
+sample/services/*/catalog-svc
+sample/services/*/edge-gw
+sample/services/*/notify-worker
 # notify-worker's simulated "sent notifications" log — regenerated every run.
 sample/services/notify-worker/notifications.log
 # order-svc is a standalone Gradle project (also not part of go.work, and

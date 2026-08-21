@@ -1,0 +1,53 @@
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 640px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  color: #222;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+header label {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+header input {
+  margin-left: 0.5rem;
+  width: 4rem;
+}
+
+.error {
+  background: #fdd;
+  border: 1px solid #c66;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+.products li,
+.cart li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #eee;
+}
+
+.products li span:first-child,
+.cart li span:first-child {
+  flex: 1;
+}
+
+.total {
+  font-weight: bold;
+}
