@@ -105,6 +105,31 @@ describe('useAsync', () => {
     expect(h.last().error?.message).toBe('just a string');
   });
 
+  it('surfaces a synchronous throw from fn exactly as it surfaces a rejection', async () => {
+    // Both arms in one test because they are ONE behaviour: a caller should
+    // not have to know which way `fn` failed. `() => Promise<T>` is a promise
+    // about the return value, so any body can throw before it returns one —
+    // Task 15 builds shot URLs inside `fn`, and a summary missing
+    // `Images.Diff` throws out of URL construction. Uncaught, that escapes
+    // useEffect and takes down the tree: a blank dashboard instead of an
+    // error on one pane.
+    const boom = new Error('bad shot URL');
+
+    const h = renderHook<string>(() => {
+      throw boom;
+    }, ['sync']);
+    const afterThrow = h.last();
+
+    const d = deferred<string>();
+    h.render(() => d.promise, ['async']);
+    await act(async () => {
+      d.reject(boom);
+    });
+
+    expect(afterThrow).toEqual({ data: null, error: boom, loading: false });
+    expect(afterThrow).toEqual(h.last());
+  });
+
   it('clears stale data the instant deps change, before the new load settles', async () => {
     const first = deferred<string>();
     const h = renderHook(() => first.promise, ['a']);
