@@ -789,6 +789,57 @@ func TestRefAcceptStillPromotesAWildcardMask(t *testing.T) {
 	}
 }
 
+// TestRefAcceptReportsAnUnmatchedProjectWideMaskOnStderrAndStillPromotes is
+// the wiring half of ruling R-H, in the same shape F1(a) uses for MasksFor:
+// through the built binary, against a real retrace.yaml. cmd_ref.go passes
+// the two mask scopes as two separate options, and nothing else in the
+// suite crosses that seam for ProjectMaskedCheckpoints — passing nil there,
+// or folding it into the refusing option, is a one-line edit.
+//
+// Both halves are the assertion. Exit 0 is the over-refusal mirror: a
+// top-level entry means "every flow", so one naming a screen this flow does
+// not have is very likely masking that screen elsewhere, and refusing it
+// would break a correct configuration. The stderr line is the other half:
+// the OTHER reading of the same config is a typo that redacts nothing, and
+// a promotion that says nothing about it puts unredacted pixels in git with
+// exit 0 and a clean log.
+func TestRefAcceptReportsAnUnmatchedProjectWideMaskOnStderrAndStillPromotes(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	// A TOP-LEVEL per-checkpoint entry for a screen this flow does not
+	// have. The run records one checkpoint, cart.
+	writeConfig(t, cwd, "app: web\nmasks:\n  login-form:\n    - x: 0\n      y: 0\n      width: 20\n      height: 20\n      why: \"the password field\"\nwire_rules:\n  - headers:\n      date: http-date\n")
+	runShot(t, bin, cwd, "web", "checkout", upstream.URL, "shot-b")
+
+	res := runRetrace(t, bin, cwd, "", "ref", "accept", "--flow", "checkout", "--app", "web")
+	if res.code != 0 {
+		t.Fatalf("ref accept refused a PROJECT-WIDE mask entry that matches no checkpoint in this flow: exit = %d\nstdout: %s\nstderr: %s\nThat entry may be masking that screen in another flow, so refusing it rejects a correct configuration.", res.code, res.stdout, res.stderr)
+	}
+	// Named on stderr, and pointing at the place a per-checkpoint mask
+	// belongs — stderr because stdout carries the --json contract.
+	for _, want := range []string{"login-form", "flows.checkout.masks"} {
+		if !strings.Contains(res.stderr, want) {
+			t.Fatalf("stderr = %q, want it to name the unmatched project-wide entry and where a per-checkpoint mask belongs (%q) — otherwise a typo that redacts nothing promotes with exit 0 and a silent log", res.stderr, want)
+		}
+	}
+	bundle, err := refs.BundleDir(cwd, "web", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The gap R-H knowingly accepts, asserted rather than assumed: the
+	// entry matched nothing, so nothing here was redacted, and the stderr
+	// line above is the ONLY signal the reader gets.
+	shot := decodeShot(t, filepath.Join(bundle, "shots", "cart.png"))
+	if got := shot.RGBAAt(10, 10); got != (color.RGBA{R: 250, A: 255}) {
+		t.Fatalf("the committed bundle's cart.png at (10,10) = %v, want the captured red — an entry naming another flow's screen must not redact this one", got)
+	}
+}
+
 // decodeShot reads a PNG out of a bundle and returns it as RGBA, so the
 // assertions above are on decoded PIXELS — not on a log line, a byte count
 // or a file size, none of which can tell a redacted shot from a copied one.

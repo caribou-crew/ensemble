@@ -1026,6 +1026,118 @@ func TestMaskingOneCheckpointOfSeveralStillPromotes(t *testing.T) {
 	}
 }
 
+// TestScopeDecidesTheVerdictForAnUnmatchedMaskEntry pins ruling R-H, which
+// is a DISTINCTION and not a behaviour: the same unmatched entry, against
+// the same run, is refused when it is flow-scoped and merely reported when
+// it is project-wide. The two subtests below are deliberately one test over
+// one fixture with ONE line different between them — the field the entry is
+// spelled into — because two separate tests would each stay green if the
+// two scopes were folded back into a single refusing map, which is exactly
+// the implementation R-H reversed.
+//
+// Why the scopes differ: a flow-scoped entry can only ever apply to this
+// flow, so matching nothing here means it protects nothing anywhere, ever —
+// no innocent reading, so refuse. A top-level entry means "every flow", so
+// one naming a screen this flow does not have is very likely doing its job
+// in another flow; refusing it would reject a correct configuration, which
+// is not a safer failure, just a louder one landing on people whose config
+// is fine.
+func TestScopeDecidesTheVerdictForAnUnmatchedMaskEntry(t *testing.T) {
+	// Matches neither checkpoint the fixture records (cart, receipt), and
+	// reads like a screen that plausibly lives in another flow.
+	const entry = "login-form"
+
+	// opts builds the identical promotion both subtests run: same run, same
+	// checkpoints, same lookup carrying real rects for the entry. Only the
+	// SCOPE the entry is declared in differs below.
+	opts := func(t *testing.T) (AcceptOptions, string) {
+		t.Helper()
+		cwd := t.TempDir()
+		root, runID := acceptFixture(t, cwd)
+		o := acceptOpts(cwd, root, runID)
+		o.MasksFor = func(checkpoint string) []pixel.Rect {
+			if checkpoint == entry {
+				return []pixel.Rect{{X: 0, Y: 0, Width: 4, Height: 4}}
+			}
+			return nil
+		}
+		return o, cwd
+	}
+
+	t.Run("project-wide: promotes, and the entry is reported as a value", func(t *testing.T) {
+		o, _ := opts(t)
+		o.ProjectMaskedCheckpoints = []string{entry} // <- the one line
+
+		res, err := Accept(o)
+		if err != nil {
+			t.Fatalf("Accept refused a promotion over a PROJECT-WIDE mask entry that matches no checkpoint here: %v\nThat entry means \"every flow\", so matching nothing in this flow has an innocent reading — it may be masking that screen in another flow. Refusing it rejects a correct configuration.", err)
+		}
+		// Contents, not length: "reports something" and "reports the
+		// entries that matched nothing" are different claims, and only the
+		// second one is the contract.
+		if got := strings.Join(res.UnmatchedMasks, ","); got != entry {
+			t.Fatalf("AcceptResult.UnmatchedMasks = %v, want exactly [%q] — the report is carried as a VALUE a caller can act on, not left to a printed sentence", res.UnmatchedMasks, entry)
+		}
+	})
+
+	t.Run("flow-scoped: refused", func(t *testing.T) {
+		o, cwd := opts(t)
+		o.MaskedCheckpoints = []string{entry} // <- the one line
+
+		_, err := Accept(o)
+		if err == nil {
+			t.Fatalf("Accept promoted a run whose FLOW-SCOPED mask entry %q matched no checkpoint — an entry that can only ever apply to this flow, matching nothing in this flow, protects nothing anywhere; it redacts nothing and looks exactly like a mask that worked", entry)
+		}
+		dir, _ := BundleDir(cwd, "web", "checkout")
+		if _, serr := os.Stat(dir); !errors.Is(serr, fs.ErrNotExist) {
+			t.Fatalf("a refused promotion still wrote a bundle at %s (stat err %v)", dir, serr)
+		}
+	})
+}
+
+// TestAMatchedProjectMaskReportsNothingAndTheReportIsAlwaysAnArray is the
+// mirror that stops "report everything" passing as "report the ones that
+// matched nothing", and it pins UnmatchedMasks' documented wire contract at
+// the same time: never nil, so the --json field is [] and not null. That
+// contract is asserted THROUGH the marshalled JSON because that is the form
+// it is about — `null` and `[]` are different answers to "which entries
+// matched nothing", and only one of them survives a caller doing len().
+func TestAMatchedProjectMaskReportsNothingAndTheReportIsAlwaysAnArray(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared []string
+	}{
+		// Every declared entry matches a checkpoint: the comparison runs
+		// and finds nothing.
+		{"every project-wide entry matches a checkpoint", []string{"cart", "receipt"}},
+		// No configuration at all: the comparison short-circuits. Both
+		// paths owe the same empty, non-nil answer.
+		{"the project declares no masks at all", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			root, runID := acceptFixture(t, cwd)
+			o := acceptOpts(cwd, root, runID)
+			o.ProjectMaskedCheckpoints = tc.declared
+
+			res, err := Accept(o)
+			if err != nil {
+				t.Fatalf("Accept: %v", err)
+			}
+			if len(res.UnmatchedMasks) != 0 {
+				t.Fatalf("AcceptResult.UnmatchedMasks = %v, want empty — every declared entry names a checkpoint this run has, so reporting any of them is reporting a config that is fine", res.UnmatchedMasks)
+			}
+			b, err := json.Marshal(res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(b), `"unmatchedMasks":[]`) {
+				t.Fatalf("--json emitted %s, want an empty ARRAY for unmatchedMasks — a nil slice marshals to null, and a consumer that iterates the field then has to special-case a second spelling of \"nothing\"", b)
+			}
+		})
+	}
+}
+
 // TestAManifestCheckpointThatEscapesTheRunDirectoryIsRefused pins
 // shotFor's filepath.Rel guard. runs.ReadManifest validates schema,
 // capture status and the wire/hop counts — it does NOT validate
