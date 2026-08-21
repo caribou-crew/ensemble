@@ -98,6 +98,18 @@ func validateComponents(names ...string) error {
 	return nil
 }
 
+// ValidateComponents is the exported face of validateComponents, for the
+// one caller outside this package that builds an <app>/<flow> path of its
+// own: refs.BundleDir, which joins into .retrace-ref rather than the runs
+// root and so cannot go through PathsFor's runID-shaped signature.
+//
+// It DELEGATES; it does not reimplement. The guard body must exist in
+// exactly one place (see validateComponents' comment and
+// global-constraints.md) — the re-review of Task 1 found the cost of a
+// second call site with no guard, and a second guard BODY is how the two
+// silently diverge instead.
+func ValidateComponents(names ...string) error { return validateComponents(names...) }
+
 // PathsFor computes the paths a run directory would have, without
 // touching disk. It validates app/flow/runID (see validateComponents) so
 // every caller — Create, and every later task that resolves an existing

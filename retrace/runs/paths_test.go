@@ -236,3 +236,41 @@ func TestListAppsErrDistinguishesMissingFromBroken(t *testing.T) {
 		t.Fatal("ListAppsErr must surface a real error when root is not a directory")
 	}
 }
+
+// TestValidateComponentsIsTheSameGuardPathsForUses pins R-A's exported
+// wrapper to the ONE guard body. It asserts agreement with PathsFor rather
+// than re-listing a charset: a second copy of the rule in a test is how the
+// two silently diverge, which is the exact failure the wrapper exists to
+// prevent. Every case PathsFor rejects, ValidateComponents must reject, and
+// every case it accepts, ValidateComponents must accept.
+func TestValidateComponentsIsTheSameGuardPathsForUses(t *testing.T) {
+	root := RunsRoot(t.TempDir())
+	names := []string{
+		"web", "checkout", RefRunID, "20260821T101500Z-abc1234",
+		"..", ".", "", ".hidden", "a/b", `a\b`, "../../etc/pwn", "bad name", "sémantique",
+	}
+	for _, n := range names {
+		t.Run(n, func(t *testing.T) {
+			_, pathsErr := PathsFor(root, n, "flow", "run")
+			wrapErr := ValidateComponents(n)
+			if (pathsErr == nil) != (wrapErr == nil) {
+				t.Fatalf("ValidateComponents(%q) = %v but PathsFor's guard = %v — the two must be one rule", n, wrapErr, pathsErr)
+			}
+		})
+	}
+}
+
+// TestValidateComponentsChecksEveryArgument — a variadic guard that only
+// looks at its first argument would pass every single-component test above
+// and still let BundleDir join an unvalidated flow.
+func TestValidateComponentsChecksEveryArgument(t *testing.T) {
+	if err := ValidateComponents("web", ".."); err == nil {
+		t.Fatal("ValidateComponents(\"web\", \"..\") = nil, want a rejection naming the second component")
+	}
+	if err := ValidateComponents("..", "checkout"); err == nil {
+		t.Fatal("ValidateComponents(\"..\", \"checkout\") = nil, want a rejection")
+	}
+	if err := ValidateComponents(); err != nil {
+		t.Fatalf("ValidateComponents() with no names = %v, want nil — nothing to reject", err)
+	}
+}
