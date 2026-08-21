@@ -5575,9 +5575,24 @@ carrying that distinction either — `s.Conformance` is nil both when no spec
 is configured and when a spec is configured and everything conformed, so both
 already marshalled identically. The fix is to *state* the fact rather than
 encode it in the absence of data, exactly as `HopDiff.HopRequireConfigured`
-already does for hops. A configured spec that fails to load returns an error
-from `CheckOpenAPI`, so `retrace diff` exits 3 and no `Summary` is produced —
-`openApiConfigured: true` therefore does imply the plane was really checked.
+already does for hops.
+
+**The exact invariant, because a looser one was written here first and was
+false.** A configured spec that fails to load returns an error from
+`CheckOpenAPI`, so `retrace diff` exits 3 and no `Summary` is produced. But
+that is not the only way the plane can go unchecked: **both quarantine exits
+precede the conformance block**, so a quarantined run reports
+`openApiConfigured: true` with `conformance: []` having checked nothing. So
+the invariant is: **`true` implies the plane was really checked on every
+non-quarantined `Summary`** — which is the only kind where any plane's data
+means anything at all.
+
+Do not "fix" that by setting the flag late. Reporting `false` for a run that
+plainly did configure a spec trades an imprecision for a falsehood.
+Conformance is not special among the planes here: a quarantined `Summary`
+has *every* field empty on purpose, and `Verdict` is what says so — the same
+reason Task 15's union must carry `quarantined`. Pin that contract
+explicitly, since the flag now leans on it.
 
 **`Entry`'s seven array fields carry no `omitempty`.** An unchanged paired
 call is the most common row any review UI renders, and with `omitempty` all
