@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 	"github.com/caribou-crew/ensemble/core/proxy"
 )
 
@@ -643,16 +644,19 @@ func TestCLI_Down(t *testing.T) {
 	}
 }
 
-// TestCLI_VersionFlag checks `ensemble --version` prints the stamped
-// version var and exits 0, with no server needed.
+// TestCLI_VersionFlag checks `ensemble --version` prints the resolved
+// version (buildinfo.Resolve enriches the unstamped "dev" this test binary
+// carries with the commit it was built from — see buildinfo_test.go) and
+// exits 0, with no server needed.
 func TestCLI_VersionFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--version"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
 	}
-	if stdout.String() != version+"\n" {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), version+"\n")
+	want := buildinfo.Resolve(version) + "\n"
+	if stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 }
 

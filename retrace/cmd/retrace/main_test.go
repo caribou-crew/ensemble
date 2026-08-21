@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 )
 
 // TestRunWithNoArgsPrintsUsageAndExitsUsage — review finding 8 (Major).
@@ -25,14 +27,19 @@ func TestRunWithNoArgsPrintsUsageAndExitsUsage(t *testing.T) {
 	}
 }
 
+// The resolved version (buildinfo.Resolve enriches the unstamped "dev" this
+// test binary carries with the commit it was built from — see
+// core/buildinfo's own tests) is what --version must print, not the raw
+// "dev" package var.
 func TestRunVersionPrintsVersionAndExitsOK(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	got := run([]string{"--version"}, &stdout, &stderr)
 	if got != exitOK {
 		t.Fatalf("exit = %d, want %d", got, exitOK)
 	}
-	if strings.TrimSpace(stdout.String()) != version {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), version)
+	want := buildinfo.Resolve(version)
+	if strings.TrimSpace(stdout.String()) != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

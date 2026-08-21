@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/buildinfo"
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
@@ -349,15 +350,17 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},
 		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
 		// Retrace is the recording binary's own version, from main.version
-		// (the `var version = "dev"` in main.go, stamped by -ldflags at
-		// release). It is replay-compatibility provenance: "which retrace
+		// (stamped by -ldflags at release; buildinfo.Resolve enriches an
+		// unstamped local build's "dev" with the commit it was built
+		// from). It is replay-compatibility provenance: "which retrace
 		// wrote this bundle" is the first question asked when a reference
 		// recorded months ago stops replaying, and it cannot be
-		// reconstructed after the fact.
+		// reconstructed after the fact — a bare "dev" answers that for
+		// every local build indiscriminately, which is no answer at all.
 		Env: runs.Env{
 			Go:       runtime.Version(),
 			Platform: runtime.GOOS + "/" + runtime.GOARCH,
-			Retrace:  version,
+			Retrace:  buildinfo.Resolve(version),
 		},
 	}
 	// Hops is a *Counts on purpose: nil means "standalone, no chain was
