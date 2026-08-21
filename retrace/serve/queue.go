@@ -169,6 +169,54 @@ func BuildQueue(d Deps) ([]Item, error) {
 	return items, nil
 }
 
+// The two reasons a review queue can have nothing in it for a human to act
+// on. They are values on the wire, not prose, because the UI and an agent
+// must reach the same conclusion from the same document.
+const (
+	// EmptyNoRuns: nothing has been recorded under .retrace/runs/ at all.
+	// This is a setup step nobody has done, not a clean project.
+	EmptyNoRuns = "no-runs"
+	// EmptyAllClear: every recorded flow was compared and every one of them
+	// scored zero. This is the reassuring one, and it is the one that has
+	// to be earned.
+	EmptyAllClear = "all-clear"
+)
+
+// EmptyReasonFor names WHY the queue has nothing to act on, or "" when it
+// has something.
+//
+// R-O: *"'no runs have been recorded yet' and 'every run was reviewed and
+// nothing needs attention' are different worlds, and an empty list renders
+// them identically. The second reads as reassurance. The first is a setup
+// step nobody has done."* A reviewer who reads the first as the second
+// concludes the project is clean on the strength of never having recorded
+// anything — which is the Zero-Value Constraint's third clause on the one
+// surface whose whole job is to make a human look.
+//
+// The distinction is on the SCREEN, not on the slice. A fully-reviewed
+// project still produces one row per flow, all at score 0, and the UI
+// collapses every zero-score row (that is what the score-0 contract is
+// for), so both worlds arrive at the reviewer as an empty review screen.
+// Keying only on len(items) == 0 would make "all-clear" a state production
+// cannot construct — a test of a hypothetical, which global-constraints.md
+// forbids by name.
+//
+// "" is the zero value and it is the SAFE one: it promises nothing.
+// EmptyAllClear is the affirmatively reassuring answer, so it is the one
+// that requires positive evidence — at least one flow, compared, and every
+// one of them scoring zero.
+func EmptyReasonFor(items []Item) string {
+	if len(items) == 0 {
+		return EmptyNoRuns
+	}
+	for _, it := range items {
+		if it.Score > 0 {
+			return ""
+		}
+	}
+	return EmptyAllClear
+}
+
 // itemOf folds one Summary into its queue line. One folding, used by both
 // the queue route and the item route — a second would be a second answer
 // for the same flow.

@@ -70,7 +70,13 @@ func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	// encodes as [] and never as null: a client that renders null as "no
 	// data yet" and [] as "nothing to review" must not have to guess which
 	// one an empty queue is.
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	//
+	// "empty" is the other half of the same question, and it is R-O's: a
+	// queue with nothing to act on says WHICH of its two causes it is.
+	// "no-runs" is a setup step nobody has done; "all-clear" is the
+	// reassuring one, and "" — the zero value — promises nothing. See
+	// EmptyReasonFor.
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "empty": EmptyReasonFor(items)})
 }
 
 func (s *server) handleItem(w http.ResponseWriter, r *http.Request) {

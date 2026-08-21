@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -95,10 +96,17 @@ func pixelAt(t *testing.T, r response, side string, x, y int) [4]uint32 {
 	return [4]uint32{cr, cg, cb, ca}
 }
 
+// mustOK also pins the Content-Type on every JSON answer it is used for —
+// the shot handler's image/png is asserted and writeJSON's header was not,
+// so dropping it left every JSON response to be sniffed. Checking it here
+// covers each verb that answers 200 rather than a list someone maintains.
 func mustOK(t *testing.T, r response, what string) map[string]any {
 	t.Helper()
 	if r.status != http.StatusOK {
 		t.Fatalf("%s: status = %d, want 200\n%s", what, r.status, r.body)
+	}
+	if !strings.HasPrefix(r.ctype, "application/json") {
+		t.Fatalf("%s: content-type = %q, want application/json — an unlabelled JSON body is sniffed", what, r.ctype)
 	}
 	return r.json(t)
 }
@@ -109,6 +117,9 @@ func queueFromREST(t *testing.T, ts *httptest.Server) []Item {
 	r := get(t, ts, "/api/queue")
 	if r.status != http.StatusOK {
 		t.Fatalf("GET /api/queue: status = %d\n%s", r.status, r.body)
+	}
+	if !strings.HasPrefix(r.ctype, "application/json") {
+		t.Fatalf("GET /api/queue: content-type = %q, want application/json", r.ctype)
 	}
 	var doc struct {
 		Items []Item `json:"items"`
@@ -368,6 +379,85 @@ func TestPostRuleRefusesAScopeItCannotHonour(t *testing.T) {
 		if r := post(t, ts, "/api/queue/web/checkout/rule", body); r.status != http.StatusBadRequest {
 			t.Fatalf("body %s was accepted: status = %d\n%s", body, r.status, r.body)
 		}
+	}
+}
+
+// acceptRequest.Run decides WHICH run becomes the reference every later
+// diff is judged against, and the response reports bundle.runId — which,
+// if the field were accepted and ignored, would faithfully report the wrong
+// run it had just promoted. Every other accept test posts an empty body, so
+// "latest" was the only selector this surface had ever exercised, and
+// `retrace ref accept --run` (which IS pinned) and its REST twin would have
+// been two different operations — the API-first parity constraint, and the
+// same class R-N and R-F rule against, on the accept verb.
+//
+// rejectRequest.Out is the same shape one verb over: an --out the caller
+// names and the server ignores writes the repro bundle somewhere else and
+// answers 200 with a directory the caller did not ask for.
+func TestAcceptAndRejectHonourTheRunAndOutTheCallerNamed(t *testing.T) {
+	cwd := threeFlowProject(t)
+	// A THIRD run, so "latest" and the run being named are unambiguously
+	// different: runC is newest, runB is the one the caller pins.
+	const runC = "20260821T102000Z-ccccccc"
+	recordRun(t, cwd, "web", "search", runC, map[string][]byte{"results": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/search", 200, `{"hits":1}`)})
+	ts := newServer(t, cwd)
+
+	doc := mustOK(t, post(t, ts, "/api/queue/web/search/accept", `{"run":"`+runB+`"}`), "POST accept --run")
+	bundle := doc["bundle"].(map[string]any)
+	if bundle["runId"] != runB {
+		t.Fatalf("accept promoted %v, want %q — the run the caller named, not the newest one", bundle["runId"], runB)
+	}
+	// And on disk, not merely in the response: the bundle every later diff
+	// is judged against is the run that was asked for.
+	m, err := runs.ReadManifest(filepath.Join(bundle["dir"].(string), "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the promoted manifest: %v", err)
+	}
+	if m.RunID != runB {
+		t.Fatalf("the promoted bundle on disk is run %q, want %q", m.RunID, runB)
+	}
+
+	// reject --out: the bundle lands where the caller said, not in the
+	// default .retrace/repro.
+	out := t.TempDir()
+	doc = mustOK(t, post(t, ts, "/api/queue/web/cart/reject", `{"out":`+strconv.Quote(out)+`}`), "POST reject --out")
+	dir, _ := doc["repro"].(map[string]any)["dir"].(string)
+	rel, err := filepath.Rel(out, dir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("reject wrote the repro bundle to %q, which is not under the --out the caller named (%q)", dir, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatalf("the repro bundle named under --out is not on disk: %v", err)
+	}
+}
+
+// A flow with a committed reference bundle and no local run directory is
+// the fresh-clone case R-O describes: .retrace/runs/ is gitignored, so a
+// clone legitimately has references and nothing recorded. It must answer
+// 409 "record a run first", never 404 "no such flow" — a typo'd flow name
+// and a flow the repository demonstrably contains are different answers,
+// and every other fixture flow has a run directory, so the bundle branch of
+// flowKnown is otherwise never the deciding one.
+func TestAFlowKnownOnlyByItsCommittedBundleIs409NotAMissingFlow(t *testing.T) {
+	cwd := threeFlowProject(t)
+	// The clone: the reference bundle is committed, the runs are not.
+	if err := os.RemoveAll(filepath.Join(runs.RunsRoot(cwd), "web", "search")); err != nil {
+		t.Fatalf("removing the gitignored runs: %v", err)
+	}
+	ts := newServer(t, cwd)
+
+	r := get(t, ts, "/api/queue/web/search")
+	if r.status != http.StatusConflict {
+		t.Fatalf("a flow with a bundle and no runs: status = %d, want 409\n%s", r.status, r.body)
+	}
+	if msg, _ := r.json(t)["error"].(string); !strings.Contains(msg, "no run matches") {
+		t.Fatalf("the 409 does not say a run needs recording: %q", msg)
+	}
+	// The mirror: a flow that really does not exist is still a 404, so this
+	// is not a 409 handed to everything.
+	if r := get(t, ts, "/api/queue/web/nosuch"); r.status != http.StatusNotFound {
+		t.Fatalf("a flow with neither runs nor a bundle: status = %d, want 404\n%s", r.status, r.body)
 	}
 }
 
@@ -695,6 +785,56 @@ func TestHealthReportsTheVersionAndTheQueueIsAlwaysAnArray(t *testing.T) {
 	}
 }
 
+// R-O's empty state. An empty review screen has two causes and they are
+// different worlds: "no runs have been recorded yet" is a setup step nobody
+// has done, and "everything was reviewed and nothing needs attention" is
+// reassurance. Rendered identically, the first is read as the second, and a
+// reviewer concludes a project is clean on the strength of never having
+// recorded anything.
+//
+// All three arms are pinned, including the one that says nothing: "" is the
+// zero value and must be what a queue with work in it reports, so the
+// reassuring answer is the one that has to be earned.
+func TestAnEmptyReviewQueueSaysWhichOfItsTwoCausesItIs(t *testing.T) {
+	t.Run("nothing has ever been recorded", func(t *testing.T) {
+		doc := mustOK(t, get(t, newServer(t, t.TempDir()), "/api/queue"), "GET /api/queue")
+		if len(doc["items"].([]any)) != 0 {
+			t.Fatalf("items = %v, want empty", doc["items"])
+		}
+		if doc["empty"] != EmptyNoRuns {
+			t.Fatalf("empty = %v, want %q — an empty list on a project with no runs must not read as \"nothing needs attention\"", doc["empty"], EmptyNoRuns)
+		}
+	})
+
+	t.Run("every recorded flow was compared and passed", func(t *testing.T) {
+		cwd := t.TempDir()
+		for _, flow := range []string{"login", "search"} {
+			recordRun(t, cwd, "web", flow, runA, map[string][]byte{"cp": shotPNG(t, white)},
+				[]trace.Hop{hop(1, "GET", "/"+flow, 200, `{"ok":true}`)})
+			acceptRef(t, cwd, "web", flow, runA)
+			recordRun(t, cwd, "web", flow, runB, map[string][]byte{"cp": shotPNG(t, white)},
+				[]trace.Hop{hop(1, "GET", "/"+flow, 200, `{"ok":true}`)})
+		}
+		doc := mustOK(t, get(t, newServer(t, cwd), "/api/queue"), "GET /api/queue")
+		// The rows exist; every one of them collapses, so the reviewer's
+		// screen is as empty as the arm above — which is exactly why the
+		// document has to say which world this is.
+		if len(doc["items"].([]any)) != 2 {
+			t.Fatalf("items = %v, want the two passing rows", doc["items"])
+		}
+		if doc["empty"] != EmptyAllClear {
+			t.Fatalf("empty = %v, want %q", doc["empty"], EmptyAllClear)
+		}
+	})
+
+	t.Run("something needs attention", func(t *testing.T) {
+		doc := mustOK(t, get(t, newServer(t, threeFlowProject(t)), "/api/queue"), "GET /api/queue")
+		if doc["empty"] != "" {
+			t.Fatalf("empty = %v, want \"\" — a queue with a failing flow in it must never report either empty state", doc["empty"])
+		}
+	})
+}
+
 // A nil Deps.Now is the ordinary production case (nobody injects a clock),
 // so it must resolve to the real one rather than panicking or reporting the
 // zero time.Time — a year-1 timestamp that would read as a real reading.
@@ -773,6 +913,50 @@ func TestPostAcceptRefusesAMaskEntryThatMatchesNoCheckpointJustAsTheCliDoes(t *t
 	// cannot be satisfied by blacking out the whole image.
 	if r, g, b, a := img.At(30, 30).RGBA(); r != 0 || g != 0 || b != 0xffff || a != 0xffff {
 		t.Fatalf("a pixel outside the mask is rgba(%d,%d,%d,%d), want the captured blue — the promoted shot is not the capture", r, g, b, a)
+	}
+}
+
+// The PROJECT-WIDE mask arm of the same verb. The flow arm above refuses;
+// this one cannot (a top-level entry matching nothing in web/search may be
+// doing its job in another flow, and checkpoints are discovered from run
+// manifests rather than declared), so refs.Accept REPORTS it in
+// AcceptResult.UnmatchedMasks and this handler deliberately puts it on the
+// wire — "an agent accepting through REST must be able to see ... that a
+// project-wide mask entry matched nothing, without parsing prose".
+//
+// Nothing asserted bundle.unmatchedMasks at all, so passing nil for
+// ProjectMaskedCheckpoints was a one-line edit with the package green: the
+// CLI would print a warning about a typo'd entry while the agent using REST
+// read "clean" and committed a bundle with unredacted pixels. This is
+// mutation-set symmetry verbatim — the flow arm was mutated and died, the
+// project arm was not mutated in the same breath and survived.
+func TestPostAcceptReportsAProjectWideMaskEntryThatMatchedNothing(t *testing.T) {
+	cwd := threeFlowProject(t)
+	yaml := "app: web\n" +
+		"masks:\n" +
+		"  reslts:\n" + // a typo: web/search's checkpoint is "results"
+		"    - {x: 0, y: 0, width: 10, height: 10, why: \"the clock\"}\n" +
+		"  results:\n" + // and one that does match, so this is not "report everything"
+		"    - {x: 0, y: 0, width: 10, height: 10, why: \"the clock\"}\n"
+	if err := os.WriteFile(filepath.Join(cwd, "retrace.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("writing retrace.yaml: %v", err)
+	}
+	ts := newServer(t, cwd)
+
+	doc := mustOK(t, post(t, ts, "/api/queue/web/search/accept", ""), "POST accept")
+	reported, ok := doc["bundle"].(map[string]any)["unmatchedMasks"].([]any)
+	if !ok {
+		t.Fatalf("the accept response carries no unmatchedMasks value: %v", doc["bundle"])
+	}
+	var got []string
+	for _, v := range reported {
+		got = append(got, v.(string))
+	}
+	// Exactly the typo, and not the entry that matched: a report naming
+	// every declared entry is a report naming a config that is fine, and a
+	// caller would learn to ignore it.
+	if strings.Join(got, ",") != "reslts" {
+		t.Fatalf("bundle.unmatchedMasks = %v, want exactly [reslts] — the typo is reported and the entry that matched is not", got)
 	}
 }
 
