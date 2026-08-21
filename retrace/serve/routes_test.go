@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -174,6 +175,179 @@ func TestGetQueueReturnsItemsWorstFirst(t *testing.T) {
 
 // The spec's "LLM walks the queue" scenario, asserted through REST only:
 // after POST accept, a fresh GET of the same item says "pass".
+// summaryFromREST reads one flow's detail document over HTTP and returns
+// the MARSHALLED summary — the JSON Task 15's UI actually parses, not a
+// struct round-trip that would hide a field the handler never wrote.
+func summaryFromREST(t *testing.T, ts *httptest.Server, app, flow string) map[string]any {
+	t.Helper()
+	doc := mustOK(t, get(t, ts, "/api/queue/"+app+"/"+flow), "GET /api/queue/"+app+"/"+flow)
+	sum, ok := doc["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("GET /api/queue/%s/%s has no summary object: %v", app, flow, doc)
+	}
+	return sum
+}
+
+// The item route is the DETAIL PANE, and it carries strictly more than a
+// queue row does: the whole diff.Summary — the per-checkpoint list and each
+// checkpoint's Images.Diff / Images.Overlay, which are the fields the UI
+// reads to know WHICH shot URLs to build.
+//
+// F3 pinned exactly this property on the queue row
+// (TestEveryFieldTheWorstRowCarriesIsPopulated) and the sibling route was
+// never mutated in the same breath — mutation-set symmetry verbatim from
+// global-constraints.md, a fix applied to one member of a set while its
+// siblings go untested. Until this test, verdictOf was the ONLY reader of
+// this body and it decodes one field, so both of these left the package
+// green:
+//
+//	writeJSON(w, 200, map[string]any{"summary": diff.Summary{Verdict: sum.Verdict}})
+//	sum.Counts = diff.Counts{}; sum.Gates = nil   // before writing
+//
+// Under either the pane says "failed" and lists nothing: no counts, no
+// reason, no checkpoints, no image paths. That is the blank-comparison-pane
+// failure handleShot's own comment guards against, one route over, on the
+// surface whose entire job is to make a human look — and it is worse here,
+// because handleShot's 404 at least SAYS the image is absent while an empty
+// detail document renders as "nothing to see".
+func TestTheItemRouteServesEveryFieldTheDetailPaneMustRead(t *testing.T) {
+	cwd := threeFlowProject(t)
+	ts := newServer(t, cwd)
+
+	// Two flows, because the required set is not the same on both and a
+	// single-flow fixture cannot tell the two apart: "failed" must carry a
+	// gates reason, "changed" must carry the four image paths, and each
+	// would be vacuous on the other.
+	for _, tc := range []struct {
+		app, flow string
+		verdict   string
+		want      []string
+	}{
+		// gates is the failing flow's own field: a red row with no reason
+		// is the defect R-M and brokenItem both exist to prevent.
+		{"web", "cart", "failed", []string{"schema", "app", "flow", "a", "b", "verdict", "checkpoints", "counts", "capture", "gates"}},
+		{"web", "search", "changed", []string{"schema", "app", "flow", "a", "b", "verdict", "checkpoints", "counts", "capture"}},
+	} {
+		t.Run(tc.app+"/"+tc.flow, func(t *testing.T) {
+			sum := summaryFromREST(t, ts, tc.app, tc.flow)
+			if sum["verdict"] != tc.verdict {
+				t.Fatalf("verdict = %v, want %q", sum["verdict"], tc.verdict)
+			}
+			for _, key := range tc.want {
+				val, ok := sum[key]
+				if !ok {
+					t.Fatalf("the detail document for %s/%s has no %q — these json tags are the REST contract Task 15's UI reads: %v", tc.app, tc.flow, key, sum)
+				}
+				// informative is the queue row's own walk (queue_test.go):
+				// a key present with the type's zero value reads as
+				// "measured, and fine", which on a non-passing flow is
+				// affirmatively reassuring and wrong.
+				if !informative(val) {
+					t.Fatalf("the %s detail document's %q is %v — the pane says %q and reports that there is nothing to look at", tc.verdict, key, val, tc.verdict)
+				}
+			}
+		})
+	}
+
+	// The image paths, checkpoint by checkpoint. These are not decoration:
+	// they are how the UI knows a diff pane exists at all, and a summary
+	// that served the verdict without them would send a reviewer to a
+	// detail view with no pictures in it.
+	changed := summaryFromREST(t, ts, "web", "search")
+	cps, ok := changed["checkpoints"].([]any)
+	if !ok || len(cps) == 0 {
+		t.Fatalf("the changed flow's checkpoint list is %v — the detail pane has nothing to render", changed["checkpoints"])
+	}
+	cp := cps[0].(map[string]any)
+	if cp["name"] != "results" || cp["verdict"] != "changed" {
+		t.Fatalf("checkpoint = %v/%v, want results/changed", cp["name"], cp["verdict"])
+	}
+	if n, _ := cp["diffPct"].(float64); n <= 0 {
+		t.Fatalf("the changed checkpoint reports diffPct = %v — every pixel of this fixture's shot differs", cp["diffPct"])
+	}
+	images, _ := cp["images"].(map[string]any)
+	for _, side := range shotSides {
+		if p, _ := images[side].(string); p == "" {
+			t.Fatalf("the changed checkpoint carries no images.%s: %v — the UI builds /api/shots/web/search/%s/results from this field, and without it the pane is blank", side, images, side)
+		}
+	}
+
+	// The mirror, and it is what stops "always emit four paths" from
+	// satisfying the loop above: an UNCHANGED checkpoint has no generated
+	// sides, exactly as GET /api/shots/.../diff answers 404 for it. Claiming
+	// a diff image that does not exist is the same lie pointing the other
+	// way.
+	passing := summaryFromREST(t, ts, "web", "login")
+	pcp := passing["checkpoints"].([]any)[0].(map[string]any)
+	pimg, _ := pcp["images"].(map[string]any)
+	for _, side := range []string{"diff", "overlay"} {
+		if p, _ := pimg[side].(string); p != "" {
+			t.Fatalf("an unchanged checkpoint claims images.%s = %q — nothing was generated for it and the shot route answers 404", side, p)
+		}
+	}
+	for _, side := range []string{"a", "b"} {
+		if p, _ := pimg[side].(string); p == "" {
+			t.Fatalf("an unchanged checkpoint carries no images.%s — it still has two screenshots to look at", side)
+		}
+	}
+}
+
+// The route is a faithful pass-through of diff.Summary, asserted
+// mechanically rather than against an inventory someone maintains: a field
+// added to Summary after this test was written is covered the day it
+// appears, which is the half the explicit list above cannot do.
+func TestTheItemRouteDropsNothingSummaryForProduced(t *testing.T) {
+	cwd := threeFlowProject(t)
+	ts := newServer(t, cwd)
+
+	for _, flow := range []string{"cart", "search", "login"} {
+		want, err := SummaryFor(deps(t, cwd), "web", flow)
+		if err != nil {
+			t.Fatalf("SummaryFor(web/%s): %v", flow, err)
+		}
+		wb, err := json.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshalling the summary for web/%s: %v", flow, err)
+		}
+		var wantDoc map[string]any
+		if err := json.Unmarshal(wb, &wantDoc); err != nil {
+			t.Fatalf("the summary for web/%s is not an object: %v", flow, err)
+		}
+		got := summaryFromREST(t, ts, "web", flow)
+		// Key by key, so the failure names the field that was dropped
+		// instead of printing two whole documents at whoever reads it.
+		for _, key := range sortedKeys(wantDoc) {
+			w, g := mustJSON(t, wantDoc[key]), mustJSON(t, got[key])
+			if w != g {
+				t.Fatalf("GET /api/queue/web/%s serves a %q the engine did not produce — the detail pane is reading a document diff.Build did not write.\nserved: %s\nwant:   %s", flow, key, g, w)
+			}
+		}
+		for _, key := range sortedKeys(got) {
+			if _, ok := wantDoc[key]; !ok {
+				t.Fatalf("GET /api/queue/web/%s serves a %q that is not part of diff.Summary at all: %v", flow, key, got[key])
+			}
+		}
+	}
+}
+
+func sortedKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshalling %v: %v", v, err)
+	}
+	return string(b)
+}
+
 func TestPostAcceptUpdatesTheReferenceExactlyAsTheUiWould(t *testing.T) {
 	cwd := threeFlowProject(t)
 	ts := newServer(t, cwd)
@@ -196,6 +370,49 @@ func TestPostAcceptUpdatesTheReferenceExactlyAsTheUiWould(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(bundle["dir"].(string), "manifest.json")); err != nil {
 		t.Fatalf("the promoted bundle has no manifest on disk: %v", err)
+	}
+	// files and bytes carry VALUES, not merely a key. The reject verb's
+	// repro.files was pinned to its contents and accept's was not — the
+	// same field name on the same kind of response, killed on one arm of
+	// the pair and alive on the other, which is the mutation-set symmetry
+	// global-constraints.md names. `"files": nil` and `"bytes": 0` both
+	// left the suite green, so accept could report that it had promoted an
+	// empty, zero-byte reference bundle and nothing would say otherwise.
+	//
+	// This is what an agent reads to know the promotion worked, and it is
+	// the same claim `retrace ref accept` prints at the CLI; the bundle
+	// budget (refs.MaxBundleBytes) is denominated in exactly this number.
+	dir := bundle["dir"].(string)
+	files, ok := bundle["files"].([]any)
+	if !ok {
+		t.Fatalf("bundle.files is %v, not a list of the files promoted", bundle["files"])
+	}
+	listed := map[string]bool{}
+	var total int64
+	for _, f := range files {
+		rel, _ := f.(string)
+		if rel == "" {
+			t.Fatalf("bundle.files carries an unnamed entry: %v", files)
+		}
+		listed[rel] = true
+		st, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("bundle.files lists %s but it is not on disk: %v", rel, err)
+		}
+		total += st.Size()
+	}
+	for _, want := range []string{"manifest.json", "wire.jsonl", "shots/results.png"} {
+		if !listed[want] {
+			t.Fatalf("the promoted bundle does not list %s: %v — a reference every later diff is judged against must say what is in it", want, files)
+		}
+	}
+	// bytes is the SUM of what was promoted, not merely non-zero: a
+	// hard-coded constant, or a count of files, would satisfy "> 0".
+	if got, _ := bundle["bytes"].(float64); int64(got) != total {
+		t.Fatalf("bundle.bytes = %v, want %d — the total size of the files this accept actually wrote", bundle["bytes"], total)
+	}
+	if total == 0 {
+		t.Fatalf("the promoted bundle measures zero bytes on disk: %v", files)
 	}
 
 	if _, v := verdictOf(t, ts, "web", "search"); v != "pass" {
@@ -525,6 +742,71 @@ func TestAFlowKnownOnlyByItsCommittedBundleIs409NotAMissingFlow(t *testing.T) {
 	// is not a 409 handed to everything.
 	if r := get(t, ts, "/api/queue/web/nosuch"); r.status != http.StatusNotFound {
 		t.Fatalf("a flow with neither runs nor a bundle: status = %d, want 404\n%s", r.status, r.body)
+	}
+}
+
+// A repro bundle whose diff could not be computed carries no summary.json,
+// and the response SAYS so.
+//
+// refs.Reject omits the file for a nil Summary — deliberately, because a
+// summary.json asserting a comparison that never ran is worse than no file
+// at all. That leaves the caller holding a bundle that is quietly missing
+// the one document explaining why the run was rejected, which is why
+// handleReject's own comment says the warning exists "rather than leaving
+// the caller to notice the missing file". Nothing constructed the flow that
+// produces it, so replacing the whole clause with `_ = warning` left the
+// package green: an explanation offered by the code and silently dropped on
+// the wire.
+//
+// The flow here has runs and no accepted reference, which is the ordinary
+// way to reach it — summaryFor refuses to diff a run against itself, so
+// there is nothing to compare, while the bundle itself is still worth
+// having.
+func TestARejectThatCouldNotDiffSaysWhyItsBundleHasNoSummary(t *testing.T) {
+	cwd := threeFlowProject(t)
+	// Recorded once, never accepted: a reference does not exist and the
+	// only candidate is the run under review.
+	recordRun(t, cwd, "web", "profile", runB, map[string][]byte{"profile": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/profile", 200, `{"ok":true}`)})
+	ts := newServer(t, cwd)
+
+	doc := mustOK(t, post(t, ts, "/api/queue/web/profile/reject", ""), "POST reject on an undiffable flow")
+	warn, _ := doc["warning"].(string)
+	if warn == "" {
+		t.Fatalf("the reject reported no warning: %v — the bundle it just wrote has no summary.json and nothing in the response says so", doc)
+	}
+	if !strings.Contains(warn, "summary.json") {
+		t.Fatalf("the warning does not name the missing file: %q", warn)
+	}
+	// It names the REASON too, not just the absence: "there is no
+	// summary.json" and "there is no summary.json because this flow has no
+	// accepted reference" are different messages to a human, and the second
+	// is the one that says what to do next.
+	if !strings.Contains(warn, "run `retrace ref accept") {
+		t.Fatalf("the warning says the file is missing but not why, so the reviewer cannot act on it: %q", warn)
+	}
+	// And the warning is true: the bundle really has no summary.json, so
+	// this is not a sentence emitted unconditionally.
+	repro := doc["repro"].(map[string]any)
+	dir := repro["dir"].(string)
+	for _, f := range repro["files"].([]any) {
+		if f.(string) == "summary.json" {
+			t.Fatalf("the response warns about a missing summary.json that the bundle actually contains: %v", repro["files"])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "summary.json")); !os.IsNotExist(err) {
+		t.Fatalf("summary.json is on disk (%v) while the response warns it is absent", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Fatalf("the bundle was not written at all: %v — a repro bundle is worth having even when the diff that explains it cannot be computed", err)
+	}
+
+	// The mirror, and it is the half that stops "always warn" from passing:
+	// a reject that COULD diff carries no warning at all, because there is
+	// nothing missing from its bundle.
+	ok := mustOK(t, post(t, ts, "/api/queue/web/cart/reject", ""), "POST reject on a diffable flow")
+	if w, present := ok["warning"]; present {
+		t.Fatalf("a reject whose bundle has a summary.json still warned: %v — a warning that is always there says nothing", w)
 	}
 }
 
