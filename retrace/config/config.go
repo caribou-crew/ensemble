@@ -473,19 +473,32 @@ func (c *Config) NormalizePath(path string) string {
 // an unknown matcher name must fail the append, not brick every later
 // Discover call in this project with no way to repair it through the API.
 //
-// The read-modify-write is serialized by overlayMu and the write itself is
-// atomic (temp file in the same directory, then os.Rename over the target),
-// so within a single process concurrent appends never lose a rule, and a
-// concurrent reader — even one in another process — never observes a
-// partially-written file.
+// The read-modify-write is serialized by overlayMu WITHIN this process and
+// by an exclusive flock(2) on a sidecar file ACROSS processes (see
+// lockOverlay in overlaylock_unix.go), and the write itself is atomic (temp
+// file in the same directory, then os.Rename over the target). So on unix
+// concurrent appends never lose a rule — whether they come from two
+// goroutines or two separate `retrace` processes — and a concurrent reader,
+// in any process, never observes a partially-written file.
 //
-// overlayMu is an in-process mutex, though: it does not serialize appends
-// made by two separate OS processes, and this function does not implement
-// cross-process locking. If the future `retrace ref rule` command and the
-// review server both end up calling AppendWireRule concurrently as separate
-// processes, one of their appends can still be silently lost — that case is
-// out of scope here and belongs to whichever task first makes the review
-// server a second live writer.
+// The cross-process half was measured before it existed and after. Task 3
+// measured 3 processes x 12 appends landing 12, 12 and 14 of 36, every lost
+// call returning a nil error; Task 11's own regression test
+// (TestNSeparateProcessesAppendingConcurrentlyLandNRules, 4 processes x 25
+// appends) landed 34 of 100 against the unlocked function and 100 of 100
+// with the lock. Silent loss behind a nil error is the same failure shape
+// the atomicity fix was written to eliminate; it simply moved up a level
+// once a second writer process appeared. Deleting the lock re-opens it, and
+// that test is what says so.
+//
+// The wait for the lock is BOUNDED (overlayLockWait): a command a developer
+// typed reports which file it is waiting on rather than hanging forever.
+//
+// NON-UNIX platforms have no lock — the Go standard library exposes no
+// portable file lock, and the portable alternative was ruled out for
+// wedging on a crash. There, this function keeps exactly its pre-Task-11
+// guarantee: safe within one process, and two writer processes can still
+// lose an append. See overlaylock_other.go.
 //
 // dir is a working-directory ROOT, exactly like runs.PathsFor's root — it
 // is intentionally not validated as a path component; only a
@@ -497,8 +510,25 @@ func AppendWireRule(dir string, r rules.Raw) error {
 	}
 	path := filepath.Join(dir, OverlayPath)
 
+	// overlayMu first, then the file lock: goroutines in this process queue
+	// on the cheap mutex instead of each opening a descriptor and contending
+	// on flock. The file lock is what the OTHER processes queue on, and it
+	// is held across the read, the merge and the rename — a lock released
+	// before the rename would leave exactly the read-modify-write window it
+	// exists to close.
 	overlayMu.Lock()
 	defer overlayMu.Unlock()
+
+	// The overlay's directory must exist before the sidecar lock can be
+	// created in it; this used to happen just before the write.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockOverlay(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	existing, err := readOverlay(path)
 	if err != nil {
@@ -516,9 +546,6 @@ func AppendWireRule(dir string, r rules.Raw) error {
 		return err
 	}
 	dir2 := filepath.Dir(path)
-	if err := os.MkdirAll(dir2, 0o755); err != nil {
-		return err
-	}
 	tmp, err := os.CreateTemp(dir2, ".wire-rules-*.json.tmp")
 	if err != nil {
 		return err
