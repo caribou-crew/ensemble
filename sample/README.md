@@ -106,6 +106,30 @@ edge-gw is the only sample service that sets CORS headers
 (`withCORS` in `main.go`) — real edge/envoy layers own CORS the same way
 they own auth, so it belongs there rather than in the client.
 
+### Test runners (Playwright + Maestro)
+
+The same checkout flow, driven by two different test runners against the
+one app — the point is proving retrace can eventually tap into either, not
+testing the app twice (see `adapters/` in design.md §7, task 4.7 — the
+`retrace-playwright`/`retrace-maestro` packages that would actually wire
+these to retrace don't exist yet, so today these are two plain, independent
+test suites).
+
+Both need the full stack running and seeded first
+(`ensemble up -c ensemble.yaml --profile full && ensemble seed baseline`)
+— they exercise the real backend, not a mock.
+
+```sh
+cd clients/web-app
+npm test                        # Playwright — tests/checkout.spec.js
+maestro test maestro/checkout.yaml   # Maestro — web support is beta, Chromium-only
+```
+
+Maestro's `assertVisible` text is a **full regex match against an
+element's entire text**, not a substring search — `"total: .*"`, not
+`"total:"` (the flow's own comments call this out; it's easy to get wrong
+once and burn the beta's ~15s-per-assertion timeout finding out).
+
 ## Layout
 
 ```
@@ -114,6 +138,8 @@ sample/
 ├── seeds/                     # baseline.sql, users.sql, empty.sql, bulk.sql
 ├── clients/
 │   └── web-app/                # React/Vite — browse/cart/checkout, no tracing code
+│       ├── tests/               # Playwright spec
+│       └── maestro/             # Maestro web flow (beta)
 └── services/
     ├── edge-gw/                # Go   — entry + auth stub + CORS, routes to storefront/catalog
     ├── catalog-svc/            # Go   — Postgres CRUD, calls payments stub

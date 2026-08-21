@@ -57,6 +57,10 @@ sample/services/notify-worker/notifications.log
 sample/services/order-svc/build/
 sample/services/order-svc/.gradle/
 
+# web-app's Playwright run output — regenerated every `npm test`.
+sample/clients/web-app/test-results/
+sample/clients/web-app/playwright-report/
+
 # Subagent-driven-development scratch: ledgers, briefs, reports, review
 # packages. Local coordination state, never part of the source tree.
 .superpowers/
