@@ -5557,7 +5557,41 @@ crashes rather than misbehaving quietly — `summary.budgets.map(...)` throws.
 Since "no evidence, no gate" applies to all four planes, an ordinary API-only
 flow now reaches that case. Pin it with a test that marshals a **fully
 empty** `Summary` and asserts every array field encodes as `[]`; a golden
-built from hand-populated slices cannot reach it.
+built from hand-populated slices cannot reach it. Have that test **walk the
+marshalled JSON** rather than list field names, so a field added later is
+covered the day it appears.
+
+**Two exceptions, both deliberate.** `Wire.Groups` stays a nil-able
+`*GroupNames`: nil there means "this flow has no group structure", which is
+genuinely not "has groups, and they are empty", and a pointer is the honest
+encoding for absent.
+
+`Conformance` flattens to `[]` like everything else, **and gains a companion
+boolean** — `OpenAPIConfigured bool` \`json:"openApiConfigured"\`, set from
+`in.Cfg.OpenAPI != ""`. Flattening alone would make **never checked** read as
+**checked and clean**, which is the silent-pass Task 9 added the `unchecked`
+kind to prevent, at plane scale rather than finding scale. But `null` was not
+carrying that distinction either — `s.Conformance` is nil both when no spec
+is configured and when a spec is configured and everything conformed, so both
+already marshalled identically. The fix is to *state* the fact rather than
+encode it in the absence of data, exactly as `HopDiff.HopRequireConfigured`
+already does for hops. A configured spec that fails to load returns an error
+from `CheckOpenAPI`, so `retrace diff` exits 3 and no `Summary` is produced —
+`openApiConfigured: true` therefore does imply the plane was really checked.
+
+**`Entry`'s seven array fields carry no `omitempty`.** An unchanged paired
+call is the most common row any review UI renders, and with `omitempty` all
+seven keys vanish from it entirely — so `entry.bodyDiff.map(...)` throws on
+the commonest row in the report. This is the one place Task 10 reaches into
+`retrace/diff/wire.go`, and `TestWireJSONKeysMatchContract` moves with it.
+
+**The embedded manifests are normalised on the `Summary` side, not in
+`retrace/runs`.** `Manifest.Checkpoints`/`.Groups` reach the wire through
+`Summary.A/B.Manifest`, but a manifest is a **persisted** artifact: changing
+its tags would fix only runs recorded from that day forward, leaving every
+existing bundle decoding to nil and re-marshalling as `null`. Normalising
+them where the `Summary` is built covers old and new manifests alike and
+changes no on-disk format.
 
 `--no-fail` computes and reports every gate exactly as above but forces
 `ExitCode` to `0` for the verdicts `changed` and `failed` — for a reporting
@@ -7062,7 +7096,8 @@ git commit -m "feat(design-system): useAsync — one guarded async-load hook for
     checkpoints: CheckpointVerdict[];
     wire: { paired: Entry[]; missing: Call[]; extra: Call[]; groups?: GroupNames };
     sections: Section[]; hops: HopDiff; unexpectedStatuses: StatusFinding[]; perf: PerfResult;
-    conformance: ConformanceFinding[]; capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts;
+    conformance: ConformanceFinding[]; openApiConfigured: boolean;
+    capture: { a: CaptureTrust; b: CaptureTrust }; counts: Counts;
     gates: string[]; budgets: Gate[] }
   ```
 
