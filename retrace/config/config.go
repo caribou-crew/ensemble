@@ -56,12 +56,20 @@ const (
 // Config is the parsed contents of retrace.yaml plus the machine-owned
 // overlay merged in by Discover.
 type Config struct {
-	App              string            `yaml:"app"`
-	Flows            map[string]Flow   `yaml:"flows"`
-	Entry            string            `yaml:"entry"`
-	Upstream         string            `yaml:"upstream"`
-	WireIgnore       []WireIgnoreEntry `yaml:"wire_ignore"`
-	WireRules        []rules.Raw       `yaml:"wire_rules"`
+	App        string            `yaml:"app"`
+	Flows      map[string]Flow   `yaml:"flows"`
+	Entry      string            `yaml:"entry"`
+	Upstream   string            `yaml:"upstream"`
+	WireIgnore []WireIgnoreEntry `yaml:"wire_ignore"`
+	WireRules  []rules.Raw       `yaml:"wire_rules"`
+	// QueryIgnore names query parameters that do not identify a call — a
+	// cache-buster, a client-side timestamp — so strict replay matches on
+	// what is left of the query. It is PROJECT-WIDE and top-level, a
+	// sibling of wire_ignore, because the two are the same kind of thing
+	// and a second scoping rule for the neighbouring key is how a config
+	// grows two mental models (R-J). A per-flow need, if one appears, gets
+	// a precedence rule stated in one place at that time.
+	QueryIgnore      []string          `yaml:"query_ignore"`
 	PathNormalize    []Normalize       `yaml:"path_normalize"`
 	ExpectedStatuses []StatusRule      `yaml:"expected_statuses"`
 	HopRequire       []RequiredRoute   `yaml:"hop_require"`
@@ -256,6 +264,23 @@ func (c *Config) WireIgnorePaths() []string {
 		paths = append(paths, e.Path)
 	}
 	return paths
+}
+
+// QueryIgnoreKeys returns the query parameters to drop before matching,
+// with blank entries removed. An empty key reaching the matcher would be
+// `url.Values.Del("")` — harmless today, and exactly the kind of
+// "permissive value derived from an unset one" the zero-value constraint
+// is about — so it is dropped at this seam, the same way WireIgnorePaths
+// drops an empty path.
+func (c *Config) QueryIgnoreKeys() []string {
+	out := make([]string, 0, len(c.QueryIgnore))
+	for _, k := range c.QueryIgnore {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 // Thresholds gates how big a pixel diff must be before it's a Fine

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
 
@@ -117,7 +118,7 @@ func TestAMissNamesTheNearestExchangeAndTheFieldsThatDiffered(t *testing.T) {
 		exch("POST", "/orders", "", obj(t, `{"sku":"a","qty":2}`), 201, `{"id":7}`, 3),
 	)
 
-	t.Run("no fixture for the path at all names method and path", func(t *testing.T) {
+	t.Run("no fixture for the path names the path and NOT the matching method", func(t *testing.T) {
 		got := b.Match(Request{Method: "GET", Path: "/order"}, Options{})
 		if !got.Miss {
 			t.Fatalf("expected a miss, got %+v", got)
@@ -132,9 +133,14 @@ func TestAMissNamesTheNearestExchangeAndTheFieldsThatDiffered(t *testing.T) {
 		if p.Expected != "/orders" || p.Actual != "/order" {
 			t.Fatalf("path diff = %+v, want expected /orders actual /order", p)
 		}
-		m := fieldNamed(t, got.Diff, "method")
-		if m.Expected != "GET" || m.Actual != "GET" {
-			t.Fatalf("method diff = %+v", m)
+		// "method: expected GET, got GET" is a reported difference that is
+		// not one, in the body a human reads to act on. The mirror arm
+		// below — same path, different verb — is what keeps this from
+		// being satisfied by never reporting the method at all.
+		for _, f := range got.Diff {
+			if f.Field == "method" {
+				t.Fatalf("the diff reports %+v, but the method matched — a miss must name what actually differed", f)
+			}
 		}
 	})
 
@@ -297,5 +303,162 @@ func TestWhenRepeatsAreExhaustedTheLastRecordedResponseRepeats(t *testing.T) {
 	}
 	if third.Hit.Body != `{"items":[{"sku":"a"}]}` {
 		t.Fatalf("third call served %q, want the last recorded response", third.Hit.Body)
+	}
+}
+
+func TestAnUnparseableRecordedRequestBodyMatchesOnlyItsOwnBytes(t *testing.T) {
+	// F3. `nil recorded body == no constraint` made a recorded POST with a
+	// form-encoded, XML, plain-text or otherwise non-JSON body match ANY
+	// body on the same method+path+query — the wildcard this package
+	// exists to refuse, arrived at by an unparseable value degrading into
+	// a permissive one instead of a refusing one.
+	//
+	// The rule is byte-exact rather than "refuse the bundle" because a
+	// non-JSON body is a perfectly legitimate recording (a form post, a
+	// protobuf) and its bytes ARE a contract; there is simply no structure
+	// in it to subset-match.
+	for _, c := range []struct{ name, recorded string }{
+		{"form encoded", "user=ada&pass=hunter2"},
+		{"xml", "<order><sku>a</sku></order>"},
+		{"plain text", "ping"},
+		{"truncated json", `{"sku":"a","qt`},
+		{"literal null", "null"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := bundleOf(Exchange{
+				Key:    Key{Method: "POST", Path: "/login"},
+				ReqRaw: c.recorded, ReqBody: decodeBody(payloadOf(c.recorded)),
+				Status: 200, Body: `{"ok":true}`, Seq: 1,
+			})
+			// Something else entirely, and something one byte away: a
+			// prefix rule would let the second one through.
+			for _, sent := range []string{`{"anything":true}`, c.recorded + "x", ""} {
+				got := b.Match(Request{Method: "POST", Path: "/login", Raw: sent, Body: decodeJSON([]byte(sent))}, Options{})
+				if !got.Miss {
+					t.Fatalf("a recorded %q body was matched by %q — an unparseable recording must not be a wildcard", c.recorded, sent)
+				}
+				if len(got.Diff) == 0 {
+					t.Fatalf("the miss for %q carries no diff to read", sent)
+				}
+			}
+			// The mirror: the recorded bytes still match themselves, so
+			// the refusal above is not "nothing ever matches".
+			got := b.Match(Request{Method: "POST", Path: "/login", Raw: c.recorded, Body: decodeJSON([]byte(c.recorded))}, Options{})
+			if got.Miss || got.Hit == nil {
+				t.Fatalf("the recorded body did not match itself: %+v", got)
+			}
+		})
+	}
+}
+
+// payloadOf builds the trace.Payload lower() would hand decodeBody, so the
+// fixtures above go through the SAME decode production uses rather than a
+// hand-chosen ReqBody.
+func payloadOf(body string) trace.Payload { return trace.Payload{Body: body} }
+
+func TestARecordingWithNoRequestBodyAtAllStillConstrainsNothing(t *testing.T) {
+	// The other arm of F3's rule, so the fix cannot be "every request body
+	// must now be byte-identical". A GET the recording made with no body
+	// is answered whatever the client sends, exactly as before.
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	got := b.Match(Request{Method: "GET", Path: "/cart"}, Options{})
+	if got.Miss || got.Hit == nil {
+		t.Fatalf("a recording with no request body did not match a bodyless request: %+v", got)
+	}
+}
+
+func TestAMalformedQueryIsNeverCanonicalisedIntoSomethingElse(t *testing.T) {
+	// SignificantQuery returns an unparseable query VERBATIM. Collapsing
+	// it to "" would make every malformed query match a recording with NO
+	// query, and make two different malformed queries match each other —
+	// two calls the operator can see are different, matched by a
+	// canonicalisation nobody asked for.
+	const bad = "a=%zz"
+	const otherBad = "b=%zz"
+	if got := SignificantQuery(bad, nil); got != bad {
+		t.Fatalf("SignificantQuery(%q) = %q, want it returned verbatim", bad, got)
+	}
+	if SignificantQuery(bad, nil) == SignificantQuery(otherBad, nil) {
+		t.Fatalf("two different malformed queries canonicalise to the same value (%q)", SignificantQuery(bad, nil))
+	}
+	if SignificantQuery(bad, nil) == SignificantQuery("", nil) {
+		t.Fatal("a malformed query canonicalises to the empty query — it would match a recording that carried no query at all")
+	}
+
+	b := bundleOf(
+		exch("GET", "/cart", "", nil, 200, `{"none":true}`, 1),
+		exch("GET", "/cart", bad, nil, 200, `{"bad":true}`, 2),
+	)
+	// The malformed query matches only its own recording...
+	got := b.Match(Request{Method: "GET", Path: "/cart", Query: bad}, Options{})
+	if got.Miss || got.Hit == nil || got.Hit.Body != `{"bad":true}` {
+		t.Fatalf("a malformed query did not match the exchange recorded with it: %+v", got)
+	}
+	// ...and a DIFFERENT malformed query matches neither.
+	got = b.Match(Request{Method: "GET", Path: "/cart", Query: otherBad}, Options{})
+	if !got.Miss {
+		t.Fatalf("%q matched a table recorded with %q and with no query: %+v", otherBad, bad, got)
+	}
+}
+
+func TestTrailingSlashAndEmptyPathEquivalenceHoldsInBothDirections(t *testing.T) {
+	// NormalizePath is one line and every one of its behaviours was
+	// unpinned: reduced to the identity, nothing in the package noticed.
+	// Both directions, because a future change that WIDENED it (stripping
+	// every trailing slash, so "/a//" == "/a") is as invisible as one that
+	// dropped it.
+	for _, c := range []struct{ in, want string }{
+		{"", "/"},
+		{"/", "/"},
+		{"/cart/", "/cart"},
+		{"/cart", "/cart"},
+		{"/cart//", "/cart/"}, // ONE trailing slash, not every one
+		{"/a/b/", "/a/b"},
+	} {
+		if got := NormalizePath(c.in); got != c.want {
+			t.Fatalf("NormalizePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	if got := b.Match(Request{Method: "GET", Path: "/cart/"}, Options{}); got.Miss {
+		t.Fatalf("a trailing slash was a miss against a recording without one: %+v", got)
+	}
+	// And the mirror: a genuinely different path is still a miss, so the
+	// equivalence above is not "paths barely matter".
+	if got := b.Match(Request{Method: "GET", Path: "/cart/items"}, Options{}); !got.Miss {
+		t.Fatalf("/cart/items matched a recording of /cart: %+v", got)
+	}
+}
+
+func TestTheNearestExchangePrefersTheMatchingMethodOverACloserPath(t *testing.T) {
+	// nearest's method penalty decides which exchange a human is shown on
+	// a 501. Dropped, nothing in the package noticed, so no fixture
+	// distinguished the right nearest rule from a wrong one — the "rule
+	// symmetry" costume: a fixture where both rules agree pins neither.
+	//
+	// Here they disagree by construction: /cart is one edit away from the
+	// request path but recorded under the WRONG verb, while /orders is
+	// four edits away under the right one.
+	b := bundleOf(
+		exch("POST", "/cart", "", nil, 201, `{}`, 1),
+		exch("GET", "/orders", "", nil, 200, `{}`, 2),
+	)
+	got := b.Match(Request{Method: "GET", Path: "/carts"}, Options{})
+	if !got.Miss || got.Nearest == nil {
+		t.Fatalf("expected a miss naming a nearest: %+v", got)
+	}
+	if got.Nearest.Key.Method != "GET" || got.Nearest.Key.Path != "/orders" {
+		t.Fatalf("nearest = %+v, want GET /orders — an exchange under a different verb is not a near miss, it is a different call",
+			got.Nearest.Key)
+	}
+	// The mirror: with the same verb available, the closest path wins.
+	b = bundleOf(
+		exch("GET", "/cart", "", nil, 200, `{}`, 1),
+		exch("GET", "/orders", "", nil, 200, `{}`, 2),
+	)
+	got = b.Match(Request{Method: "GET", Path: "/carts"}, Options{})
+	if got.Nearest == nil || got.Nearest.Key.Path != "/cart" {
+		t.Fatalf("nearest = %+v, want GET /cart", got.Nearest)
 	}
 }

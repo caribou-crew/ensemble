@@ -40,11 +40,18 @@ func replaysRoot(cwd string) string { return filepath.Join(cwd, ".retrace", "rep
 // replayReport is the --json document. Every field carries an explicit
 // camelCase tag (global-constraints.md): this is a CI contract.
 type replayReport struct {
-	App       string        `json:"app"`
-	Flow      string        `json:"flow"`
-	Ref       replayRef     `json:"ref"`
-	RunDir    string        `json:"runDir"`
-	Exchanges int           `json:"exchanges"`
+	App       string    `json:"app"`
+	Flow      string    `json:"flow"`
+	Ref       replayRef `json:"ref"`
+	RunDir    string    `json:"runDir"`
+	Exchanges int       `json:"exchanges"`
+	// Served is how many calls were answered FROM THE BUNDLE, and Unused
+	// names the recorded exchanges nothing ever asked for. Without them a
+	// consumer of this document cannot tell "every call matched" from "the
+	// client never called anything": missCount is 0 in both worlds. Served
+	// == 0 is could-not-evaluate, exit 3.
+	Served    int           `json:"served"`
+	Unused    []replay.Key  `json:"unused"`
 	MissCount int           `json:"missCount"`
 	Misses    []replay.Miss `json:"misses"`
 	Test      replayTest    `json:"test"`
@@ -84,6 +91,14 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(testCmd) == 0 {
 		return fail(stderr, "replay: a test command is required after `--`")
+	}
+	// Before anything is bound. A flag that binds and THEN refuses every
+	// request (httpguard 403s a non-loopback Host) hands the operator a
+	// running server, a live port and a stream of DNS-rebinding errors that
+	// have nothing to do with what they did — the failure arriving later,
+	// further from the cause, wearing someone else's message (R-I).
+	if err := requireLoopback(*listen); err != nil {
+		return fail(stderr, "replay: %v", err)
 	}
 
 	cwd, err := os.Getwd()
@@ -189,12 +204,17 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "retrace: replay: could not append to %s (%v) — the miss report below is complete, the file is not\n", p.MissesPath, err)
 	}
 
+	served := srv.ServedCount()
+	unused := srv.UnusedExchanges()
+
 	if *asJSON {
 		if err := writeJSON(stdout, replayReport{
 			App: appName, Flow: flow,
 			Ref:       replayRef{Kind: r.Kind, Dir: r.Dir, RunID: r.RunID},
 			RunDir:    p.RunDir,
 			Exchanges: len(bundle.Exchanges),
+			Served:    served,
+			Unused:    unused,
 			MissCount: len(misses),
 			Misses:    misses,
 			Test:      replayTest{Command: strings.Join(testCmd, " "), ExitCode: testExit},
@@ -202,7 +222,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, "replay: %v", err)
 		}
 	} else {
-		renderReplay(stdout, appName, flow, r.Kind, len(bundle.Exchanges), p.RunDir, misses)
+		renderReplay(stdout, appName, flow, r.Kind, len(bundle.Exchanges), served, unused, p.RunDir, misses)
 	}
 
 	// A miss is a hard gate. It outranks the test command's own code on
@@ -211,16 +231,79 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	if len(misses) > 0 {
 		return exitGate
 	}
+	// Nothing was compared. That is NOT the same verdict as "everything
+	// matched", and it must never share an exit code with it: a miss (2)
+	// means the recording and reality disagree, which is a finding, while
+	// zero served means there was nothing to disagree about. `revalidate`
+	// already separates those, and 3 — could not evaluate — is where this
+	// belongs.
+	if served == 0 {
+		fmt.Fprintf(stderr, "retrace: replay: the test command made NO calls the bundle could answer — nothing was compared, so this is not a pass\n")
+		fmt.Fprintf(stderr, "  point the app under test at RETRACE_PROXY_URL (a hard-coded base URL ignores it), and check the command actually ran its suite\n")
+		return exitUsage
+	}
 	return testExit
+}
+
+// requireLoopback refuses a --listen address that is not loopback, BEFORE
+// a listener exists. The replay server serves recorded traffic — request
+// and response bodies lifted verbatim out of a bundle — so the bind the
+// product offers is loopback, and the help text has always said so. A flag
+// must not describe a guarantee that is not made (R-I). httpguard stays
+// exactly as it is: defence in depth for the Host header on a loopback
+// bind, not a licence to offer this one.
+func requireLoopback(addr string) error {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("--listen %q is not a host:port address: %v", addr, err)
+	}
+	refuse := func() error {
+		return fmt.Errorf("--listen %s is not a loopback address — a replay server answers with recorded traffic, which carries whatever the bundle recorded (tokens, cookies, personal data), so it binds 127.0.0.1 only; reach it from another host with an SSH tunnel (`ssh -L 9000:127.0.0.1:9000 host`) or a port-forward, not by widening the bind", addr)
+	}
+	// An empty host is 0.0.0.0/[::] — every interface. It is the widest
+	// bind there is, so it is refused rather than read as "unspecified,
+	// probably fine": the zero value here must be the refusing one.
+	if strings.TrimSpace(host) == "" {
+		return refuse()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !ip.IsLoopback() {
+			return refuse()
+		}
+		return nil
+	}
+	// A NAME (localhost, or something that merely looks like it). Every
+	// address it resolves to must be loopback — one non-loopback answer is
+	// a bind on a real interface, whatever the name suggested.
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("--listen %s: cannot resolve %q, and an address that does not resolve cannot be shown to be loopback: %v", addr, host, err)
+	}
+	for _, ip := range ips {
+		if !ip.IsLoopback() {
+			return refuse()
+		}
+	}
+	return nil
 }
 
 // renderReplay prints one line per miss, each naming the nearest recorded
 // exchange and the fields that differed. Nothing is truncated — a report
 // an agent has to read is not a dashboard.
-func renderReplay(w io.Writer, app, flow, kind string, exchanges int, runDir string, misses []replay.Miss) {
-	fmt.Fprintf(w, "retrace: replayed %s/%s from the %s (%d recorded exchanges)\n", app, flow, kind, exchanges)
+func renderReplay(w io.Writer, app, flow, kind string, exchanges, served int, unused []replay.Key, runDir string, misses []replay.Miss) {
+	fmt.Fprintf(w, "retrace: replayed %s/%s from the %s (%d recorded exchanges, %d served)\n", app, flow, kind, exchanges, served)
 	fmt.Fprintf(w, "  %s\n", runDir)
+	for _, k := range unused {
+		fmt.Fprintf(w, "  never called: %s %s%s\n", k.Method, k.Path, pathQuery(k.Query))
+	}
 	if len(misses) == 0 {
+		if served == 0 {
+			// Never the "every call matched" sentence for a replay in
+			// which nothing was asked. Two different worlds must not print
+			// the same verdict.
+			fmt.Fprintf(w, "  NOTHING WAS COMPARED: the test command made no calls the bundle could answer\n")
+			return
+		}
 		fmt.Fprintf(w, "  every call matched the recording\n")
 		return
 	}
@@ -246,6 +329,14 @@ func renderReplay(w io.Writer, app, flow, kind string, exchanges int, runDir str
 	fmt.Fprintf(w, "  recording is stale: `retrace revalidate --ref %s --upstream URL` says which.\n", flow)
 }
 
+// pathQuery renders a query for display, "" when there is none.
+func pathQuery(q string) string {
+	if q == "" {
+		return ""
+	}
+	return "?" + q
+}
+
 // printCandidates renders the runs refs.Resolve tried and why each was
 // rejected. A "no reference" that names nothing tells the operator only
 // that they are stuck.
@@ -268,7 +359,7 @@ func replayOptions(cfg *config.Config) (replay.Options, error) {
 	if err != nil {
 		return replay.Options{}, err
 	}
-	return replay.Options{Rules: rs, Normalize: cfg.NormalizePath}, nil
+	return replay.Options{Rules: rs, Normalize: cfg.NormalizePath, QueryIgnore: cfg.QueryIgnoreKeys()}, nil
 }
 
 // createReplayRun makes the replay's run directory. Run ids are

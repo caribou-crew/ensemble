@@ -68,6 +68,7 @@ type Server struct {
 	opts       Options
 	missesPath string
 	misses     []Miss
+	served     int
 	logErr     error
 	now        func() time.Time
 }
@@ -92,6 +93,39 @@ func (s *Server) MissCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.misses)
+}
+
+// ServedCount is the number of requests this server ANSWERED FROM THE
+// BUNDLE. It exists because "no misses" and "the recording was honoured"
+// are two different facts, and a replay in which the client never called
+// anything satisfies the first while proving nothing about the second: an
+// app with a hard-coded base URL that ignores RETRACE_PROXY_URL, a runner
+// that skipped its suite, a `--` command that exited early. Zero served is
+// "nothing was compared", which `retrace replay` reports as could-not-
+// evaluate rather than as a clean pass.
+//
+// Preflights and guard rejections are deliberately NOT counted: neither is
+// an exchange the recording answered.
+func (s *Server) ServedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.served
+}
+
+// UnusedExchanges names every recorded exchange no request ever matched,
+// in recorded order. A replay that served two of nine recorded calls is a
+// materially different event from one that served all nine, and the
+// difference is invisible in a miss count.
+func (s *Server) UnusedExchanges() []Key {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Key
+	for i := range s.bundle.Exchanges {
+		if s.bundle.Exchanges[i].used == 0 {
+			out = append(out, s.bundle.Exchanges[i].Key)
+		}
+	}
+	return out
 }
 
 // Misses returns a copy of every miss recorded so far.
@@ -125,16 +159,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body any
+	var raw string
 	if r.Body != nil {
-		raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+		b, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
 		if err == nil {
-			body = decodeJSON(raw)
+			raw = string(b)
+			body = decodeJSON(b)
 		}
 	}
 
 	s.mu.Lock()
 	res := s.bundle.Match(Request{
-		Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: body,
+		Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: body, Raw: raw,
 	}, s.opts)
 	if res.Miss || res.Hit == nil {
 		miss := Miss{
@@ -155,18 +191,31 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// Copied out under the lock: the Exchange lives in a slice the next
 	// Match may re-read, and the response is written after the unlock.
 	hit := *res.Hit
+	s.served++
 	s.mu.Unlock()
 	writeHit(w, hit)
 }
 
 // writeHit replays one recorded exchange. Headers are replayed as
-// recorded except the ones that describe THIS connection rather than the
-// payload: Content-Length is recomputed by net/http from the body actually
-// written, and hop-by-hop headers belong to the original connection and
-// would be wrong (or fatal) on this one.
+// recorded except two families that describe THIS exchange rather than the
+// recorded payload:
+//
+//   - connection headers. Content-Length is recomputed by net/http from
+//     the body actually written, and hop-by-hop headers belong to the
+//     original connection and would be wrong (or fatal) on this one.
+//   - the CORS plane. reflectCORS has already answered THIS request's
+//     Origin, and a recorded Access-Control-Allow-Origin would otherwise
+//     win the Set() and replay the ORIGIN OF THE RECORDING to a browser on
+//     localhost — which is every browser-driven capture, the primary
+//     consumer. A recorded bare "*" would replay as a bare "*", the exact
+//     value reflectCORS exists never to emit, and a credentialed request
+//     would fail. The browser then blocks the response, the developer sees
+//     a network error, and it reads as an app bug — and because it lands on
+//     a HIT, the miss machinery never sees it. Vary goes with them: it is
+//     part of the same answer, and this server's Vary is Origin.
 func writeHit(w http.ResponseWriter, e Exchange) {
 	for k, v := range e.Headers {
-		if connectionHeader(k) {
+		if connectionHeader(k) || corsHeader(k) {
 			continue
 		}
 		w.Header().Set(k, v)
@@ -189,6 +238,13 @@ func connectionHeader(name string) bool {
 		return true
 	}
 	return false
+}
+
+// corsHeader reports the response headers the REPLAY SERVER owns rather
+// than the recording — see writeHit.
+func corsHeader(name string) bool {
+	n := strings.ToLower(name)
+	return strings.HasPrefix(n, "access-control-") || n == "vary"
 }
 
 // writeMiss is the loud refusal: 501 Not Implemented, with everything a
