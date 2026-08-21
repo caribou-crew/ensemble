@@ -97,6 +97,19 @@ func TestValidateServicePortCollidesWithDatabasePort(t *testing.T) {
 	}
 }
 
+func TestValidateServiceNegativeStartupTimeout(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"bff": {Run: "node dist/main.js", Port: 8003, StartupTimeoutS: -1},
+	}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bff") {
+		t.Errorf("error does not name the service: %v", err)
+	}
+}
+
 func TestValidateDependsOnUnknownReference(t *testing.T) {
 	c := &Config{Services: map[string]Service{
 		"bff": {Run: "node dist/main.js", Port: 8003, DependsOn: []string{"ghost"}},
