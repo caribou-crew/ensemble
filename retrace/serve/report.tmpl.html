@@ -96,7 +96,7 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 
 <div class="rows">
 {{range .Rows}}<section class="row {{if .Compared}}row--compared{{else}}row--not-compared{{end}}" data-flow="{{.Key}}" data-score="{{score .Score}}">
-  <a class="row__flow" href="{{.Href}}">{{.Key}}</a>
+  {{if .Href}}<a class="row__flow" href="{{.Href}}">{{.Key}}</a>{{else}}<span class="row__flow">{{.Key}}</span>{{end}}
   <span class="badge badge--{{.Verdict}}">{{.Verdict}}</span>
   {{if .Compared}}
   <span class="row__runs">run <code>{{.RunID}}</code> vs reference <code>{{if .RefRunID}}{{.RefRunID}}{{else}}(none recorded){{end}}</code></span>

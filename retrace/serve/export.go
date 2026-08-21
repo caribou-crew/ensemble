@@ -322,22 +322,30 @@ type exporter struct {
 // snake_case flow names are ordinary. The filesystem already has a separator
 // that cannot collide, and the runs root already uses it.
 func (e *exporter) item(it Item) (reportRow, error) {
-	// The join guard again, at the join: it.App/it.Flow come off the runs
-	// tree rather than off a flag, and a directory name that could not be
-	// validated is one this export must refuse loudly rather than skip —
-	// a flow silently missing from a report is indistinguishable from a
-	// flow that passed.
-	if err := runs.ValidateComponents(it.App, it.Flow); err != nil {
-		return reportRow{}, fmt.Errorf("serve: cannot export %s/%s: %w", it.App, it.Flow, err)
-	}
-	dir := path.Join(it.App, it.Flow)
 	row := reportRow{
 		Key: it.App + "/" + it.Flow, App: it.App, Flow: it.Flow,
-		Href:    path.Join(dir, "index.html"),
 		Verdict: it.Verdict, Score: it.Score, Gates: it.Gates,
 		Capture: it.Capture,
 		Reasons: append(append([]runs.TrustReason{}, it.Capture.A.Reasons...), it.Capture.B.Reasons...),
 	}
+
+	// The join guard, at the join, delegated to the one guard body:
+	// it.App/it.Flow are about to become a directory under OutDir.
+	//
+	// A row that cannot pass it is NOT dropped and does NOT take the export
+	// down. BuildQueue emits brokenItem(app, "", err) for an app whose flow
+	// listing failed — a real, reachable state (an unreadable app
+	// directory), and a row that names no flow at all. It still belongs in
+	// the report, because a broken flow silently missing from a review
+	// queue is indistinguishable from a flow that passed; what it does not
+	// get is a directory of its own or a link to a page that does not
+	// exist.
+	if err := runs.ValidateComponents(it.App, it.Flow); err != nil {
+		row.WhyNot = fmt.Sprintf("could not be evaluated — this row names no flow that can be written to a directory (%v), so it appears here and has no page of its own", err)
+		return row, nil
+	}
+	dir := path.Join(it.App, it.Flow)
+	row.Href = path.Join(dir, "index.html")
 
 	if unEvaluable(it) {
 		row.WhyNot = "could not be evaluated — this flow was never compared, so nothing below is a finding about it"
