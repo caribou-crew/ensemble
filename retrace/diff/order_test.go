@@ -1,6 +1,11 @@
 package diff
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/runs"
+)
 
 func TestLISPicksTheMinimalMovedSet(t *testing.T) {
 	// A: 1 2 3 → B: 3 1 2 is ONE call moving (item "3", from last to
@@ -234,5 +239,86 @@ func TestUngroupedRunsRenderAsOneFlatSection(t *testing.T) {
 	sections2 := BuildSections(entries, &GroupNames{})
 	if len(sections2) != 1 || len(sections2[0].Entries) != 2 {
 		t.Fatalf("BuildSections with empty GroupNames = %+v, want one flat section", sections2)
+	}
+}
+
+// TestUngroupedSectionsDoNotAliasWirePaired pins the ruling in buildSection
+// itself, not the round-3 combination that happened to depend on it.
+// Round 3 pinned "aliasing restored + the Sections loop dropped" — a
+// two-mechanism fixture that only fires when BOTH change together. This
+// fixture isolates the one mechanism: it goes through Build on an
+// UNGROUPED run (the path that used to alias Wire.Paired's backing array
+// straight through, per order.go's buildSection doc), writes through
+// Sections[0].Entries[0], and asserts Wire.Paired[0] did not move. Nothing
+// else about the Sections loop is touched, so this fails if and only if
+// buildSection stops copying on the no-groups path — exactly the ruling
+// round 4 found unpinned. Reverting buildSection's `out := make + copy`
+// back to `out := entries` must turn this red on its own.
+func TestUngroupedSectionsDoNotAliasWirePaired(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	a := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	b := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: a, B: b, Cfg: cfg})
+	if len(s.Wire.Paired) == 0 || len(s.Sections) == 0 || len(s.Sections[0].Entries) == 0 {
+		t.Fatalf("test setup: nothing to mutate through; Wire.Paired=%+v Sections=%+v", s.Wire.Paired, s.Sections)
+	}
+	original := s.Wire.Paired[0].Method
+
+	s.Sections[0].Entries[0].Method = "MUTATED-VIA-SECTIONS"
+
+	if s.Wire.Paired[0].Method != original {
+		t.Fatalf("Wire.Paired[0].Method = %q after writing through Sections[0].Entries[0], want unchanged %q — an ungrouped Build must not let Sections and Wire.Paired share backing memory",
+			s.Wire.Paired[0].Method, original)
+	}
+}
+
+// TestGroupedSectionsDoNotAliasWirePaired is the grouped-path companion:
+// the brief that produced this fix asked whether the grouped path deserves
+// the same assertion, since it copies today via the byName map's append
+// but nothing pins that either. Pinning the property Build promises here
+// — not BuildSections' current implementation of it — means a future
+// refactor of the grouped collection path (e.g. one that started aliasing
+// byName's slices) would be caught here too, not only on the ungrouped
+// fixture above.
+//
+// IMPORTANT: this test does NOT kill the buildSection mutation that
+// TestUngroupedSectionsDoNotAliasWirePaired kills (reverting buildSection's
+// `out := make + copy` back to `out := entries`). Measured directly: with
+// that mutation applied, this test still PASSES, because byName[n] is
+// already a freshly appended slice before buildSection ever sees it —
+// buildSection's own copy is redundant on this path today. Its green run
+// is evidence the grouped path still doesn't alias, NOT evidence that the
+// buildSection ruling under test in the other function was exercised.
+func TestGroupedSectionsDoNotAliasWirePaired(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	groups := []runs.Group{{Name: "checkout"}}
+	a := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, groups, okCapture())}
+	b := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, groups, okCapture())}
+	cfg := baseConfig(t)
+	opts, err := OptionsFor(cfg, a.Manifest, b.Manifest)
+	if err != nil {
+		t.Fatalf("OptionsFor: %v", err)
+	}
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: a, B: b, Cfg: cfg, Options: opts})
+	if len(s.Wire.Paired) == 0 || len(s.Sections) == 0 || len(s.Sections[len(s.Sections)-1].Entries) == 0 {
+		t.Fatalf("test setup: nothing to mutate through; Wire.Paired=%+v Sections=%+v", s.Wire.Paired, s.Sections)
+	}
+	last := len(s.Sections) - 1
+	original := s.Wire.Paired[0].Method
+
+	s.Sections[last].Entries[0].Method = "MUTATED-VIA-SECTIONS"
+
+	if s.Wire.Paired[0].Method != original {
+		t.Fatalf("Wire.Paired[0].Method = %q after writing through Sections[%d].Entries[0], want unchanged %q — a grouped Build must not let Sections and Wire.Paired share backing memory",
+			s.Wire.Paired[0].Method, last, original)
 	}
 }
