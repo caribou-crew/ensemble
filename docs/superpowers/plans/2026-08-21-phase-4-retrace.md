@@ -5321,6 +5321,15 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
       WireMoved          int `json:"wireMoved"`
       WireMissing        int `json:"wireMissing"`
       WireExtra          int `json:"wireExtra"`
+      // Violations counts rule violations from BOTH planes: every
+      // Entry.BodyViolations element AND every Entry.HeaderDiff element
+      // whose Type == "violation". Task 8's review found headers flattening
+      // violations into "changed", which made the exit-2 bullet below
+      // inexpressible for headers — a header rule violation gated at exit 1.
+      // HeaderDiff.Type carries the outcome
+      // ("changed"|"added"|"removed"|"tolerated"|"violation"); counting only
+      // BodyViolations here reintroduces that defect at the consumer.
+      // Tolerated entries on either plane are NOT violations.
       Violations         int `json:"violations"`
       HopNew             int `json:"hopNew"`
       HopGone            int `json:"hopGone"`
@@ -5437,7 +5446,10 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
   side that slips through it still lands the run on `failed` via
   `capture.Fatal`, unchanged from today.
 - `failed` (exit 2) if not quarantined and ANY of: a rule `Violation`
-  exists; `RequiredRouteFailures` is non-empty; `UnexpectedStatuses` is
+  exists **on either plane — `Entry.BodyViolations`, or an
+  `Entry.HeaderDiff` element with `Type == "violation"`** (see `Counts`
+  above; checking only the body plane gates a header violation at exit 1,
+  which is the defect Task 8's review found); `RequiredRouteFailures` is non-empty; `UnexpectedStatuses` is
   non-empty; `Perf.Status == "over"`; `capture.Fatal` is true for either
   side; a `Budgets` entry has `Failed == true` for a plane named in
   `fail_on`. Unexpected ≥400 fails the run **regardless of pixel/wire
