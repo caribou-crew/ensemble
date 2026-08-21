@@ -4500,6 +4500,24 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 `Compare` orchestrates, exactly as flowlens did:
 1. decode both; record `WidthA/HeightA/WidthB/HeightB` — these are the
    shots' real geometry and are never overwritten by anything below.
+1a. **`ApplyMasks` on both, HERE — before trim, before the size branch.**
+   Mask rects come from `cfg.MasksFor(...)` and are authored in the
+   ORIGINAL screenshot's coordinate space, so this is the only frame in
+   which a mask rect means what its author meant. **Amended after Task 7's
+   review; the original plan ran this at step 3 and that was wrong twice
+   over.** With masks applied post-trim, a mask at (12,12) under
+   `TrimA={10,10,20,20}` covers the content that was at (22,22) — and since
+   A and B trim independently, it covers *different content on each side*.
+   Measured on the shipped code: a masked widget gave `NumDiff=0` with
+   `Trim:false` and `NumDiff=16` with `Trim:true`, and the plan's only
+   `pixel.Compare` call site (line ~5518) passes `Masks` and `Trim` in the
+   same `Options`. Running masks post-`Overlap` was the second error: it
+   left masked regions counted in the `Overlap` block, the one number this
+   plan calls "the only number that means the content changed", which
+   reaches `summary.json`, `--json`, the REST item response and the static
+   export. Do NOT "fix" this by translating mask rects per side into
+   post-trim coordinates — that answers the coordinate-space question twice
+   instead of removing it.
 1b. if `o.Trim` → `TrimUniformBorder` each image independently; on `ok`,
    replace the working image and record the kept rect in `Result.TrimA` /
    `Result.TrimB`. A refusal (see Step 6) is not an error: the working
@@ -4511,7 +4529,11 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 2. if sizes differ → compute `Overlap` on the **cropped intersection** first
    (that is the only number that means "the content changed"), then pad both
    onto the union canvas and set `PaddedForDiff`.
-3. `ApplyMasks` on both.
+3. ~~`ApplyMasks` on both.~~ **TOMBSTONE — moved to step 1a by Task 7's
+   review. Do not restore it here.** Masking at this point applies
+   original-coordinate rects to trimmed images and leaves masked pixels
+   counted in `Overlap`; both were measured as live defects, not
+   hypotheticals. See 1a for the evidence.
 4. `Match` twice: at `GateThreshold` (the verdict number) and at
    `FineThreshold` (the reporting number).
 5. if `WantDiff && NumDiff > 0` → keep the gate pass's output image.
@@ -4527,9 +4549,22 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 
 `TrimUniformBorder` crops a uniform border matched against the top-left
 pixel, **refusing** to trim (returning `ok == false`) when the result would
-be <2px in either dimension or when nothing would change — a fully uniform
-shot means nothing rendered, and trimming it to a sliver destroys the
-evidence. It works on a decoded `*image.RGBA`, not on PNG bytes: `Compare`
+be <2px in either dimension — a fully uniform shot means nothing rendered,
+and trimming it to a sliver destroys the evidence.
+
+**Amended after Task 7's review, two corrections.** First, the "<2px" clause
+is the ONLY refusal test; an earlier draft listed a separate "fully uniform"
+refusal, but the scan invariant makes those identical — `top` runs to
+`b.Max.Y` on a uniform image, so `kh == 0` exactly, a strict subset of <2px.
+Verified exhaustively for every uniform `w,h` in 1..6 plus the degenerate
+set (0x0, 5x0, 1x1, fully transparent, 10x1, 1x10, non-zero-`Rect.Min`
+sub-images). A separate check there is unreachable code.
+Second, ~~"or when nothing would change"~~ is a **TOMBSTONE — an
+already-tight image returns `ok=true` with the full-bounds rect, NOT a
+refusal.** Refusing would set `Result.TrimA` to nil, which that field's own
+doc reads as "trim was requested and declined", making "already tight"
+indistinguishable from "declined" — one zero value carrying two meanings,
+which the Global Constraint forbids. It works on a decoded `*image.RGBA`, not on PNG bytes: `Compare`
 has already decoded, and a re-encode round trip inside the compare path
 would be pure waste.
 Tests: `TestTrimsAUniformBorder`, `TestRefusesToTrimAFullyUniformImage`,
