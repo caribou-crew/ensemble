@@ -1067,3 +1067,54 @@ func TestSummaryJsonShapeIsStable(t *testing.T) {
 		t.Fatalf("Summary JSON shape drifted from testdata/summary.golden.json — field names are an API; a rename is a breaking change for every consumer.\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// TestBuildItselfRefusesASideThatResolvedToNone pins the rule directly at
+// Build, not merely through the callers that already guard.
+//
+// "none" means "I could not compare", never "nothing differed". Every
+// consumer of refs.Resolve today guards before calling Build and each of
+// those guards is pinned — but a rule re-implemented at each consumer is a
+// rule that will be forgotten at the next one, and Tasks 12 and 13 add two
+// consumers that resolve references through the same call. Build's refusal
+// is the invariant they cannot fail to inherit; the callers' guards stay,
+// because they own the message that names `retrace ref accept`.
+//
+// BOTH sides are asserted: a guard written for side A only is the
+// mutation-set symmetry this phase keeps paying for.
+func TestBuildItselfRefusesASideThatResolvedToNone(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	cfg := baseConfig(t)
+	good := func(dir, id string) RunRef {
+		return RunRef{Kind: "run", Dir: dir, RunID: id, Manifest: manifest(id, nil, nil, okCapture())}
+	}
+	none := RunRef{Kind: "none"}
+
+	for _, tc := range []struct {
+		name string
+		a, b RunRef
+	}{
+		{"side A", none, good(dirB, "b")},
+		{"side B", good(dirA, "a"), none},
+		{"both sides", none, none},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Build(BuildInput{App: "app", Flow: "flow", A: tc.a, B: tc.b, Cfg: cfg})
+			if err == nil {
+				t.Fatalf("Build returned a Summary (verdict %q) for a side that resolved to nothing comparable — an empty document whose verdict reads clean is exactly the plausible value \"none\" exists to prevent", s.Verdict)
+			}
+			if s.Verdict != "" {
+				t.Fatalf("Build returned verdict %q alongside its error; a refused build must produce no document at all", s.Verdict)
+			}
+		})
+	}
+
+	// The mirror: the kinds that DO resolve still build. A refusal that
+	// caught "run" or "bundle" would break every diff in the product.
+	for _, kind := range []string{"run", "bundle"} {
+		a, b := good(dirA, "a"), good(dirB, "b")
+		a.Kind, b.Kind = kind, kind
+		if _, err := Build(BuildInput{App: "app", Flow: "flow", A: a, B: b, Cfg: cfg}); err != nil {
+			t.Fatalf("Build refused two %q sides: %v", kind, err)
+		}
+	}
+}

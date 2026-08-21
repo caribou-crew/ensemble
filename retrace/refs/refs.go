@@ -16,9 +16,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/caribou-crew/ensemble/core/trace"
@@ -244,6 +246,29 @@ type AcceptOptions struct {
 	// the captured truth, and Accept's job is to not LEAK past a mask that
 	// exists, never to invent one.
 	MasksFor func(checkpoint string) []pixel.Rect
+	// MaskedCheckpoints names every checkpoint the caller's configuration
+	// declares a mask ENTRY for. It exists because MasksFor is a lookup and
+	// a lookup cannot report a typo: `chekout-summary:` against a
+	// checkpoint named `checkout-summary` returns no masks, which is
+	// indistinguishable here from "this screen needs no mask", so the
+	// promotion takes the plain-copy path and publishes the pixels the
+	// entry was written to hide.
+	//
+	// Accept refuses a promotion whose declared entries include one no
+	// checkpoint in the run matches. It refuses on the ENTRY, never on the
+	// checkpoint: "this flow declares masks and this checkpoint got none"
+	// would refuse the legitimate case of masking one screen of five. An
+	// entry matching nothing has no such innocent reading.
+	//
+	// The caller strips any wildcard its own dialect has before passing
+	// this — a wildcard names no checkpoint, so it can never be a typo, and
+	// this package does not know config's spelling of one.
+	//
+	// nil means "the caller has no configuration to check", the same
+	// honest reading as a nil MasksFor. The wiring that fills it is pinned
+	// end to end from the CLI, because a nil arriving from a caller that
+	// DOES have a config is exactly the defect this field exists to catch.
+	MaskedCheckpoints []string
 	// Force overrides ONE refusal: promoting a run whose capture verdict is
 	// fatal (capture.Fatal — degraded, broken, failed, or the unassessed
 	// zero verdict). It overrides nothing else, and the zero value is the
@@ -257,8 +282,11 @@ type AcceptOptions struct {
 	//     Forcing past MaxBundleBytes moves the cost to everyone who ever
 	//     clones the repository, so overBudget's message offers three
 	//     remedies and pointedly not this flag.
-	//   - An undecodable masked shot is a redaction that cannot be proven
-	//     to have happened. Nothing may override that.
+	//   - A redaction that cannot be proven to have happened is never
+	//     overridable: an undecodable masked shot, a mask that covers none
+	//     of its image, a mask entry naming a checkpoint that does not
+	//     exist. Each of the three ends with unredacted pixels in a
+	//     committed bundle, and a repository cannot be un-published.
 	//
 	// A `suspect` capture is NOT gated: it is a heuristic doubt, and the
 	// caller warns and proceeds. Only capture.Fatal gets a gate, because a
@@ -313,6 +341,14 @@ type bundleFile struct {
 // A fatal capture verdict is REFUSED unless o.Force; a `suspect` one is
 // promoted and left for the caller to warn about. See AcceptOptions.Force.
 //
+// Three refusals protect the redaction itself and none of them is
+// forcible, because each ends the same way — unredacted pixels in a
+// committed bundle: a masked shot that cannot be decoded, a mask that
+// covers none of its image (see coversNothing), and a configured mask
+// entry that matches no checkpoint in this run (see unmatchedMasks). A
+// mask that is not protecting anything is the defect, whichever of the
+// three shapes it arrives in.
+//
 // Note what is deliberately NOT a bar here: a dirty git tree. Resolve
 // refuses a dirty run and Accept does not, and the asymmetry is the point.
 // Resolve picks a reference NOBODY chose, silently, as a fallback — its
@@ -340,6 +376,10 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 		return AcceptResult{}, fmt.Errorf(
 			"refusing to promote %s: its capture verdict is %q — a run the capture machinery could not vouch for cannot be the thing every later diff is judged against, and that is how a proxy-down run becomes the source of truth; re-record the flow, or pass --force if you have established the capture is sound",
 			o.RunID, m.Capture.Status)
+	}
+
+	if err := unmatchedMasks(m.Checkpoints, o.MaskedCheckpoints); err != nil {
+		return AcceptResult{}, err
 	}
 
 	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
@@ -376,6 +416,52 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, CaptureStatus: m.Capture.Status}, nil
 }
 
+// unmatchedMasks refuses a promotion whose configuration declares a mask
+// for a checkpoint the run does not have. A lookup keyed on the checkpoint
+// name cannot tell that apart from "no mask here"; only the declared
+// entries can, which is why AcceptOptions carries them.
+//
+// It reports EVERY unmatched entry and names the checkpoints that do
+// exist, because the fix is almost always a spelling and a message that
+// makes the reader go and list the run's checkpoints themselves has done
+// half a job.
+func unmatchedMasks(cps []runs.Checkpoint, declared []string) error {
+	if len(declared) == 0 {
+		return nil
+	}
+	have := make(map[string]bool, len(cps))
+	names := make([]string, 0, len(cps))
+	for _, cp := range cps {
+		have[cp.Name] = true
+		names = append(names, cp.Name)
+	}
+	var missing []string
+	for _, d := range declared {
+		if !have[d] {
+			missing = append(missing, d)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	existing := "this run has no checkpoints at all"
+	if len(names) > 0 {
+		sort.Strings(names)
+		existing = "this run's checkpoints are " + strings.Join(names, ", ")
+	}
+	return fmt.Errorf("refusing to promote: a mask is configured for %s, which no checkpoint matches — %s. A mask entry that matches no checkpoint redacts nothing, and it looks exactly like a mask that worked; fix the spelling or remove the entry, because a reference bundle is committed and an unredacted promotion cannot be taken back",
+		quoteList(missing), existing)
+}
+
+func quoteList(names []string) string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = fmt.Sprintf("%q", n)
+	}
+	return strings.Join(out, ", ")
+}
+
 // shotFor stages one checkpoint's screenshot, redacting it when a mask
 // covers it. Masks previously only gated COMPARISON, which meant a blessed
 // shot could reach a committed reference bundle with legible card data
@@ -384,7 +470,9 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 //
 // An undecodable shot is a REFUSAL, never a byte-for-byte copy: a mask that
 // cannot be applied is a mask that is not protecting anything, and the
-// whole point of this branch is what the mask hides.
+// whole point of this branch is what the mask hides. A mask that IS applied
+// and covers nothing is refused for the identical reason — see
+// coversNothing.
 func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Rect) (bundleFile, error) {
 	// cp.File is run-dir-relative and comes from the manifest; it is
 	// resolved against runDir and must not escape it. filepath.Join cleans
@@ -409,12 +497,44 @@ func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Re
 	if err != nil {
 		return bundleFile{}, fmt.Errorf("checkpoint %q is masked but could not be decoded, so its mask cannot be applied: %w — refusing to promote it unredacted", cp.Name, err)
 	}
+	if r, ok := coversNothing(img, masks); ok {
+		return bundleFile{}, fmt.Errorf("checkpoint %q has a mask at x=%d y=%d %dx%d, which covers none of its %dx%d image — applying it would redact nothing while reporting success, so this is a mask that is not protecting anything, exactly like one that cannot be decoded; fix the rectangle (a mask authored against a different device is the usual cause), because a reference bundle is committed and an unredacted promotion cannot be taken back",
+			cp.Name, r.X, r.Y, r.Width, r.Height, img.Rect.Dx(), img.Rect.Dy())
+	}
 	pixel.ApplyMasks(img, masks)
 	out, err := pixel.Encode(img)
 	if err != nil {
 		return bundleFile{}, fmt.Errorf("re-encoding the redacted checkpoint %q: %w", cp.Name, err)
 	}
 	return bundleFile{rel: rel, src: src, bytes: out, size: int64(len(out))}, nil
+}
+
+// coversNothing reports the first mask whose intersection with the image is
+// EMPTY — a rectangle authored at y=1400 for a 900px shot, or one with a
+// non-positive width. pixel.ApplyMasks clamps such a rect to nothing and
+// paints zero pixels, so shotFor would store a shot it had "redacted" and
+// return success.
+//
+// This lives here and NOT in pixel.ApplyMasks. The clamp is right for the
+// other caller: in COMPARISON a mask authored on a taller device must
+// degrade to a partial mask rather than panicking, and diff depends on
+// that. Same function, two callers, two different correct behaviours —
+// comparison tolerates, promotion refuses. Anyone tempted to "fix" the
+// clamp itself would silently break diffing.
+//
+// A PARTIAL overlap is deliberately fine: a rect authored y=850..1000
+// against a 900px shot paints 850..900 and so covers all of the region
+// that exists, and refusing it would break every project whose masks were
+// authored on a taller device. The defect is a mask that paints zero
+// pixels. Nothing else.
+func coversNothing(img *image.RGBA, masks []pixel.Rect) (pixel.Rect, bool) {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	for _, r := range masks {
+		if min(r.X+r.Width, w) <= max(r.X, 0) || min(r.Y+r.Height, h) <= max(r.Y, 0) {
+			return r, true
+		}
+	}
+	return pixel.Rect{}, false
 }
 
 // measure fills in each staged file's size — the REDACTED size for a
@@ -542,6 +662,15 @@ func Reject(o RejectOptions) (RejectResult, error) {
 	// A function that joins a caller-supplied component into a filesystem
 	// path validates that component at the seam; relying on PathsFor having
 	// been called first would make this guard a property of statement order.
+	//
+	// UNREACHABLE TODAY, and deliberately kept. PathsFor above rejects the
+	// same three components, so no input reaches this line invalid and no
+	// test can turn red when it is deleted — a review measured exactly that
+	// (mutation M27 survives) and it is an intended survivor, recorded here
+	// rather than left as a comment with a body. What it defends against is
+	// the edit that moves, replaces or relaxes the PathsFor call above:
+	// then the out-dir join below becomes the first join of App/Flow/RunID,
+	// and the guard that was decorative becomes the only one.
 	if err := runs.ValidateComponents(o.App, o.Flow, o.RunID); err != nil {
 		return RejectResult{}, err
 	}

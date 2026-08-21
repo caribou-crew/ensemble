@@ -661,11 +661,12 @@ func TestAcceptRefusesAFatalCaptureUnlessForced(t *testing.T) {
 	}
 }
 
-// TestForceDoesNotOverrideTheOtherTwoRefusals is the negative half of the
+// TestForceDoesNotOverrideTheOtherRefusals is the negative half of the
 // ruling: Force gates capture.Fatal and NOTHING else. Without this, Force
 // would drift into a general "do it anyway", which is how a size budget
-// stops being a budget.
-func TestForceDoesNotOverrideTheOtherTwoRefusals(t *testing.T) {
+// stops being a budget — and how a redaction that cannot be proven to have
+// happened becomes optional.
+func TestForceDoesNotOverrideTheOtherRefusals(t *testing.T) {
 	t.Run("the size budget", func(t *testing.T) {
 		cwd := t.TempDir()
 		root, runID := acceptFixture(t, cwd, withCheckpoint("huge", "huge.png"))
@@ -696,6 +697,30 @@ func TestForceDoesNotOverrideTheOtherTwoRefusals(t *testing.T) {
 		o.MasksFor = func(string) []pixel.Rect { return []pixel.Rect{{X: 0, Y: 0, Width: 1, Height: 1}} }
 		if _, err := Accept(o); err == nil {
 			t.Fatal("Force promoted a shot that could not be decoded to be masked — a redaction that cannot be proven to have happened must never be forcible")
+		}
+	})
+
+	t.Run("a mask that covers none of its image", func(t *testing.T) {
+		cwd := t.TempDir()
+		root, runID := acceptFixture(t, cwd)
+
+		o := acceptOpts(cwd, root, runID)
+		o.Force = true
+		o.MasksFor = func(string) []pixel.Rect { return []pixel.Rect{{X: 0, Y: 1400, Width: 200, Height: 40}} }
+		if _, err := Accept(o); err == nil {
+			t.Fatal("Force promoted a shot whose mask painted zero pixels — a redaction that did not happen must never be forcible")
+		}
+	})
+
+	t.Run("a mask entry that matches no checkpoint", func(t *testing.T) {
+		cwd := t.TempDir()
+		root, runID := acceptFixture(t, cwd)
+
+		o := acceptOpts(cwd, root, runID)
+		o.Force = true
+		o.MaskedCheckpoints = []string{"chekout-summary"}
+		if _, err := Accept(o); err == nil {
+			t.Fatal("Force promoted a run whose configured mask matched no checkpoint — Force gates the capture verdict, nothing else")
 		}
 	})
 }
@@ -860,4 +885,203 @@ func TestAnAbsentBundleDirectoryStillFallsBack(t *testing.T) {
 	if got.Kind != "run" {
 		t.Fatalf("Kind = %q (reason %q), want \"run\" — no bundle directory is the designed path, not a corrupt bundle", got.Kind, got.Reason)
 	}
+}
+
+// --- masks that protect nothing ----------------------------------------
+//
+// The three tests below and their three mirrors are one finding: a
+// promotion that reports success having redacted nothing is the same defect
+// as one that copies an undecodable shot through, and it reaches a
+// COMMITTED bundle. Each refusal has a mirror asserting the innocent case
+// still promotes, because an over-refusal here breaks every project whose
+// masks were authored against a different device.
+
+func TestAMaskThatCoversNoneOfItsImageIsRefused(t *testing.T) {
+	// The rectangle is authored for a taller device and lands entirely
+	// below a 10px shot. pixel.ApplyMasks CLAMPS rather than complaining,
+	// so without a check the shot is decoded, re-encoded, stored and
+	// reported as promoted, having been redacted in zero pixels.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	o := acceptOpts(cwd, root, runID)
+	o.MasksFor = func(checkpoint string) []pixel.Rect {
+		if checkpoint == "cart" {
+			return []pixel.Rect{{X: 0, Y: 1400, Width: 200, Height: 40}}
+		}
+		return nil
+	}
+	_, err := Accept(o)
+	if err == nil {
+		t.Fatal("Accept promoted a shot whose mask covered none of it — a mask applied to nothing is a mask that is not protecting anything, and the bundle is committed")
+	}
+	for _, want := range []string{"cart", "1400"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to name the checkpoint and the rectangle (%q)", err, want)
+		}
+	}
+	dir, _ := BundleDir(cwd, "web", "checkout")
+	if _, serr := os.Stat(dir); !errors.Is(serr, fs.ErrNotExist) {
+		t.Fatalf("a refused promotion still wrote a bundle at %s (stat err %v)", dir, serr)
+	}
+}
+
+// TestAPartiallyClampedMaskStillPromotes is the over-refusal mirror. A rect
+// authored on a taller device that OVERLAPS the shot covers all of the
+// region that exists; refusing it would break every such project, and the
+// clamp in pixel.ApplyMasks stays right for comparison either way.
+func TestAPartiallyClampedMaskStillPromotes(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	o := acceptOpts(cwd, root, runID)
+	o.MasksFor = func(checkpoint string) []pixel.Rect {
+		if checkpoint == "cart" {
+			// Starts inside the 10x10 shot, runs far past its edges.
+			return []pixel.Rect{{X: 6, Y: 6, Width: 900, Height: 900}}
+		}
+		return nil
+	}
+	res, err := Accept(o)
+	if err != nil {
+		t.Fatalf("Accept refused a mask that clamps to a partial region: %v — that rect covers every pixel of the region that exists", err)
+	}
+	masked, err := os.ReadFile(filepath.Join(res.Dir, "shots", "cart.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pixelAt(t, masked, 8, 8); got != black {
+		t.Fatalf("cart.png at (8,8) = %v, want black — the part of the mask that IS on the image must still be applied", got)
+	}
+	if got := pixelAt(t, masked, 1, 1); got != red {
+		t.Fatalf("cart.png at (1,1) = %v, want the original %v — the clamp must not spread the mask over the whole shot", got, red)
+	}
+}
+
+func TestAMaskEntryMatchingNoCheckpointIsRefusedAndNamesWhatExists(t *testing.T) {
+	// The typo route: `masks: { chekout-summary: [...] }` against a run
+	// whose checkpoints are cart and receipt. MasksFor is a lookup, so it
+	// returns nil for the misspelt name and the shot takes the plain-copy
+	// path — success, exit 0, and the pixels the entry was written to hide
+	// are now in git. Only the declared ENTRIES can catch it.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	o := acceptOpts(cwd, root, runID)
+	o.MasksFor = func(checkpoint string) []pixel.Rect {
+		if checkpoint == "chekout-summary" {
+			return []pixel.Rect{{X: 0, Y: 0, Width: 4, Height: 4}}
+		}
+		return nil
+	}
+	o.MaskedCheckpoints = []string{"chekout-summary"}
+	_, err := Accept(o)
+	if err == nil {
+		t.Fatal("Accept promoted a run whose configured mask matched no checkpoint — that mask redacted nothing and looks exactly like one that worked")
+	}
+	for _, want := range []string{"chekout-summary", "cart", "receipt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to name the unmatched entry AND the checkpoints that do exist (%q), so the fix is obvious from the message", err, want)
+		}
+	}
+	dir, _ := BundleDir(cwd, "web", "checkout")
+	if _, serr := os.Stat(dir); !errors.Is(serr, fs.ErrNotExist) {
+		t.Fatalf("a refused promotion still wrote a bundle at %s (stat err %v)", dir, serr)
+	}
+}
+
+// TestMaskingOneCheckpointOfSeveralStillPromotes is the over-refusal
+// mirror for the entry check: the refusal keys on the ENTRY, never on the
+// checkpoint, because a flow may legitimately mask one screen of five.
+func TestMaskingOneCheckpointOfSeveralStillPromotes(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	o := acceptOpts(cwd, root, runID)
+	o.MasksFor = func(checkpoint string) []pixel.Rect {
+		if checkpoint == "cart" {
+			return []pixel.Rect{{X: 0, Y: 0, Width: 4, Height: 4}}
+		}
+		return nil
+	}
+	// cart is masked, receipt is not, and that is a correct config.
+	o.MaskedCheckpoints = []string{"cart"}
+	res, err := Accept(o)
+	if err != nil {
+		t.Fatalf("Accept refused a flow that masks one checkpoint of two: %v", err)
+	}
+	masked, err := os.ReadFile(filepath.Join(res.Dir, "shots", "cart.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pixelAt(t, masked, 1, 1); got != black {
+		t.Fatalf("cart.png at (1,1) = %v, want black", got)
+	}
+	unmasked, err := os.ReadFile(filepath.Join(res.Dir, "shots", "receipt.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pixelAt(t, unmasked, 1, 1); got != red {
+		t.Fatalf("receipt.png at (1,1) = %v, want the original %v — an unmasked checkpoint is carried as captured", got, red)
+	}
+}
+
+// TestAManifestCheckpointThatEscapesTheRunDirectoryIsRefused pins
+// shotFor's filepath.Rel guard. runs.ReadManifest validates schema,
+// capture status and the wire/hop counts — it does NOT validate
+// Checkpoint.File, so this guard is the only thing between a manifest
+// naming "../../../secret.txt" and Accept reading that file and writing it
+// OUTSIDE the bundle tree (writeBundleFile joins the same traversing
+// relative path onto the staging directory).
+//
+// The second assertion is a filesystem check, not a reading of the error:
+// "it returned an error" and "it wrote nothing outside the bundle" are two
+// different claims, and only the second one is the finding.
+func TestAManifestCheckpointThatEscapesTheRunDirectoryIsRefused(t *testing.T) {
+	cwd := t.TempDir()
+	root := runs.RunsRoot(cwd)
+	runID := "20260821T100000Z-aaa1111"
+	p, err := runs.PathsFor(root, "web", "checkout", runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(cwd, "secret.txt")
+	writeFile(t, secret, []byte("-----BEGIN PRIVATE KEY-----"))
+	escape, err := filepath.Rel(p.RunDir, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRun(t, root, "web", "checkout", runID, withCheckpoint("escape", filepath.ToSlash(escape)))
+	before := treeOf(t, cwd)
+
+	if _, err := Accept(acceptOpts(cwd, root, runID)); err == nil {
+		t.Fatalf("Accept promoted a checkpoint whose file (%q) resolves outside the run directory", escape)
+	}
+	after := treeOf(t, cwd)
+	if strings.Join(before, "\n") != strings.Join(after, "\n") {
+		t.Fatalf("a refused Accept changed the tree:\nbefore:\n%s\nafter:\n%s\n— a traversing checkpoint must not be read out of the run directory and written anywhere", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+}
+
+// treeOf lists every path under root, so "nothing was written outside the
+// bundle" is asserted over the whole tree rather than over the handful of
+// destinations the test author thought of.
+func treeOf(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return rerr
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(out)
+	return out
 }

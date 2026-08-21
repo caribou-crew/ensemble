@@ -354,6 +354,28 @@ func writePNG(path string, img *image.RGBA) error {
 // Build produces the one document every consumer reads: the CLI's text
 // report, --json, the review queue, the static export, and any agent.
 func Build(in BuildInput) (Summary, error) {
+	// "none" is the refusing value of the Kind vocabulary: it means "I
+	// could not compare", never "nothing differed". Building from one would
+	// produce a Summary whose every plane is empty and whose verdict is
+	// therefore clean — the plausible-value trap, in the one document every
+	// consumer reads.
+	//
+	// The callers that resolve a reference each guard already, and those
+	// guards STAY: they own the operator-facing message that names
+	// `retrace ref accept`, which this error cannot produce because Build
+	// does not know how the side was resolved. This is not redundancy — it
+	// is the invariant a consumer that does not exist yet (Task 12's replay
+	// server, Task 13's review server) cannot fail to inherit. A rule
+	// re-implemented at each consumer is a rule that will be forgotten at
+	// the next one.
+	for _, side := range []struct {
+		label string
+		ref   RunRef
+	}{{"A", in.A}, {"B", in.B}} {
+		if side.ref.Kind == "none" {
+			return Summary{}, fmt.Errorf("side %s resolved to nothing comparable (kind %q, reason recorded by whoever resolved it) — there is no comparison to report, and reporting one would say \"nothing differed\" about a diff that never ran; resolve it, or tell the operator why it could not be resolved", side.label, side.ref.Kind)
+		}
+	}
 	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B}
 	s.Capture = CaptureBanner{A: in.A.Manifest.Capture, B: in.B.Manifest.Capture}
 	// Set BEFORE the quarantine exits: this is a fact about configuration,
