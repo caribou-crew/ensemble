@@ -5444,10 +5444,28 @@ git commit -m "feat(retrace): hop diff, unexpected-status detection, perf budget
   results** — the spec's explicit scenario.
 - `changed` (exit 1) if not failed and any of: a checkpoint verdict is not
   `ok`; `Wire` has changed/moved/missing/extra entries; `HopDiff` has new or
-  gone routes or a deviating service count; `Conformance` is non-empty; a
+  gone routes or a deviating service count; **`Conformance` contains any
+  finding whose `Kind` is NOT `"unchecked"`**; a
   `Budgets` entry has `Failed == true` for a plane NOT named in `fail_on`
   (measured and reported, but not allowed to fail the build).
 - `pass` (exit 0) otherwise.
+
+**The `"unchecked"` conformance kind, and why it sits on neither side of
+that line.** Added by Task 9's review: it means "the checker could not
+verify this" — an unresolvable `$ref`, an unparseable body, or a body
+`trace.Redactor` truncated at `maxBody`. It must never be silently treated
+as a pass, which is why it is a finding at all rather than an empty list.
+But it must not fail or change a run either: redaction truncation is
+routine, so gating on it would mark nearly every run `changed` and the gate
+would be turned off within a week — the same fate as any noisy guard.
+
+So `unchecked` is **reported and verdict-neutral**. `retrace diff --json`
+and `summary.json` must surface these findings plainly enough that a reader
+who sees `"verdict": "pass"` can still tell that part of the response was
+never checked; a `pass` next to a silent `unchecked` list is the reassuring
+zero value this plan keeps having to dig out. Pin BOTH directions: a
+conformance list containing only `unchecked` entries verdicts `pass`, and
+one containing a single non-`unchecked` finding verdicts `changed`.
 
 **Gate budgets are computed once, per plane, not per call site.** For each
 plane `retrace.yaml`'s `gates:` map configures (`cfg.Gates`, Task 3's
