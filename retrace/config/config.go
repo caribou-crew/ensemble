@@ -191,6 +191,25 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 		w.Why = ""
 		return nil
 	}
+	// node.Decode(&p) below gets a FRESH yaml decoder with KnownFields off:
+	// Load's dec.KnownFields(true) belongs to the outer *yaml.Decoder, and
+	// that strictness does not propagate into a custom UnmarshalYAML, which
+	// is handed a bare *yaml.Node instead of the decoder that produced it.
+	// Left unchecked, a typo'd key here (e.g. "whyy" for "why") would
+	// silently decode as if the field weren't there at all — precisely the
+	// silent drop this field exists to prevent, since Why is the reason a
+	// wire path is ignored. Enforce known fields by hand, matching the
+	// house style used for every other unknown-key error in this package.
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			switch node.Content[i].Value {
+			case "path", "why":
+			default:
+				return fmt.Errorf("line %d: field %s not found in type config.WireIgnoreEntry",
+					node.Content[i].Line, node.Content[i].Value)
+			}
+		}
+	}
 	// Avoid infinite recursion into WireIgnoreEntry.UnmarshalYAML by
 	// decoding into a distinct named type with the same fields.
 	type plain WireIgnoreEntry
@@ -200,6 +219,23 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*w = WireIgnoreEntry(p)
 	return nil
+}
+
+// WireIgnorePaths returns just the paths from Config.WireIgnore, for the
+// diff engine, which has no use for Why — the same way pixel.RectsFrom
+// converts config.Rect at one seam. An entry that parsed to Path == "" is
+// dropped rather than passed down: an empty path reaching the diff engine
+// as an ignore rule would match every path, which is the most permissive
+// value the type has, so the zero-value clause applies to this method too.
+func (c *Config) WireIgnorePaths() []string {
+	paths := make([]string, 0, len(c.WireIgnore))
+	for _, e := range c.WireIgnore {
+		if e.Path == "" {
+			continue
+		}
+		paths = append(paths, e.Path)
+	}
+	return paths
 }
 
 // Thresholds gates how big a pixel diff must be before it's a Fine
@@ -212,6 +248,31 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 type Thresholds struct {
 	Gate float64 `yaml:"gate"`
 	Fine float64 `yaml:"fine"`
+}
+
+// validPlanes is the fixed set of gate/fail_on plane names. It is fixed by
+// the brief, not open-ended, so validating it at Load is shape work: any
+// other name is a typo, and gates/fail_on both escape KnownFields on their
+// own — Gates is a map (its keys are values, invisible to KnownFields) and
+// FailOn is a []string (there is no field-name concept to check at all).
+var validPlanes = map[string]bool{"pixel": true, "wire": true, "hop": true, "perf": true}
+
+// validatePlanes rejects a typo'd plane name in gates or fail_on, naming the
+// offender. Left unchecked, `gates: {pixle: ...}` loads clean and silently
+// ungates "pixle" while leaving "pixel" at its untouched default — the user
+// believes they configured a plane and got nothing, with no error at all.
+func validatePlanes(c *Config) error {
+	for name := range c.Gates {
+		if !validPlanes[name] {
+			return fmt.Errorf("gates: unknown plane %q, want one of pixel, wire, hop, perf", name)
+		}
+	}
+	for _, name := range c.FailOn {
+		if !validPlanes[name] {
+			return fmt.Errorf("fail_on: unknown plane %q, want one of pixel, wire, hop, perf", name)
+		}
+	}
+	return nil
 }
 
 func Load(path string) (*Config, error) {
@@ -249,6 +310,9 @@ func Load(path string) (*Config, error) {
 	// Fail at load, not at first diff: an unknown matcher name in config is
 	// a typo the user wants to hear about now.
 	if _, err := c.Rules(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := validatePlanes(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil

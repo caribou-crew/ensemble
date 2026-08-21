@@ -456,6 +456,25 @@ func TestGatesPixelDefaultsFromThresholdsGateAndZeroIsMeaningful(t *testing.T) {
 	if _, ok := cfg.Gates["wire"]; ok {
 		t.Fatalf("gates.wire must stay absent (ungated) when not configured, got %+v", cfg.Gates)
 	}
+
+	// A non-default thresholds.gate, with no gates: block at all, must still
+	// flow through to gates.pixel — pins F6/M5: replacing
+	// `gate := c.Thresholds.Gate` with `gate := DefaultGate` left the whole
+	// suite green because every other case used the default thresholds,
+	// where the two values are numerically identical (0.1 == 0.1).
+	path3 := filepath.Join(dir, "retrace3.yaml")
+	os.WriteFile(path3, []byte("app: web\nthresholds:\n  gate: 0.5\n"), 0o644)
+	cfg3, err := Load(path3)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	g3, ok := cfg3.Gates["pixel"]
+	if !ok || g3.BudgetPct == nil {
+		t.Fatalf("gates.pixel must be present and set when absent from config, got %+v", cfg3.Gates)
+	}
+	if *g3.BudgetPct != 0.5 {
+		t.Fatalf("gates.pixel.budget_pct with thresholds.gate=0.5 and no gates: block = %v, want 0.5", *g3.BudgetPct)
+	}
 }
 
 // TestFailOnAndOtherPlaneGatesRoundTripThroughRealYaml is the item-1 text
@@ -555,6 +574,85 @@ func TestWireIgnoreAcceptsBareStringAndObjectForm(t *testing.T) {
 	}
 	if cfg.WireIgnore[1].Path != "/health" || cfg.WireIgnore[1].Why != "polled by the load balancer" {
 		t.Fatalf("object-form wire_ignore entry = %+v", cfg.WireIgnore[1])
+	}
+}
+
+// TestWireIgnoreObjectFormRejectsATypoedWhyKey pins F1: a custom
+// UnmarshalYAML that calls node.Decode gets a fresh decoder with
+// KnownFields off, so the outer decoder's strictness does not propagate.
+// Before the fix, "whyy:" was silently accepted and dropped — precisely the
+// field whose whole purpose is to carry the reason for the ignore. Mutating
+// UnmarshalYAML back to a bare node.Decode(&p) (removing the manual
+// known-fields walk) must make this fail.
+func TestWireIgnoreObjectFormRejectsATypoedWhyKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yamlSrc := "app: web\n" +
+		"wire_ignore:\n" +
+		"  - path: \"/health\"\n" +
+		"    whyy: \"typo\"\n"
+	os.WriteFile(path, []byte(yamlSrc), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("a typo'd wire_ignore object key must fail Load, not silently drop the field")
+	}
+	if !strings.Contains(err.Error(), "whyy") {
+		t.Fatalf("error must name the offending key, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "config.WireIgnoreEntry") {
+		t.Fatalf("error must name the type, matching this package's house style, got: %v", err)
+	}
+}
+
+// TestWireIgnorePathsDropsEmptyPathEntries pins F2: Config.WireIgnorePaths
+// must exist for Task 10, and an entry that parsed to Path == "" must be
+// dropped rather than passed down — an empty path reaching the diff engine
+// as an ignore rule would match everything, the most permissive value the
+// type has.
+func TestWireIgnorePathsDropsEmptyPathEntries(t *testing.T) {
+	c := &Config{WireIgnore: []WireIgnoreEntry{
+		{Path: "/health", Why: "polled by the load balancer"},
+		{Path: "", Why: "malformed entry, no path"},
+		{Path: "date"},
+	}}
+	got := c.WireIgnorePaths()
+	want := []string{"/health", "date"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("WireIgnorePaths() = %+v, want %+v (empty Path dropped)", got, want)
+	}
+}
+
+// TestUnknownGatePlaneNameFailsLoadNamingIt pins F5: gates: is a
+// map[string]Gate, so a typo'd plane name escapes KnownFields entirely —
+// "pixle" would load clean and silently leave the intended "pixel" plane at
+// its default while gating nothing.
+func TestUnknownGatePlaneNameFailsLoadNamingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\ngates:\n  pixle:\n    budget_pct: 0\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("an unknown gates plane name must fail Load")
+	}
+	if !strings.Contains(err.Error(), "pixle") {
+		t.Fatalf("error must name the offending plane, got: %v", err)
+	}
+}
+
+// TestUnknownFailOnPlaneNameFailsLoadNamingIt pins the fail_on half of F5.
+func TestUnknownFailOnPlaneNameFailsLoadNamingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	os.WriteFile(path, []byte("app: web\nfail_on: [\"pixle\", \"nonsense\"]\n"), 0o644)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("an unknown fail_on plane name must fail Load")
+	}
+	if !strings.Contains(err.Error(), "pixle") {
+		t.Fatalf("error must name the offending plane, got: %v", err)
 	}
 }
 
