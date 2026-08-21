@@ -2126,6 +2126,29 @@ type Thresholds struct {
 }
 ```
 
+**`Load` rejects `thresholds.gate` or `thresholds.fine` outside `(0, 1)`,
+naming the offender and both meanings.** This is not tidiness; it closes a
+silent pass reachable from a plausible config value. `thresholds.gate` is
+overloaded: `pixel.Compare` uses it as a **per-pixel YIQ colour-distance
+threshold**, where `Match` computes `maxDelta = maxYIQDelta * threshold *
+threshold`, while `Build` compares it against `DiffPct` as a **percent of
+pixels**. The two coincide near the `0.1` default and diverge completely
+above `1`: at any `threshold >= 1`, `|delta| > maxDelta` is unsatisfiable, so
+**every checkpoint reports 0.00% forever and the pixel plane is permanently
+green.** A user writing `gate: 5` meaning "5% of pixels may differ" gets
+exactly that, silently, with no error and a clean report.
+
+Rejecting at the seam follows the precedent already set for `wire_ignore`
+entries beginning with `/`: a setting that cannot do what its writer plainly
+intended is as misleading as an empty one, and the seam is where it is
+cheapest to say so. Splitting the overloaded key into two distinct settings
+is the real fix and belongs to Phase 4b; the guard is what stops the silent
+pass shipping in the meantime.
+
+Pin it with a config whose `gate` is `5` — the plausible mistake, not an
+arbitrary out-of-range number — asserting `Load` errors and names the key.
+Pin the boundary too: `0.99` loads, `1` does not.
+
 `rules.Raw` already carries `json:` tags (Task 2) and needs matching
 `yaml:` ones for the same reason — it is decoded from both
 `retrace.yaml`'s `wire_rules` and `.retrace/wire-rules.json`.
