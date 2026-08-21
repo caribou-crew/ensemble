@@ -301,3 +301,101 @@ func TestLoadBundleRefusesATruncatedRecordedResponseBody(t *testing.T) {
 		t.Fatalf("body = %q, want the recorded body served in full", got)
 	}
 }
+
+func TestLoadBundleRefusesARecordedPartialResponse(t *testing.T) {
+	// The worst combination this product has: silent, on a HIT, wrong
+	// bytes, exit 0. `Range` is a request header and is not part of Key,
+	// so a recorded 206 for bytes 0-499 is served to a client asking for
+	// bytes 500-999, along with the recorded Content-Range describing the
+	// wrong bytes. The client assembles a corrupt file, the matcher counts
+	// a hit, and `retrace replay` reports that every call matched — F1's
+	// failure arriving through a door that needs the client to do nothing
+	// unusual at all.
+	for _, c := range []struct {
+		name    string
+		status  int
+		headers map[string]string
+	}{
+		{"a 206 with Content-Range", 206, map[string]string{"Content-Range": "bytes 0-499/1234"}},
+		// A Content-Range without the status is malformed but recordable,
+		// and it is the same lie about which bytes these are.
+		{"a Content-Range on a 200", 200, map[string]string{"Content-Range": "bytes 0-499/1234"}},
+		// ...and the status alone, for an origin that omitted the header.
+		{"a bare 206", 206, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := hop(1, "GET", "/download", "", c.status, "the first five hundred bytes")
+			for k, v := range c.headers {
+				h.Resp.Headers[k] = v
+			}
+			_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+			if err == nil {
+				t.Fatal("LoadBundle accepted a recorded partial response — it can only ever be served to a client asking for a different byte range, on a hit, with the run exiting 0")
+			}
+			if !strings.Contains(err.Error(), "PARTIAL response") || !strings.Contains(err.Error(), "/download") {
+				t.Fatalf("error %q does not name the problem and the exchange", err)
+			}
+		})
+	}
+
+	// THE MIRROR, in two parts. Advertising range support is not the same
+	// fact as having recorded a partial response — every range-capable
+	// server sends Accept-Ranges on ordinary full-body responses, and
+	// refusing on it would reject them all.
+	t.Run("Accept-Ranges alone still loads and serves", func(t *testing.T) {
+		h := hop(1, "GET", "/download", "", 200, `{"items":[]}`)
+		h.Resp.Headers["Accept-Ranges"] = "bytes"
+		b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+		if err != nil {
+			t.Fatalf("a full response from a range-capable server did not load: %v", err)
+		}
+		_, url := serve(t, b, Options{}, "")
+		resp := do(t, "GET", url+"/download", "", nil)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status = %d, want the recorded 200 — the refusal swallowed the ordinary case", resp.StatusCode)
+		}
+		if got := readBody(t, resp); got != `{"items":[]}` {
+			t.Fatalf("body = %q, want the recorded body served in full", got)
+		}
+	})
+}
+
+func TestLoadBundleRefusesARecordedRequestContentEncoding(t *testing.T) {
+	// Replay is merely loud about this one — under byte-exact matching a
+	// real gzipped request body can never equal the mangled recorded bytes,
+	// so every such call misses. `retrace revalidate` is the half that
+	// matters: it re-issues the recorded request verbatim, so it would put
+	// `Content-Encoding: gzip` on bytes that are no longer gzip and report
+	// the live stack's refusal as DRIFT the recording never caused —
+	// sending someone to debug a service that is behaving correctly.
+	h := hop(1, "POST", "/ingest", "��mangled gzip", 200, `{"ok":true}`)
+	h.Req.Headers = map[string]string{"Content-Type": "application/json", "Content-Encoding": "gzip"}
+	_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+	if err == nil {
+		t.Fatal("LoadBundle accepted a recorded request Content-Encoding — revalidate would re-issue it over bytes that are not that encoding and call the rejection drift")
+	}
+	if !strings.Contains(err.Error(), "REQUEST Content-Encoding") || !strings.Contains(err.Error(), "/ingest") {
+		t.Fatalf("error %q does not name the problem and the exchange", err)
+	}
+
+	// The mirror, both halves: `identity` is the explicit no-op and not a
+	// claim about the bytes (the same exemption the response arm makes),
+	// and a request with no Content-Encoding at all loads and serves.
+	identity := hop(1, "POST", "/ingest", `{"n":1}`, 200, `{"ok":true}`)
+	identity.Req.Headers = map[string]string{"Content-Encoding": "identity"}
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity})); err != nil {
+		t.Fatalf("a request recording Content-Encoding: identity did not load: %v", err)
+	}
+
+	plain := hop(1, "POST", "/ingest", `{"n":1}`, 200, `{"ok":true}`)
+	plain.Req.Headers = map[string]string{"Content-Type": "application/json"}
+	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{plain}))
+	if err != nil {
+		t.Fatalf("an uncompressed recorded request did not load: %v", err)
+	}
+	_, url := serve(t, b, Options{}, "")
+	resp := do(t, "POST", url+"/ingest", `{"n":1}`, map[string]string{"Content-Type": "application/json"})
+	if got := readBody(t, resp); got != `{"ok":true}` {
+		t.Fatalf("body = %q, want the recorded response — the refusal swallowed the ordinary case", got)
+	}
+}
