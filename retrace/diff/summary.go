@@ -640,6 +640,13 @@ func budgetsOf(s Summary, cfg *config.Config) []Gate {
 func observedFor(s Summary, plane string) (observed float64, measurable bool) {
 	switch plane {
 	case "pixel":
+		// A max over nothing is 0, which reads as "no pixels changed" — the
+		// same false reassurance an empty denominator gives the other three
+		// planes. Pixel does not divide, but the rule is about evidence, not
+		// about division: no checkpoints, no gate.
+		if len(s.Checkpoints) == 0 {
+			return 0, false
+		}
 		var worst float64
 		for _, cp := range s.Checkpoints {
 			if cp.DiffPct > worst {
