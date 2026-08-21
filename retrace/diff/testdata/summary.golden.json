@@ -108,12 +108,15 @@
     }
   ],
   "hops": {
-    "serviceCounts": null,
+    "serviceCounts": [],
+    "newErrors": [],
+    "goneErrors": [],
     "newRoutes": [],
     "goneRoutes": [],
+    "requiredFailures": [],
     "hopRequireConfigured": false
   },
-  "unexpectedStatuses": null,
+  "unexpectedStatuses": [],
   "perf": {
     "status": "unset",
     "measuredMs": 0,
@@ -152,5 +155,6 @@
       "observed": 1.5,
       "failed": true
     }
-  ]
+  ],
+  "quarantined": []
 }

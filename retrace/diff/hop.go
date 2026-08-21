@@ -38,7 +38,7 @@ type Route struct {
 	To     string   `json:"to"`
 	Method string   `json:"method"`
 	Path   string   `json:"path"`
-	Via    []string `json:"via,omitempty"`
+	Via    []string `json:"via"`
 }
 
 // RouteFailure is one config.RequiredRoute that RequiredRouteFailures
@@ -74,11 +74,11 @@ type HopDiff struct {
 	// dedup key that produced the entry came from that side's hops, not
 	// the other side's. A consumer joining Seq against hops.jsonl must use
 	// GoneErrors → the reference run's file, NewErrors → the candidate's.
-	NewErrors             []StatusFinding `json:"newErrors,omitempty"`
-	GoneErrors            []StatusFinding `json:"goneErrors,omitempty"`
+	NewErrors             []StatusFinding `json:"newErrors"`
+	GoneErrors            []StatusFinding `json:"goneErrors"`
 	NewRoutes             []Route         `json:"newRoutes"`
 	GoneRoutes            []Route         `json:"goneRoutes"`
-	RequiredRouteFailures []RouteFailure  `json:"requiredFailures,omitempty"`
+	RequiredRouteFailures []RouteFailure  `json:"requiredFailures"`
 	// HopRequireConfigured distinguishes "no hopRequire entries were
 	// configured" from "hopRequire entries were configured and all
 	// passed" — both leave RequiredRouteFailures empty, and a consumer

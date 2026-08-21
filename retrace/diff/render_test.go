@@ -11,8 +11,11 @@ package diff
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"image/color"
+	"sort"
 	"strings"
 	"testing"
 
@@ -566,4 +569,147 @@ func TestAnApiOnlyFlowReportsNoBudgetsAtAll(t *testing.T) {
 	if strings.Contains(buf.String(), "BUDGET:") {
 		t.Fatalf("RenderText prints a BUDGET line for a flow with no measurable plane:\n%s", buf.String())
 	}
+}
+
+// TestEveryArrayFieldOnAnEmptySummaryMarshalsAsAnArray is the case
+// TestSummaryJsonShapeIsStable's hand-built golden cannot reach: a Summary
+// with nothing in it at all.
+//
+// null, absent and [] are three encodings of one meaning — "no entries" —
+// and the nil arrives by too many routes to mean anything on its own.
+// Carrying that ambiguity costs every consumer a null-guard, and the
+// consumer who forgets does not misbehave quietly, it crashes:
+// `summary.budgets.map(...)` throws on an API-only flow, which is an
+// ordinary correct configuration. Tasks 12, 13, 15 and 16 are all unwritten,
+// so the consumer who forgets is literally the one not written yet.
+//
+// This walks the marshalled JSON rather than listing field names, so a new
+// array-valued field added later is covered the day it appears instead of
+// the day someone remembers to extend a list.
+func TestEveryArrayFieldOnAnEmptySummaryMarshalsAsAnArray(t *testing.T) {
+	var s Summary
+	s.ensureArrays()
+
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(b, &tree); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Exceptions, by exact path. Two kinds, and the difference matters:
+	// the first is a distinction an empty array genuinely cannot carry, the
+	// rest are fields this task is not allowed to touch.
+	allowedNull := map[string]string{
+		"wire.groups": "a nil *GroupNames means this flow has no group structure at all, " +
+			"which is not the same as having groups that are empty — and it says so with a " +
+			"pointer, the honest way to encode absent, rather than with the emptiness of an array",
+
+		"conformance": "PENDING A RULING. nil currently means BOTH \"no OpenAPI spec configured\" " +
+			"and \"spec configured and every call conforms\". Those are different facts and " +
+			"neither is carried today, so flattening to [] would make \"never checked\" read as " +
+			"\"checked and clean\" — I4's defect one level up, at plane scale instead of finding scale",
+
+		// runs.Manifest belongs to retrace/runs, which this task must not
+		// modify. Listed rather than silently skipped so the boundary is
+		// visible: these are the fields the array rule has NOT reached.
+		"a.manifest.checkpoints": "runs.Manifest — out of scope for this task",
+		"b.manifest.checkpoints": "runs.Manifest — out of scope for this task",
+		"a.manifest.groups":      "runs.Manifest — out of scope for this task",
+		"b.manifest.groups":      "runs.Manifest — out of scope for this task",
+	}
+
+	var walk func(path string, v any)
+	var nulls []string
+	walk = func(path string, v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, sub := range t {
+				p := k
+				if path != "" {
+					p = path + "." + k
+				}
+				if sub == nil {
+					if _, ok := allowedNull[p]; !ok {
+						nulls = append(nulls, p)
+					}
+					continue
+				}
+				walk(p, sub)
+			}
+		case []any:
+			for i, sub := range t {
+				walk(fmt.Sprintf("%s[%d]", path, i), sub)
+			}
+		}
+	}
+	walk("", tree)
+
+	if len(nulls) > 0 {
+		sort.Strings(nulls)
+		t.Fatalf("these fields marshalled as null on an empty Summary: %v\n"+
+			"An array field must always encode as [] — a consumer that forgets the null-guard crashes rather than misbehaving quietly.\n"+
+			"If one of these is a genuine \"not computed\" distinct from \"computed and empty\", it belongs in allowedNull with a comment saying why.\njson:\n%s",
+			nulls, b)
+	}
+}
+
+// TestBuildsOwnExitsAllProduceArrays checks the guarantee where consumers
+// actually meet it. The empty-Summary test above pins ensureArrays; this
+// pins that Build CALLS it, on every exit it has — and the quarantine exit
+// matters most, because it is the one that computes almost nothing and so
+// is the likeliest to hand a consumer a nil.
+func TestBuildsOwnExitsAllProduceArrays(t *testing.T) {
+	arraysOf := func(t *testing.T, s Summary) {
+		t.Helper()
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var tree map[string]any
+		if err := json.Unmarshal(b, &tree); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, k := range []string{"checkpoints", "sections", "unexpectedStatuses", "gates", "budgets", "quarantined"} {
+			if tree[k] == nil {
+				t.Errorf("%q marshalled as null out of Build — every array field ships as []\njson: %s", k, b)
+			}
+		}
+		w, _ := tree["wire"].(map[string]any)
+		for _, k := range []string{"paired", "missing", "extra"} {
+			if w == nil || w[k] == nil {
+				t.Errorf("wire.%s marshalled as null out of Build", k)
+			}
+		}
+		h, _ := tree["hops"].(map[string]any)
+		for _, k := range []string{"serviceCounts", "newRoutes", "goneRoutes", "newErrors", "goneErrors", "requiredFailures"} {
+			if h == nil || h[k] == nil {
+				t.Errorf("hops.%s marshalled as null out of Build", k)
+			}
+		}
+	}
+
+	dirA, dirB := t.TempDir(), t.TempDir()
+	hp := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{hp})
+	writeWireFile(t, dirB, []trace.Hop{hp})
+
+	t.Run("the ordinary exit, on a flow with nothing to report", func(t *testing.T) {
+		aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+		bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+		arraysOf(t, mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)}))
+	})
+
+	t.Run("the quarantine exit, which computes almost nothing", func(t *testing.T) {
+		broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the proxy never started"}
+		aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+		bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, broken)}
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
+		if s.Verdict != "quarantined" {
+			t.Fatalf("test setup: verdict = %q, want quarantined", s.Verdict)
+		}
+		arraysOf(t, s)
+	})
 }
