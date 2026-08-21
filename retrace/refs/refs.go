@@ -247,18 +247,21 @@ type AcceptOptions struct {
 	// exists, never to invent one.
 	MasksFor func(checkpoint string) []pixel.Rect
 	// MaskedCheckpoints names every checkpoint the caller's configuration
-	// declares a mask ENTRY for. It exists because MasksFor is a lookup and
-	// a lookup cannot report a typo: `chekout-summary:` against a
-	// checkpoint named `checkout-summary` returns no masks, which is
+	// declares a mask ENTRY for IN THIS PROMOTION'S OWN SCOPE — an entry
+	// that can apply to nothing else. It exists because MasksFor is a
+	// lookup and a lookup cannot report a typo: `chekout-summary:` against
+	// a checkpoint named `checkout-summary` returns no masks, which is
 	// indistinguishable here from "this screen needs no mask", so the
 	// promotion takes the plain-copy path and publishes the pixels the
 	// entry was written to hide.
 	//
-	// Accept refuses a promotion whose declared entries include one no
-	// checkpoint in the run matches. It refuses on the ENTRY, never on the
-	// checkpoint: "this flow declares masks and this checkpoint got none"
-	// would refuse the legitimate case of masking one screen of five. An
-	// entry matching nothing has no such innocent reading.
+	// Accept REFUSES a promotion when one of these matches no checkpoint in
+	// the run. Scope is what earns the refusal: an entry that can only ever
+	// apply here, matching nothing here, protects nothing anywhere, ever.
+	//
+	// It refuses on the ENTRY, never on the checkpoint: "this flow declares
+	// masks and this checkpoint got none" would refuse the legitimate case
+	// of masking one screen of five.
 	//
 	// The caller strips any wildcard its own dialect has before passing
 	// this — a wildcard names no checkpoint, so it can never be a typo, and
@@ -269,6 +272,26 @@ type AcceptOptions struct {
 	// end to end from the CLI, because a nil arriving from a caller that
 	// DOES have a config is exactly the defect this field exists to catch.
 	MaskedCheckpoints []string
+	// ProjectMaskedCheckpoints names the mask entries that also apply to
+	// OTHER promotions — for the CLI, the project-wide top-level `masks:`
+	// map. An unmatched one is REPORTED in AcceptResult.UnmatchedMasks and
+	// never refused, because it has an innocent reading the flow-scoped
+	// entries above do not: an entry naming a screen this flow does not
+	// have may be doing its job in another flow.
+	//
+	// Refusing it would reject a correct configuration, which is not a
+	// safer failure than reporting it — just a louder one, landing on
+	// people whose config is fine. See config.ProjectMaskEntryCheckpoints
+	// for why the principled version (check it against every flow) is not
+	// computable here, and for the boundary this sits on: a warning is not
+	// a gate when the condition is unambiguously a defect, and IS the right
+	// instrument when the condition is genuinely ambiguous.
+	//
+	// The gap is knowingly accepted: a misspelt TOP-LEVEL per-checkpoint
+	// entry still promotes unredacted, reported but not refused. The severe
+	// form — the mask wiring being dead, so no mask applies at all — is
+	// closed by the end-to-end test in retrace/cmd/retrace.
+	ProjectMaskedCheckpoints []string
 	// Force overrides ONE refusal: promoting a run whose capture verdict is
 	// fatal (capture.Fatal — degraded, broken, failed, or the unassessed
 	// zero verdict). It overrides nothing else, and the zero value is the
@@ -302,6 +325,15 @@ type AcceptResult struct {
 	Files []string `json:"files"` // bundle-relative, slash-separated
 	RunID string   `json:"runId"`
 	Bytes int64    `json:"bytes"`
+	// UnmatchedMasks lists the project-wide mask entries that matched no
+	// checkpoint in this run. They are REPORTED, not refused (see
+	// AcceptOptions.ProjectMaskedCheckpoints), and they are carried as a
+	// VALUE rather than left to a printed sentence: a caller — the CLI
+	// today, the review server in Task 13 — must be able to act on them
+	// without parsing prose, and a test must be able to pin them without
+	// asserting on a log line. Never nil, so the JSON is [] rather than
+	// null.
+	UnmatchedMasks []string `json:"unmatchedMasks"`
 	// CaptureStatus is the promoted run's own capture verdict, carried
 	// through as a TYPED value rather than left reconstructible from
 	// warning text. A promotion off a non-ok capture is the human's call to
@@ -344,8 +376,10 @@ type bundleFile struct {
 // Three refusals protect the redaction itself and none of them is
 // forcible, because each ends the same way — unredacted pixels in a
 // committed bundle: a masked shot that cannot be decoded, a mask that
-// covers none of its image (see coversNothing), and a configured mask
-// entry that matches no checkpoint in this run (see unmatchedMasks). A
+// covers none of its image (see coversNothing), and a FLOW-SCOPED mask
+// entry that matches no checkpoint in this run (see unmatchedMasks; a
+// project-wide one is reported in AcceptResult.UnmatchedMasks instead,
+// because it may be doing its job in another flow). A
 // mask that is not protecting anything is the defect, whichever of the
 // three shapes it arrives in.
 //
@@ -381,6 +415,7 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	if err := unmatchedMasks(m.Checkpoints, o.MaskedCheckpoints); err != nil {
 		return AcceptResult{}, err
 	}
+	reported := unmatchedNames(m.Checkpoints, o.ProjectMaskedCheckpoints)
 
 	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
 	for _, name := range []string{"wire.jsonl", "hops.jsonl"} {
@@ -413,45 +448,65 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	for i, f := range files {
 		names[i] = f.rel
 	}
-	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, CaptureStatus: m.Capture.Status}, nil
+	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, UnmatchedMasks: reported, CaptureStatus: m.Capture.Status}, nil
 }
 
-// unmatchedMasks refuses a promotion whose configuration declares a mask
-// for a checkpoint the run does not have. A lookup keyed on the checkpoint
-// name cannot tell that apart from "no mask here"; only the declared
-// entries can, which is why AcceptOptions carries them.
+// unmatchedMasks refuses a promotion whose flow-scoped configuration
+// declares a mask for a checkpoint the run does not have. A lookup keyed on
+// the checkpoint name cannot tell that apart from "no mask here"; only the
+// declared entries can, which is why AcceptOptions carries them.
 //
 // It reports EVERY unmatched entry and names the checkpoints that do
 // exist, because the fix is almost always a spelling and a message that
 // makes the reader go and list the run's checkpoints themselves has done
 // half a job.
 func unmatchedMasks(cps []runs.Checkpoint, declared []string) error {
-	if len(declared) == 0 {
+	missing := unmatchedNames(cps, declared)
+	if len(missing) == 0 {
 		return nil
 	}
+	return fmt.Errorf("refusing to promote: a mask is configured for %s, which no checkpoint matches — %s. A mask entry that matches no checkpoint redacts nothing, and it looks exactly like a mask that worked; fix the spelling or remove the entry, because a reference bundle is committed and an unredacted promotion cannot be taken back",
+		quoteList(missing), checkpointList(cps))
+}
+
+// unmatchedNames is the one comparison both verdicts are built on — the
+// refusing one and the reporting one. Two copies of it would be two rules
+// that could disagree about what "matched" means.
+//
+// It returns an EMPTY, non-nil slice rather than nil when nothing is
+// unmatched: this value reaches AcceptResult and marshals into the --json
+// contract, where null and [] are different answers to "which entries
+// matched nothing".
+func unmatchedNames(cps []runs.Checkpoint, declared []string) []string {
+	missing := []string{}
+	if len(declared) == 0 {
+		return missing
+	}
 	have := make(map[string]bool, len(cps))
-	names := make([]string, 0, len(cps))
 	for _, cp := range cps {
 		have[cp.Name] = true
-		names = append(names, cp.Name)
 	}
-	var missing []string
 	for _, d := range declared {
 		if !have[d] {
 			missing = append(missing, d)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
 	sort.Strings(missing)
-	existing := "this run has no checkpoints at all"
-	if len(names) > 0 {
-		sort.Strings(names)
-		existing = "this run's checkpoints are " + strings.Join(names, ", ")
+	return missing
+}
+
+// checkpointList words the "and here is what this run does have" half of
+// the refusal.
+func checkpointList(cps []runs.Checkpoint) string {
+	if len(cps) == 0 {
+		return "this run has no checkpoints at all"
 	}
-	return fmt.Errorf("refusing to promote: a mask is configured for %s, which no checkpoint matches — %s. A mask entry that matches no checkpoint redacts nothing, and it looks exactly like a mask that worked; fix the spelling or remove the entry, because a reference bundle is committed and an unredacted promotion cannot be taken back",
-		quoteList(missing), existing)
+	names := make([]string, 0, len(cps))
+	for _, cp := range cps {
+		names = append(names, cp.Name)
+	}
+	sort.Strings(names)
+	return "this run's checkpoints are " + strings.Join(names, ", ")
 }
 
 func quoteList(names []string) string {

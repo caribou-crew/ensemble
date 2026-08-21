@@ -868,12 +868,20 @@ func TestMalformedOverlayJSONFailsDiscoverNamingThePath(t *testing.T) {
 	}
 }
 
-// TestMaskEntryCheckpointsEnumeratesBothMapsAndSkipsTheWildcard pins the
-// enumeration `retrace ref accept` needs to detect a misspelt mask entry.
-// MasksFor cannot do it: a lookup returns nil for a name it does not hold,
-// which is indistinguishable from "this screen needs no mask", so the
-// promotion copies the shot through unredacted and exits 0.
-func TestMaskEntryCheckpointsEnumeratesBothMapsAndSkipsTheWildcard(t *testing.T) {
+// TestTheTwoMaskEnumerationsStaySeparate pins the enumeration
+// `retrace ref accept` needs to detect a misspelt mask entry. MasksFor
+// cannot do it: a lookup returns nil for a name it does not hold, which is
+// indistinguishable from "this screen needs no mask", so the promotion
+// copies the shot through unredacted and exits 0.
+//
+// The two enumerations carry DIFFERENT verdicts and so must not merge. A
+// flow-scoped entry can only ever apply to its own flow, so one matching
+// nothing in the run is protecting nothing anywhere and Accept refuses it.
+// A top-level entry applies to every flow, so one matching nothing HERE is
+// very likely doing its job in another flow — Accept only reports it.
+// Merging the two maps is what makes a correct multi-flow config refuse,
+// which is why that merge is what this test exists to kill.
+func TestTheTwoMaskEnumerationsStaySeparate(t *testing.T) {
 	c := &Config{
 		Masks: map[string][]Rect{"*": {{Width: 1}}, "cart": {{Width: 2}}},
 		Flows: map[string]Flow{
@@ -881,18 +889,38 @@ func TestMaskEntryCheckpointsEnumeratesBothMapsAndSkipsTheWildcard(t *testing.T)
 			"login":    {Masks: map[string][]Rect{"password": {{Width: 5}}}},
 		},
 	}
-	got := strings.Join(c.MaskEntryCheckpoints("checkout"), ",")
-	// cart appears in both maps and must appear once; "*" names no
-	// checkpoint, so it can never be a typo; login's entries belong to
-	// another flow's scope and are not in this one.
-	if got != "cart,receipt" {
-		t.Fatalf("MaskEntryCheckpoints(checkout) = %q, want %q — both maps, deduplicated, sorted, without the wildcard", got, "cart,receipt")
+
+	// The flow's OWN map only. "cart" is here because checkout declares it,
+	// not because the top-level map does — "receipt" is the half that
+	// proves it, and the absence of nothing-from-top-level is proved by the
+	// login case below.
+	if got := strings.Join(c.FlowMaskEntryCheckpoints("checkout"), ","); got != "cart,receipt" {
+		t.Fatalf("FlowMaskEntryCheckpoints(checkout) = %q, want %q — this flow's own map, sorted", got, "cart,receipt")
 	}
-	if got := strings.Join(c.MaskEntryCheckpoints("login"), ","); got != "cart,password" {
-		t.Fatalf("MaskEntryCheckpoints(login) = %q, want %q — the top-level map applies to every flow", got, "cart,password")
+	// login declares only "password". If the top-level map were folded in,
+	// "cart" would appear here — and a promotion of login would then refuse
+	// over an entry that is protecting checkout's screen perfectly well.
+	if got := strings.Join(c.FlowMaskEntryCheckpoints("login"), ","); got != "password" {
+		t.Fatalf("FlowMaskEntryCheckpoints(login) = %q, want %q — the top-level map must NOT be folded into a flow's own scope", got, "password")
 	}
-	if got := len((&Config{}).MaskEntryCheckpoints("checkout")); got != 0 {
-		t.Fatalf("a config with no masks declared %d entries, want 0 — an invented entry would refuse a correct promotion", got)
+	// Another flow's entries never leak sideways.
+	if got := strings.Join(c.FlowMaskEntryCheckpoints("checkout"), ","); strings.Contains(got, "password") {
+		t.Fatalf("FlowMaskEntryCheckpoints(checkout) = %q — login's entries belong to another flow's scope", got)
+	}
+
+	// The project-wide map, without the wildcard: "*" names no checkpoint,
+	// so it can never be a typo and must never be reported as unmatched.
+	if got := strings.Join(c.ProjectMaskEntryCheckpoints(), ","); got != "cart" {
+		t.Fatalf("ProjectMaskEntryCheckpoints() = %q, want %q — top-level only, without the wildcard", got, "cart")
+	}
+
+	// An empty config invents nothing. An invented entry would refuse a
+	// correct promotion.
+	if got := len((&Config{}).FlowMaskEntryCheckpoints("checkout")); got != 0 {
+		t.Fatalf("a config with no masks declared %d flow entries, want 0", got)
+	}
+	if got := len((&Config{}).ProjectMaskEntryCheckpoints()); got != 0 {
+		t.Fatalf("a config with no masks declared %d project entries, want 0", got)
 	}
 }
 

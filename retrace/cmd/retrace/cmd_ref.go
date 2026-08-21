@@ -211,8 +211,10 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 		// The entries, not just the lookup: MasksFor cannot report a
 		// checkpoint name this project spelled wrong, and a mask entry that
 		// matches nothing publishes exactly the pixels it was written to
-		// hide. See AcceptOptions.MaskedCheckpoints.
-		MaskedCheckpoints: p.cfg.MaskEntryCheckpoints(*flow),
+		// hide. The two scopes get two verdicts — see
+		// AcceptOptions.MaskedCheckpoints and .ProjectMaskedCheckpoints.
+		MaskedCheckpoints:        p.cfg.FlowMaskEntryCheckpoints(*flow),
+		ProjectMaskedCheckpoints: p.cfg.ProjectMaskEntryCheckpoints(),
 	})
 	if err != nil {
 		return fail(stderr, "ref accept: %v", err)
@@ -224,6 +226,17 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 	if res.CaptureStatus != trace.VerdictOK {
 		fmt.Fprintf(stderr, "retrace: warning: promoting %s, whose capture verdict is %q — every diff against this reference now inherits that doubt; re-record and re-accept if it was a proxy problem rather than a real change\n",
 			runID, res.CaptureStatus)
+	}
+	// Reported, not refused: a top-level entry naming a screen this flow
+	// does not have may be masking that screen in another flow, so
+	// refusing it would reject a correct configuration. It still goes to
+	// stderr every time, because the OTHER reading — a typo silently
+	// redacting nothing — is the one that ends with pixels in git.
+	// AcceptResult.UnmatchedMasks carries the same fact as a value, so
+	// nothing depends on parsing this sentence.
+	if len(res.UnmatchedMasks) > 0 {
+		fmt.Fprintf(stderr, "retrace: warning: the project-wide `masks:` map declares an entry for %s, which no checkpoint in %s/%s matches — it redacts nothing HERE. That is fine if it masks a screen in another flow; if it was meant for this one, fix the spelling or move it under `flows.%s.masks`, where a per-checkpoint mask belongs.\n",
+			strings.Join(res.UnmatchedMasks, ", "), p.app, *flow, *flow)
 	}
 	if *asJSON {
 		if err := writeJSON(stdout, res); err != nil {
