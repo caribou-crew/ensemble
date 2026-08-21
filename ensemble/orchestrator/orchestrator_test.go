@@ -125,6 +125,56 @@ func TestUpHealthGateFailure(t *testing.T) {
 	}
 }
 
+// TestUpHealthGateHonorsPerServiceStartupTimeout pins config.Service.
+// StartupTimeoutS: a service whose health endpoint takes longer to come up
+// than the orchestrator-wide default (Opts.HealthTimeout) must still
+// succeed when its own StartupTimeoutS covers that wait — e.g. a JVM
+// service paying a slow classloading/Spring-context cost on every boot,
+// without raising the default for every other, fast-starting service.
+func TestUpHealthGateHonorsPerServiceStartupTimeout(t *testing.T) {
+	port := freePort(t)
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv.Listener.Close()
+	srv.Listener = ln
+	defer srv.Close()
+
+	// Simulates the slow starter: nothing answers on port until well past
+	// the 200ms global default below, but comfortably inside the 2s
+	// per-service override.
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		srv.Start()
+	}()
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"jvm": {Run: "sleep 30", Port: port, Health: "/healthz", StartupTimeoutS: 2},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{HealthTimeout: 200 * time.Millisecond})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v (StartupTimeoutS=2s override should have covered the 700ms startup delay)", err)
+	}
+	defer o.Down()
+
+	st, ok := o.Service("jvm")
+	if !ok {
+		t.Fatal("expected a state for jvm")
+	}
+	if st.Status != StatusHealthy {
+		t.Fatalf("status = %q, want %q", st.Status, StatusHealthy)
+	}
+}
+
 // Test 5: build-if-stale, driven through Restart. First Restart builds
 // (stamp missing); a Restart with no watched-file changes skips the build;
 // touching a watched file forces the next Restart to rebuild.

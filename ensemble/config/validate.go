@@ -60,6 +60,9 @@ func (c *Config) Validate() error {
 		if svc.Proxy != 0 {
 			usedPorts[svc.Proxy] = append(usedPorts[svc.Proxy], "service "+name)
 		}
+		if svc.StartupTimeoutS < 0 {
+			errs = append(errs, fmt.Errorf("service %q: startup_timeout_s must be >= 0", name))
+		}
 		for _, dep := range svc.DependsOn {
 			if !c.hasServiceOrDatabase(dep) {
 				errs = append(errs, fmt.Errorf("service %q: depends_on references unknown service/database %q", name, dep))

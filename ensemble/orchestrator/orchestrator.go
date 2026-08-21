@@ -445,7 +445,7 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 
 	o.setState(name, func(s *ServiceState) { s.Port = svc.Port })
 
-	if err := o.gateHealth(ctx, name, svc.Health, svc.Port, placement == "docker"); err != nil {
+	if err := o.gateHealth(ctx, name, svc.Health, svc.Port, placement == "docker", svc.StartupTimeoutS); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: %w", name, err)
 	}
@@ -534,21 +534,38 @@ func (o *Orchestrator) gateDatabaseHealth(ctx context.Context, name string, db c
 // container running, and (either placement) a Port > 0 must accept a TCP
 // dial. No Health and no Port is trivially healthy — the process/container
 // having started successfully is all there is to check.
-func (o *Orchestrator) gateHealth(ctx context.Context, name, healthPath string, port int, isDocker bool) error {
+//
+// startupTimeoutS is the service's config.Service.StartupTimeoutS: 0 uses
+// o.opts.HealthTimeout (the 30s-default budget every other service gates
+// on), a positive value overrides it for this service alone — see
+// resolveHealthTimeout.
+func (o *Orchestrator) gateHealth(ctx context.Context, name, healthPath string, port int, isDocker bool, startupTimeoutS int) error {
+	timeout := o.resolveHealthTimeout(startupTimeoutS)
 	if healthPath != "" {
 		url := fmt.Sprintf("http://127.0.0.1:%d%s", port, healthPath)
-		return pollHealth(ctx, url, o.opts.HealthTimeout)
+		return pollHealth(ctx, url, timeout)
 	}
 	if isDocker {
-		if err := pollDockerRunning(ctx, name, o.opts.HealthTimeout); err != nil {
+		if err := pollDockerRunning(ctx, name, timeout); err != nil {
 			return err
 		}
 	}
 	if port > 0 {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		return pollTCP(ctx, addr, o.opts.HealthTimeout)
+		return pollTCP(ctx, addr, timeout)
 	}
 	return nil
+}
+
+// resolveHealthTimeout returns the per-service override (startupTimeoutS,
+// config.Service.StartupTimeoutS) as a duration when set, else falls back
+// to the orchestrator-wide o.opts.HealthTimeout. Validate() rejects a
+// negative override, so 0 is the only "unset" value reaching here.
+func (o *Orchestrator) resolveHealthTimeout(startupTimeoutS int) time.Duration {
+	if startupTimeoutS > 0 {
+		return time.Duration(startupTimeoutS) * time.Second
+	}
+	return o.opts.HealthTimeout
 }
 
 // --- build-if-stale ---

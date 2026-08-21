@@ -38,6 +38,12 @@ type Service struct {
 	Docker    *DockerPlacement  `yaml:"docker"`
 	Entry     bool              `yaml:"entry"`   // clients call this directly
 	Profile   string            `yaml:"profile"` // "" = always on
+	// StartupTimeoutS overrides Orchestrator.Opts.HealthTimeout (default 30s)
+	// for this service's health gate only. 0 = use the default. For a slow
+	// starter (a JVM service paying classloading/Spring-context cost on
+	// every boot, say) the global default is too tight to raise for
+	// everyone else just to accommodate one service.
+	StartupTimeoutS int `yaml:"startup_timeout_s"`
 }
 
 // DockerPlacement runs a Service as a container instead of a native process.
