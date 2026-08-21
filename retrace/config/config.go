@@ -467,34 +467,58 @@ func (c *Config) MasksFor(flow, checkpoint string) []Rect {
 	return nil
 }
 
-// MaskEntryCheckpoints names every checkpoint a mask ENTRY is written for
-// in this flow's scope: the flow's own map plus the project-wide top-level
-// one, deduplicated and sorted. It is the enumeration MasksFor cannot give
-// — a lookup keyed on a checkpoint name returns nil for a name it does not
-// hold, so a misspelt entry is indistinguishable from a screen that needs
-// no mask, and `retrace ref accept` would promote the pixels the entry was
-// written to hide.
+// FlowMaskEntryCheckpoints names every checkpoint a mask entry is written
+// for in THIS FLOW's own map (`flows.<flow>.masks`), sorted, with "*"
+// excluded. A flow-scoped entry can only ever apply to this flow, so one
+// that matches no checkpoint in the run being promoted protects nothing,
+// anywhere, ever — `refs.Accept` refuses it.
 //
-// The "*" wildcard is excluded: it names no checkpoint, so it can never be
-// a typo, and a flow it does not happen to cover is not a defect.
+// This is the enumeration MasksFor cannot give: a lookup keyed on a
+// checkpoint name returns nil for a name it does not hold, so a misspelt
+// entry is indistinguishable from a screen that needs no mask, and
+// `retrace ref accept` would promote the pixels the entry was written to
+// hide.
 //
-// Both maps are reported because MasksFor consults both. A top-level entry
-// is project-wide, so in a multi-flow project one written for another
-// flow's screen shows up here too; the consumer's refusal says which entry
-// and which checkpoints exist, and the remedy — move it under
-// flows.<flow>.masks — is a line of YAML.
-func (c *Config) MaskEntryCheckpoints(flow string) []string {
-	seen := map[string]bool{}
-	for _, m := range []map[string][]Rect{c.Flows[flow].Masks, c.Masks} {
-		for name := range m {
-			if name == "*" {
-				continue
-			}
-			seen[name] = true
+// The "*" wildcard is excluded here and below: it names no checkpoint, so
+// it can never be a typo.
+func (c *Config) FlowMaskEntryCheckpoints(flow string) []string {
+	return maskEntryNames(c.Flows[flow].Masks)
+}
+
+// ProjectMaskEntryCheckpoints names every checkpoint the PROJECT-WIDE
+// top-level `masks:` map declares an entry for, sorted, without "*".
+//
+// It is deliberately separate from FlowMaskEntryCheckpoints and carries a
+// weaker verdict, because the two have different meanings. Top-level means
+// "every flow", so an entry matching nothing in the checkout run has an
+// obvious innocent reading: it is doing its job in the login flow.
+// Refusing it would reject a correct configuration.
+//
+// The principled check — evaluate a top-level entry against EVERY flow's
+// checkpoints, since one matching nothing project-wide really is a typo —
+// is not computable at accept time: checkpoints are discovered from run
+// manifests, not declared in config, so a flow that has never been run has
+// no known checkpoints and the verdict would depend on what happens to sit
+// in the gitignored .retrace/runs/. So Accept REPORTS these instead of
+// refusing them.
+//
+// That is not the "a warning is not a gate" rule being broken. That rule
+// bites when the condition is unambiguously a defect (`gate: 5`, a fatal
+// capture verdict, a flag the dialect cannot honour) — one reading each, so
+// warning is a machine declining to act on what it already knows. When the
+// condition is genuinely AMBIGUOUS, a warning is the correct instrument and
+// refusing is the error: the alternative is not a safer failure, it is a
+// louder one landing on people whose config is fine.
+func (c *Config) ProjectMaskEntryCheckpoints() []string {
+	return maskEntryNames(c.Masks)
+}
+
+func maskEntryNames(m map[string][]Rect) []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		if name == "*" {
+			continue
 		}
-	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
 		out = append(out, name)
 	}
 	sort.Strings(out)
