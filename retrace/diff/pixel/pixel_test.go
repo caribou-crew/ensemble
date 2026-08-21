@@ -129,6 +129,30 @@ func TestDimensionMismatchIsReportedNotThrown(t *testing.T) {
 	}
 }
 
+// TestWidthAHeightAWidthBHeightBAreNotInterchangeable pins NEW-2: every
+// existing size-mismatch fixture in this package varies only ONE dimension
+// (e.g. 40x40 vs 40x60 — WidthA == WidthB, only the heights differ), so a
+// mutation that swaps which image's dimensions feed WidthA/HeightA versus
+// WidthB/HeightB is undetectable there: Mismatch's `!=` check is symmetric
+// under that swap, and no existing assertion reads these four fields'
+// literal values. Here a and b differ in BOTH dimensions, and all four
+// values (30, 50, 70, 90) are pairwise distinct, so a swap is visible no
+// matter which pair of fields it confuses.
+func TestWidthAHeightAWidthBHeightBAreNotInterchangeable(t *testing.T) {
+	base := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+	a := solidPNG(t, 30, 50, base)
+	b := solidPNG(t, 70, 90, base)
+
+	res, _, err := Compare(a, b, Options{})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if res.WidthA != 30 || res.HeightA != 50 || res.WidthB != 70 || res.HeightB != 90 {
+		t.Fatalf("WidthA/HeightA/WidthB/HeightB = %d/%d/%d/%d, want 30/50/70/90 — "+
+			"an A<->B field swap must be visible here", res.WidthA, res.HeightA, res.WidthB, res.HeightB)
+	}
+}
+
 func TestDifferentSizesStillProduceAnOverlayAndADiff(t *testing.T) {
 	base := color.RGBA{R: 10, G: 20, B: 30, A: 255}
 	a := solidPNG(t, 40, 40, base)

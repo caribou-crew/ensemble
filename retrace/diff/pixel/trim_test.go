@@ -209,6 +209,54 @@ func TestCompareTrimReadsEachSideFromItsOwnImage(t *testing.T) {
 	}
 }
 
+// TestCompareAssignsEachSidesTrimRectToTheCorrectField pins F3's sibling
+// gap: every existing trim-wiring fixture (including
+// TestCompareTrimsBothSidesWhenTrimIsRequested and
+// TestCompareTrimReadsEachSideFromItsOwnImage, above) uses the SAME 10px
+// border width on both sides, so the kept Rect is geometrically IDENTICAL
+// for A and B — a mutation that swaps which side's kept rect lands in
+// res.TrimA versus res.TrimB (while workA/workB's pixel content stays
+// correct) passes every one of them undetected. Here A and B have
+// DIFFERENT border widths, so TrimA and TrimB must hold different, exact
+// values — a swap is visible.
+func TestCompareAssignsEachSidesTrimRectToTheCorrectField(t *testing.T) {
+	borderA := color.RGBA{R: 200, G: 200, B: 200, A: 255}
+	borderB := color.RGBA{R: 50, G: 50, B: 50, A: 255}
+	interior := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+
+	build := func(border color.RGBA, borderPx int) []byte {
+		img := newRGBA(40, 40, border)
+		for y := borderPx; y < 40-borderPx; y++ {
+			for x := borderPx; x < 40-borderPx; x++ {
+				img.SetRGBA(x, y, interior)
+			}
+		}
+		b, err := Encode(img)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return b
+	}
+	a := build(borderA, 10) // trims to kept {10,10,20,20}
+	b := build(borderB, 15) // trims to kept {15,15,10,10} — a DIFFERENT rect
+
+	res, _, err := Compare(a, b, Options{Trim: true})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if res.TrimA == nil || res.TrimB == nil {
+		t.Fatalf("TrimA=%v TrimB=%v, want both non-nil", res.TrimA, res.TrimB)
+	}
+	wantTrimA := Rect{X: 10, Y: 10, Width: 20, Height: 20}
+	wantTrimB := Rect{X: 15, Y: 15, Width: 10, Height: 10}
+	if *res.TrimA != wantTrimA {
+		t.Fatalf("TrimA = %+v, want %+v — a swap with TrimB must be visible here", *res.TrimA, wantTrimA)
+	}
+	if *res.TrimB != wantTrimB {
+		t.Fatalf("TrimB = %+v, want %+v — a swap with TrimA must be visible here", *res.TrimB, wantTrimB)
+	}
+}
+
 // TestTrimmedSizeMismatchDoesNotSetMismatch pins F8: Mismatch reports
 // whether the two SHOTS differed in size, never whether independent
 // trimming happened to crop them to different sizes. a and b are both
