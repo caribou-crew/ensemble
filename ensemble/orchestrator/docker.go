@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,15 +21,28 @@ func dockerContainerName(name string) string {
 // dockerRunService starts a Service's docker placement: `docker run -d
 // --name ensemble-<name> -p <ports> -e K=V <image>`.
 func dockerRunService(name string, d *config.DockerPlacement) error {
+	return runDocker(name, dockerRunServiceArgs(name, d))
+}
+
+// dockerRunServiceArgs builds the `docker run` argv for a service
+// placement: ports, env, then d.Args verbatim, then the image. Env keys
+// are emitted sorted so the argv is stable.
+func dockerRunServiceArgs(name string, d *config.DockerPlacement) []string {
 	args := []string{"run", "-d", "--name", dockerContainerName(name)}
 	for _, p := range d.Ports {
 		args = append(args, "-p", p)
 	}
-	for k, v := range d.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	keys := make([]string, 0, len(d.Env))
+	for k := range d.Env {
+		keys = append(keys, k)
 	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, d.Env[k]))
+	}
+	args = append(args, d.Args...)
 	args = append(args, d.Image)
-	return runDocker(name, args)
+	return args
 }
 
 // defaultContainerPorts maps a managed database's Type to the port its

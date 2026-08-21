@@ -140,6 +140,11 @@ type DockerPlacement struct {
 	Image string            `yaml:"image"`
 	Ports []string          `yaml:"ports"`
 	Env   map[string]string `yaml:"env"`
+	// Args are extra `docker run` flags appended verbatim before the
+	// image — `--add-host=host.docker.internal:host-gateway` so a
+	// containerized service can reach host-side databases on Linux,
+	// `--network`, `-v`, `--platform`, anything ensemble has no field for.
+	Args []string `yaml:"args"`
 }
 
 // Database is a datastore ensemble provisions alongside services.
