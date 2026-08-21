@@ -224,12 +224,41 @@ func TestRunStandaloneRecordsAndWritesAManifest(t *testing.T) {
 	if m.Flow != "checkout" || m.App != "web" {
 		t.Errorf("app/flow = %q/%q", m.App, m.Flow)
 	}
-	// assessTrust is an unfilled seam (Task 6 owns the real rules) and must
-	// never default to a clean verdict: an unassessed capture has to gate
-	// as suspect, not OK, or a later "tidy up the placeholder" edit ships a
-	// capture that was never actually assessed.
-	if m.Capture.Status != trace.VerdictSuspect {
-		t.Errorf("capture.status = %q, want %q (assessTrust is an unfilled seam and must not gate clean)", m.Capture.Status, trace.VerdictSuspect)
+	// A healthy run — one call made and recorded, exit 0, no history to
+	// compare screenshot counts against — must actually reach VerdictOK now
+	// that Task 6 fills the assessTrust seam. A regression back to the
+	// hard-coded suspect placeholder, or any change that keeps a clean run
+	// from ever reaching ok, would fail here.
+	if m.Capture.Status != trace.VerdictOK {
+		t.Errorf("capture.status = %q, want %q; reasons: %+v", m.Capture.Status, trace.VerdictOK, m.Capture.Reasons)
+	}
+}
+
+// TestRunBannersANonOkVerdict is Task 6's Step 6 regression: a run whose
+// command makes no calls at all must both (a) print a stderr line
+// identifying the verdict, and (b) persist the same status to the manifest
+// — the banner and the durable record must never disagree.
+func TestRunBannersANonOkVerdict(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\n")
+
+	// "true" never touches RETRACE_PROXY_URL and posts no markers, so
+	// retrace never sees a single request of any kind: RequestsSeen == 0.
+	args := []string{"run", "--flow", "checkout", "--app", "web", "--upstream", upstream.URL, "--", "true"}
+	res := runRetrace(t, bin, cwd, "", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 (the test command itself succeeded)\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "capture-trust:") || !strings.Contains(res.stderr, "broken") {
+		t.Fatalf("stderr does not banner a broken capture-trust verdict:\n%s", res.stderr)
+	}
+	m := onlyManifest(t, cwd, "web", "checkout")
+	if m.Capture.Status != trace.VerdictBroken {
+		t.Errorf("manifest capture.status = %q, want %q — the banner and the manifest must agree", m.Capture.Status, trace.VerdictBroken)
 	}
 }
 
