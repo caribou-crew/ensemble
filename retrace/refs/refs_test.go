@@ -2,13 +2,20 @@ package refs
 
 import (
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/draw"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -324,5 +331,365 @@ func TestResolveWithAnInvalidAppOrFlowIsNoneNotAPanic(t *testing.T) {
 	}
 	if got.Reason == "" {
 		t.Fatal("Reason is empty — a rejected component must say what was wrong")
+	}
+}
+
+// --- Step 4: accept -----------------------------------------------------
+
+// shot builds a distinctive PNG: a `fill` background with a `mark`-coloured
+// rectangle at (0,0)-(4,4). Two colours, in two regions, is what makes a
+// mask assertion meaningful — an all-one-colour fixture cannot tell "masked
+// the right rectangle" from "masked everything" or "masked nothing".
+func shot(t *testing.T, fill, mark color.RGBA, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{fill}, image.Point{}, draw.Src)
+	draw.Draw(img, image.Rect(0, 0, 4, 4), &image.Uniform{mark}, image.Point{}, draw.Src)
+	b, err := pixel.Encode(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func writeFile(t *testing.T, path string, b []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pixelAt(t *testing.T, png []byte, x, y int) color.RGBA {
+	t.Helper()
+	img, err := pixel.Decode(png)
+	if err != nil {
+		t.Fatalf("decoding a stored shot: %v", err)
+	}
+	i := img.PixOffset(x, y)
+	return color.RGBA{img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3]}
+}
+
+var (
+	white = color.RGBA{255, 255, 255, 255}
+	red   = color.RGBA{255, 0, 0, 255}
+	black = color.RGBA{0, 0, 0, 255}
+)
+
+// acceptFixture records one run with two checkpoints, a wire plane, a hop
+// chain, a misses file and a log — so what Accept DOESN'T carry is as
+// testable as what it does.
+func acceptFixture(t *testing.T, cwd string, opts ...runOpt) (root, runID string) {
+	t.Helper()
+	root = runs.RunsRoot(cwd)
+	runID = "20260821T100000Z-aaa1111"
+	opts = append([]runOpt{withCheckpoint("cart", "shots/cart.png"), withCheckpoint("receipt", "shots/receipt.png")}, opts...)
+	p := writeRun(t, root, "web", "checkout", runID, opts...)
+	writeFile(t, filepath.Join(p.ShotsDir, "cart.png"), shot(t, white, red, 10, 10))
+	writeFile(t, filepath.Join(p.ShotsDir, "receipt.png"), shot(t, white, red, 10, 10))
+	writeFile(t, p.WirePath, []byte(`{"schema":"ensemble/1"}`+"\n"))
+	writeFile(t, p.HopsPath, []byte(`{"schema":"ensemble/1"}`+"\n"))
+	writeFile(t, p.MissesPath, []byte(`{"miss":true}`+"\n"))
+	writeFile(t, p.GroupsPath, []byte(`{"name":"browse"}`+"\n"))
+	writeFile(t, filepath.Join(p.RunDir, "proxy.log"), []byte("noisy\n"))
+	return root, runID
+}
+
+func acceptOpts(cwd, root, runID string) AcceptOptions {
+	return AcceptOptions{Cwd: cwd, RunsRoot: root, App: "web", Flow: "checkout", RunID: runID}
+}
+
+func TestAcceptWritesACompactCommittableBundle(t *testing.T) {
+	// bundle dir contains manifest.json, wire.jsonl, hops.jsonl, shots/;
+	// misses.jsonl and any logs are NOT carried — they are not reference
+	// material. RunID in the manifest keeps the provenance of the run it
+	// was promoted from, while the directory is the literal "reference".
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	res, err := Accept(acceptOpts(cwd, root, runID))
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	want, _ := BundleDir(cwd, "web", "checkout")
+	if res.Dir != want {
+		t.Fatalf("Dir = %q, want %q", res.Dir, want)
+	}
+	if filepath.Base(res.Dir) != runs.RefRunID {
+		t.Fatalf("bundle dir is %q, want the literal %q — a churning directory name makes git show a promotion as a delete plus an add", filepath.Base(res.Dir), runs.RefRunID)
+	}
+
+	// Assert over what is ON DISK, not over the list the implementation
+	// chose to report — a walk covers a file added long after this test.
+	var got []string
+	if err := filepath.WalkDir(res.Dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(res.Dir, p)
+		got = append(got, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	wantFiles := []string{"hops.jsonl", "manifest.json", "shots/cart.png", "shots/receipt.png", "wire.jsonl"}
+	if strings.Join(got, ",") != strings.Join(wantFiles, ",") {
+		t.Fatalf("bundle holds %v, want exactly %v — misses.jsonl, groups.jsonl and logs are not reference material", got, wantFiles)
+	}
+	sorted := append([]string(nil), res.Files...)
+	sort.Strings(sorted)
+	if strings.Join(sorted, ",") != strings.Join(wantFiles, ",") {
+		t.Fatalf("AcceptResult.Files = %v, want it to match what landed on disk %v", res.Files, got)
+	}
+
+	if res.RunID != runID {
+		t.Fatalf("AcceptResult.RunID = %q, want the source run %q", res.RunID, runID)
+	}
+	m, err := runs.ReadManifest(filepath.Join(res.Dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the bundle manifest: %v", err)
+	}
+	if m.RunID != runID {
+		t.Fatalf("bundle manifest runId = %q, want the provenance of the run it was promoted from (%q)", m.RunID, runID)
+	}
+	if res.Bytes <= 0 {
+		t.Fatalf("AcceptResult.Bytes = %d, want the real bundle size", res.Bytes)
+	}
+	if res.CaptureStatus != trace.VerdictOK {
+		t.Fatalf("CaptureStatus = %q, want the promoted run's verdict carried through as a typed value", res.CaptureStatus)
+	}
+	// And the bundle resolves — the round trip Resolve depends on.
+	if ref := Resolve(cwd, root, "web", "checkout"); ref.Kind != "bundle" {
+		t.Fatalf("after Accept, Resolve = %+v, want Kind \"bundle\"", ref)
+	}
+}
+
+func TestAcceptRedactsMaskedRegionsIntoTheStoredShots(t *testing.T) {
+	// masks previously only gated comparison; a blessed shot once reached a
+	// reference bundle with legible card data. Accept is the ONLY place
+	// this can be fixed, so it re-encodes each masked shot.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+
+	o := acceptOpts(cwd, root, runID)
+	// Only ONE of the two checkpoints is masked, and the mask covers only
+	// part of that shot: "masked everything" and "masked nothing" both fail.
+	o.MasksFor = func(checkpoint string) []pixel.Rect {
+		if checkpoint == "cart" {
+			return []pixel.Rect{{X: 0, Y: 0, Width: 4, Height: 4}}
+		}
+		return nil
+	}
+	res, err := Accept(o)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	masked, err := os.ReadFile(filepath.Join(res.Dir, "shots", "cart.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pixelAt(t, masked, 1, 1); got != black {
+		t.Fatalf("cart.png at (1,1) = %v, want opaque black — the masked region reached the committed bundle unredacted", got)
+	}
+	if got := pixelAt(t, masked, 8, 8); got != white {
+		t.Fatalf("cart.png at (8,8) = %v, want the original %v — Accept redacted more than the mask", got, white)
+	}
+	unmasked, err := os.ReadFile(filepath.Join(res.Dir, "shots", "receipt.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pixelAt(t, unmasked, 1, 1); got != red {
+		t.Fatalf("receipt.png at (1,1) = %v, want the original %v — an unmasked checkpoint must be carried as captured", got, red)
+	}
+}
+
+func TestAcceptRefusesAnUnreadableShotRatherThanPromotingItUnredacted(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	p, err := runs.PathsFor(root, "web", "checkout", runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(p.ShotsDir, "cart.png"), []byte("this is not a PNG"))
+
+	o := acceptOpts(cwd, root, runID)
+	o.MasksFor = func(string) []pixel.Rect { return []pixel.Rect{{X: 0, Y: 0, Width: 4, Height: 4}} }
+	if _, err := Accept(o); err == nil {
+		t.Fatal("Accept promoted a shot it could not decode — a mask it cannot apply must refuse, never copy the bytes through unredacted")
+	}
+	dir, _ := BundleDir(cwd, "web", "checkout")
+	if _, err := os.Stat(filepath.Join(dir, "shots", "cart.png")); err == nil {
+		t.Fatal("a refused Accept left the undecodable shot in the bundle")
+	}
+}
+
+func TestAcceptReplacesRatherThanMergesTheBundle(t *testing.T) {
+	// a screen deleted from the flow must not linger in the reference.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	if _, err := Accept(acceptOpts(cwd, root, runID)); err != nil {
+		t.Fatalf("first Accept: %v", err)
+	}
+
+	// A second run of the same flow, with `receipt` deleted and a new
+	// checkpoint added.
+	next := "20260821T110000Z-bbb2222"
+	p := writeRun(t, root, "web", "checkout", next, withCheckpoint("cart", "shots/cart.png"), withCheckpoint("thanks", "shots/thanks.png"))
+	writeFile(t, filepath.Join(p.ShotsDir, "cart.png"), shot(t, white, red, 10, 10))
+	writeFile(t, filepath.Join(p.ShotsDir, "thanks.png"), shot(t, white, red, 10, 10))
+	writeFile(t, p.WirePath, []byte(`{"schema":"ensemble/1"}`+"\n"))
+
+	res, err := Accept(acceptOpts(cwd, root, next))
+	if err != nil {
+		t.Fatalf("second Accept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(res.Dir, "shots", "receipt.png")); err == nil {
+		t.Fatal("receipt.png survived a promotion that no longer captures it — the bundle merged instead of replacing")
+	}
+	if _, err := os.Stat(filepath.Join(res.Dir, "shots", "thanks.png")); err != nil {
+		t.Fatalf("thanks.png missing from the replaced bundle: %v", err)
+	}
+	// hops.jsonl existed in the first run and not the second: a stale plane
+	// is the same defect as a stale screenshot.
+	if _, err := os.Stat(filepath.Join(res.Dir, "hops.jsonl")); err == nil {
+		t.Fatal("hops.jsonl survived from the previous promotion — the bundle merged instead of replacing")
+	}
+}
+
+func TestAcceptRefusesToExceedTheSizeBudgetNamingTheOffender(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	p, err := runs.PathsFor(root, "web", "checkout", runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Incompressible noise, so the PNG on disk really is over budget.
+	big := make([]byte, MaxBundleBytes+1)
+	for i := range big {
+		big[i] = byte(i * 7919 % 251)
+	}
+	writeFile(t, p.WirePath, big)
+
+	_, err = Accept(acceptOpts(cwd, root, runID))
+	if err == nil {
+		t.Fatal("Accept exceeded MaxBundleBytes without refusing — a reference bundle is committed, so its size is a cost every clone pays forever")
+	}
+	msg := err.Error()
+	for _, want := range []string{"wire.jsonl", "web/checkout", "MaxBundleBytes"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error = %q, want it to name %q", msg, want)
+		}
+	}
+}
+
+func TestAcceptWarnsButProceedsOnANonOkCapture(t *testing.T) {
+	// promotion is explicit, so an untrustworthy capture is warned about,
+	// never promoted silently — that is how a proxy-down run becomes the
+	// source of truth.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd, withCapture(trace.VerdictSuspect, "unattributed traffic mid-run"))
+
+	res, err := Accept(acceptOpts(cwd, root, runID))
+	if err != nil {
+		t.Fatalf("Accept refused a non-ok capture: %v — promotion is explicit, so this is the human's call to make", err)
+	}
+	if res.CaptureStatus != trace.VerdictSuspect {
+		t.Fatalf("CaptureStatus = %q, want %q carried through as a typed value, not reconstructible only from warning text",
+			res.CaptureStatus, trace.VerdictSuspect)
+	}
+	// The verdict must survive INTO the bundle, so every later diff banners
+	// it too — a warning printed once at accept time is not a record.
+	m, err := runs.ReadManifest(filepath.Join(res.Dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Capture.Status != trace.VerdictSuspect {
+		t.Fatalf("bundle manifest capture status = %q, want the promoted run's own verdict %q", m.Capture.Status, trace.VerdictSuspect)
+	}
+}
+
+func TestAcceptRejectsAnAppOrFlowThatWouldEscapeTheRefsRoot(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	o := acceptOpts(cwd, root, runID)
+	o.Flow = ".."
+	if _, err := Accept(o); err == nil {
+		t.Fatal("Accept accepted a traversal flow")
+	}
+}
+
+// --- Step 6: reject -----------------------------------------------------
+
+func TestRejectEmitsASelfContainedReproBundle(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	out := filepath.Join(t.TempDir(), "repro")
+
+	s := &diff.Summary{Schema: diff.SummarySchema, App: "web", Flow: "checkout", Verdict: "changed"}
+	res, err := Reject(RejectOptions{Cwd: cwd, RunsRoot: root, App: "web", Flow: "checkout", RunID: runID, OutDir: out, Summary: s})
+	if err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if want := filepath.Join(out, "web__checkout__"+runID); res.Dir != want {
+		t.Fatalf("Dir = %q, want %q", res.Dir, want)
+	}
+	for _, name := range []string{"manifest.json", "wire.jsonl", "hops.jsonl", "shots/cart.png", "summary.json"} {
+		if _, err := os.Stat(filepath.Join(res.Dir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("repro bundle is missing %s: %v", name, err)
+		}
+	}
+	var back diff.Summary
+	b, err := os.ReadFile(filepath.Join(res.Dir, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("summary.json does not round-trip: %v", err)
+	}
+	if back.Verdict != "changed" || back.Flow != "checkout" {
+		t.Fatalf("summary.json = %+v, want the diff that motivated the rejection", back)
+	}
+	if len(res.Files) == 0 {
+		t.Fatal("RejectResult.Files is empty")
+	}
+}
+
+func TestRejectWithoutASummaryStillEmitsTheRun(t *testing.T) {
+	// A run can be rejected before any diff exists (no reference yet). The
+	// bundle is still worth having; summary.json is simply absent, which is
+	// honest — an empty summary.json would assert a diff that never ran.
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	res, err := Reject(RejectOptions{Cwd: cwd, RunsRoot: root, App: "web", Flow: "checkout", RunID: runID})
+	if err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if want := filepath.Join(cwd, ".retrace", "repro"); filepath.Dir(res.Dir) != want {
+		t.Fatalf("default OutDir = %q, want %q", filepath.Dir(res.Dir), want)
+	}
+	if _, err := os.Stat(filepath.Join(res.Dir, "summary.json")); err == nil {
+		t.Fatal("summary.json exists for a rejection with no diff — an empty summary asserts a comparison that never happened")
+	}
+	if _, err := os.Stat(filepath.Join(res.Dir, "manifest.json")); err != nil {
+		t.Fatalf("repro bundle is missing manifest.json: %v", err)
+	}
+}
+
+// TestRejectCarriesTheMissesFileAcceptDrops — the two bundles have opposite
+// purposes and must not converge on one file list: a repro bundle is for
+// debugging, so replay misses are exactly what someone needs.
+func TestRejectCarriesTheMissesFileAcceptDrops(t *testing.T) {
+	cwd := t.TempDir()
+	root, runID := acceptFixture(t, cwd)
+	res, err := Reject(RejectOptions{Cwd: cwd, RunsRoot: root, App: "web", Flow: "checkout", RunID: runID})
+	if err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(res.Dir, "misses.jsonl")); err != nil {
+		t.Fatalf("repro bundle is missing misses.jsonl: %v", err)
 	}
 }

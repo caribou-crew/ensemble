@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -188,4 +190,340 @@ func noneReason(app, flow string, history []Candidate) string {
 		parts = append(parts, c.RunID+": "+c.Reason)
 	}
 	return fmt.Sprintf("no run eligible as a reference for %s/%s — %s", app, flow, strings.Join(parts, "; "))
+}
+
+// --- accept -------------------------------------------------------------
+
+// AcceptOptions is one promotion: which run, in which project, becomes the
+// reference for its flow.
+type AcceptOptions struct {
+	Cwd, RunsRoot, App, Flow, RunID string
+	// MasksFor is the ONLY mask input, and it is a function because masks
+	// are per-checkpoint by nature — the whole point is "ignore the clock in
+	// the header of THIS screen". A flat []pixel.Rect alongside it would be
+	// a precedence question with no answer, resolved differently by any two
+	// readers.
+	//
+	// It is already []pixel.Rect: the config.Rect -> pixel.Rect conversion
+	// happens ONCE, in the caller's closure, through pixel.RectsFrom. This
+	// package never imports retrace/config.
+	//
+	// nil means "no masks anywhere", which is the honest reading of a
+	// caller that has no config — not a trap, because an unmasked shot is
+	// the captured truth, and Accept's job is to not LEAK past a mask that
+	// exists, never to invent one.
+	MasksFor func(checkpoint string) []pixel.Rect
+}
+
+// AcceptResult is what a promotion did, in the shape `--json` emits.
+type AcceptResult struct {
+	Dir   string   `json:"dir"`
+	Files []string `json:"files"` // bundle-relative, slash-separated
+	RunID string   `json:"runId"`
+	Bytes int64    `json:"bytes"`
+	// CaptureStatus is the promoted run's own capture verdict, carried
+	// through as a TYPED value rather than left reconstructible from
+	// warning text. A promotion off a non-ok capture is the human's call to
+	// make, but the machine-readable record of having made it belongs here.
+	CaptureStatus trace.Verdict `json:"captureStatus"`
+}
+
+// bundleFile is one file staged for a bundle: where it came from, where it
+// goes, and (for a masked shot) the re-encoded bytes that replace it.
+type bundleFile struct {
+	rel   string // bundle-relative, slash-separated
+	src   string
+	bytes []byte // non-nil when the content was rewritten (a redacted shot)
+	size  int64
+}
+
+// Accept promotes one run into the committed reference bundle for its flow.
+//
+// It carries manifest.json, wire.jsonl, hops.jsonl and the checkpoint shots
+// — and nothing else. misses.jsonl (a replay artifact), groups.jsonl (raw
+// marker records, already folded into Manifest.Groups) and any logs are not
+// reference material: a bundle is committed, so every byte in it is a cost
+// every clone pays forever.
+//
+// Only the shots the MANIFEST names are carried, never a directory listing
+// of shots/. That is what guarantees every promoted image went through
+// MasksFor: a stray file in shots/ has no checkpoint name, so there is no
+// mask to look up for it, and copying it would be the unredacted promotion
+// this function exists to prevent.
+//
+// The bundle is STAGED in a sibling directory and moved into place, rather
+// than the RemoveAll-then-copy the plan sketched. A refusal partway through
+// a copy — an undecodable shot, an over-budget file — would otherwise have
+// already destroyed the previous reference, turning "I refused to promote
+// this" into "you now have no reference at all".
+func Accept(o AcceptOptions) (AcceptResult, error) {
+	p, err := runs.PathsFor(o.RunsRoot, o.App, o.Flow, o.RunID)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	dir, err := BundleDir(o.Cwd, o.App, o.Flow)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	m, err := runs.ReadManifest(p.ManifestPath)
+	if err != nil {
+		return AcceptResult{}, fmt.Errorf("reading the manifest for %s/%s/%s: %w", o.App, o.Flow, o.RunID, err)
+	}
+
+	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
+	for _, name := range []string{"wire.jsonl", "hops.jsonl"} {
+		src := filepath.Join(p.RunDir, name)
+		if _, err := os.Stat(src); err == nil {
+			files = append(files, bundleFile{rel: name, src: src})
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return AcceptResult{}, err
+		}
+	}
+	for _, cp := range m.Checkpoints {
+		f, err := shotFor(p.RunDir, cp, o.MasksFor)
+		if err != nil {
+			return AcceptResult{}, err
+		}
+		files = append(files, f)
+	}
+	total, err := measure(files)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if total > MaxBundleBytes {
+		return AcceptResult{}, overBudget(o.App, o.Flow, total, files)
+	}
+
+	if err := stageAndSwap(dir, files); err != nil {
+		return AcceptResult{}, err
+	}
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.rel
+	}
+	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, CaptureStatus: m.Capture.Status}, nil
+}
+
+// shotFor stages one checkpoint's screenshot, redacting it when a mask
+// covers it. Masks previously only gated COMPARISON, which meant a blessed
+// shot could reach a committed reference bundle with legible card data
+// still in it. Accept is the only place that can be fixed, because it is
+// the only place the bytes are copied.
+//
+// An undecodable shot is a REFUSAL, never a byte-for-byte copy: a mask that
+// cannot be applied is a mask that is not protecting anything, and the
+// whole point of this branch is what the mask hides.
+func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Rect) (bundleFile, error) {
+	// cp.File is run-dir-relative and comes from the manifest; it is
+	// resolved against runDir and must not escape it. filepath.Join cleans
+	// "..", so the check is on the cleaned result, not the input.
+	src := filepath.Join(runDir, filepath.FromSlash(cp.File))
+	if rel, err := filepath.Rel(runDir, src); err != nil || strings.HasPrefix(rel, "..") {
+		return bundleFile{}, fmt.Errorf("checkpoint %q names %q, which is outside the run directory", cp.Name, cp.File)
+	}
+	rel := filepath.ToSlash(filepath.Clean(cp.File))
+	var masks []pixel.Rect
+	if masksFor != nil {
+		masks = masksFor(cp.Name)
+	}
+	if len(masks) == 0 {
+		return bundleFile{rel: rel, src: src}, nil
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		return bundleFile{}, fmt.Errorf("reading checkpoint %q for redaction: %w", cp.Name, err)
+	}
+	img, err := pixel.Decode(raw)
+	if err != nil {
+		return bundleFile{}, fmt.Errorf("checkpoint %q is masked but could not be decoded, so its mask cannot be applied: %w — refusing to promote it unredacted", cp.Name, err)
+	}
+	pixel.ApplyMasks(img, masks)
+	out, err := pixel.Encode(img)
+	if err != nil {
+		return bundleFile{}, fmt.Errorf("re-encoding the redacted checkpoint %q: %w", cp.Name, err)
+	}
+	return bundleFile{rel: rel, src: src, bytes: out, size: int64(len(out))}, nil
+}
+
+// measure fills in each staged file's size — the REDACTED size for a
+// rewritten shot, because that is the byte count the bundle actually costs.
+func measure(files []bundleFile) (int64, error) {
+	var total int64
+	for i := range files {
+		if files[i].bytes == nil {
+			st, err := os.Stat(files[i].src)
+			if err != nil {
+				return 0, err
+			}
+			files[i].size = st.Size()
+		}
+		total += files[i].size
+	}
+	return total, nil
+}
+
+func overBudget(app, flow string, total int64, files []bundleFile) error {
+	largest := files[0]
+	for _, f := range files[1:] {
+		if f.size > largest.size {
+			largest = f
+		}
+	}
+	return fmt.Errorf("reference bundle for %s/%s would be %s, over the %s budget — the largest file is %s (%s); add a mask, trim the flow, or raise MaxBundleBytes deliberately",
+		app, flow, humanBytes(total), humanBytes(MaxBundleBytes), largest.rel, humanBytes(largest.size))
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// stageAndSwap writes every staged file into a sibling temp directory, then
+// replaces dir with it. REPLACES: a screen deleted from the flow must not
+// linger in the reference, and neither must a hops.jsonl from a run that
+// recorded one when this one did not.
+func stageAndSwap(dir string, files []bundleFile) error {
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp(parent, ".staging-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging) // no-op once the rename has moved it away
+	for _, f := range files {
+		if err := writeBundleFile(filepath.Join(staging, filepath.FromSlash(f.rel)), f); err != nil {
+			return err
+		}
+	}
+	// A same-parent rename cannot span filesystems, so the only window is
+	// between the RemoveAll and the Rename — orders of magnitude smaller
+	// than a whole copy, and a crash inside it leaves no half-bundle,
+	// because the staged tree is complete before either call runs.
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.Rename(staging, dir)
+}
+
+func writeBundleFile(dst string, f bundleFile) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if f.bytes != nil {
+		return os.WriteFile(dst, f.bytes, 0o644)
+	}
+	b, err := os.ReadFile(f.src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o644)
+}
+
+// --- reject -------------------------------------------------------------
+
+// RejectOptions captures a failing run as an attachable repro bundle.
+// OutDir defaults to <Cwd>/.retrace/repro. Summary may be nil — a run can
+// be rejected before any reference exists to diff it against.
+type RejectOptions struct {
+	Cwd, RunsRoot, App, Flow, RunID, OutDir string
+	Summary                                 *diff.Summary
+}
+
+type RejectResult struct {
+	Dir   string   `json:"dir"`
+	Files []string `json:"files"`
+}
+
+// Reject copies a failing run — manifest, both hop planes, its shots, its
+// replay misses — plus the diff.Summary that motivated the rejection, into
+// <OutDir>/<app>__<flow>__<runId>/: something a human can attach to a bug.
+//
+// It carries MORE than Accept, not less, and deliberately so. The two
+// bundles have opposite purposes: a reference is committed and must be
+// minimal, while a repro is thrown away after someone reads it and wants
+// everything — misses.jsonl especially, which is exactly what a replay
+// failure is about.
+//
+// Shots are copied VERBATIM, never redacted: a repro bundle is evidence,
+// and evidence with the interesting region painted black is not evidence.
+// It is also not committed — .retrace/repro/ is ignored (see .gitignore) —
+// so the leak Accept's redaction prevents does not arise here.
+//
+// A nil Summary writes no summary.json at all. An empty one would assert a
+// comparison that never ran, which is the "a plausible value is worse than
+// an absent one" trap in file form.
+func Reject(o RejectOptions) (RejectResult, error) {
+	p, err := runs.PathsFor(o.RunsRoot, o.App, o.Flow, o.RunID)
+	if err != nil {
+		return RejectResult{}, err
+	}
+	if err := runs.ValidateComponents(o.App, o.Flow, o.RunID); err != nil {
+		return RejectResult{}, err
+	}
+	outDir := o.OutDir
+	if outDir == "" {
+		outDir = filepath.Join(o.Cwd, ".retrace", "repro")
+	}
+	dir := filepath.Join(outDir, o.App+"__"+o.Flow+"__"+o.RunID)
+	if err := os.RemoveAll(dir); err != nil {
+		return RejectResult{}, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return RejectResult{}, err
+	}
+
+	var files []string
+	for _, name := range []string{"manifest.json", "wire.jsonl", "hops.jsonl", "misses.jsonl", "groups.jsonl"} {
+		src := filepath.Join(p.RunDir, name)
+		b, err := os.ReadFile(src)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return RejectResult{}, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+			return RejectResult{}, err
+		}
+		files = append(files, name)
+	}
+	shots, err := os.ReadDir(p.ShotsDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return RejectResult{}, err
+	}
+	for _, e := range shots {
+		if e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(p.ShotsDir, e.Name()))
+		if err != nil {
+			return RejectResult{}, err
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "shots"), 0o755); err != nil {
+			return RejectResult{}, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "shots", e.Name()), b, 0o644); err != nil {
+			return RejectResult{}, err
+		}
+		files = append(files, "shots/"+e.Name())
+	}
+	if o.Summary != nil {
+		b, err := json.MarshalIndent(o.Summary, "", "  ")
+		if err != nil {
+			return RejectResult{}, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "summary.json"), append(b, '\n'), 0o644); err != nil {
+			return RejectResult{}, err
+		}
+		files = append(files, "summary.json")
+	}
+	return RejectResult{Dir: dir, Files: files}, nil
 }
