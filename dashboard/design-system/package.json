@@ -7,12 +7,22 @@
   "types": "./primitives.tsx",
   "exports": {
     ".": "./primitives.tsx",
-    "./tokens.css": "./tokens.css"
+    "./tokens.css": "./tokens.css",
+    "./useAsync": "./useAsync.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
   },
   "peerDependencies": {
     "react": "*"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "happy-dom": "^20.11.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }
