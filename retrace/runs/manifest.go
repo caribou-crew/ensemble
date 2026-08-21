@@ -48,11 +48,19 @@ type Manifest struct {
 	// not serialize the same way, or a broken capture reads as a clean one.
 	Capture CaptureTrust `json:"capture"`
 	// Wire is never omitted, the same as Capture and unlike Hops: it always
-	// has a key, and Counts.Missing (not a nil pointer) is what says whether
-	// the count inside it is real. See Counts below.
+	// has a key, and Counts.Recorded (not a nil pointer) is what says
+	// whether the count inside it is real. See Counts below.
 	Wire Counts `json:"wire"`
-	// Hops is nil in standalone mode — see ModeStandalone. Present-but-zero
-	// means the chain was recorded and was empty.
+	// Hops is nil in standalone mode — see ModeStandalone — and that nil
+	// pointer is the ONLY encoding of "not recorded" for this field.
+	// Present-but-zero (&Counts{Recorded:true}) means the chain was recorded
+	// and was empty. A non-nil Hops must always have Recorded true:
+	// WriteManifest and ReadManifest both reject Hops != nil && !Hops.Recorded,
+	// because Counts.Recorded exists for Wire, which has no pointer to be
+	// nil — giving Hops a second "absent" spelling would let the impossible
+	// state hops:{calls:40,recorded:false} reach disk, and omitempty on a
+	// pointer means a non-nil-but-unrecorded Counts would still emit the
+	// key, so the two encodings would not even be mutually exclusive.
 	Hops *Counts `json:"hops,omitempty"`
 	Test Test    `json:"test"`
 	Env  Env     `json:"env"`
@@ -83,18 +91,26 @@ type Checkpoint struct {
 
 // Counts reports how many calls were recorded on one plane (currently
 // Manifest.Wire; Manifest.Hops uses *Counts instead — see its doc comment).
-// Missing and Calls draw the same "absent vs empty" distinction Hops draws
-// with a nil pointer: Missing false with Calls 0 means "recorded, and there
-// were none" — a real, clean fact. Missing true means "not recorded", with
-// Reason saying why, and a diff must refuse to compare against it rather
-// than silently treating it as zero calls. Missing is therefore never
-// omitempty — a bool that disappears when false is exactly how "absent" and
-// "fine" end up as the same bytes on disk, which is the trap Capture's doc
-// comment also warns about.
+// Recorded and Calls draw the same "absent vs empty" distinction Hops draws
+// with a nil pointer: Recorded true with Calls 0 means "recorded, and there
+// were none" — a real, clean fact. Recorded false means "not recorded",
+// with Reason saying why, and a diff must refuse to compare against it
+// rather than silently treating it as zero calls.
+//
+// The zero value, Counts{}, is deliberately Recorded:false — the
+// protective reading, not the permissive one. Any code path that forgets
+// to set Wire (or a Hops it allocates) therefore asserts "unknown, refuse"
+// for free, rather than asserting a clean wire plane it never actually
+// recorded. (An earlier `Missing bool` encoding had this backwards: its
+// zero value, Missing:false, asserted "recorded and clean" — the
+// permissive reading the global zero-value constraint forbids.) Recorded
+// is therefore never omitempty — a bool that disappears when false is
+// exactly how "absent" and "fine" end up as the same bytes on disk, which
+// is the trap Capture's doc comment also warns about.
 type Counts struct {
-	Calls   int    `json:"calls"`
-	Missing bool   `json:"missing"`
-	Reason  string `json:"reason,omitempty"`
+	Calls    int    `json:"calls"`
+	Recorded bool   `json:"recorded"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type Test struct {
@@ -133,6 +149,40 @@ type Gap struct {
 	Seconds int       `json:"seconds"`
 }
 
+// validateCounts enforces, for one Counts-typed manifest field, the same
+// "absence must not silently read as fine" invariant WriteManifest already
+// enforces on Capture.Status: a plane that was not recorded must say so
+// explicitly (Recorded false) AND explain why (Reason set), and must not
+// simultaneously claim a nonzero Calls — "not recorded" with 40 calls is a
+// self-contradiction, not a state this schema allows onto disk.
+func validateCounts(field string, c Counts) error {
+	if c.Recorded {
+		return nil
+	}
+	if c.Calls != 0 {
+		return fmt.Errorf("runs: manifest %s.calls must be 0 when recorded is false (got %d) — a plane cannot claim to be unrecorded and also report calls", field, c.Calls)
+	}
+	if c.Reason == "" {
+		return fmt.Errorf("runs: manifest %s.recorded is false but reason is empty — explain why %s was not recorded", field, field)
+	}
+	return nil
+}
+
+// validateHops enforces the Hops-specific half of the same invariant: for
+// Hops, "not recorded" has exactly one encoding — the nil pointer (see
+// Manifest.Hops's doc comment) — so a non-nil Hops claiming Recorded false
+// is a second, contradictory spelling of "absent" that must never reach
+// disk.
+func validateHops(hops *Counts) error {
+	if hops == nil {
+		return nil
+	}
+	if !hops.Recorded {
+		return fmt.Errorf("runs: manifest hops is present but recorded is false — for hops, absence is the nil pointer (omit hops entirely), not recorded:false")
+	}
+	return validateCounts("hops", *hops)
+}
+
 // WriteManifest stamps and normalizes m before writing manifest.json:
 //
 //   - Schema is always overwritten with the current constant.
@@ -142,6 +192,11 @@ type Gap struct {
 //     would make an unassessed capture gate as clean. A caller that hasn't
 //     run trust assessment yet must pass an explicit verdict (e.g.
 //     trace.VerdictFailed), not a zero CaptureTrust.
+//   - Wire and, if non-nil, Hops must not claim absence (Recorded false)
+//     while also reporting a nonzero Calls, and must carry a Reason when
+//     absence IS claimed — see validateCounts. A non-nil Hops must never
+//     claim absence at all — see validateHops and Manifest.Hops's doc
+//     comment.
 //   - Checkpoints and Groups are defaulted from nil to an empty slice, so
 //     "no items" always serializes as [] and never as null.
 //
@@ -152,6 +207,12 @@ func WriteManifest(p Paths, m *Manifest) error {
 	m.Schema = Schema
 	if m.Capture.Status == "" {
 		return fmt.Errorf("runs: manifest capture status must not be empty — pass an explicit trace.Verdict")
+	}
+	if err := validateCounts("wire", m.Wire); err != nil {
+		return err
+	}
+	if err := validateHops(m.Hops); err != nil {
+		return err
 	}
 	if m.Checkpoints == nil {
 		m.Checkpoints = []Checkpoint{}
@@ -206,6 +267,18 @@ func ReadManifest(path string) (Manifest, error) {
 	}
 	if m.Capture.Status == "" {
 		return Manifest{}, fmt.Errorf("runs: manifest capture status must not be empty — pass an explicit trace.Verdict")
+	}
+	// Wire/Hops are re-checked here for the same reason Capture.Status is,
+	// immediately above: WriteManifest only guards manifests THIS build
+	// wrote. An older build, or a hand-edited reference bundle, can still
+	// carry the self-contradictory hops:{calls:40,recorded:false}. Checked
+	// in the same order as WriteManifest so both functions reject the same
+	// manifest for the same reason first.
+	if err := validateCounts("wire", m.Wire); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateHops(m.Hops); err != nil {
+		return Manifest{}, err
 	}
 	return m, nil
 }

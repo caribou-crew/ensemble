@@ -20,6 +20,7 @@ func TestManifestRoundTripsAndStampsSchema(t *testing.T) {
 		StartedAt:   time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC),
 		Checkpoints: []Checkpoint{{Name: "cart", File: "shots/cart.png", Width: 390, Height: 844}},
 		Capture:     CaptureTrust{Status: trace.VerdictDegraded, Summary: "propagation gap at bff"},
+		Wire:        Counts{Recorded: true},
 	}
 	if err := WriteManifest(p, &m); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
@@ -86,6 +87,7 @@ func TestWriteManifestStampsCallersSchema(t *testing.T) {
 	m := Manifest{
 		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeEnsemble,
 		Capture: CaptureTrust{Status: trace.VerdictOK, Summary: "ok"},
+		Wire:    Counts{Recorded: true},
 	}
 	if err := WriteManifest(p, &m); err != nil {
 		t.Fatalf("WriteManifest: %v", err)
@@ -107,6 +109,7 @@ func TestWriteManifestDefaultsNilSlicesToEmptyArrays(t *testing.T) {
 	m := Manifest{
 		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeEnsemble,
 		Capture: CaptureTrust{Status: trace.VerdictOK, Summary: "ok"},
+		Wire:    Counts{Recorded: true},
 	}
 	// m.Checkpoints and m.Groups are both nil here.
 	if err := WriteManifest(p, &m); err != nil {
@@ -164,47 +167,138 @@ func TestReadManifestRejectsZeroValueCaptureStatus(t *testing.T) {
 	}
 }
 
-// TestCountsMissingAndReasonRoundTripThroughRealJson is the item-5 text
-// test: parses real JSON text (not a struct literal) and asserts Missing
-// and Reason arrive with the exact key spelling, and that Missing false
-// with Calls 0 ("recorded, none happened") is distinguishable on the wire
-// from Missing true with a Reason ("not recorded, and why").
-func TestCountsMissingAndReasonRoundTripThroughRealJson(t *testing.T) {
+// TestWriteManifestRejectsACountsThatForgotRecorded pins F3's write-seam
+// guard for the exact defect class it exists to catch: a construction site
+// that reports a real Calls count but forgets to set Recorded (leaving it
+// at its false zero value) — e.g. `runs.Counts{Calls: len(wireHops)}`. This
+// is the whole argument for F4's inversion: a forgotten field must fail
+// loudly instead of silently asserting a clean, unrecorded-but-populated
+// plane. Without validateCounts, this exact manifest round-trips fine.
+func TestWriteManifestRejectsACountsThatForgotRecorded(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := Manifest{
+		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeEnsemble,
+		Capture: CaptureTrust{Status: trace.VerdictOK, Summary: "ok"},
+		Wire:    Counts{Calls: 12}, // Recorded forgotten — left at its false zero value
+	}
+	if err := WriteManifest(p, &m); err == nil {
+		t.Fatal("WriteManifest must reject Wire.Calls != 0 with Recorded left false — a forgotten Recorded must fail loudly, not assert a clean wire plane")
+	}
+}
+
+// TestWriteManifestRequiresAReasonWhenRecordedIsFalse pins the fourth bullet
+// of F3: absence (Recorded false) must not be half-written — a caller that
+// claims a plane was not recorded must say why.
+func TestWriteManifestRequiresAReasonWhenRecordedIsFalse(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := Manifest{
+		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeEnsemble,
+		Capture: CaptureTrust{Status: trace.VerdictOK, Summary: "ok"},
+		// Wire is the zero value here: Recorded false, Calls 0, Reason "".
+	}
+	if err := WriteManifest(p, &m); err == nil {
+		t.Fatal("WriteManifest must reject Recorded=false with no Reason explaining why")
+	}
+}
+
+// TestWriteManifestRejectsANonNilHopsClaimingAbsence pins F3's first bullet:
+// for Hops, absence has exactly one encoding — the nil pointer (see
+// Manifest.Hops's doc comment). A non-nil Hops with Recorded false is a
+// second, contradictory spelling of "absent" and must never reach disk.
+func TestWriteManifestRejectsANonNilHopsClaimingAbsence(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := Manifest{
+		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeEnsemble,
+		Capture: CaptureTrust{Status: trace.VerdictOK, Summary: "ok"},
+		Wire:    Counts{Recorded: true},
+		Hops:    &Counts{Calls: 40, Reason: "chain truncated"}, // Recorded left false
+	}
+	if err := WriteManifest(p, &m); err == nil {
+		t.Fatal("WriteManifest must reject a non-nil Hops with Recorded false — for Hops, absence is the nil pointer, not recorded:false")
+	}
+}
+
+// TestReadManifestRejectsACountsThatForgotRecorded mirrors
+// TestWriteManifestRejectsACountsThatForgotRecorded at the read seam — a
+// hand-edited or older-build manifest can carry the same self-contradictory
+// state on disk even though this build's own WriteManifest would refuse to
+// write it.
+func TestReadManifestRejectsACountsThatForgotRecorded(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	body := `{"schema":"retrace/1","capture":{"status":"ok","summary":"ok"},"wire":{"calls":12,"recorded":false}}` + "\n"
+	if err := os.WriteFile(p.ManifestPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := ReadManifest(p.ManifestPath); err == nil {
+		t.Fatal("ReadManifest must reject wire.calls != 0 with wire.recorded false, the same as WriteManifest does")
+	}
+}
+
+// TestCountsRecordedAndReasonRoundTripThroughRealJson is the item-5 text
+// test, updated for F4's inversion (Missing bool -> Recorded bool, zero
+// value now the protective "not recorded" reading): parses real JSON text
+// (not a struct literal) and asserts Recorded and Reason arrive with the
+// exact key spelling, and that Recorded true with Calls 0 ("recorded, none
+// happened") is distinguishable on the wire from Recorded false with a
+// Reason ("not recorded, and why").
+func TestCountsRecordedAndReasonRoundTripThroughRealJson(t *testing.T) {
 	var recorded Counts
-	if err := json.Unmarshal([]byte(`{"calls":0,"missing":false}`), &recorded); err != nil {
+	if err := json.Unmarshal([]byte(`{"calls":0,"recorded":true}`), &recorded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if recorded.Missing || recorded.Calls != 0 {
-		t.Fatalf("recorded-and-empty must be Missing=false Calls=0, got %+v", recorded)
+	if !recorded.Recorded || recorded.Calls != 0 {
+		t.Fatalf("recorded-and-empty must be Recorded=true Calls=0, got %+v", recorded)
 	}
 
 	var absent Counts
-	if err := json.Unmarshal([]byte(`{"calls":0,"missing":true,"reason":"wire capture disabled"}`), &absent); err != nil {
+	if err := json.Unmarshal([]byte(`{"calls":0,"recorded":false,"reason":"wire capture disabled"}`), &absent); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if !absent.Missing || absent.Reason != "wire capture disabled" {
-		t.Fatalf("absent must be Missing=true with Reason set, got %+v", absent)
+	if absent.Recorded || absent.Reason != "wire capture disabled" {
+		t.Fatalf("absent must be Recorded=false with Reason set, got %+v", absent)
 	}
 
-	// Marshal side: Missing must never be omitted (never omitempty), Reason
+	// Marshal side: Recorded must never be omitted (never omitempty), Reason
 	// must be omitted when blank.
-	b, err := json.Marshal(Counts{Calls: 3})
+	b, err := json.Marshal(Counts{Calls: 3, Recorded: true})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(b), `"missing":false`) {
-		t.Fatalf(`Counts{Calls:3} must serialize "missing":false explicitly, got %s`, b)
+	if !strings.Contains(string(b), `"recorded":true`) {
+		t.Fatalf(`Counts{Calls:3, Recorded:true} must serialize "recorded":true explicitly, got %s`, b)
 	}
 	if strings.Contains(string(b), "reason") {
 		t.Fatalf("a blank Reason must be omitted (omitempty), got %s", b)
 	}
 
-	b2, err := json.Marshal(Counts{Missing: true, Reason: "standalone mode"})
+	// The zero value must not omit recorded either — that is precisely how
+	// "absent" and "fine" would end up as the same bytes on disk.
+	zeroB, err := json.Marshal(Counts{})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(b2), `"missing":true`) || !strings.Contains(string(b2), `"reason":"standalone mode"`) {
-		t.Fatalf("Counts with Missing+Reason set must serialize both, got %s", b2)
+	if !strings.Contains(string(zeroB), `"recorded":false`) {
+		t.Fatalf(`Counts{} (the zero value) must serialize "recorded":false explicitly, got %s`, zeroB)
+	}
+
+	b2, err := json.Marshal(Counts{Reason: "standalone mode"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(b2), `"recorded":false`) || !strings.Contains(string(b2), `"reason":"standalone mode"`) {
+		t.Fatalf("Counts with Reason set (Recorded left at its false zero value) must serialize both, got %s", b2)
 	}
 }
 
