@@ -44,7 +44,19 @@ func TestAlignPerformanceOnAShapedInput(t *testing.T) {
 	elapsed := time.Since(start)
 
 	t.Logf("align(120x120, ~20KB bodies) took %s (pairs=%d aOnly=%d bOnly=%d)", elapsed, len(pairs), len(aOnly), len(bOnly))
-	if elapsed > 3*time.Second {
-		t.Fatalf("align(120x120, ~20KB bodies) took %s, want well under the pre-memoization ~9.5s (regression guard: 3s)", elapsed)
+	// The threshold is derived from the GAP this test must detect, not from
+	// measured current performance plus a margin. Memoized: 0.225s without
+	// -race, 2.0-3.1s under it. Un-memoized: 28s without -race, and worse
+	// under it. Any value between those two populations catches the
+	// regression; 10s sits ~3x above the slow end of "fixed" and far below
+	// "broken", so it cannot flake on a loaded CI box while still failing
+	// loudly if the sim[][] cache is ever lost.
+	//
+	// A 3s bound here was measured WITHOUT -race and failed 1 run in 4 under
+	// it — and -race is what the mandated CI command uses. A perf guard
+	// tuned to the fast path is a flaky test wearing a regression test's
+	// clothes.
+	if elapsed > 10*time.Second {
+		t.Fatalf("align(120x120, ~20KB bodies) took %s, want far under the un-memoized ~28s (regression guard: 10s)", elapsed)
 	}
 }
