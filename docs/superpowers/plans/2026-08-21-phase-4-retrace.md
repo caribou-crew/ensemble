@@ -3138,7 +3138,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Checkpoints: checkpoints,
 		Groups:      groups,
 		Capture:     trust,
-		Wire:        runs.Counts{Calls: len(wireHops)},
+		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},
 		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
 		// Retrace is the recording binary's own version, from main.version
 		// (the `var version = "dev"` in main.go, stamped by -ldflags at
@@ -3156,7 +3156,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	// recorded", present-and-zero means "the chain was recorded and was
 	// empty". Task 5 sets it; standalone leaves it nil.
 	if s.Mode == runs.ModeEnsemble {
-		m.Hops = &runs.Counts{Calls: len(hops)}
+		m.Hops = &runs.Counts{Calls: len(hops), Recorded: true}
 	}
 	return m, runs.WriteManifest(s.Paths, &m)
 }
@@ -5394,9 +5394,15 @@ func TestAnUnconfiguredPlaneGetsNoGateEntry(t *testing.T) {
 	// reading as "passed".
 }
 func TestAZeroBudgetGatesOnAnyDifference(t *testing.T) {
-	// cfg.Gates["pixel"].BudgetPct == 0 (explicitly configured, not absent):
-	// any nonzero DiffPct must set Gate.Failed true — zero-but-configured is
-	// not the same as absent.
+	// Gate.BudgetPct is *float64, NOT float64 — that is how "absent" and
+	// "explicitly 0" stay distinguishable, since a bare float cannot carry
+	// both. So the configured-zero case is `BudgetPct != nil &&
+	// *BudgetPct == 0`, never `BudgetPct == 0` (which does not compile and
+	// would mean the wrong thing if it did).
+	//
+	// With budget_pct explicitly 0, any nonzero DiffPct must set
+	// Gate.Failed true: zero-but-configured means "must be pixel-identical",
+	// and is not the same as absent.
 }
 func TestFailOnDeterminesWhichBudgetCanFailTheBuild(t *testing.T) {
 	// a "pixel" Gate.Failed with fail_on:["wire"] only  → Verdict "changed",
