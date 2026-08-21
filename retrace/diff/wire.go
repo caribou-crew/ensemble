@@ -868,9 +868,11 @@ func DiffWire(a, b []trace.Hop, o Options) Wire {
 	}
 
 	return Wire{
-		Paired:  entries,
-		Missing: callsFrom(missingHops, o.GroupsA),
-		Extra:   callsFrom(extraHops, o.GroupsB),
+		Paired: entries,
+		// A matched deviation ANNOTATES the call; it never removes it. See
+		// applyDeviations in deviations.go.
+		Missing: applyDeviations(callsFrom(missingHops, o.GroupsA), o.Deviations),
+		Extra:   applyDeviations(callsFrom(extraHops, o.GroupsB), o.Deviations),
 		Groups:  groupsPtr,
 	}
 }

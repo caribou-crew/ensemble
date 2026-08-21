@@ -215,12 +215,20 @@ func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
 		GroupsA:    a.Groups,
 		GroupsB:    b.Groups,
 	}
-	// TODO(task-11): load the deviations ledger here —
-	//   if cfg.Deviations != "" {
-	//       ds, err := LoadDeviations(filepath.Join(cfg.Dir, cfg.Deviations))
-	//       o.Deviations = ResolveDeviations(ds, a.App, b.App)
-	//   }
-	// o.Deviations stays nil until then, which is a no-op.
+	// The deviations ledger. This is the ONE assembly point, so there is no
+	// second place for a caller to forget it. A load failure is returned,
+	// never swallowed: a config that names a ledger it cannot read must fail
+	// the diff (exit 3), not run it with nothing tolerated.
+	//
+	// The app pair comes from the two MANIFESTS, not from a flag — the
+	// deviation is a fact about the two apps actually being compared.
+	if cfg.Deviations != "" {
+		ds, err := LoadDeviations(filepath.Join(cfg.Dir, cfg.Deviations))
+		if err != nil {
+			return Options{}, err
+		}
+		o.Deviations = ResolveDeviations(ds, a.App, b.App)
+	}
 	return o, nil
 }
 
@@ -500,6 +508,17 @@ func Build(in BuildInput) (Summary, error) {
 	return s, nil
 }
 
+// untolerated counts the calls in cs that no approved deviation covers.
+func untolerated(cs []Call) int {
+	n := 0
+	for _, c := range cs {
+		if c.Tolerated == nil {
+			n++
+		}
+	}
+	return n
+}
+
 func countOf(s Summary) Counts {
 	c := Counts{Checkpoints: len(s.Checkpoints)}
 	for _, cp := range s.Checkpoints {
@@ -508,8 +527,12 @@ func countOf(s Summary) Counts {
 		}
 	}
 	c.WirePaired = len(s.Wire.Paired)
-	c.WireMissing = len(s.Wire.Missing)
-	c.WireExtra = len(s.Wire.Extra)
+	// A call an approved deviation covers stays in Wire.Missing/Wire.Extra —
+	// visible to every consumer, annotated with why — but does not count as
+	// a finding. Counting it here is what would reach the verdict through
+	// changed(), which is the one thing "tolerated" is supposed to stop.
+	c.WireMissing = untolerated(s.Wire.Missing)
+	c.WireExtra = untolerated(s.Wire.Extra)
 	for _, e := range s.Wire.Paired {
 		for _, cl := range e.Classes {
 			switch cl {
