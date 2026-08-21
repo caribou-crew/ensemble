@@ -15,6 +15,7 @@ package replay
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 
@@ -110,6 +111,14 @@ type Bundle struct {
 //     upstream never sent. `retrace diff` already treats Resp.Truncated as
 //     significant (diff/openapi.go's required-field check refuses to run
 //     against one); a strict mock has no weaker reading available to it;
+//   - a recorded PARTIAL response (206, or a Content-Range header) — see
+//     the arm itself: Range is not part of the match key, so such an
+//     exchange can only ever be served to a client asking for a different
+//     byte range;
+//   - a recorded REQUEST carrying Content-Encoding — `retrace revalidate`
+//     re-issues the recorded request against the live stack, and that
+//     header over bytes the capture already mangled produces a rejection
+//     reported as drift the recording never caused;
 //   - a recorded response carrying Content-Encoding — the bytes in the
 //     bundle are NOT what that header describes. core/proxy forwards the
 //     client's Accept-Encoding verbatim and Go's transport only
@@ -178,20 +187,75 @@ func refuse(h trace.Hop) error {
 	if enc := contentEncoding(h.Resp.Headers); enc != "" {
 		return fmt.Errorf("hop %d (%s) recorded Content-Encoding: %s — the recorded body is no longer those bytes (the capture wrote them through JSON, which replaces every invalid UTF-8 byte), so replaying that header would hand the client a body it cannot decode; re-record the flow with the client sending `Accept-Encoding: identity`", h.Seq, where, enc)
 	}
+	// The REQUEST side of the same header, and the reason it is a separate
+	// arm rather than a widened one: replay is merely loud about it (a
+	// real compressed request body can never equal the mangled recorded
+	// bytes under byte-exact matching, so every such call misses), while
+	// `retrace revalidate` is not. Revalidate re-issues the recorded
+	// request verbatim, so it would put `Content-Encoding: gzip` on bytes
+	// that are no longer gzip, and report the live stack's rejection as
+	// DRIFT — a wrong answer, not a degraded one, that sends someone to
+	// debug a service behaving correctly.
+	//
+	// Dropping the header in sendableRequestHeader instead would send the
+	// mangled bytes as plain text and earn a different wrong answer. The
+	// bytes are the problem; the header only announces them.
+	if enc := contentEncoding(h.Req.Headers); enc != "" {
+		return fmt.Errorf("hop %d (%s) recorded a REQUEST Content-Encoding: %s — the recorded request bytes are no longer that encoding (the capture wrote them through JSON, which replaces every invalid UTF-8 byte), so `retrace revalidate` would re-issue that header over bytes that are not %s and report the live stack's refusal as drift the recording never caused; re-record the flow with the client sending the request body uncompressed", h.Seq, where, enc, enc)
+	}
+	// A PARTIAL response. This is the quietest failure this package can
+	// have and the worst combination it has: silent, on a HIT, wrong
+	// bytes, exit 0. `Range` is a request header and is deliberately not
+	// part of Key (headers never are — see Key's doc comment), so a
+	// recorded 206 can be served to a client asking for a COMPLETELY
+	// DIFFERENT byte range, along with the recorded Content-Range
+	// describing that other request's bytes. The client assembles a
+	// corrupt file, the matcher counts a hit, and `retrace replay` prints
+	// that every call matched.
+	//
+	// The alternative is to put Range into the match key, which makes
+	// every range request its own recorded exchange. That is right in
+	// principle and it is a FEATURE, not a fix — so the door is shut
+	// deliberately here rather than left ajar unnoticed, and the feature
+	// can land when someone needs it.
+	//
+	// Accept-Ranges is NOT this: advertising that the server supports
+	// ranges is not the same fact as having recorded a partial response,
+	// and refusing on it would reject the ordinary full-body recordings
+	// that every range-capable server produces.
+	if h.Status == http.StatusPartialContent || headerValue(h.Resp.Headers, "content-range") != "" {
+		return fmt.Errorf("hop %d (%s) recorded a PARTIAL response (status %d%s) — the Range a client asks for is not part of the replay match key, so this exchange could only ever be served to a client requesting a DIFFERENT byte range, together with a Content-Range describing the recorded request's bytes rather than that client's: the client assembles a corrupt file while replay counts a hit and exits 0. Re-record the flow without range requests", h.Seq, where, h.Status, contentRangeSuffix(h.Resp.Headers))
+	}
 	return nil
+}
+
+// contentRangeSuffix renders the recorded Content-Range for the refusal
+// message, so a 200 that carries one says which header tripped it.
+func contentRangeSuffix(headers map[string]string) string {
+	if v := headerValue(headers, "content-range"); v != "" {
+		return ", Content-Range: " + v
+	}
+	return ""
+}
+
+// headerValue looks one recorded header up case-insensitively. Recorded
+// headers come off the wire with whatever casing the origin used, so
+// every read of them goes through this rather than a map index.
+func headerValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // contentEncoding returns the recorded Content-Encoding when it claims an
 // actual encoding. "identity" is the explicit no-op and is not a claim
 // about the bytes, so it is not a refusal.
 func contentEncoding(headers map[string]string) string {
-	for k, v := range headers {
-		if !strings.EqualFold(k, "content-encoding") {
-			continue
-		}
-		if t := strings.TrimSpace(v); t != "" && !strings.EqualFold(t, "identity") {
-			return t
-		}
+	if t := headerValue(headers, "content-encoding"); t != "" && !strings.EqualFold(t, "identity") {
+		return t
 	}
 	return ""
 }
