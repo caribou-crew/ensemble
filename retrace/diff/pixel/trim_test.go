@@ -163,3 +163,65 @@ func TestCompareTrimsBothSidesWhenTrimIsRequested(t *testing.T) {
 			trimmed.WidthA, trimmed.HeightA, trimmed.WidthB, trimmed.HeightB)
 	}
 }
+
+// TestCompareTrimReadsEachSideFromItsOwnImage is a stricter wiring check
+// than TestCompareTrimsBothSidesWhenTrimIsRequested (F3): that test's
+// fixtures share an IDENTICAL interior, so it cannot distinguish "B
+// trimmed from B" from "B trimmed from A" — cropping either side produces
+// the same content either way. Here A and B have DIFFERENT interiors, so
+// reading the wrong side's TrimUniformBorder result produces a detectably
+// different comparison.
+func TestCompareTrimReadsEachSideFromItsOwnImage(t *testing.T) {
+	borderA := color.RGBA{R: 200, G: 200, B: 200, A: 255}
+	borderB := color.RGBA{R: 50, G: 50, B: 50, A: 255}
+	interiorA := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+	interiorB := color.RGBA{R: 90, G: 40, B: 200, A: 255}
+
+	build := func(border, interior color.RGBA) []byte {
+		img := newRGBA(40, 40, border)
+		for y := 10; y < 30; y++ {
+			for x := 10; x < 30; x++ {
+				img.SetRGBA(x, y, interior)
+			}
+		}
+		b, err := Encode(img)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return b
+	}
+	a := build(borderA, interiorA)
+	b := build(borderB, interiorB)
+
+	trimmed, _, err := Compare(a, b, Options{Trim: true})
+	if err != nil {
+		t.Fatalf("Compare(Trim: true): %v", err)
+	}
+	if trimmed.TrimA == nil || trimmed.TrimB == nil {
+		t.Fatalf("TrimA=%v TrimB=%v, want both non-nil", trimmed.TrimA, trimmed.TrimB)
+	}
+	if trimmed.NumDiff == 0 {
+		t.Fatal("NumDiff = 0 with Trim: true, want > 0: the two sides' interiors are different colours, " +
+			"so trimming must compare B's own cropped content, not a copy of A's")
+	}
+	if trimmed.DiffPct != 100 {
+		t.Fatalf("DiffPct = %v, want 100: every pixel in the trimmed interior differs", trimmed.DiffPct)
+	}
+}
+
+// TestRefusesToTrimAZeroSizeImage pins F11: the w==0||h==0 guard is the
+// only thing standing between an exported function and an
+// index-out-of-range panic in pixelAt (img.Pix[0] on an empty Pix).
+func TestRefusesToTrimAZeroSizeImage(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 0, 0))
+	cropped, kept, ok := TrimUniformBorder(img)
+	if ok {
+		t.Fatalf("ok = true, want false for a 0x0 image (cropped=%v kept=%+v)", cropped, kept)
+	}
+	if cropped != nil {
+		t.Fatalf("cropped = %v, want nil on refusal", cropped)
+	}
+	if kept != (Rect{}) {
+		t.Fatalf("kept = %+v, want the zero value on refusal", kept)
+	}
+}
