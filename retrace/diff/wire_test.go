@@ -1118,6 +1118,23 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff",
 	})
 
+	// The `full` Entry above cannot detect an omitempty on any of these
+	// fields — every one of them is populated, so the tag never fires. This
+	// is the shape that matters and the one that was uncovered: an
+	// UNCHANGED paired call, which is the most common row in any summary
+	// and the one where all seven array fields are empty.
+	//
+	// Array fields carry no omitempty, so a consumer reads the same key set
+	// from every Entry it is handed. Without that, entry.bodyDiff.map(...)
+	// throws on the commonest row the review UI renders.
+	bare := Entry{Method: "GET", NormalizedPath: "/x", SeqA: 1, SeqB: 1}
+	ensureEntryArrays(&bare)
+	assertJSONKeys(t, bare, []string{
+		"method", "normalizedPath", "seqA", "seqB", "posA", "posB",
+		"classes", "bodyDiff", "bodyTolerated",
+		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff",
+	})
+
 	note := ToleratedNote{ID: "d1", Reason: "expected"}
 	assertJSONKeys(t, note, []string{"id", "reason"})
 

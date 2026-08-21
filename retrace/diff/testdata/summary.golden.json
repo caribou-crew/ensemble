@@ -19,8 +19,8 @@
       },
       "startedAt": "0001-01-01T00:00:00Z",
       "finishedAt": "0001-01-01T00:00:00Z",
-      "checkpoints": null,
-      "groups": null,
+      "checkpoints": [],
+      "groups": [],
       "capture": {
         "status": "",
         "summary": ""
@@ -58,8 +58,8 @@
       },
       "startedAt": "0001-01-01T00:00:00Z",
       "finishedAt": "0001-01-01T00:00:00Z",
-      "checkpoints": null,
-      "groups": null,
+      "checkpoints": [],
+      "groups": [],
       "capture": {
         "status": "",
         "summary": ""
@@ -122,7 +122,8 @@
     "measuredMs": 0,
     "budgetMs": 0
   },
-  "conformance": null,
+  "conformance": [],
+  "openApiConfigured": false,
   "capture": {
     "a": {
       "status": "ok",
