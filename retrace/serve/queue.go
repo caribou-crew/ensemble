@@ -92,6 +92,7 @@ func (d Deps) check() error {
 //	  10  per hop route that appeared or vanished
 //	   1  per changed checkpoint
 //	   1  per changed / missing / extra wire call
+//	     … and then a FLOOR: any verdict other than "pass" scores above zero.
 //
 // A passing flow scores 0 and the UI collapses it, which is exactly why
 // "quarantined" scores with "failed" rather than falling through to the
@@ -102,6 +103,25 @@ func (d Deps) check() error {
 // global-constraints.md, landing on the one surface whose job is to make
 // sure a human looks. "Could not evaluate" sorts with the worst, never with
 // the clean.
+//
+// THE FLOOR, and it is not a tie-break nicety. The weighted terms above are
+// not the same set diff.changed() counts: Counts.WireMoved, Conformance and
+// UnexpectedStatuses all make a flow "changed" and none of them appears in
+// the sum. So a reorder-only flow came out Verdict:"changed", Gates:[],
+// Score:0 — and score 0 is not a display detail, it is the wire contract for
+// "nothing to act on". EmptyReasonFor then saw every item at zero and
+// answered "all-clear", the UI rendered "none of them needs attention", and
+// the changed row sat underneath that sentence inside a disclosure labelled
+// "N passing". A flow that changed, reported as a clean project.
+//
+// Floored rather than given weights for the three missing counts, because
+// inventing weights makes this formula the second place that decides what
+// counts as a change; the verdict already decided, and diff.changed() is the
+// one home for it. Any non-"pass" verdict — including the zero value, which
+// is not "pass" — scores above zero, so `score == 0` stays an exact test for
+// "this flow passed" instead of an approximation of it. That single rule
+// corrects the ordering, the queue's collapse partition, the disclosure
+// label and EmptyReasonFor together.
 func ScoreOf(s diff.Summary) float64 {
 	score := 0.0
 	switch s.Verdict {
@@ -112,6 +132,9 @@ func ScoreOf(s diff.Summary) float64 {
 	score += 10 * float64(s.Counts.HopNew+s.Counts.HopGone)
 	score += float64(s.Counts.PixelChanged)
 	score += float64(s.Counts.WireChanged + s.Counts.WireMissing + s.Counts.WireExtra)
+	if score == 0 && s.Verdict != "pass" {
+		score = 1
+	}
 	return score
 }
 
