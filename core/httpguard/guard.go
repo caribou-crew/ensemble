@@ -38,25 +38,54 @@ import (
 // literals and "localhost" are always allowed on top of the set's own
 // entries; the single entry "*" disables host/origin matching entirely
 // (see ensemble's Deps.AllowedHosts).
-type hostSet map[string]bool
+//
+// The wildcard is a SEPARATE field rather than a member of names, because
+// the two are decided at different moments: whether an entry IS the
+// wildcard is decided on the entry as written, before any normalization,
+// while every other entry is matched after its port and IPv6 brackets are
+// stripped. Folding them together is what let "*:8080" — a plausible
+// allow-list typo, and one that reads as a narrowing — strip down to "*"
+// and turn host and origin matching off entirely.
+type hostSet struct {
+	names map[string]bool
+	wild  bool
+}
 
 // newHostSet builds the allow-list from hosts (hostnames, with or without
 // a port — the port is ignored, since the port a request arrives on is
 // already decided by the listener).
+//
+// An entry containing "*" that is not EXACTLY "*" names no host this
+// server can answer as: the matcher has no glob, so "*.dev.example" could
+// only ever match a Host header spelled "*.dev.example" literally. Such an
+// entry is dropped rather than stored, which fails closed — the listener
+// keeps answering as loopback and as any other entry in the list, and the
+// unhonourable one grants nothing. Callers that want a wide bind spell the
+// wildcard exactly; retrace's `serve --allow-host` refuses the star-shaped
+// forms outright on a non-loopback bind, where the difference matters.
 func newHostSet(hosts []string) hostSet {
-	s := hostSet{}
+	s := hostSet{names: map[string]bool{}}
 	for _, h := range hosts {
-		if h = strings.TrimSpace(h); h != "" {
-			s[strings.ToLower(hostOnly(h))] = true
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
 		}
+		if h == "*" {
+			s.wild = true
+			continue
+		}
+		if strings.Contains(h, "*") {
+			continue
+		}
+		s.names[strings.ToLower(hostOnly(h))] = true
 	}
 	return s
 }
 
-// any reports whether the set is the "*" wildcard — host/origin matching
-// off, for a deliberately wide bind whose reachable hostnames can't be
-// enumerated.
-func (s hostSet) any() bool { return s["*"] }
+// any reports whether the set carries the "*" wildcard — host/origin
+// matching off, for a deliberately wide bind whose reachable hostnames
+// can't be enumerated.
+func (s hostSet) any() bool { return s.wild }
 
 // allows reports whether hostport (a Host header or an Origin's authority)
 // names something this server legitimately answers as.
@@ -68,7 +97,7 @@ func (s hostSet) allows(hostport string) bool {
 	if host == "" {
 		return false
 	}
-	if s[host] {
+	if s.names[host] {
 		return true
 	}
 	if host == "localhost" {
