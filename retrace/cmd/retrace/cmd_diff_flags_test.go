@@ -442,3 +442,63 @@ func runBrokenRecording(t *testing.T, bin, cwd, upstreamURL string) string {
 	t.Fatal("no run directory produced by the broken recording")
 	return ""
 }
+
+// TestEachSelectorDefaultsToItsOwnSideOfTheComparison pins the two `--a` /
+// `--b` default strings and the two `Kind == "none"` guards — four arms that
+// every other CLI test walks straight past, because they all pass both
+// selectors explicitly.
+//
+// The defaults are asymmetric on purpose: `--a` is the accepted REFERENCE
+// and `--b` is the LATEST run. Swapping them, or dropping either guard, is
+// invisible to a test that names both sides. Resolving "reference" is Task
+// 11's; until it lands the selector reports "none", and the contract this
+// pins is that "none" is refused with a message telling the operator what
+// to do — not passed into Build to fail later as an unreadable directory.
+func TestEachSelectorDefaultsToItsOwnSideOfTheComparison(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\n")
+	aID := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+	runOnce(t, bin, cwd, "web", "checkout", upstream.URL) // the "latest" run
+
+	t.Run("side A defaults to the reference, which is refused by name", func(t *testing.T) {
+		// --b named, --a left to its default.
+		res := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web", "--b", aID)
+		if res.code != 3 {
+			t.Fatalf("exit = %d, want 3\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+		}
+		if !strings.Contains(res.stderr, "no reference bundle") {
+			t.Fatalf("stderr = %q, want the no-reference-bundle refusal — side A's default must be resolved and refused by name, not carried into Build as an empty run", res.stderr)
+		}
+	})
+
+	t.Run("side B refuses an unresolvable selector by name too", func(t *testing.T) {
+		// The mirror of the first case: the guard on side B is a separate
+		// `if`, and dropping it is invisible unless some test asks side B
+		// for the one selector that resolves to "none".
+		res := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web", "--a", aID, "--b", "reference")
+		if res.code != 3 {
+			t.Fatalf("exit = %d, want 3\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+		}
+		if !strings.Contains(res.stderr, "no reference bundle") {
+			t.Fatalf("stderr = %q, want the no-reference-bundle refusal on side B as well as side A", res.stderr)
+		}
+	})
+
+	t.Run("side B defaults to the latest run, which resolves", func(t *testing.T) {
+		// --a named, --b left to its default. If --b defaulted to the
+		// reference this would be the same 3 as above.
+		res := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web", "--a", aID)
+		if res.code == 3 {
+			t.Fatalf("exit = 3 — side B's default must resolve to the latest run, not to the reference\nstdout: %s\nstderr: %s", res.stdout, res.stderr)
+		}
+		if strings.Contains(res.stderr, "no reference bundle") {
+			t.Fatalf("stderr = %q, want a real comparison against the latest run", res.stderr)
+		}
+	})
+}

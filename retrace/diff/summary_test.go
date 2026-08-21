@@ -451,28 +451,41 @@ func TestACaptureTrustBannerRidesAlongInJsonAndText(t *testing.T) {
 }
 
 func TestANonOkSideIsQuarantinedByDefault(t *testing.T) {
-	dirA, dirB := t.TempDir(), t.TempDir()
-	h := hop(1, "GET", "/cart", 200, "", `{}`)
-	writeWireFile(t, dirA, []trace.Hop{h})
-	writeWireFile(t, dirB, []trace.Hop{h})
+	for _, side := range []string{"a", "b"} {
+		t.Run("broken on side "+side, func(t *testing.T) {
+			dirA, dirB := t.TempDir(), t.TempDir()
+			h := hop(1, "GET", "/cart", 200, "", `{}`)
+			writeWireFile(t, dirA, []trace.Hop{h})
+			writeWireFile(t, dirB, []trace.Hop{h})
 
-	broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the capture listener stopped during the run"}
-	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
-	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, broken)}
-	cfg := baseConfig(t)
+			broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the capture listener stopped during the run"}
+			capA, capB := okCapture(), okCapture()
+			if side == "a" {
+				capA = broken
+			} else {
+				capB = broken
+			}
+			aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, capA)}
+			bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, capB)}
+			cfg := baseConfig(t)
 
-	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
-	if s.Verdict != "quarantined" {
-		t.Fatalf("verdict = %q, want quarantined", s.Verdict)
-	}
-	if ExitCode(s) != 3 {
-		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
-	}
-	if len(s.Quarantined) != 1 || s.Quarantined[0].Side != "b" {
-		t.Fatalf("Quarantined = %+v, want side b named", s.Quarantined)
-	}
-	if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 || s.Hops.HopRequireConfigured || len(s.Budgets) != 0 {
-		t.Fatalf("a quarantined Build must not populate any comparison field, got %+v", s)
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+			if s.Verdict != "quarantined" {
+				t.Fatalf("verdict = %q, want quarantined", s.Verdict)
+			}
+			if ExitCode(s) != 3 {
+				t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+			}
+			if len(s.Quarantined) != 1 || s.Quarantined[0].Side != side {
+				t.Fatalf("Quarantined = %+v, want side %s named", s.Quarantined, side)
+			}
+			if s.Quarantined[0].Reason != broken.Summary {
+				t.Fatalf("Quarantined reason = %q, want the side's own capture summary %q", s.Quarantined[0].Reason, broken.Summary)
+			}
+			if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 || s.Hops.HopRequireConfigured || len(s.Budgets) != 0 {
+				t.Fatalf("a quarantined Build must not populate any comparison field, got %+v", s)
+			}
+		})
 	}
 }
 
@@ -484,12 +497,52 @@ func TestANonOkSideIsQuarantinedByDefault(t *testing.T) {
 // make incompleteCheck fire unconditionally for a merely-failing test too,
 // silently taking away --allow-degraded's ability to let a human compare
 // one anyway.
+//
+// Table-driven over BOTH sides. The review found this pinned on side b
+// only: narrowing side a's "< 0" to "!= 0" was green, and --a defaults to
+// the REFERENCE side, so a stale never-finished reference bundle is the
+// likelier real case of the two.
 func TestIncompleteCheckOnlyFiresOnANegativeExitCodeNotAnyNonzeroOne(t *testing.T) {
-	a := RunRef{Manifest: manifest("a", nil, nil, okCapture())}
-	b := RunRef{Manifest: manifest("b", nil, nil, okCapture())}
-	b.Manifest.Test.ExitCode = 7
-	if q := incompleteCheck(a, b); len(q) != 0 {
-		t.Fatalf("incompleteCheck = %+v, want empty — a positive exit code is a completed (failing) test, not a truncated recording", q)
+	for _, side := range []string{"a", "b"} {
+		t.Run("a positive exit code on side "+side, func(t *testing.T) {
+			a := RunRef{Manifest: manifest("a", nil, nil, okCapture())}
+			b := RunRef{Manifest: manifest("b", nil, nil, okCapture())}
+			if side == "a" {
+				a.Manifest.Test.ExitCode = 7
+			} else {
+				b.Manifest.Test.ExitCode = 7
+			}
+			if q := incompleteCheck(a, b); len(q) != 0 {
+				t.Fatalf("incompleteCheck = %+v, want empty — a positive exit code is a completed (failing) test, not a truncated recording", q)
+			}
+		})
+	}
+}
+
+// TestIncompleteCheckFiresOnANegativeExitCodeOnEitherSide is the mirror of
+// the test above, and the reason it exists is that the two together are
+// what pin "< 0": a test asserting only that 7 does NOT fire passes just as
+// happily against an incompleteCheck that never fires at all, and the
+// existing -1 fixtures only ever put the killed run on side b — so deleting
+// side a's block entirely was green.
+func TestIncompleteCheckFiresOnANegativeExitCodeOnEitherSide(t *testing.T) {
+	for _, side := range []string{"a", "b"} {
+		t.Run("a signal-killed run on side "+side, func(t *testing.T) {
+			a := RunRef{Manifest: manifest("a", nil, nil, okCapture())}
+			b := RunRef{Manifest: manifest("b", nil, nil, okCapture())}
+			if side == "a" {
+				a.Manifest.Test.ExitCode = -1
+			} else {
+				b.Manifest.Test.ExitCode = -1
+			}
+			q := incompleteCheck(a, b)
+			if len(q) != 1 || q[0].Side != side {
+				t.Fatalf("incompleteCheck = %+v, want exactly one entry naming side %q", q, side)
+			}
+			if !strings.Contains(q[0].Reason, "truncated") {
+				t.Fatalf("reason = %q, want one saying the recording is truncated", q[0].Reason)
+			}
+		})
 	}
 }
 
@@ -510,29 +563,38 @@ func TestIncompleteCheckOnlyFiresOnANegativeExitCodeNotAnyNonzeroOne(t *testing.
 // production, but cmd_run.go's own pass-through behavior is a separate,
 // still-open ruling — this test must not depend on it.
 func TestASignalKilledTestCommandIsQuarantinedNotDiffed(t *testing.T) {
-	dirA, dirB := t.TempDir(), t.TempDir()
-	h := hop(1, "GET", "/cart", 200, "", `{}`)
-	writeWireFile(t, dirA, []trace.Hop{h})
-	writeWireFile(t, dirB, []trace.Hop{h})
+	for _, side := range []string{"a", "b"} {
+		t.Run("killed on side "+side, func(t *testing.T) {
+			dirA, dirB := t.TempDir(), t.TempDir()
+			h := hop(1, "GET", "/cart", 200, "", `{}`)
+			writeWireFile(t, dirA, []trace.Hop{h})
+			writeWireFile(t, dirB, []trace.Hop{h})
 
-	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
-	bManifest := manifest("b", nil, nil, okCapture())
-	bManifest.Test.ExitCode = -1
-	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
-	cfg := baseConfig(t)
+			aManifest := manifest("a", nil, nil, okCapture())
+			bManifest := manifest("b", nil, nil, okCapture())
+			if side == "a" {
+				aManifest.Test.ExitCode = -1
+			} else {
+				bManifest.Test.ExitCode = -1
+			}
+			aRef := RunRef{Kind: "run", Dir: dirA, Manifest: aManifest}
+			bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
+			cfg := baseConfig(t)
 
-	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
-	if s.Verdict != "quarantined" {
-		t.Fatalf("verdict = %q, want quarantined (a signal-killed test command produced a truncated recording, not a comparable run)", s.Verdict)
-	}
-	if ExitCode(s) != 3 {
-		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
-	}
-	if len(s.Quarantined) != 1 || s.Quarantined[0].Side != "b" {
-		t.Fatalf("Quarantined = %+v, want side b named", s.Quarantined)
-	}
-	if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 || len(s.Budgets) != 0 {
-		t.Fatalf("a quarantined Build must not populate any comparison field, got %+v", s)
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+			if s.Verdict != "quarantined" {
+				t.Fatalf("verdict = %q, want quarantined (a signal-killed test command produced a truncated recording, not a comparable run)", s.Verdict)
+			}
+			if ExitCode(s) != 3 {
+				t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+			}
+			if len(s.Quarantined) != 1 || s.Quarantined[0].Side != side {
+				t.Fatalf("Quarantined = %+v, want side %s named", s.Quarantined, side)
+			}
+			if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 || len(s.Budgets) != 0 {
+				t.Fatalf("a quarantined Build must not populate any comparison field, got %+v", s)
+			}
+		})
 	}
 }
 
@@ -543,23 +605,35 @@ func TestASignalKilledTestCommandIsQuarantinedNotDiffed(t *testing.T) {
 // the flag to override, so incompleteCheck is NOT gated behind
 // AllowDegraded the way quarantineCheck is.
 func TestAllowDegradedDoesNotOverrideASignalKilledTestCommand(t *testing.T) {
-	dirA, dirB := t.TempDir(), t.TempDir()
-	h := hop(1, "GET", "/cart", 200, "", `{}`)
-	writeWireFile(t, dirA, []trace.Hop{h})
-	writeWireFile(t, dirB, []trace.Hop{h})
+	for _, side := range []string{"a", "b"} {
+		t.Run("killed on side "+side, func(t *testing.T) {
+			dirA, dirB := t.TempDir(), t.TempDir()
+			h := hop(1, "GET", "/cart", 200, "", `{}`)
+			writeWireFile(t, dirA, []trace.Hop{h})
+			writeWireFile(t, dirB, []trace.Hop{h})
 
-	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
-	bManifest := manifest("b", nil, nil, okCapture())
-	bManifest.Test.ExitCode = -1
-	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
-	cfg := baseConfig(t)
+			aManifest := manifest("a", nil, nil, okCapture())
+			bManifest := manifest("b", nil, nil, okCapture())
+			if side == "a" {
+				aManifest.Test.ExitCode = -1
+			} else {
+				bManifest.Test.ExitCode = -1
+			}
+			aRef := RunRef{Kind: "run", Dir: dirA, Manifest: aManifest}
+			bRef := RunRef{Kind: "run", Dir: dirB, Manifest: bManifest}
+			cfg := baseConfig(t)
 
-	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
-	if s.Verdict != "quarantined" {
-		t.Fatalf("verdict = %q, want quarantined even with AllowDegraded (a truncated recording has no complete data to accept)", s.Verdict)
-	}
-	if ExitCode(s) != 3 {
-		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
+			if s.Verdict != "quarantined" {
+				t.Fatalf("verdict = %q, want quarantined even with AllowDegraded (a truncated recording has no complete data to accept)", s.Verdict)
+			}
+			if ExitCode(s) != 3 {
+				t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+			}
+			if len(s.Quarantined) != 1 || s.Quarantined[0].Side != side {
+				t.Fatalf("Quarantined = %+v, want side %s named", s.Quarantined, side)
+			}
+		})
 	}
 }
 
@@ -574,49 +648,74 @@ func TestAllowDegradedDoesNotOverrideASignalKilledTestCommand(t *testing.T) {
 // covers the opposite corner (a suspect side WITH --allow-degraded, so the
 // banner rides through comparison) but never pins the default-refusal path
 // for VerdictSuspect specifically — this test closes that gap.
+//
+// Table-driven over BOTH sides: the review found the A arm pinned (narrowing
+// it to capture.Fatal was caught) and the B arm not (narrowing B to Fatal
+// was green), because the only suspect-side fixture in the suite put the
+// suspect run on A.
 func TestASuspectSideIsQuarantinedEvenThoughItIsNotFatal(t *testing.T) {
-	dirA, dirB := t.TempDir(), t.TempDir()
-	h := hop(1, "GET", "/cart", 200, "", `{}`)
-	writeWireFile(t, dirA, []trace.Hop{h})
-	writeWireFile(t, dirB, []trace.Hop{h})
+	for _, side := range []string{"a", "b"} {
+		t.Run("suspect on side "+side, func(t *testing.T) {
+			dirA, dirB := t.TempDir(), t.TempDir()
+			h := hop(1, "GET", "/cart", 200, "", `{}`)
+			writeWireFile(t, dirA, []trace.Hop{h})
+			writeWireFile(t, dirB, []trace.Hop{h})
 
-	suspect := runs.CaptureTrust{Status: trace.VerdictSuspect, Summary: "a quiet stretch was seen"}
-	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, suspect)}
-	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
-	cfg := baseConfig(t)
+			suspect := runs.CaptureTrust{Status: trace.VerdictSuspect, Summary: "a quiet stretch was seen"}
+			capA, capB := okCapture(), okCapture()
+			if side == "a" {
+				capA = suspect
+			} else {
+				capB = suspect
+			}
+			aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, capA)}
+			bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, capB)}
+			cfg := baseConfig(t)
 
-	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
-	if s.Verdict != "quarantined" {
-		t.Fatalf("verdict = %q, want quarantined (a suspect side must be refused by default, not silently compared)", s.Verdict)
-	}
-	if ExitCode(s) != 3 {
-		t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
-	}
-	if len(s.Quarantined) != 1 || s.Quarantined[0].Side != "a" {
-		t.Fatalf("Quarantined = %+v, want side a named", s.Quarantined)
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+			if s.Verdict != "quarantined" {
+				t.Fatalf("verdict = %q, want quarantined (a suspect side must be refused by default, not silently compared)", s.Verdict)
+			}
+			if ExitCode(s) != 3 {
+				t.Fatalf("ExitCode = %d, want 3", ExitCode(s))
+			}
+			if len(s.Quarantined) != 1 || s.Quarantined[0].Side != side {
+				t.Fatalf("Quarantined = %+v, want side %s named", s.Quarantined, side)
+			}
+		})
 	}
 }
 
 func TestAllowDegradedOverridesQuarantine(t *testing.T) {
-	dirA, dirB := t.TempDir(), t.TempDir()
-	h := hop(1, "GET", "/cart", 200, "", `{}`)
-	writeWireFile(t, dirA, []trace.Hop{h})
-	writeWireFile(t, dirB, []trace.Hop{h})
+	for _, side := range []string{"a", "b"} {
+		t.Run("broken on side "+side, func(t *testing.T) {
+			dirA, dirB := t.TempDir(), t.TempDir()
+			h := hop(1, "GET", "/cart", 200, "", `{}`)
+			writeWireFile(t, dirA, []trace.Hop{h})
+			writeWireFile(t, dirB, []trace.Hop{h})
 
-	broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the capture listener stopped during the run"}
-	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
-	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, broken)}
-	cfg := baseConfig(t)
+			broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the capture listener stopped during the run"}
+			capA, capB := okCapture(), okCapture()
+			if side == "a" {
+				capA = broken
+			} else {
+				capB = broken
+			}
+			aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, capA)}
+			bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, capB)}
+			cfg := baseConfig(t)
 
-	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
-	if s.Verdict != "failed" {
-		t.Fatalf("verdict = %q, want failed (a fatal side still fails the build once compared)", s.Verdict)
-	}
-	if len(s.Quarantined) != 0 {
-		t.Fatalf("Quarantined = %+v, want empty — AllowDegraded must skip quarantine, not merely relabel it", s.Quarantined)
-	}
-	if len(s.Wire.Paired) != 1 {
-		t.Fatalf("expected the comparison to actually run, got Wire=%+v", s.Wire)
+			s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, AllowDegraded: true})
+			if s.Verdict != "failed" {
+				t.Fatalf("verdict = %q, want failed (a fatal side still fails the build once compared)", s.Verdict)
+			}
+			if len(s.Quarantined) != 0 {
+				t.Fatalf("Quarantined = %+v, want empty — AllowDegraded must skip quarantine, not merely relabel it", s.Quarantined)
+			}
+			if len(s.Wire.Paired) != 1 {
+				t.Fatalf("expected the comparison to actually run, got Wire=%+v", s.Wire)
+			}
+		})
 	}
 }
 
