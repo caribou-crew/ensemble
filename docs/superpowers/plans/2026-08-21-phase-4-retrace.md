@@ -3739,6 +3739,30 @@ two halves of a single guard against "the proxy died and nobody noticed",
 and the re-review found that leaning on either alone fails on the same
 input.
 
+**In attached mode `RequestsSeen` is legitimately zero, and reading that as
+zero would be a false accusation.** Task 5 shipped ensemble-attached
+capture, where proxied requests reach *ensemble's* edge listener and never
+touch retrace at all — so retrace can only ever count marker-door hits.
+A perfectly healthy attached run therefore reports 0, and the table above
+maps 0 to `VerdictBroken` / `proxy-never-reached`. That verdict would be
+wrong, loudly, on every attached run whose flow happened to record no
+calls.
+
+The `-1 = unknown` sentinel exists for exactly this, and it is why the
+field is not a plain count: **attached mode must pass `-1`, never `0`.**
+Zero means "we counted, and nothing arrived"; `-1` means "this mode does
+not count". Collapsing them is the zero-value trap in its purest form — the
+absent measurement reading as a damning one — and note it fails in the
+opposite direction from the inflation problem above: one makes a dead proxy
+look alive, this one makes a live proxy look dead. A single field carries
+both hazards, which is why the rule for setting it belongs in one place.
+
+Two agents reached this independently — Task 5's implementer while building
+attached capture, and Task 5's reviewer while re-deriving the drain race —
+before this task was dispatched. Treat it as established, not speculative.
+Add a case to the table: attached mode, zero calls, `RequestsSeen: -1`,
+which must NOT produce `proxy-never-reached`.
+
 **This task's verdict is what Task 10's quarantine reads.** Comparing two
 captures when one of them is already known-broken produces confident
 nonsense — a diff against a `broken` reference does not mean "identical",
