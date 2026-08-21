@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -510,5 +511,263 @@ func TestACrossSiteBrowserRequestIsRefusedByTheGuardAndIsNotAMiss(t *testing.T) 
 	}
 	if s.MissCount() != 0 {
 		t.Fatalf("MissCount = %d, want 0 — a guard rejection is not a client deviation", s.MissCount())
+	}
+}
+
+// prodServer stands up a server that must NEVER be reached, and reports
+// whether it was. It answers plausibly on purpose: a test whose "escape"
+// target refuses connections would pass against a replay server that let
+// the client leave and merely failed afterwards.
+func prodServer(t *testing.T) (*httptest.Server, func() int64) {
+	t.Helper()
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Write([]byte(`{"from":"production"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() int64 { return hits.Load() }
+}
+
+func TestARecordedRedirectSendsTheClientBackIntoTheReplayServerAndNeverOut(t *testing.T) {
+	// THE CENTRAL INVARIANT. This package has no upstream, no passthrough
+	// and no way for a call to reach a live system — and none of that
+	// matters if a recorded `302 Location: https://prod.example.com/next`
+	// is replayed verbatim, because every browser and every default HTTP
+	// client follows it and issues the next request against the RECORDED
+	// host. A supposedly hermetic CI job then reads production, and
+	// mutates it for any redirect the app follows with a mutating method.
+	// It is silent, it lands on a hit, and the miss machinery never sees
+	// it because the follow-up request never arrives here.
+	//
+	// So this test does not assert that a header string changed — a
+	// rewrite pointing anywhere at all would satisfy that. It follows the
+	// redirect with a real client and asserts where the follow-up LANDED.
+	prod, prodHits := prodServer(t)
+
+	t.Run("a recorded next exchange replays end to end", func(t *testing.T) {
+		b := bundleOf(
+			Exchange{
+				Key: Key{Method: "GET", Path: "/login"}, Status: 302,
+				Headers: map[string]string{
+					"location":   prod.URL + "/dashboard?tab=1#frag",
+					"x-recorded": "yes",
+				},
+				Seq: 1,
+			},
+			exch("GET", "/dashboard", "tab=1", nil, 200, `{"from":"the recording"}`, 2),
+		)
+		s, url := serve(t, b, Options{}, "")
+		before := prodHits()
+
+		resp := do(t, "GET", url+"/login", "", nil) // http.DefaultClient follows redirects
+		body := readBody(t, resp)
+		if prodHits() != before {
+			t.Fatalf("the client left the replay server and hit the recorded host %d time(s) — the strict mock's whole premise is that no call can reach a live system", prodHits()-before)
+		}
+		if strings.Contains(body, "production") {
+			t.Fatalf("the response came from the recorded host: %s", body)
+		}
+		if body != `{"from":"the recording"}` {
+			t.Fatalf("body = %q, want the recorded /dashboard exchange — the redirect must land back in the bundle", body)
+		}
+		if s.MissCount() != 0 {
+			t.Fatalf("MissCount = %d, want 0 — both exchanges are recorded", s.MissCount())
+		}
+		if s.ServedCount() != 2 {
+			t.Fatalf("ServedCount = %d, want 2 — the recorded flow should replay end to end", s.ServedCount())
+		}
+	})
+
+	t.Run("an unrecorded next exchange is a loud miss, not a real request", func(t *testing.T) {
+		// The other arm, and the one that says what strict replay means:
+		// "we did not record this" is the answer, and it must be loud.
+		b := bundleOf(Exchange{
+			Key: Key{Method: "GET", Path: "/login"}, Status: 302,
+			Headers: map[string]string{"location": prod.URL + "/never-recorded"},
+			Seq:     1,
+		})
+		s, url := serve(t, b, Options{}, "")
+		before := prodHits()
+
+		resp := do(t, "GET", url+"/login", "", nil)
+		body := readBody(t, resp)
+		if prodHits() != before {
+			t.Fatalf("the client reached the recorded host %d time(s)", prodHits()-before)
+		}
+		if resp.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("status = %d, want 501 — an unrecorded redirect target must be a miss", resp.StatusCode)
+		}
+		if !strings.Contains(body, "/never-recorded") {
+			t.Fatalf("the 501 body does not name the unmatched follow-up: %s", body)
+		}
+		if s.MissCount() != 1 {
+			t.Fatalf("MissCount = %d, want 1", s.MissCount())
+		}
+	})
+
+	t.Run("the host named makes no difference", func(t *testing.T) {
+		// Not only hosts that look like production, and not only absolute
+		// URLs: a protocol-relative "//host/path" carries an authority
+		// with no scheme and escapes exactly the same way.
+		for _, loc := range []string{
+			"https://accounts.example.com/sso?next=%2Fcart",
+			"//accounts.example.com/sso",
+			"http://user:secret@accounts.example.com/sso",
+		} {
+			b := bundleOf(Exchange{
+				Key: Key{Method: "GET", Path: "/login"}, Status: 302,
+				Headers: map[string]string{"location": loc}, Seq: 1,
+			})
+			_, url := serve(t, b, Options{}, "")
+			resp := noRedirect(t, url+"/login")
+			got := resp.Header.Get("Location")
+			resp.Body.Close()
+			u, err := neturl.Parse(got)
+			if err != nil {
+				t.Fatalf("Location %q is not parseable: %v", got, err)
+			}
+			if strings.Contains(u.Host, "accounts.example.com") {
+				t.Fatalf("Location = %q, want the replay listener's own authority — a third-party host the recording never captured must become a miss, not a real request", got)
+			}
+			if u.User != nil {
+				t.Fatalf("Location = %q still carries userinfo minted for another host", got)
+			}
+		}
+	})
+
+	t.Run("status, path, query, fragment and other headers survive", func(t *testing.T) {
+		// The rewrite changes where the client goes, not what the
+		// recording said.
+		b := bundleOf(Exchange{
+			Key: Key{Method: "GET", Path: "/login"}, Status: 307,
+			Headers: map[string]string{
+				"location":   prod.URL + "/dashboard?tab=1&q=a%20b#frag",
+				"x-recorded": "yes",
+			},
+			Seq: 1,
+		})
+		_, url := serve(t, b, Options{}, "")
+		resp := noRedirect(t, url+"/login")
+		defer resp.Body.Close()
+		if resp.StatusCode != 307 {
+			t.Fatalf("status = %d, want the recorded 307", resp.StatusCode)
+		}
+		if got := resp.Header.Get("X-Recorded"); got != "yes" {
+			t.Fatalf("X-Recorded = %q, want the recorded header untouched", got)
+		}
+		u, err := neturl.Parse(resp.Header.Get("Location"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Path != "/dashboard" || u.RawQuery != "tab=1&q=a%20b" || u.Fragment != "frag" {
+			t.Fatalf("Location = %q, want path/query/fragment preserved exactly", resp.Header.Get("Location"))
+		}
+		if u.Scheme != "http" {
+			t.Fatalf("Location scheme = %q, want the scheme this listener actually speaks", u.Scheme)
+		}
+	})
+
+	t.Run("a relative Location is left byte-identical", func(t *testing.T) {
+		// The over-refusal mirror. A relative Location already resolves
+		// against our own host, so it is safe — rewriting it is only a
+		// chance to mangle it, and mangling it breaks flows that were
+		// never in danger.
+		for _, loc := range []string{"/dashboard?tab=1", "dashboard?tab=1", "http:dashboard?tab=1"} {
+			b := bundleOf(
+				Exchange{
+					Key: Key{Method: "GET", Path: "/login"}, Status: 302,
+					Headers: map[string]string{"location": loc}, Seq: 1,
+				},
+				exch("GET", "/dashboard", "tab=1", nil, 200, `{"from":"the recording"}`, 2),
+			)
+			_, url := serve(t, b, Options{}, "")
+			resp := noRedirect(t, url+"/login")
+			got := resp.Header.Get("Location")
+			resp.Body.Close()
+			if got != loc {
+				t.Fatalf("Location = %q, want the recorded %q unchanged", got, loc)
+			}
+		}
+		// And it still works end to end through a following client.
+		b := bundleOf(
+			Exchange{
+				Key: Key{Method: "GET", Path: "/login"}, Status: 302,
+				Headers: map[string]string{"location": "/dashboard?tab=1"}, Seq: 1,
+			},
+			exch("GET", "/dashboard", "tab=1", nil, 200, `{"from":"the recording"}`, 2),
+		)
+		_, url := serve(t, b, Options{}, "")
+		if got := readBody(t, do(t, "GET", url+"/login", "", nil)); got != `{"from":"the recording"}` {
+			t.Fatalf("body = %q, want the recorded /dashboard exchange", got)
+		}
+	})
+}
+
+// noRedirect fetches without following redirects, so the 3xx itself can be
+// inspected.
+func noRedirect(t *testing.T, url string) *http.Response {
+	t.Helper()
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
+func TestARecordedCookieDomainIsStrippedSoTheSessionActuallyEstablishes(t *testing.T) {
+	// A recorded `Domain=prod.example.com` can never match a loopback
+	// listener, so the browser drops the cookie: the session never
+	// establishes and the test fails somewhere later wearing an app bug's
+	// clothing — the same misattribution reflectCORS exists to prevent.
+	b := bundleOf(Exchange{
+		Key: Key{Method: "POST", Path: "/login"}, Status: 200,
+		Headers: map[string]string{
+			"set-cookie": "sid=abc123; Domain=prod.example.com; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Lax",
+		},
+		Body: `{"ok":true}`, Seq: 1,
+	})
+	_, url := serve(t, b, Options{}, "")
+
+	resp := do(t, "POST", url+"/login", "", nil)
+	defer resp.Body.Close()
+	raw := resp.Header.Get("Set-Cookie")
+	if strings.Contains(strings.ToLower(raw), "domain=") {
+		t.Fatalf("Set-Cookie = %q, still carries the recorded Domain — a browser drops that cookie on a loopback listener and the session never establishes", raw)
+	}
+	// Everything else is the recording's, untouched. Secure included: it
+	// is not stripped, because loopback is a secure context in every
+	// browser that matters and removing it would WEAKEN what was recorded
+	// rather than re-address it.
+	cookies := resp.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %+v, want exactly one", cookies)
+	}
+	c := cookies[0]
+	if c.Name != "sid" || c.Value != "abc123" {
+		t.Fatalf("cookie = %+v, want the recorded sid=abc123", c)
+	}
+	if c.Domain != "" {
+		t.Fatalf("cookie Domain = %q, want none", c.Domain)
+	}
+	if c.Path != "/" || c.MaxAge != 3600 || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie = %+v, want every other recorded attribute preserved (Path, Max-Age, HttpOnly, Secure, SameSite)", c)
+	}
+
+	// The mirror: a recorded cookie with no Domain is passed through
+	// byte-identically, so the strip is a Domain strip and not a rewrite
+	// of every cookie.
+	const plain = "sid=abc123; Path=/; HttpOnly"
+	b2 := bundleOf(Exchange{
+		Key: Key{Method: "POST", Path: "/login"}, Status: 200,
+		Headers: map[string]string{"set-cookie": plain},
+		Body:    `{"ok":true}`, Seq: 1,
+	})
+	_, url2 := serve(t, b2, Options{}, "")
+	resp2 := do(t, "POST", url2+"/login", "", nil)
+	defer resp2.Body.Close()
+	if got := resp2.Header.Get("Set-Cookie"); got != plain {
+		t.Fatalf("Set-Cookie = %q, want the recorded %q unchanged", got, plain)
 	}
 }

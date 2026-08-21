@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -193,7 +194,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	hit := *res.Hit
 	s.served++
 	s.mu.Unlock()
-	writeHit(w, hit)
+	writeHit(w, r, hit)
 }
 
 // writeHit replays one recorded exchange. Headers are replayed as
@@ -213,10 +214,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 //     a network error, and it reads as an app bug — and because it lands on
 //     a HIT, the miss machinery never sees it. Vary goes with them: it is
 //     part of the same answer, and this server's Vary is Origin.
-func writeHit(w http.ResponseWriter, e Exchange) {
+//
+// Two more are REWRITTEN rather than skipped, because they are legitimate
+// parts of a recorded flow that name the world the RECORDING was made in
+// (the family Access-Control-Allow-Origin belongs to) and would send the
+// client somewhere else: see rewriteLocation and stripCookieDomain.
+func writeHit(w http.ResponseWriter, r *http.Request, e Exchange) {
 	for k, v := range e.Headers {
 		if connectionHeader(k) || corsHeader(k) {
 			continue
+		}
+		switch {
+		case strings.EqualFold(k, "location"):
+			v = rewriteLocation(v, r)
+		case strings.EqualFold(k, "set-cookie"):
+			v = stripCookieDomain(v)
 		}
 		w.Header().Set(k, v)
 	}
@@ -238,6 +250,116 @@ func connectionHeader(name string) bool {
 		return true
 	}
 	return false
+}
+
+// rewriteLocation points a recorded redirect back at THIS server.
+//
+// THE ESCAPE THIS CLOSES IS THE PACKAGE'S CENTRAL INVARIANT. A replay
+// server has no upstream, no passthrough and no way for a call to reach a
+// live system — verified by construction, and worth nothing if a recorded
+// `302 Location: https://prod.example.com/next` is replayed verbatim,
+// because every browser and every default HTTP client follows it and
+// issues the next request AGAINST THE RECORDED HOST. A CI job that is
+// supposed to be hermetic then reads production data, and mutates it for
+// any redirect the app follows with a method that mutates. It is silent,
+// it lands on a HIT, and the miss machinery cannot see it: the follow-up
+// request never arrives here.
+//
+// Rewritten rather than refused at load, unlike the Content-Encoding and
+// partial-response arms: a redirect is an ordinary part of a real recorded
+// flow, so refusing would reject a large fraction of honest bundles. With
+// the rewrite the client follows the redirect BACK INTO US, and then
+// either the recording contains that next exchange — a hit, and the
+// recorded flow replays end to end, which is what we wanted — or it does
+// not, and it is a 501 miss with a misses.jsonl line and exit 2, which is
+// the loud, correct answer for a flow the recording does not cover. Either
+// way nothing escapes.
+//
+// The authority written in is the one the CLIENT reached us on (r.Host,
+// which httpguard has already confirmed is loopback), so it is the
+// listener's actual bound address and port rather than a configured or
+// assumed one. Path, query and fragment are preserved exactly; any
+// userinfo is dropped, because credentials minted for another host have no
+// business being sent to this one.
+//
+// Two things are deliberately NOT rewritten:
+//
+//   - A RELATIVE Location ("/next", "next") already resolves against our
+//     own host, so it is safe and is left byte-identical. Rewriting it
+//     would only be a chance to mangle it.
+//   - A non-HTTP scheme ("myapp://callback", "mailto:"). It cannot reach
+//     an HTTP upstream, no HTTP client follows it, and rewriting it would
+//     break the deep-link flows apps legitimately redirect into. (The
+//     opaque form, "http:next", is left alone for the same reason it is
+//     safe: a client resolves it against the base URL — us.)
+//
+// Which HOST is named makes no difference. A Location to some third party
+// the recording never captured is rewritten too, so it becomes a miss
+// rather than a real request to that host: under strict replay "we did not
+// record this" is the answer, and it must be loud.
+func rewriteLocation(loc string, r *http.Request) string {
+	u, err := url.Parse(strings.TrimSpace(loc))
+	if err != nil {
+		// An unparseable Location cannot be shown to be safe, so it is not
+		// passed on. Dropping it leaves the recorded 3xx with no target,
+		// which stops the client rather than sending it somewhere unknown.
+		return ""
+	}
+	if u.Scheme == "" && u.Host == "" {
+		return loc // relative: already points at this server
+	}
+	if u.Opaque != "" {
+		return loc
+	}
+	if u.Scheme != "" && !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return loc
+	}
+	u.Scheme = requestScheme(r)
+	u.Host = r.Host
+	u.User = nil
+	return u.String()
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// stripCookieDomain removes the Domain attribute from a recorded
+// Set-Cookie, leaving every other attribute exactly as recorded.
+//
+// A recorded `Domain=prod.example.com` can never match a loopback
+// listener, so the browser drops the cookie outright: the session never
+// establishes and the test fails somewhere later wearing an app bug's
+// clothing. That is the same misattribution reflectCORS exists to prevent,
+// and the same family — a recorded value naming the world the recording
+// was made in. Without the attribute the cookie is host-only for whatever
+// host the client used, which is this server.
+//
+// Only Domain. `Secure` is deliberately left alone — see the report: it
+// does not have the same effect on a loopback listener, and stripping it
+// would weaken what the recording said rather than re-address it.
+//
+// One interaction, reported rather than papered over: trace.Hop headers
+// are a map[string]string, and core/proxy's flatHeaders JOINS a repeated
+// header with ", ", so a response that set TWO cookies is already recorded
+// as one malformed value before replay sees it. Splitting that on ";" can
+// drop a segment carrying the second cookie's name. This function does not
+// try to unpick it — reconstructing cookies from a lossy join would hide a
+// capture-layer defect behind a plausible-looking result, which is the one
+// thing this package refuses to do.
+func stripCookieDomain(v string) string {
+	parts := strings.Split(v, ";")
+	out := parts[:0]
+	for _, p := range parts {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "domain=") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, ";")
 }
 
 // corsHeader reports the response headers the REPLAY SERVER owns rather
