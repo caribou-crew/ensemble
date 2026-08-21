@@ -26,11 +26,12 @@ var version = "dev"
 const usage = `ensemble — local backend orchestrator CLI
 
 Usage:
-  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700]
+  ensemble up [-c ensemble.yaml] [--profile p1,p2] [--variant svc=name,...] [--api 127.0.0.1:4700]
   ensemble dashboard [--api-url URL] [--no-open]
   ensemble status [--api-url URL] [--json]
   ensemble down [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
+  ensemble variant <service> <variant> [--api-url URL] [--json]
   ensemble latency list [--api-url URL] [--json]
   ensemble latency set --target NAME --path / [--fixed MS] [--p50 MS] [--p95 MS] [--p99 MS] [--enabled] [--api-url URL] [--json]
   ensemble latency reset [--api-url URL] [--json]
@@ -74,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdDown(args[1:], stdout, stderr)
 	case "seed":
 		return cmdSeed(args[1:], stdout, stderr)
+	case "variant":
+		return cmdVariant(args[1:], stdout, stderr)
 	case "latency":
 		return cmdLatency(args[1:], stdout, stderr)
 	case "traffic":

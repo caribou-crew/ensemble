@@ -27,7 +27,8 @@ import (
 type upOptions struct {
 	ConfigPath string
 	Profiles   []string
-	Addr       string // control-plane API listen address, e.g. ":4700"
+	Variants   map[string]string // per-service variant overrides (--variant svc=name)
+	Addr       string            // control-plane API listen address, e.g. ":4700"
 }
 
 // defaultAPIAddr is the loopback-only control-plane listen address `ensemble
@@ -57,11 +58,30 @@ func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("c", "ensemble.yaml", "path to ensemble.yaml")
 	profile := fs.String("profile", "", "comma-separated active profiles")
+	variant := fs.String("variant", "", "comma-separated service=variant overrides of each service's default variant")
 	addr := fs.String("api", defaultAPIAddr, "control-plane API listen address")
 	if err := fs.Parse(args); err != nil {
 		return upOptions{}, err
 	}
-	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Addr: *addr}, nil
+	variants, err := parseVariantFlag(*variant)
+	if err != nil {
+		fmt.Fprintf(stderr, "ensemble: up: %v\n", err)
+		return upOptions{}, err
+	}
+	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr}, nil
+}
+
+// parseVariantFlag parses --variant's "svc=name,svc2=name2" form.
+func parseVariantFlag(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range splitCSV(v) {
+		name, variant, ok := strings.Cut(pair, "=")
+		if !ok || name == "" || variant == "" {
+			return nil, fmt.Errorf("--variant: %q is not service=variant", pair)
+		}
+		out[name] = variant
+	}
+	return out, nil
 }
 
 func cmdUp(args []string, stdout, stderr io.Writer) int {
@@ -142,8 +162,16 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 
 	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
 
+	// Check --variant against the config up front so a typo fails here,
+	// not as a confusing start failure deep in Up.
+	for name, variant := range opts.Variants {
+		if _, err := cfg.ResolveService(name, variant); err != nil {
+			return fmt.Errorf("--variant %s=%s: %w", name, variant, err)
+		}
+	}
 	orch := orchestrator.New(cfg, px, orchestrator.Opts{
 		Profiles: opts.Profiles,
+		Variants: opts.Variants,
 		Logf:     logf,
 	})
 	orch.SQLRunner = inspector.NewSQLRunner(cfg.Databases)

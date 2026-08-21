@@ -26,6 +26,7 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/services/{name}/restart", s.withAnnotation(s.handleServiceRestart))
 	mux.HandleFunc("POST /api/services/{name}/flip", s.withAnnotation(s.handleServiceFlip))
+	mux.HandleFunc("POST /api/services/{name}/variant", s.withAnnotation(s.handleServiceVariant))
 
 	mux.HandleFunc("POST /api/seed/{name}", s.withAnnotation(s.handleSeed))
 
@@ -160,6 +161,11 @@ type TopologyNode struct {
 	Category string `json:"category"` // "service" | "database" | "stub" | "gateway"
 	Status   string `json:"status"`
 	Entry    bool   `json:"entry,omitempty"`
+	// Variant/Variants are set only for a service declaring
+	// config.Service.Variants: the current choice and every option, so a
+	// client can offer the switch exactly where it applies.
+	Variant  string   `json:"variant,omitempty"`
+	Variants []string `json:"variants,omitempty"`
 }
 
 // TopologyEdge is a directed dependency: From calls/depends on To.
@@ -210,7 +216,8 @@ func (s *server) buildTopology() TopologyResponse {
 	nodes := make([]TopologyNode, 0, len(svcNames)+len(dbNames)+len(stubNames)+len(gwNames))
 	for _, name := range svcNames {
 		svc := cfg.Services[name]
-		nodes = append(nodes, TopologyNode{Name: name, Category: "service", Status: statusFor(name), Entry: svc.Entry})
+		cur, avail := s.Orch.Variant(name)
+		nodes = append(nodes, TopologyNode{Name: name, Category: "service", Status: statusFor(name), Entry: svc.Entry, Variant: cur, Variants: avail})
 	}
 	for _, name := range dbNames {
 		nodes = append(nodes, TopologyNode{Name: name, Category: "database", Status: statusFor(name)})
@@ -315,6 +322,40 @@ func (s *server) handleServiceFlip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Orch.Flip(r.Context(), name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	st, _ := s.Orch.Service(name)
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleServiceVariant switches a service to one of its declared variants
+// (config.Service.Variants) — see orchestrator.SetVariant. 404 for an
+// unknown service, 400 for a service without variants or an unknown
+// variant name, 500 when the switch itself fails.
+func (s *server) handleServiceVariant(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	svc, ok := s.Cfg.Services[name]
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("service %q not found", name))
+		return
+	}
+	var req struct {
+		Variant string `json:"variant"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if len(svc.Variants) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("service %q declares no variants", name))
+		return
+	}
+	if _, ok := svc.Variants[req.Variant]; !ok {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("service %q has no variant %q (have %s)", name, req.Variant, strings.Join(svc.VariantNames(), ", ")))
+		return
+	}
+	if err := s.Orch.SetVariant(r.Context(), name, req.Variant); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

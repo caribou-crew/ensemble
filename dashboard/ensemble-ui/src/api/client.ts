@@ -3,9 +3,15 @@
 // ApiError. No caching, no retries — that belongs to whichever view needs
 // it (SSE reconnection, polling, etc. land in later tasks).
 
-import type { Hop, LatencyRule, LogicalHop, ServiceState, Topology } from './types';
-import type { SeedStepResult } from './types';
-import type { DatabaseInfo, EntityInfo, Table } from './types';
+import type {
+  Hop,
+  LatencyRule,
+  LogicalHop,
+  ServiceState,
+  Topology,
+} from "./types";
+import type { SeedStepResult } from "./types";
+import type { DatabaseInfo, EntityInfo, Table } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -16,7 +22,7 @@ export class ApiError extends Error {
 
   constructor(status: number, message: string, body?: unknown) {
     super(message);
-    this.name = 'ApiError';
+    this.name = "ApiError";
     this.status = status;
     this.body = body;
   }
@@ -43,7 +49,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const message =
-      body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
+      body &&
+      typeof body === "object" &&
+      "error" in body &&
+      typeof (body as { error: unknown }).error === "string"
         ? (body as { error: string }).error
         : res.statusText || `request failed with status ${res.status}`;
     throw new ApiError(res.status, message, body);
@@ -58,19 +67,21 @@ function jsonInit(method: string, payload?: unknown): RequestInit {
   }
   return {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   };
 }
 
-function query(params: Record<string, string | number | boolean | undefined>): string {
+function query(
+  params: Record<string, string | number | boolean | undefined>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === '') continue;
+    if (value === undefined || value === "") continue;
     search.set(key, String(value));
   }
   const s = search.toString();
-  return s ? `?${s}` : '';
+  return s ? `?${s}` : "";
 }
 
 export interface TrafficParams {
@@ -96,15 +107,19 @@ export interface SeedResult {
 
 export const api = {
   status(): Promise<ServiceState[]> {
-    return request<{ services: ServiceState[] }>('/api/status').then((r) => r.services);
+    return request<{ services: ServiceState[] }>("/api/status").then(
+      (r) => r.services,
+    );
   },
 
   topology(): Promise<Topology> {
-    return request<Topology>('/api/topology');
+    return request<Topology>("/api/topology");
   },
 
   traffic(params: TrafficParams = {}): Promise<Hop[]> {
-    return request<{ hops: Hop[] }>(`/api/traffic${query(params)}`).then((r) => r.hops);
+    return request<{ hops: Hop[] }>(`/api/traffic${query(params)}`).then(
+      (r) => r.hops,
+    );
   },
 
   trace(id: string): Promise<TraceResponse> {
@@ -112,39 +127,67 @@ export const api = {
   },
 
   latencyList(): Promise<LatencyRule[]> {
-    return request<{ rules: LatencyRule[] }>('/api/latency').then((r) => r.rules);
-  },
-
-  latencyUpsert(rule: LatencyRule): Promise<LatencyRule[]> {
-    return request<{ rules: LatencyRule[] }>('/api/latency', jsonInit('PUT', rule)).then((r) => r.rules);
-  },
-
-  latencyDelete(target: string, path: string): Promise<LatencyRule[]> {
-    return request<{ rules: LatencyRule[] }>(`/api/latency${query({ target, path })}`, {
-      method: 'DELETE',
-    }).then((r) => r.rules);
-  },
-
-  latencyArmAll(enabled: boolean): Promise<LatencyRule[]> {
-    return request<{ rules: LatencyRule[] }>('/api/latency/arm-all', jsonInit('POST', { enabled })).then(
+    return request<{ rules: LatencyRule[] }>("/api/latency").then(
       (r) => r.rules,
     );
   },
 
+  latencyUpsert(rule: LatencyRule): Promise<LatencyRule[]> {
+    return request<{ rules: LatencyRule[] }>(
+      "/api/latency",
+      jsonInit("PUT", rule),
+    ).then((r) => r.rules);
+  },
+
+  latencyDelete(target: string, path: string): Promise<LatencyRule[]> {
+    return request<{ rules: LatencyRule[] }>(
+      `/api/latency${query({ target, path })}`,
+      {
+        method: "DELETE",
+      },
+    ).then((r) => r.rules);
+  },
+
+  latencyArmAll(enabled: boolean): Promise<LatencyRule[]> {
+    return request<{ rules: LatencyRule[] }>(
+      "/api/latency/arm-all",
+      jsonInit("POST", { enabled }),
+    ).then((r) => r.rules);
+  },
+
   latencyReset(): Promise<LatencyRule[]> {
-    return request<{ rules: LatencyRule[] }>('/api/latency/reset', jsonInit('POST')).then((r) => r.rules);
+    return request<{ rules: LatencyRule[] }>(
+      "/api/latency/reset",
+      jsonInit("POST"),
+    ).then((r) => r.rules);
   },
 
   restart(name: string): Promise<ServiceState> {
-    return request<ServiceState>(`/api/services/${encodeURIComponent(name)}/restart`, jsonInit('POST'));
+    return request<ServiceState>(
+      `/api/services/${encodeURIComponent(name)}/restart`,
+      jsonInit("POST"),
+    );
   },
 
   flip(name: string): Promise<ServiceState> {
-    return request<ServiceState>(`/api/services/${encodeURIComponent(name)}/flip`, jsonInit('POST'));
+    return request<ServiceState>(
+      `/api/services/${encodeURIComponent(name)}/flip`,
+      jsonInit("POST"),
+    );
+  },
+
+  setVariant(name: string, variant: string): Promise<ServiceState> {
+    return request<ServiceState>(
+      `/api/services/${encodeURIComponent(name)}/variant`,
+      jsonInit("POST", { variant }),
+    );
   },
 
   seed(name: string): Promise<SeedResult> {
-    return request<SeedResult>(`/api/seed/${encodeURIComponent(name)}`, jsonInit('POST'));
+    return request<SeedResult>(
+      `/api/seed/${encodeURIComponent(name)}`,
+      jsonInit("POST"),
+    );
   },
 
   // --- inspector (Task 3.5): databases/schema/rows. Every one of these
@@ -153,13 +196,15 @@ export const api = {
   // failure. ---
 
   databases(): Promise<DatabaseInfo[]> {
-    return request<{ databases: DatabaseInfo[] }>('/api/databases').then((r) => r.databases);
+    return request<{ databases: DatabaseInfo[] }>("/api/databases").then(
+      (r) => r.databases,
+    );
   },
 
   databaseSchema(name: string): Promise<Table[]> {
-    return request<{ tables: Table[] }>(`/api/databases/${encodeURIComponent(name)}/schema`).then(
-      (r) => r.tables,
-    );
+    return request<{ tables: Table[] }>(
+      `/api/databases/${encodeURIComponent(name)}/schema`,
+    ).then((r) => r.tables);
   },
 
   databaseRows(
@@ -179,7 +224,9 @@ export const api = {
   // must render it defensively rather than assume a contract. ---
 
   entities(): Promise<EntityInfo[]> {
-    return request<{ entities: EntityInfo[] }>('/api/entities').then((r) => r.entities);
+    return request<{ entities: EntityInfo[] }>("/api/entities").then(
+      (r) => r.entities,
+    );
   },
 
   entityList(name: string): Promise<unknown> {
@@ -187,21 +234,29 @@ export const api = {
   },
 
   entityGet(name: string, id: string): Promise<unknown> {
-    return request<unknown>(`/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`);
+    return request<unknown>(
+      `/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+    );
   },
 
   entityCreate(name: string, body: unknown): Promise<unknown> {
-    return request<unknown>(`/api/entities/${encodeURIComponent(name)}`, jsonInit('POST', body));
+    return request<unknown>(
+      `/api/entities/${encodeURIComponent(name)}`,
+      jsonInit("POST", body),
+    );
   },
 
   entityUpdate(name: string, id: string, body: unknown): Promise<unknown> {
     return request<unknown>(
       `/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-      jsonInit('PUT', body),
+      jsonInit("PUT", body),
     );
   },
 
   entityDelete(name: string, id: string): Promise<unknown> {
-    return request<unknown>(`/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`, jsonInit('DELETE'));
+    return request<unknown>(
+      `/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+      jsonInit("DELETE"),
+    );
   },
 };

@@ -44,6 +44,7 @@ type ServiceState struct {
 	PID       int       `json:"pid,omitempty"` // native only; 0 for docker
 	ProxyPort int       `json:"proxyPort,omitempty"`
 	Port      int       `json:"port,omitempty"`
+	Variant   string    `json:"variant,omitempty"` // current config.Service variant, if it declares any
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	LastErr   string    `json:"lastErr,omitempty"`
 }
@@ -62,6 +63,10 @@ type Opts struct {
 	// HealthTimeout bounds how long a health/TCP/docker gate waits before
 	// failing the service. Defaults to 30s.
 	HealthTimeout time.Duration
+	// Variants overrides config.Service.Default per service for this run
+	// (`ensemble up --variant svc=real`). cmd_up validates the names
+	// against the config before building the Orchestrator.
+	Variants map[string]string
 }
 
 // Orchestrator supervises the services and databases of one config.Config.
@@ -74,6 +79,10 @@ type Orchestrator struct {
 	states      map[string]*ServiceState
 	procs       map[string]*exec.Cmd // native nodes with a running process
 	dockerNodes map[string]bool      // nodes currently running as containers
+	// variants is each service's chosen config.Service variant, when it
+	// declares any: seeded from Opts.Variants, else the config default,
+	// and changed by SetVariant. Read through currentVariant.
+	variants map[string]string
 
 	// serviceLocks holds one mutex per service name, serializing Flip,
 	// Restart, and Down's per-service teardown against each other for a
@@ -149,10 +158,128 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		states:                map[string]*ServiceState{},
 		procs:                 map[string]*exec.Cmd{},
 		dockerNodes:           map[string]bool{},
+		variants:              variantsFrom(cfg, opts.Variants),
 		serviceLocks:          map[string]*sync.Mutex{},
 		killGroup:             killProcessGroup,
 		removeDockerContainer: dockerRemove,
 	}
+}
+
+// variantsFrom seeds the per-service variant choice: the override when one
+// is given, else the config default. Services without variants get no
+// entry.
+func variantsFrom(cfg *config.Config, overrides map[string]string) map[string]string {
+	out := map[string]string{}
+	for name, svc := range cfg.Services {
+		if len(svc.Variants) == 0 {
+			continue
+		}
+		if v, ok := overrides[name]; ok {
+			out[name] = v
+		} else {
+			out[name] = svc.DefaultVariant()
+		}
+	}
+	return out
+}
+
+// currentVariant is name's chosen variant, "" for a service without any.
+func (o *Orchestrator) currentVariant(name string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.variants[name]
+}
+
+// resolve flattens name's config through its current variant — the only
+// form startServiceAs & co. ever see.
+func (o *Orchestrator) resolve(name string) (config.Service, error) {
+	return o.cfg.ResolveService(name, o.currentVariant(name))
+}
+
+// Variant returns name's current variant and the variants it declares
+// (sorted); both empty for a service without variants.
+func (o *Orchestrator) Variant(name string) (current string, available []string) {
+	svc, ok := o.cfg.Services[name]
+	if !ok || len(svc.Variants) == 0 {
+		return "", nil
+	}
+	return o.currentVariant(name), svc.VariantNames()
+}
+
+// SetVariant switches name to the named variant. A running service is
+// stopped (whichever placement is live) and the variant started in its
+// default placement, health-gated — Flip with a different target, and
+// like Flip it never touches the proxy listener: the port is the
+// service's, not the variant's. A service that isn't running only records
+// the choice, which its next start honours. Restart and Flip resolve
+// through the same choice, so neither reverts to the config default.
+func (o *Orchestrator) SetVariant(ctx context.Context, name, variant string) error {
+	svc, ok := o.cfg.Services[name]
+	if !ok {
+		return fmt.Errorf("orchestrator: variant %q: unknown service", name)
+	}
+	if len(svc.Variants) == 0 {
+		return fmt.Errorf("orchestrator: variant %q: service %s declares no variants", name, name)
+	}
+	resolved, err := o.cfg.ResolveService(name, variant)
+	if err != nil {
+		return fmt.Errorf("orchestrator: variant %q: %w", name, err)
+	}
+
+	unlock := o.lockService(name)
+	defer unlock()
+
+	o.mu.Lock()
+	_, hasProc := o.procs[name]
+	isDocker := o.dockerNodes[name]
+	o.mu.Unlock()
+
+	if !hasProc && !isDocker {
+		o.mu.Lock()
+		o.variants[name] = variant
+		o.mu.Unlock()
+		o.setState(name, func(s *ServiceState) { s.Variant = variant })
+		return nil
+	}
+	if _, _, err := o.stopCurrent(name); err != nil {
+		o.fail(name, err)
+		return fmt.Errorf("orchestrator: variant %q: %w", name, err)
+	}
+	o.mu.Lock()
+	o.variants[name] = variant
+	o.mu.Unlock()
+	return o.startServiceAs(ctx, name, resolved, defaultPlacement(resolved))
+}
+
+// stopCurrent tears down whichever placement of name is live and forgets
+// it, reporting which it was. Caller holds name's service lock. A
+// teardown error is returned before the maps are touched, so a
+// possibly-still-live predecessor stays tracked rather than orphaned.
+func (o *Orchestrator) stopCurrent(name string) (hadProc, wasDocker bool, err error) {
+	o.mu.Lock()
+	cmd, hadProc := o.procs[name]
+	wasDocker = o.dockerNodes[name]
+	o.mu.Unlock()
+
+	if hadProc && cmd.Process != nil {
+		if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return hadProc, wasDocker, fmt.Errorf("stop previous process (pid %d): %w", cmd.Process.Pid, err)
+		}
+	}
+	if hadProc {
+		o.mu.Lock()
+		delete(o.procs, name)
+		o.mu.Unlock()
+	}
+	if wasDocker {
+		if err := o.removeDockerContainer(name); err != nil {
+			return hadProc, wasDocker, fmt.Errorf("stop previous container: %w", err)
+		}
+		o.mu.Lock()
+		delete(o.dockerNodes, name)
+		o.mu.Unlock()
+	}
+	return hadProc, wasDocker, nil
 }
 
 // lockService acquires (lazily creating) the per-service mutex for name and
@@ -194,7 +321,12 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 		if o.testStartHook != nil {
 			o.testStartHook(name)
 		}
-		if svc, ok := active[name]; ok {
+		if _, ok := active[name]; ok {
+			svc, err := o.resolve(name)
+			if err != nil {
+				o.fail(name, err)
+				return fmt.Errorf("orchestrator: %s: %w", name, err)
+			}
 			o.logf("orchestrator: starting service %s", name)
 			if err := o.startService(ctx, name, svc); err != nil {
 				return err
@@ -288,9 +420,12 @@ func (o *Orchestrator) Down() error {
 // same port.
 func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
-	svc, ok := active[name]
-	if !ok {
+	if _, ok := active[name]; !ok {
 		return fmt.Errorf("orchestrator: restart %q: not an active service", name)
+	}
+	svc, err := o.resolve(name)
+	if err != nil {
+		return fmt.Errorf("orchestrator: restart %q: %w", name, err)
 	}
 
 	// Serialize against any concurrent Flip/Restart/Down teardown on this
@@ -390,9 +525,11 @@ func defaultPlacement(svc config.Service) string {
 // (startService, Restart, Flip) is responsible for picking a placement svc
 // actually supports.
 func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc config.Service, placement string) error {
+	variant := o.currentVariant(name)
 	o.setState(name, func(s *ServiceState) {
 		s.Placement = placement
 		s.ProxyPort = svc.Proxy
+		s.Variant = variant
 		s.PID = 0 // stale from a previous placement until the native branch below sets it
 	})
 
@@ -400,7 +537,13 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 
 	if svc.Build != "" {
 		o.setStatus(name, StatusBuilding, "")
-		stampPath := filepath.Join(o.opts.LogDir, name+".buildstamp")
+		// Stamps are per variant: the stub being freshly built says
+		// nothing about whether the monolith's build is current.
+		stampName := name
+		if variant != "" {
+			stampName = name + "." + variant
+		}
+		stampPath := filepath.Join(o.opts.LogDir, stampName+".buildstamp")
 		stale, err := buildStale(stampPath, workDir, svc.Watch)
 		if err != nil {
 			o.fail(name, err)

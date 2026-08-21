@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"syscall"
 )
 
 // Flip switches name between native and container placement at runtime:
@@ -19,9 +18,12 @@ import (
 // with only one placement errors rather than silently no-op'ing.
 func (o *Orchestrator) Flip(ctx context.Context, name string) error {
 	active := o.cfg.ServicesForProfiles(o.opts.Profiles)
-	svc, ok := active[name]
-	if !ok {
+	if _, ok := active[name]; !ok {
 		return fmt.Errorf("orchestrator: flip %q: not an active service", name)
+	}
+	svc, err := o.resolve(name)
+	if err != nil {
+		return fmt.Errorf("orchestrator: flip %q: %w", name, err)
 	}
 	if svc.Run == "" || svc.Docker == nil {
 		return fmt.Errorf("orchestrator: flip %q: service %s has no alternate placement", name, name)
@@ -34,35 +36,17 @@ func (o *Orchestrator) Flip(ctx context.Context, name string) error {
 	unlock := o.lockService(name)
 	defer unlock()
 
-	o.mu.Lock()
-	cmd, hasProc := o.procs[name]
-	isDocker := o.dockerNodes[name]
-	o.mu.Unlock()
-
+	hadProc, wasDocker, err := o.stopCurrent(name)
+	if err != nil {
+		o.fail(name, err)
+		return fmt.Errorf("orchestrator: flip %q: %w", name, err)
+	}
 	var target string
 	switch {
-	case isDocker:
+	case wasDocker:
 		target = "native"
-		if err := o.removeDockerContainer(name); err != nil {
-			wrapped := fmt.Errorf("stop previous container: %w", err)
-			o.fail(name, wrapped)
-			return fmt.Errorf("orchestrator: flip %q: %w", name, wrapped)
-		}
-		o.mu.Lock()
-		delete(o.dockerNodes, name)
-		o.mu.Unlock()
-	case hasProc:
+	case hadProc:
 		target = "docker"
-		if cmd.Process != nil {
-			if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
-				wrapped := fmt.Errorf("stop previous process (pid %d): %w", cmd.Process.Pid, err)
-				o.fail(name, wrapped)
-				return fmt.Errorf("orchestrator: flip %q: %w", name, wrapped)
-			}
-		}
-		o.mu.Lock()
-		delete(o.procs, name)
-		o.mu.Unlock()
 	default:
 		return fmt.Errorf("orchestrator: flip %q: service %s is not running", name, name)
 	}

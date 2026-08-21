@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -45,6 +47,92 @@ type Service struct {
 	// every boot, say) the global default is too tight to raise for
 	// everyone else just to accommodate one service.
 	StartupTimeoutS int `yaml:"startup_timeout_s"`
+
+	// Variants are named alternative backings for this one logical
+	// service — e.g. a small Go stub of a monolith and the monolith
+	// itself — sharing Port/Proxy/Health/DependsOn/Entry/Profile but each
+	// with its own Dir/Build/Run/Env/Docker. When set, the service-level
+	// backing fields above must be empty (see Validate) and Default names
+	// the variant `ensemble up` starts. The orchestrator switches between
+	// them at runtime the way Flip switches placements: same port, proxy
+	// listener untouched.
+	Variants map[string]Variant `yaml:"variants"`
+	Default  string             `yaml:"default"`
+}
+
+// Variant is one backing of a Service: the fields that describe how to
+// build and run it, and nothing about what it is on the network.
+type Variant struct {
+	Dir             string            `yaml:"dir"`
+	Build           string            `yaml:"build"`
+	Watch           []string          `yaml:"watch"`
+	Run             string            `yaml:"run"`
+	Env             map[string]string `yaml:"env"`
+	Docker          *DockerPlacement  `yaml:"docker"`
+	StartupTimeoutS int               `yaml:"startup_timeout_s"`
+}
+
+// hasBackingFields reports whether any per-backing field is set at the
+// service level — the set a Variant carries.
+func (s Service) hasBackingFields() bool {
+	return s.Dir != "" || s.Build != "" || len(s.Watch) > 0 || s.Run != "" ||
+		len(s.Env) > 0 || s.Docker != nil || s.StartupTimeoutS != 0
+}
+
+// VariantNames returns the declared variant names, sorted.
+func (s Service) VariantNames() []string {
+	names := make([]string, 0, len(s.Variants))
+	for n := range s.Variants {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// DefaultVariant is the variant a fresh start uses: Default when set, the
+// sole variant when exactly one is declared, else "" (no variants, or an
+// invalid config Validate would have rejected).
+func (s Service) DefaultVariant() string {
+	if s.Default != "" {
+		return s.Default
+	}
+	if len(s.Variants) == 1 {
+		for n := range s.Variants {
+			return n
+		}
+	}
+	return ""
+}
+
+// ResolveService returns the named service flattened to a single backing:
+// the variant's Dir/Build/Watch/Run/Env/Docker/StartupTimeoutS overlaid on
+// the service's identity fields, with Variants/Default cleared so the
+// result looks exactly like a plain service to everything downstream. An
+// empty variant means the default. A service without variants is returned
+// as-is (variant must then be empty).
+func (c *Config) ResolveService(name, variant string) (Service, error) {
+	svc, ok := c.Services[name]
+	if !ok {
+		return Service{}, fmt.Errorf("config: service %q not found", name)
+	}
+	if len(svc.Variants) == 0 {
+		if variant != "" {
+			return Service{}, fmt.Errorf("config: service %q has no variants (asked for %q)", name, variant)
+		}
+		return svc, nil
+	}
+	if variant == "" {
+		variant = svc.DefaultVariant()
+	}
+	v, ok := svc.Variants[variant]
+	if !ok {
+		return Service{}, fmt.Errorf("config: service %q has no variant %q (have %s)", name, variant, strings.Join(svc.VariantNames(), ", "))
+	}
+	out := svc
+	out.Dir, out.Build, out.Watch, out.Run = v.Dir, v.Build, v.Watch, v.Run
+	out.Env, out.Docker, out.StartupTimeoutS = v.Env, v.Docker, v.StartupTimeoutS
+	out.Variants, out.Default = nil, ""
+	return out, nil
 }
 
 // DockerPlacement runs a Service as a container instead of a native process.

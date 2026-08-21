@@ -271,3 +271,15 @@
     transparent 5px
   );
 }
+
+.topo-panel__variant {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85em;
+}
+
+.topo-panel__variant select {
+  flex: 1;
+  min-width: 0;
+}
