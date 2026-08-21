@@ -42,19 +42,35 @@ export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]): Asy
   useEffect(() => {
     const mine = ++generation.current;
     setState({ data: null, error: null, loading: true });
-    fn().then(
-      (data) => {
+
+    // One failure path, used by both ways `fn` can fail. Sharing it rather
+    // than writing the rejection twice is the same argument the hook itself
+    // makes: two copies of a handler are two copies that can drift.
+    const fail = (cause: unknown) => {
+      if (generation.current !== mine) return;
+      setState({
+        data: null,
+        error: cause instanceof Error ? cause : new Error(String(cause)),
+        loading: false,
+      });
+    };
+
+    try {
+      fn().then((data) => {
         if (generation.current === mine) setState({ data, error: null, loading: false });
-      },
-      (cause: unknown) => {
-        if (generation.current !== mine) return;
-        setState({
-          data: null,
-          error: cause instanceof Error ? cause : new Error(String(cause)),
-          loading: false,
-        });
-      },
-    );
+      }, fail);
+    } catch (cause) {
+      // `fn` is typed `() => Promise<T>`, but that is a promise about the
+      // RETURN value — any body can throw before it ever returns one, and no
+      // type can prevent it. Task 15 builds shot URLs inside `fn`, so a
+      // summary missing `Images.Diff` throws out of URL construction; without
+      // this catch the throw escapes `useEffect` and takes down the whole
+      // tree, which is a BLANK dashboard instead of an error on one pane —
+      // the surface whose job is to make a human look showing them nothing.
+      // The caller should not have to know which way `fn` failed, so this
+      // routes into the identical `fail` the rejection path uses.
+      fail(cause);
+    }
     // Bumping the generation on cleanup is what makes clause 4 hold: after
     // unmount (or before the next load starts) no in-flight promise can
     // still match `mine`.
