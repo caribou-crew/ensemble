@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -49,14 +51,7 @@ func TestCheckOpenAPIEndToEndAcrossAKindOfEachFinding(t *testing.T) {
 		t.Fatalf("findings = %+v, want kinds %v (one per non-clean hop, none for the two clean hops or the transport error)", findings, want)
 	}
 	for _, k := range want {
-		found := false
-		for _, got := range kinds {
-			if got == k {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(kinds, k) {
 			t.Errorf("expected a %q finding among %v", k, kinds)
 		}
 	}
@@ -155,4 +150,189 @@ func TestAMissingSpecFileIsAnErrorNotSilentSuccess(t *testing.T) {
 func TestConformanceFindingJSONKeysMatchContract(t *testing.T) {
 	assertJSONKeys(t, ConformanceFinding{Method: "GET", Path: "/x", Status: 200, Kind: "unknown-path", Detail: "d"},
 		[]string{"method", "path", "status", "kind", "detail"})
+}
+
+// TestPathMatchingIsDeterministicAcrossRepeatedCalls pins C1: two
+// templated paths of the same segment count ("/users/{id}" and
+// "/{entity}/{id}") both match "/users/55", and Go's randomized map
+// iteration order previously made matchOpenAPIPath return whichever one
+// the runtime handed it first — a CI gate that flips between "conformant"
+// and "undocumented-status" on unchanged input. "/users/{id}" is strictly
+// more specific (one template segment vs two) and must win every time.
+// It documents only a 2XX range, not 500, so a hop returning 500 must
+// deterministically report undocumented-status against "/users/{id}" —
+// if the less-specific "/{entity}/{id}" (which DOES document 500) ever
+// won instead, this hop would silently report zero findings.
+func TestPathMatchingIsDeterministicAcrossRepeatedCalls(t *testing.T) {
+	hops := []trace.Hop{apiHop(1, "GET", "/users/55", 500, `{}`)}
+
+	for i := range 200 {
+		findings, err := CheckOpenAPI(hops, openAPIFixture)
+		if err != nil {
+			t.Fatalf("iteration %d: CheckOpenAPI: %v", i, err)
+		}
+		if len(findings) != 1 || findings[0].Kind != "undocumented-status" {
+			t.Fatalf("iteration %d: want exactly one undocumented-status finding (via the more specific /users/{id}), got %+v", i, findings)
+		}
+		if !strings.Contains(findings[0].Detail, "/users/{id}") {
+			t.Fatalf("iteration %d: Detail must name the more specific pattern /users/{id}, got %q", i, findings[0].Detail)
+		}
+		if strings.Contains(findings[0].Detail, "/{entity}/{id}") {
+			t.Fatalf("iteration %d: Detail must not name the less specific pattern /{entity}/{id}, got %q", i, findings[0].Detail)
+		}
+	}
+}
+
+func TestALiteralPathWinsOverATemplateThatAlsoMatches(t *testing.T) {
+	// /things/42 (literal) and /things/{id} (template) both match
+	// "/things/42"; the literal must win. Proven by content, not just by
+	// which Kind comes back: the literal's schema requires "literalField",
+	// the template's requires "templateField" — a body carrying only
+	// literalField must produce no finding only if the literal path item
+	// was actually selected.
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/things/42", 200, `{"literalField":1}`)}, "testdata/openapi-priority.json")
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("the literal /things/42 path item must win over the template; got %+v", findings)
+	}
+}
+
+func TestDefaultResponseCoversAnUndocumentedStatus(t *testing.T) {
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/orders", 503, `{"orderId":"o1"}`)}, openAPIFixture)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("503 is not documented literally or as a range on /orders, but IS covered by \"default\"; want no findings, got %+v", findings)
+	}
+}
+
+func TestCheckOpenAPIStripsTheQueryStringBeforeMatchingThePath(t *testing.T) {
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/cart?ref=abc123", 200, `{"items":[]}`)}, openAPIFixture)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("a query string must be stripped before path matching (every real capture carries one); got %+v", findings)
+	}
+}
+
+func TestAnUnresolvableRefIsUncheckedNotAPass(t *testing.T) {
+	specPath := writeTempSpec(t, `{
+		"paths": {
+			"/widgets": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "$ref": "#/components/schemas/DoesNotExist" }
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"components": { "schemas": {} }
+	}`)
+
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/widgets", 200, `{}`)}, specPath)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Kind != "unchecked" {
+		t.Fatalf("an unresolvable $ref must report \"unchecked\", not a silent pass; got %+v", findings)
+	}
+}
+
+func TestATruncatedBodyIsUncheckedNotAPass(t *testing.T) {
+	truncatedHop := apiHop(1, "GET", "/cart", 200, `{}`) // missing "items" -- would normally be a finding
+	truncatedHop.Resp.Truncated = true
+
+	findings, err := CheckOpenAPI([]trace.Hop{truncatedHop}, openAPIFixture)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Kind != "unchecked" {
+		t.Fatalf("a redaction-truncated body must report \"unchecked\", not a silent pass (and not the missing-field finding a lucky parse might produce); got %+v", findings)
+	}
+}
+
+func TestAnUnparseableBodyIsUncheckedNotAPass(t *testing.T) {
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/cart", 200, `not json at all`)}, openAPIFixture)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Kind != "unchecked" {
+		t.Fatalf("a body that fails json.Unmarshal must report \"unchecked\", not a silent pass; got %+v", findings)
+	}
+}
+
+// TestALiteralPathIsMatchedByExactStringNotJustBySegments pins the part of
+// MUT-36 (removing matchOpenAPIPath's exact-match-first branch) that
+// TestALiteralPathWinsOverATemplateThatAlsoMatches does NOT reach: two
+// literal (template-free) keys, "/dup" and "/dup/", split into the SAME
+// segments (["dup"]) — a trailing slash contributes no segment. With the
+// exact-match branch, requesting "/dup/" finds the "/dup/" entry directly
+// by string. Without it, both candidates tie at specificity 0 and the
+// general loop's sorted-key tie-break ("/dup" < "/dup/") silently picks the
+// wrong one — a real behavior change the specificity ranking alone cannot
+// prevent, since it only orders by TEMPLATE-segment count, not by which
+// string was actually requested.
+func TestALiteralPathIsMatchedByExactStringNotJustBySegments(t *testing.T) {
+	specPath := writeTempSpec(t, `{
+		"paths": {
+			"/dup/": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["trailingSlashField"] }
+								}
+							}
+						}
+					}
+				}
+			},
+			"/dup": {
+				"get": {
+					"responses": {
+						"200": {
+							"content": {
+								"application/json": {
+									"schema": { "required": ["bareField"] }
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"components": { "schemas": {} }
+	}`)
+
+	findings, err := CheckOpenAPI([]trace.Hop{apiHop(1, "GET", "/dup/", 200, `{}`)}, specPath)
+	if err != nil {
+		t.Fatalf("CheckOpenAPI: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Kind != "missing-required-field" {
+		t.Fatalf("expected one missing-required-field finding, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Detail, "trailingSlashField") {
+		t.Fatalf("requesting the exact string \"/dup/\" must match the \"/dup/\" entry (missing trailingSlashField), not the segment-equivalent \"/dup\" entry; got %q", findings[0].Detail)
+	}
+}
+
+func writeTempSpec(t *testing.T, contents string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := dir + "/spec.json"
+	if err := os.WriteFile(p, []byte(contents), 0o644); err != nil {
+		t.Fatalf("writing temp spec: %v", err)
+	}
+	return p
 }
