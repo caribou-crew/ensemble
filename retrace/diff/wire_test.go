@@ -1130,11 +1130,18 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	// Array fields carry no omitempty, so a consumer reads the same key set
 	// from every Entry it is handed. Without that, entry.bodyDiff.map(...)
 	// throws on the commonest row the review UI renders.
+	//
+	// "moved" and "truncated" are in this list, and they moved here in Task
+	// 15's fix round (D2): they used to be omitempty, so a FALSE bool was an
+	// absent key on exactly this row — the unchanged paired call. Their
+	// presence-ness is now the same as every other field's, and this
+	// assertion is the golden that pins it: put omitempty back and this line
+	// goes red.
 	bare := Entry{Method: "GET", NormalizedPath: "/x", SeqA: 1, SeqB: 1}
 	ensureEntryArrays(&bare)
 	assertJSONKeys(t, bare, []string{
 		"method", "normalizedPath", "seqA", "seqB", "posA", "posB",
-		"classes", "bodyDiff", "bodyTolerated",
+		"moved", "truncated", "classes", "bodyDiff", "bodyTolerated",
 		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff",
 	})
 

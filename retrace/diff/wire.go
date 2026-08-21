@@ -350,16 +350,29 @@ type StatusChange struct {
 }
 
 type Entry struct {
-	Method          string        `json:"method"`
-	NormalizedPath  string        `json:"normalizedPath"`
-	SeqA            uint64        `json:"seqA"`
-	SeqB            uint64        `json:"seqB"`
-	PosA            int           `json:"posA"`
-	PosB            int           `json:"posB"`
-	GroupA          string        `json:"groupA,omitempty"`
-	GroupB          string        `json:"groupB,omitempty"`
-	Moved           bool          `json:"moved,omitempty"`
-	Truncated       bool          `json:"truncated,omitempty"`
+	Method         string `json:"method"`
+	NormalizedPath string `json:"normalizedPath"`
+	SeqA           uint64 `json:"seqA"`
+	SeqB           uint64 `json:"seqB"`
+	PosA           int    `json:"posA"`
+	PosB           int    `json:"posB"`
+	GroupA         string `json:"groupA,omitempty"`
+	GroupB         string `json:"groupB,omitempty"`
+	// Moved and Truncated are NEVER omitempty (D2). Removing omitempty from
+	// a bool is a WIDENING — a reader that tolerated absence still works —
+	// so it cannot break a consumer, and it is what makes `entry.moved`
+	// mean what a TS mirror declaring `moved: boolean` says it means.
+	//
+	// The absent key is runtime-safe only for as long as every consumer
+	// tests truthiness: `undefined` is falsy today, and the day someone
+	// writes `=== false`, a `switch`, or re-serialises the document it stops
+	// being safe. "Safe as long as nobody writes ===" is a requirement
+	// nobody can be told — and this task shipped a confidently WRONG note
+	// about exactly this shape, which is how someone comes to write the
+	// unsafe line on purpose. Every other bool on this REST surface that
+	// means "did this happen" now encodes the same way.
+	Moved           bool          `json:"moved"`
+	Truncated       bool          `json:"truncated"`
 	Classes         []string      `json:"classes"`
 	StatusChange    *StatusChange `json:"statusChange,omitempty"`
 	BodyDiff        []FieldDiff   `json:"bodyDiff"`

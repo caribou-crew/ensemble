@@ -689,3 +689,107 @@ func TestAPassingItemSerialisesGatesAsAnEmptyArray(t *testing.T) {
 		t.Fatalf("the failing row %s/%s serialises an EMPTY gates array — a red row with no reason: %s", failing.App, failing.Flow, fb)
 	}
 }
+
+// --- F7: a flow that changed must never reach the reviewer as "all clear" -
+
+// reorderOnlyProject records a reference and then a candidate whose ONLY
+// delta is the order of two otherwise-identical wire calls. Nothing is
+// hand-built: the run directories are written the way `retrace run` leaves
+// them, the reference is promoted through refs.Accept, and the verdict comes
+// out of diff.Build.
+//
+// That combination lands on the three counts ScoreOf's weighted terms do not
+// mention — Counts.WireMoved here, and Conformance / UnexpectedStatuses by
+// the same argument — which diff.changed() DOES count.
+func reorderOnlyProject(t *testing.T) string {
+	t.Helper()
+	cwd := t.TempDir()
+	shots := map[string][]byte{"orders": shotPNG(t, white)}
+	recordRun(t, cwd, "web", "orders", runA, shots, []trace.Hop{
+		hop(1, "GET", "/orders", 200, `{"n":1}`),
+		hop(2, "GET", "/profile", 200, `{"n":2}`),
+	})
+	acceptRef(t, cwd, "web", "orders", runA)
+	// Same two calls, same bodies, same statuses — swapped.
+	recordRun(t, cwd, "web", "orders", runB, shots, []trace.Hop{
+		hop(1, "GET", "/profile", 200, `{"n":2}`),
+		hop(2, "GET", "/orders", 200, `{"n":1}`),
+	})
+	return cwd
+}
+
+// The whole chain, in one test, because the defect only exists as a chain:
+// ScoreOf omits WireMoved, so the row scores 0; EmptyReasonFor sees every
+// item at 0 and answers "all-clear"; the UI renders "none of them needs
+// attention" and files the changed row under a disclosure labelled
+// "N passing". A flow that changed, reported as a clean project.
+//
+// Remove the floor from ScoreOf and every assertion below goes red.
+func TestAReorderOnlyFlowIsNeverReportedAsAllClear(t *testing.T) {
+	cwd := reorderOnlyProject(t)
+	d := deps(t, cwd)
+
+	sum, err := SummaryFor(d, "web", "orders")
+	if err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	// The fixture really is the shape this test claims: a "changed" verdict
+	// whose only evidence is a count ScoreOf's terms never mention. Without
+	// this, a fixture that drifted into (say) a changed checkpoint would keep
+	// the test green while pinning nothing.
+	if sum.Verdict != "changed" {
+		t.Fatalf("the fixture is not a changed flow: verdict %q, counts %+v", sum.Verdict, sum.Counts)
+	}
+	if sum.Counts.WireMoved == 0 {
+		t.Fatalf("the fixture recorded no reordering: counts %+v", sum.Counts)
+	}
+	if len(sum.Gates) != 0 || sum.Counts.PixelChanged != 0 || sum.Counts.WireChanged != 0 ||
+		sum.Counts.WireMissing != 0 || sum.Counts.WireExtra != 0 ||
+		sum.Counts.HopNew != 0 || sum.Counts.HopGone != 0 {
+		t.Fatalf("the fixture carries evidence ScoreOf already weighs, so it cannot detect the gap: gates %v counts %+v", sum.Gates, sum.Counts)
+	}
+
+	if got := ScoreOf(sum); got <= 0 {
+		t.Fatalf("ScoreOf(a changed flow) = %v — score 0 is the wire contract for \"nothing to act on\", and the UI collapses it under a disclosure labelled \"passing\"", got)
+	}
+
+	items, err := BuildQueue(d)
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one flow in the queue, got %d: %v", len(items), queueOrder(items))
+	}
+	if items[0].Score <= 0 {
+		t.Fatalf("the queue row for a changed flow scores %v", items[0].Score)
+	}
+	if got := EmptyReasonFor(items); got == EmptyAllClear {
+		t.Fatalf("EmptyReasonFor said %q over a queue containing a flow that CHANGED — the reviewer is told every recorded flow was compared and none of them needs attention", got)
+	}
+}
+
+// The other arm, and it is the one that keeps the floor honest: a genuinely
+// passing flow must still score exactly zero, or the floor would have bought
+// the partition by making every row need attention — and "all-clear" would
+// become a state production can no longer construct.
+func TestAPassingFlowStillScoresExactlyZeroAndEarnsAllClear(t *testing.T) {
+	cwd := t.TempDir()
+	shots := map[string][]byte{"login": shotPNG(t, white)}
+	recordRun(t, cwd, "web", "login", runA, shots, []trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, shots, []trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 || items[0].Verdict != "pass" {
+		t.Fatalf("expected one passing flow, got %+v", items)
+	}
+	if items[0].Score != 0 {
+		t.Fatalf("a passing flow scored %v, want 0 — the UI's collapse partition and EmptyReasonFor both key on exactly zero", items[0].Score)
+	}
+	if got := EmptyReasonFor(items); got != EmptyAllClear {
+		t.Fatalf("EmptyReasonFor = %q over an all-passing queue, want %q", got, EmptyAllClear)
+	}
+}
