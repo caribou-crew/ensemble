@@ -142,14 +142,17 @@ review UI exist.
 
 ## Phase 5 — sample stack ("brew")
 
-- [ ] 5.1 Services: catalog-svc (Go/pg), user-svc (Node/pg), order-svc
+- [x] 5.1 Services: catalog-svc (Go/pg), user-svc (Node/pg), order-svc
       (Java/Spring/MySQL, profile `full`), notify-worker (Go/redis),
       storefront-bff + ops-bff (Node, dynamo cart), edge-gw (Go) — real CRUD,
       trace-header forwarding, /healthz each.
 - [ ] 5.2 Clients: web-app (React/Vite), rn-app (Expo). Order + browse flows.
-- [ ] 5.3 `sample/ensemble.yaml` (the reference config: dbs incl. dynamodb +
-      localstack, stubs payment/analytics/kms, entities, profiles) + seeds
-      (baseline/empty/bulk/outage).
+- [x] 5.3 `sample/ensemble.yaml` (the reference config: dbs incl. dynamodb,
+      stubs payment/analytics/kms, profiles) + seeds
+      (baseline/empty/bulk/outage). Uses DynamoDB Local directly rather than
+      localstack, and analytics/kms are unwired decorations (see the stub's
+      own comment in ensemble.yaml) — everything on the money path is live
+      and integration-tested.
 - [ ] 5.4 Dog-food e2e in CI: retrace records a web-app flow against the live
       sample, replays it stackless, diffs — zero unexplained deltas.
 

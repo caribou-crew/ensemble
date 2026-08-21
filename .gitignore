@@ -35,11 +35,25 @@ bin/
 # files) — generated fresh by every run, wherever ensemble.yaml lives.
 .ensemble/
 
-# sample/ services are standalone Go modules (not part of go.work); `go
-# build ./...` in each one drops an extensionless binary named after the
-# module right next to main.go.
-sample/services/*/catalog-svc
-sample/services/*/edge-gw
+# Building an ensemble/retrace CLI directly from inside its module dir
+# (`cd ensemble && go build ./cmd/ensemble`) drops an extensionless binary
+# named after the built package, right there — distinct from the repo-root
+# `./ensemble`/`./retrace` binaries `make build`/`go build -o` produce,
+# which land outside these module dirs and are each dev's own choice to
+# leave uncommitted.
+/ensemble/ensemble
+/retrace/retrace
+
+# sample/ services each build into their own bin/ (already covered by the
+# blanket bin/ rule above) rather than dropping an extensionless binary
+# next to main.go — avoids enumerating a new entry here every time a
+# service is added.
+# notify-worker's simulated "sent notifications" log — regenerated every run.
+sample/services/notify-worker/notifications.log
+# order-svc is a standalone Gradle project (also not part of go.work, and
+# not a Go module at all) — its build output and Gradle's local cache.
+sample/services/order-svc/build/
+sample/services/order-svc/.gradle/
 
 # Subagent-driven-development scratch: ledgers, briefs, reports, review
 # packages. Local coordination state, never part of the source tree.
