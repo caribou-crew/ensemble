@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/config"
@@ -645,9 +646,12 @@ func TestEveryArrayFieldOnAnEmptySummaryMarshalsAsAnArray(t *testing.T) {
 
 // TestBuildsOwnExitsAllProduceArrays checks the guarantee where consumers
 // actually meet it. The empty-Summary test above pins ensureArrays; this
-// pins that Build CALLS it, on every exit it has — and the quarantine exit
-// matters most, because it is the one that computes almost nothing and so
-// is the likeliest to hand a consumer a nil.
+// pins that Build CALLS it, on every exit that returns a completed
+// Summary — three of them: the ordinary exit and both quarantine exits
+// (quarantineCheck's untrusted capture, incompleteCheck's truncated
+// recording). The quarantine exits matter most, because they compute
+// almost nothing and so are the likeliest to hand a consumer a nil —
+// incompleteCheck's especially, since it is the exit this task added.
 func TestBuildsOwnExitsAllProduceArrays(t *testing.T) {
 	arraysOf := func(t *testing.T, s Summary) {
 		t.Helper()
@@ -693,6 +697,17 @@ func TestBuildsOwnExitsAllProduceArrays(t *testing.T) {
 		broken := runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the proxy never started"}
 		aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
 		bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, broken)}
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
+		if s.Verdict != "quarantined" {
+			t.Fatalf("test setup: verdict = %q, want quarantined", s.Verdict)
+		}
+		arraysOf(t, s)
+	})
+
+	t.Run("the incompleteCheck exit, on a signal-killed recording", func(t *testing.T) {
+		aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+		aRef.Manifest.Test.ExitCode = -1
+		bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
 		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
 		if s.Verdict != "quarantined" {
 			t.Fatalf("test setup: verdict = %q, want quarantined", s.Verdict)
@@ -800,6 +815,15 @@ func TestAQuarantinedSummaryDoesNotClaimAnyPlaneWasChecked(t *testing.T) {
 		t.Fatalf("a quarantined Summary computed a plane: conformance=%d checkpoints=%d paired=%d",
 			len(s.Conformance), len(s.Checkpoints), len(s.Wire.Paired))
 	}
+	// OpenAPIConfigured is set before either quarantine check runs — it is a
+	// fact about configuration, not about what got computed — so it must
+	// stay true here even though Conformance itself is empty. The rejected
+	// alternative was setting the flag from inside the conformance block,
+	// which this quarantine path never reaches; that alternative would
+	// leave OpenAPIConfigured false here despite a spec being configured.
+	if !s.OpenAPIConfigured {
+		t.Fatal("OpenAPIConfigured is false on a quarantined run though a spec was configured — the flag must survive the quarantine exit unchanged")
+	}
 }
 
 // TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild is the wiring
@@ -811,31 +835,21 @@ func TestAQuarantinedSummaryDoesNotClaimAnyPlaneWasChecked(t *testing.T) {
 // Entries live in two places on the Summary and both are populated from the
 // same diff, so a fixture that checks one arm cannot see the other go
 // missing. This asserts through Build, on the JSON, for both.
+//
+// Two subtests, not one, and this is load-bearing rather than decorative.
+// BuildSections' no-groups path used to pass Wire.Paired straight through,
+// so on an UNGROUPED run Sections[i].Entries[j] and Wire.Paired[k] were
+// literally the same memory — dropping either loop in ensureArrays was
+// invisible on that shape, because normalising one arm silently normalised
+// the other through the shared backing array. Every bare-Entry fixture in
+// this suite went through twoRuns, which always builds ungrouped, so that
+// blind spot went unmeasured. buildSection now copies unconditionally (see
+// order.go), which removes the aliasing on both paths, but the grouped
+// case is kept anyway: it pins the behaviour Build promises rather than
+// BuildSections' current implementation of it.
 func TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild(t *testing.T) {
-	// Identical on both sides: the unchanged paired call, the most common
-	// row in any summary and the one where all seven arrays are empty.
-	h := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
-	aRef, bRef := twoRuns(t, []trace.Hop{h}, []trace.Hop{h}, nil, nil)
-
-	s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
-	if len(s.Wire.Paired) == 0 {
-		t.Fatalf("test setup: nothing paired")
-	}
-	if len(s.Sections) == 0 || len(s.Sections[0].Entries) == 0 {
-		t.Fatalf("test setup: no section entries; Sections = %+v", s.Sections)
-	}
-
-	b, err := json.Marshal(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var tree map[string]any
-	if err := json.Unmarshal(b, &tree); err != nil {
-		t.Fatal(err)
-	}
-
 	keys := []string{"classes", "bodyDiff", "bodyTolerated", "bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff"}
-	check := func(where string, raw any) {
+	check := func(t *testing.T, where string, raw any) {
 		t.Helper()
 		e, ok := raw.(map[string]any)
 		if !ok {
@@ -853,21 +867,76 @@ func TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild(t *testing.T) {
 		}
 	}
 
-	wire, _ := tree["wire"].(map[string]any)
-	paired, _ := wire["paired"].([]any)
-	if len(paired) == 0 {
-		t.Fatalf("wire.paired is empty in the JSON")
-	}
-	check("wire.paired[0]", paired[0])
+	checkBuild := func(t *testing.T, s Summary) {
+		t.Helper()
+		if len(s.Wire.Paired) == 0 {
+			t.Fatalf("test setup: nothing paired")
+		}
+		if len(s.Sections) == 0 || len(s.Sections[0].Entries) == 0 {
+			t.Fatalf("test setup: no section entries; Sections = %+v", s.Sections)
+		}
 
-	sections, _ := tree["sections"].([]any)
-	if len(sections) == 0 {
-		t.Fatalf("sections is empty in the JSON")
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tree map[string]any
+		if err := json.Unmarshal(b, &tree); err != nil {
+			t.Fatal(err)
+		}
+
+		wire, _ := tree["wire"].(map[string]any)
+		paired, _ := wire["paired"].([]any)
+		if len(paired) == 0 {
+			t.Fatalf("wire.paired is empty in the JSON")
+		}
+		check(t, "wire.paired[0]", paired[0])
+
+		sections, _ := tree["sections"].([]any)
+		if len(sections) == 0 {
+			t.Fatalf("sections is empty in the JSON")
+		}
+		sec0, _ := sections[0].(map[string]any)
+		entries, _ := sec0["entries"].([]any)
+		if len(entries) == 0 {
+			t.Fatalf("sections[0].entries is empty in the JSON")
+		}
+		check(t, "sections[0].entries[0]", entries[0])
 	}
-	sec0, _ := sections[0].(map[string]any)
-	entries, _ := sec0["entries"].([]any)
-	if len(entries) == 0 {
-		t.Fatalf("sections[0].entries is empty in the JSON")
-	}
-	check("sections[0].entries[0]", entries[0])
+
+	// Identical on both sides: the unchanged paired call, the most common
+	// row in any summary and the one where all seven arrays are empty.
+	h := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
+
+	t.Run("ungrouped", func(t *testing.T) {
+		aRef, bRef := twoRuns(t, []trace.Hop{h}, []trace.Hop{h}, nil, nil)
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: baseConfig(t)})
+		checkBuild(t, s)
+	})
+
+	t.Run("grouped", func(t *testing.T) {
+		dirA, dirB := t.TempDir(), t.TempDir()
+		hg := hop(1, "GET", "/cart", 200, "", `{"ok":true}`)
+		hg.T = trace.Timings{Start: time.Date(2024, 1, 1, 0, 0, 5, 0, time.UTC)}
+		writeWireFile(t, dirA, []trace.Hop{hg})
+		writeWireFile(t, dirB, []trace.Hop{hg})
+
+		groups := []runs.Group{
+			{Name: "checkout", StartedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+				EndedAt: time.Date(2024, 1, 1, 0, 0, 10, 0, time.UTC)},
+		}
+		aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, groups, okCapture())}
+		bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, groups, okCapture())}
+		cfg := baseConfig(t)
+		opts, err := OptionsFor(cfg, aRef.Manifest, bRef.Manifest)
+		if err != nil {
+			t.Fatalf("OptionsFor: %v", err)
+		}
+
+		s := mustBuild(t, BuildInput{App: "a", Flow: "f", A: aRef, B: bRef, Cfg: cfg, Options: opts})
+		if len(s.Sections) != 1 || s.Sections[0].Name != "checkout" {
+			t.Fatalf("test setup: Sections = %+v, want one section named checkout", s.Sections)
+		}
+		checkBuild(t, s)
+	})
 }

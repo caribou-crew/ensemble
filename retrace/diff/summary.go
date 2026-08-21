@@ -877,13 +877,17 @@ func renderConformance(w io.Writer, findings []ConformanceFinding) {
 // `summary.budgets.map(...)` throws on an API-only flow, which is an
 // ordinary correct configuration, not an edge case.
 //
-// Called at BOTH of Build's exits. The quarantine return matters as much as
-// the normal one: that path computes almost nothing, so it is the exit most
-// likely to hand a consumer a nil, and "we refused to compare" is already
-// carried explicitly by Verdict — it does not also need to be encoded in
-// the shape of nine other fields.
+// Called at all three of Build's exits that return a completed Summary: the
+// ordinary exit and both quarantine exits (quarantineCheck's untrusted
+// capture, incompleteCheck's truncated recording). The quarantine returns
+// matter as much as the normal one: those paths compute almost nothing, so
+// they are the exits most likely to hand a consumer a nil, and "we refused
+// to compare" is already carried explicitly by Verdict — it does not also
+// need to be encoded in the shape of nine other fields.
 //
-// Conformance is deliberately NOT in this list; see its own note below.
+// Conformance IS in this list, flattened like every other plane — see the
+// comment at its assignment below for what carries the "was this plane
+// even checked" distinction instead of the null/[] difference.
 func (s *Summary) ensureArrays() {
 	if s.Checkpoints == nil {
 		s.Checkpoints = []CheckpointVerdict{}
@@ -938,15 +942,17 @@ func (s *Summary) ensureArrays() {
 	// highest-traffic row the always-arrays rule has to cover, not an edge
 	// case. Entries live in two places on the Summary and both are walked.
 	//
-	// Measured: today either loop alone would do, because BuildSections
-	// slices Wire.Paired rather than copying it, so Sections[i].Entries[j]
-	// and Wire.Paired[k] are literally the same memory — dropping either
-	// loop is an equivalent mutant, and both were confirmed to survive for
-	// that reason and no other. Both are kept anyway: the aliasing is an
-	// implementation detail of BuildSections, not a promise it makes, and a
-	// future copy there would silently leave one arm unnormalised. A
-	// guarantee that holds only through someone else's aliasing is not a
-	// guarantee.
+	// Both loops are load-bearing, on every run. buildSection (order.go)
+	// copies its entries into a fresh backing array unconditionally, so
+	// Sections[i].Entries[j] and Wire.Paired[k] are always separate memory
+	// — never the same struct, on a grouped run or an ungrouped one.
+	// Dropping either loop leaves the arm it owns unnormalised: six of its
+	// seven array keys marshal back to null. An earlier version of this
+	// comment claimed dropping either loop was an equivalent mutant because
+	// the two sides aliased — that was only ever true pre-copy, and only on
+	// the shape (ungrouped) that every fixture happened to build; see
+	// TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild's grouped and
+	// ungrouped cases for both proofs.
 	for i := range s.Wire.Paired {
 		ensureEntryArrays(&s.Wire.Paired[i])
 	}
