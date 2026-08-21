@@ -524,3 +524,46 @@ func hasReason(c runs.CaptureTrust, code string) bool {
 	}
 	return false
 }
+
+// TestAnApiOnlyFlowReportsNoBudgetsAtAll records the visible behaviour
+// change the four-plane rule creates, for Tasks 12, 13 and 16, which read
+// Budgets.
+//
+// A flow that takes no screenshots and configures no other gate now reports
+// ZERO budget entries. Before the rule it reported one — applyDefaults fills
+// gates.pixel from thresholds.gate on every run, so the pixel entry was
+// effectively always present, reading "0.00% ok" for a plane that was never
+// checked. An absent plane is not a new shape for a consumer (a plane
+// `gates:` never mentions has always been absent), but an EMPTY Budgets on a
+// fully-defaulted config is newly reachable, and that is the part worth
+// pinning.
+//
+// This asserts the semantic — no entries — and deliberately not the JSON
+// encoding of the empty case, which is a separate open question.
+func TestAnApiOnlyFlowReportsNoBudgetsAtAll(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+
+	cfg := baseConfig(t)
+	// Exactly what applyDefaults produces for a config that says nothing
+	// about gates: a pixel budget and nothing else.
+	cfg.Gates = map[string]config.Gate{"pixel": gatePct(0.1)}
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if len(s.Budgets) != 0 {
+		t.Fatalf("Budgets = %+v, want none — this flow took no screenshots, so its only configured plane has no subject", s.Budgets)
+	}
+	if s.Verdict != "pass" || ExitCode(s) != 0 {
+		t.Fatalf("verdict = %q / exit %d, want pass / 0", s.Verdict, ExitCode(s))
+	}
+	// And the report must not print a BUDGET line for it either.
+	var buf bytes.Buffer
+	RenderText(&buf, s)
+	if strings.Contains(buf.String(), "BUDGET:") {
+		t.Fatalf("RenderText prints a BUDGET line for a flow with no measurable plane:\n%s", buf.String())
+	}
+}
