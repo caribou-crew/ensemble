@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/refs"
@@ -286,15 +287,55 @@ func itemGates(s diff.Summary) []string {
 	return out
 }
 
+// notAssessed is the capture trust of a flow whose comparison never
+// happened, and it exists so that the ZERO VALUE is not what crosses the
+// wire.
+//
+// brokenItem used to fold a hand-populated diff.Summary{} into a row, which
+// left Item.Capture a zero diff.CaptureBanner: `{"a":{"status":"","summary":""},
+// "b":{…}}`. That is a capture-trust VALUE asserted for a capture nobody
+// examined, on the one type whose entire purpose is to say how much the
+// evidence below it can be trusted — global-constraints.md's zero-value rule
+// on exactly the field it was written for. Every consumer then has to know
+// that brokenItem exists in order to read the row correctly, and the second
+// consumer (Task 16's static CI report) would inherit it with nothing to
+// protect it.
+//
+// trace.VerdictFailed, not a new member of the dialect: it is documented "no
+// usable capture", it is the worst rank, and "no usable capture" is exactly
+// this row's situation. The MACHINE-READABLE distinction between "assessed
+// and found unusable" and "never assessed at all" is the reason code —
+// TrustReason.Code is a plain string, so `capture-not-assessed` costs no wire
+// type — and the Summary says it in a sentence for the human half.
+//
+// Never keyed on Status == VerdictBroken anywhere: capture.Assess's own doc
+// rules that out, and every consumer here tests Status != VerdictOK.
+func notAssessed(reason string) runs.CaptureTrust {
+	return runs.CaptureTrust{
+		Status:  trace.VerdictFailed,
+		Summary: "capture not assessed — this flow could not be compared at all, so neither side's recording was ever examined",
+		Hint:    "this is not a verdict about the capture; it is the absence of one. Fix the reason above and the row will carry a real capture verdict.",
+		Reasons: []runs.TrustReason{{
+			Code:   "capture-not-assessed",
+			Status: trace.VerdictFailed,
+			Detail: reason,
+			Hint:   "no capture trust was computed for either side, because the comparison that would have read them never ran",
+		}},
+	}
+}
+
 // brokenItem is the queue line for a flow that could not be diffed. The
 // verdict is "failed" — not "pass" with an empty Counts, which is what
 // dropping the error would produce, and which would announce a clean flow
-// on the strength of never having looked at it.
+// on the strength of never having looked at it — and the capture says it was
+// never assessed rather than carrying the zero value. See notAssessed.
 func brokenItem(app, flow string, err error) Item {
+	trust := notAssessed(err.Error())
 	return itemOf(diff.Summary{
 		Schema: diff.SummarySchema, App: app, Flow: flow,
 		Verdict: "failed",
 		Gates:   []string{err.Error()},
+		Capture: diff.CaptureBanner{A: trust, B: trust},
 	})
 }
 

@@ -100,9 +100,49 @@ export interface RuleRequest {
  * — but a reviewer who receives it AFTER clicking has already formed the
  * belief that they scoped the rule, and nobody reads a REST call in a pull
  * request. So the sentence is said up front instead.
+ *
+ * This half never changes: it is true of every wire rule ever written.
  */
-export const RULE_BLAST_RADIUS =
-  'This rule applies to EVERY flow in this project and to BOTH the request and the response body — a wire rule is scoped by neither. Narrow it with the method and path below; those are the only dimensions the rule dialect has.';
+export const RULE_BLAST_RADIUS_ALWAYS =
+  'This rule applies to EVERY flow in this project and to BOTH the request and the response body — a wire rule is scoped by neither.';
+
+/**
+ * The rest of the sentence, RECOMPUTED from the live values of the method and
+ * path boxes — N-2, and the reason it cannot be a constant.
+ *
+ * `rules.Rule.Path == ""` means EVERY PATH (`MatchPathGlob` returns true for
+ * an empty glob: "an unscoped rule applies to every call"), and
+ * `Rule.Method == ""` means every method. `handleRule` requires only `field`
+ * and `matcher`, so nothing refuses an empty box — nor should it: a
+ * project-wide rule is a legitimate thing the dialect exists to express, and
+ * `retrace ref rule` shares that contract.
+ *
+ * The defect was that the screen went SILENT when the rule became wide. The
+ * static half of this sentence tells the reviewer these two boxes are their
+ * only protection, and the control it points at treats an empty value as "no
+ * protection at all" — a zero value meaning "everything", on the one control
+ * in this app that writes a persistent, committed, project-wide tolerance.
+ * Clearing the path box to generalise a rule, or backspacing it by accident,
+ * used to change nothing on screen.
+ *
+ * So the copy tells the truth continuously rather than at seed time. Blank
+ * counts as empty: a box holding only spaces is not a narrowing either.
+ */
+export function ruleBlastRadius(method: string, path: string): string {
+  const noMethod = method.trim() === '';
+  const noPath = path.trim() === '';
+
+  if (noMethod && noPath) {
+    return `${RULE_BLAST_RADIUS_ALWAYS} Both boxes below are EMPTY, and empty does not mean "unset" — it means EVERY METHOD and EVERY PATH. This is the widest rule the dialect can write: it will silence this field name everywhere in the project.`;
+  }
+  if (noPath) {
+    return `${RULE_BLAST_RADIUS_ALWAYS} The path box below is EMPTY, and empty does not mean "this path" — it means EVERY PATH. This rule will apply to every ${method.trim()} call in the project, not just this one.`;
+  }
+  if (noMethod) {
+    return `${RULE_BLAST_RADIUS_ALWAYS} The method box below is EMPTY, and empty does not mean "this method" — it means EVERY METHOD. This rule will apply to ${path.trim()} whatever the verb.`;
+  }
+  return `${RULE_BLAST_RADIUS_ALWAYS} Within that, it is narrowed to ${method.trim()} ${path.trim()} — method and path are the only dimensions the rule dialect has, and clearing either box WIDENS the rule rather than unsetting it.`;
+}
 
 /**
  * The rule request for a selected field. This is the seam R-U turns on: the

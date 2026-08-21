@@ -75,14 +75,20 @@ export interface Hop {
  * A capture-trust verdict — core/trace.Verdict — and the EMPTY STRING is a
  * member, not an omission (R-X, shape 1).
  *
- * trace.Verdict is a Go string type whose zero value is "". ReadManifest
- * refuses an empty capture status, so a verdict that came off a manifest is
- * always one of the five named ones — but `serve.brokenItem` folds a
- * hand-built zero `diff.Summary` into a queue row for any flow that could not
- * be diffed at all, and that row's `capture.a`/`capture.b` are zero
- * `runs.CaptureTrust` values. `{"status":"","summary":""}` is on the wire for
- * exactly the rows that most need a human, so a union of five would make the
- * badge for those rows fall off the end of the tone table.
+ * trace.Verdict is a Go string type whose zero value is "", and no type on
+ * the Go side prevents a struct literal from carrying it. `serve.brokenItem`
+ * did exactly that until N-3: it folded a hand-built zero `diff.Summary` into
+ * a queue row for any flow that could not be diffed, so
+ * `{"status":"","summary":""}` reached this app for exactly the rows that most
+ * need a human.
+ *
+ * NO PRODUCTION PATH EMITS IT TODAY. `ReadManifest` refuses an empty capture
+ * status, `diff.Build` sets `Summary.Capture` from both manifests before even
+ * the quarantine exits, and `brokenItem` now sends `failed` plus a
+ * `capture-not-assessed` reason. This member is therefore not describing a
+ * live case; it is what makes the tone table TOTAL over the Go type's actual
+ * domain, so the next `serve` construction path that forgets the field is a
+ * compile error here rather than a grey badge at a reviewer's desk.
  *
  * "" ranks with the worst, never with `ok`: it is "nobody assessed this",
  * which is the state global-constraints.md's zero-value rule exists for.

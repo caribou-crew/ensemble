@@ -34,6 +34,30 @@ export interface AsyncState<T> {
  * arrow, which is a new function identity every render, and depending on it
  * would re-fetch forever. `deps` is the caller's explicit statement of what
  * the load actually depends on.
+ *
+ * WHAT THE SYNCHRONOUS CATCH COVERS, AND WHAT IT DOES NOT. `fn` is typed
+ * `() => Promise<T>`, but that types the RETURN value; any body can throw
+ * before it ever returns one, and no type prevents it. The catch below turns
+ * that into this hook's error state, so one pane reports a failure instead of
+ * the effect throwing and taking the tree down.
+ *
+ * It covers a throw from **`fn` itself**, and nothing else. A throw in a
+ * component's RENDER phase is not reachable from here — it happens before any
+ * effect runs, on a different call stack — so a caller that builds a value
+ * which can throw (a URL from a field the server may not have written, say)
+ * while producing its JSX must **guard at that call site**. This hook cannot,
+ * and there is no error boundary under `dashboard/` to catch it either;
+ * React 19 unmounts the root and the reviewer gets a blank page.
+ *
+ * That is not hypothetical: retrace's ShotCompare built an `<img src>` from
+ * `api.shotUrl(…, 'b', '')` during render for any checkpoint the diff wrote no
+ * candidate shot for, and blanked the whole review screen on exactly the
+ * checkpoint that had gone missing (Task 15, F5). It is fixed at the call
+ * site, which is the only place it could be fixed. An earlier version of this
+ * comment cited that same consumer as an example of what the catch below
+ * DOES cover; it was wrong on the mechanism, and a confident wrong note about
+ * where a throw lands is how someone comes to write the unguarded line on
+ * purpose.
  */
 export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ data: null, error: null, loading: true });
@@ -62,13 +86,16 @@ export function useAsync<T>(fn: () => Promise<T>, deps: readonly unknown[]): Asy
     } catch (cause) {
       // `fn` is typed `() => Promise<T>`, but that is a promise about the
       // RETURN value — any body can throw before it ever returns one, and no
-      // type can prevent it. Task 15 builds shot URLs inside `fn`, so a
-      // summary missing `Images.Diff` throws out of URL construction; without
-      // this catch the throw escapes `useEffect` and takes down the whole
+      // type can prevent it. A `fn` that reads a field the server may not
+      // have written, or builds a URL from one, throws synchronously here;
+      // without this catch it escapes `useEffect` and takes down the whole
       // tree, which is a BLANK dashboard instead of an error on one pane —
       // the surface whose job is to make a human look showing them nothing.
       // The caller should not have to know which way `fn` failed, so this
       // routes into the identical `fail` the rejection path uses.
+      //
+      // Scope: this is a throw from `fn`. A throw in a RENDER phase never
+      // reaches this stack and is not covered — see the doc comment.
       fail(cause);
     }
     // Bumping the generation on cleanup is what makes clause 4 hold: after
