@@ -209,6 +209,59 @@ func TestCompareTrimReadsEachSideFromItsOwnImage(t *testing.T) {
 	}
 }
 
+// TestTrimmedSizeMismatchDoesNotSetMismatch pins F8: Mismatch reports
+// whether the two SHOTS differed in size, never whether independent
+// trimming happened to crop them to different sizes. a and b are both
+// 40x40 with pixel-identical interior content, differing only in how much
+// uniform border surrounds it (10px vs 15px) — so they trim to
+// DIFFERENT-size crops (20x20 vs 10x10) even though the shots themselves
+// are identically sized. Comparing still requires reconciling that
+// post-trim size difference (PaddedForDiff must stay true), but Mismatch
+// must not follow it: these are the same-size shots Trim exists to compare
+// cleanly, and Task 10 turns Mismatch straight into verdict "changed"
+// regardless of DiffPct.
+func TestTrimmedSizeMismatchDoesNotSetMismatch(t *testing.T) {
+	border := color.RGBA{R: 200, G: 200, B: 200, A: 255}
+	interior := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+
+	build := func(borderPx int) []byte {
+		img := newRGBA(40, 40, border)
+		for y := borderPx; y < 40-borderPx; y++ {
+			for x := borderPx; x < 40-borderPx; x++ {
+				img.SetRGBA(x, y, interior)
+			}
+		}
+		b, err := Encode(img)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return b
+	}
+	a := build(10) // trims to a 20x20 interior
+	b := build(15) // trims to a 10x10 interior — same content, narrower border
+
+	res, _, err := Compare(a, b, Options{Trim: true})
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if res.WidthA != 40 || res.HeightA != 40 || res.WidthB != 40 || res.HeightB != 40 {
+		t.Fatalf("WidthA/HeightA/WidthB/HeightB = %d/%d/%d/%d, want 40/40/40/40: the shots themselves are the same size",
+			res.WidthA, res.HeightA, res.WidthB, res.HeightB)
+	}
+	if res.Mismatch {
+		t.Fatal("Mismatch = true, want false: the SHOTS are the same size — only the independently-trimmed crops differ")
+	}
+	if !res.PaddedForDiff {
+		t.Fatal("PaddedForDiff = false, want true: the trims differ in size, so Compare still had to reconcile a canvas to compare them")
+	}
+	if res.Overlap == nil {
+		t.Fatal("Overlap == nil, want a populated overlap block: the trims differ in size")
+	}
+	if res.Overlap.NumDiff != 0 {
+		t.Fatalf("Overlap.NumDiff = %d, want 0: the shared interior content is pixel-identical", res.Overlap.NumDiff)
+	}
+}
+
 // TestRefusesToTrimAZeroSizeImage pins F11: the w==0||h==0 guard is the
 // only thing standing between an exported function and an
 // index-out-of-range panic in pixelAt (img.Pix[0] on an empty Pix).
