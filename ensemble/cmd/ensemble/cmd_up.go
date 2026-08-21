@@ -211,11 +211,6 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	// then stubs, then sessions, then the hops file.
 	defer px.Close()
 
-	if err := orch.Up(ctx); err != nil {
-		_ = orch.Down()
-		return fmt.Errorf("orchestrator up: %w", err)
-	}
-
 	// shutdownCtx derives from ctx so either SIGINT/SIGTERM (which cancels
 	// ctx) or the API's POST /api/shutdown (which calls cancelShutdown
 	// directly) stops Serve the same way.
@@ -228,16 +223,65 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		Shutdown: cancelShutdown, AllowedHosts: allowedHosts, Insp: insp,
 	})
 
-	// "starting", not "serving": server.Serve binds inside the goroutine
-	// below, so at this point the listener isn't confirmed up yet — the
-	// select below is what actually observes bind success (shutdownCtx
-	// stays live) vs. failure (serveErrCh fires immediately).
+	// The API server binds before orch.Up runs its (possibly slow: docker
+	// pulls, DB health gates, builds) dependency walk, not after — so
+	// `ensemble status` and `ensemble dashboard` can connect and watch
+	// services come up live instead of getting connection refused for the
+	// whole startup window. "starting", not "serving": server.Serve binds
+	// inside the goroutine below, so at this point the listener isn't
+	// confirmed up yet — the select below is what actually observes bind
+	// success (shutdownCtx stays live) vs. failure (serveErrCh fires
+	// immediately).
 	fmt.Fprintf(stdout, "ensemble: starting API on %s\n", opts.Addr)
 	if exposureWarning != "" {
 		fmt.Fprintln(stderr, exposureWarning)
 	}
 	serveErrCh := make(chan error, 1)
 	go func() { serveErrCh <- server.Serve(shutdownCtx, opts.Addr, handler) }()
+
+	// orch.Up runs concurrently with the API server rather than blocking
+	// ahead of it (see above). A non-nil return no longer means Up
+	// aborted early — orch.Up itself now keeps going through a per-node
+	// failure (see its doc comment) — so it's handled below as a warning,
+	// not a teardown: whatever came up stays up, and the operator can use
+	// the now-already-reachable status/dashboard/restart to fix the
+	// failed node in parallel instead of losing the whole stack to one
+	// bad service.
+	upErrCh := make(chan error, 1)
+	go func() { upErrCh <- orch.Up(ctx) }()
+
+	var serveErr error
+	select {
+	case upErr := <-upErrCh:
+		if upErr != nil {
+			logStartupWarning(stderr, upErr)
+		}
+		// Fall through to the steady-state wait below, same as a clean Up.
+	case <-shutdownCtx.Done():
+		// SIGINT/SIGTERM (or POST /api/shutdown, though nothing can reach
+		// it yet since Up hasn't returned) arrived while services/
+		// databases were still coming up. orch.Up shares ctx, so it should
+		// already be unwinding — wait for it before Down touches shared
+		// orchestrator state (Up and Down must never run concurrently).
+		fmt.Fprintln(stdout, "ensemble: shutting down")
+		<-upErrCh
+		serveErr = <-serveErrCh
+		downErr := orch.Down()
+		if serveErr != nil {
+			return serveErr
+		}
+		return downErr
+	case serveErr = <-serveErrCh:
+		// The control-plane API failed to bind (e.g. a second `ensemble
+		// up`). Let Up finish on its own — its fate is independent of the
+		// bind — before writing to stderr again: Up's own progress logging
+		// (logf) runs in its own goroutine until it returns, and stderr
+		// isn't safe for concurrent writers.
+		<-upErrCh
+		fmt.Fprintf(stderr, "ensemble: API server failed to start: %v\n", serveErr)
+		_ = orch.Down()
+		return serveErr
+	}
 
 	// Two ways this stops waiting: a normal shutdown (SIGINT/SIGTERM
 	// canceled ctx, or POST /api/shutdown called cancelShutdown), or Serve
@@ -246,7 +290,6 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	// racing it. Without this second case, a bind failure (e.g. the address
 	// is already in use) left the error sitting unread in serveErrCh
 	// forever: services and stubs kept running, and runUp never returned.
-	var serveErr error
 	select {
 	case <-shutdownCtx.Done():
 		fmt.Fprintln(stdout, "ensemble: shutting down")
@@ -262,6 +305,18 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return serveErr
 	}
 	return downErr
+}
+
+// logStartupWarning reports a partial orch.Up failure (one or more
+// service/database nodes failed or were skipped) without treating it as
+// fatal — runUp keeps the stack up around it. upErr is an errors.Join of
+// one error per affected node (see Orchestrator.Up), printed one per line.
+func logStartupWarning(stderr io.Writer, upErr error) {
+	fmt.Fprintln(stderr, "ensemble: WARNING: one or more services/databases failed to start — the stack is staying up with whatever did:")
+	for line := range strings.SplitSeq(upErr.Error(), "\n") {
+		fmt.Fprintf(stderr, "ensemble:   %s\n", line)
+	}
+	fmt.Fprintln(stderr, "ensemble: use `ensemble status` or the dashboard to see what failed, and the dashboard's restart action to retry once fixed.")
 }
 
 // buildInspector constructs an inspector.Inspector and registers a Driver

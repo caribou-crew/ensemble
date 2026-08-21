@@ -476,11 +476,18 @@ func (o *Orchestrator) lockService(name string) func() {
 	return l.Unlock
 }
 
-// Up starts every active service and database in dependency order,
-// gating each on health before moving to the next. The first failure
-// (cycle, build failure, start failure, health timeout) stops Up and is
-// returned naming the offending node; nodes already started are left
-// running (call Down to tear them down).
+// Up starts every active service and database in dependency order, gating
+// each on health before moving to the next. A node that fails to start
+// (build failure, start failure, health timeout) is marked StatusFailed
+// (see fail) and Up moves on to the next node rather than aborting —
+// everything already running, and every independent branch of the
+// topology, is left up. Any node depending (directly or transitively) on
+// a failed one is itself marked StatusFailed and skipped without being
+// attempted, so it doesn't sit out its own health timeout only to fail
+// for the same reason. The returned error, when non-nil, joins one error
+// per failed-or-skipped node — it does not mean nothing is running; check
+// States() for that. Callers that want an all-or-nothing Up should call
+// Down themselves when this returns non-nil.
 func (o *Orchestrator) Up(ctx context.Context) error {
 	active := o.activeServices()
 	order, err := o.topoOrder(active)
@@ -496,6 +503,9 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 		return err
 	}
 
+	failed := map[string]bool{}
+	var errs []error
+
 	for _, name := range order {
 		if o.testStartHook != nil {
 			o.testStartHook(name)
@@ -504,30 +514,59 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 			svc, err := o.resolve(name)
 			if err != nil {
 				o.fail(name, err)
-				return fmt.Errorf("orchestrator: %s: %w", name, err)
+				failed[name] = true
+				errs = append(errs, fmt.Errorf("orchestrator: %s: %w", name, err))
+				continue
+			}
+			// Checked after resolve, not before: a variant can override
+			// DependsOn, so the dependency set to check is the resolved
+			// one, not active[name]'s pre-variant config.Service.
+			if dep, skip := firstFailedDep(svc.DependsOn, failed); skip {
+				err := fmt.Errorf("orchestrator: %s: skipped: dependency %s failed to start", name, dep)
+				o.fail(name, err)
+				failed[name] = true
+				errs = append(errs, err)
+				continue
 			}
 			o.logf("orchestrator: starting service %s", name)
 			if err := o.startService(ctx, name, svc); err != nil {
-				return err
+				failed[name] = true
+				errs = append(errs, err)
+				continue
 			}
 			// Proxy wiring is a one-time thing per Up: px.Serve binds a
 			// listener with no way to release it, so Restart must not
 			// call this again — the existing listener keeps forwarding
 			// to the service's (static) port across restarts.
 			if err := o.wireProxy(name, svc); err != nil {
-				return err
+				failed[name] = true
+				errs = append(errs, err)
+				continue
 			}
 			continue
 		}
 		if db, ok := o.cfg.Databases[name]; ok {
 			o.logf("orchestrator: starting database %s", name)
 			if err := o.startDatabase(ctx, name, db); err != nil {
-				return err
+				failed[name] = true
+				errs = append(errs, err)
 			}
 			continue
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// firstFailedDep returns the first of deps present in failed, so a service
+// whose dependency didn't come up can be marked failed and skipped without
+// attempting to start it — see the Up doc comment.
+func firstFailedDep(deps []string, failed map[string]bool) (string, bool) {
+	for _, d := range deps {
+		if failed[d] {
+			return d, true
+		}
+	}
+	return "", false
 }
 
 // Down tears down every process and container this Orchestrator started.

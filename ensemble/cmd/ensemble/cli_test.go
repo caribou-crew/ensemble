@@ -122,6 +122,13 @@ func startEnsemble(t *testing.T) *upTestEnv {
 
 	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
 	waitHealthy(t, apiURL)
+	// The API now binds before orch.Up runs (services/databases come up
+	// concurrently with it, not before it — see cmd_up.go), so a healthy
+	// /api/health no longer implies "svc" has finished starting. Every
+	// other test in this file assumes startEnsemble hands back a fully-up
+	// stack, so wait for that explicitly here instead of pushing this
+	// poll into each caller.
+	waitServiceHealthy(t, NewClient(apiURL), "svc")
 
 	env := &upTestEnv{apiURL: apiURL, proxyPort: proxyPort, cancel: cancel, result: result, stdout: stdout, stderr: stderr}
 	t.Cleanup(func() {
@@ -145,6 +152,28 @@ func waitHealthy(t *testing.T, apiURL string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("server never became healthy at %s", apiURL)
+}
+
+// waitServiceHealthy polls c.Status until name reports "healthy", or fails
+// the test after 5s. Used where the API being reachable (waitHealthy) isn't
+// enough on its own — orch.Up now runs concurrently with the API server, so
+// a service can still be mid-startup, or absent from Status entirely, for a
+// moment after /api/health first answers.
+func waitServiceHealthy(t *testing.T, c *Client, name string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := c.Status(context.Background())
+		if err == nil {
+			for _, s := range st.Services {
+				if s.Name == name && s.Status == "healthy" {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("service %q never became healthy via %s", name, c.BaseURL)
 }
 
 // TestUp_ClientRoundTripAndSIGINTShutdown is the brief's core scenario: run
@@ -341,6 +370,221 @@ services:
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("service process matching %q still alive after runUp returned — orch.Down was not called on bind failure", marker)
+}
+
+// TestUp_APIReachableDuringSlowStartup is the "status/dashboard get
+// connection refused for the whole startup window" fix: the control-plane
+// API must bind and answer before orch.Up finishes a slow, health-gated
+// startup, not only after. "slow" never reports healthy until well past
+// when the API should already be reachable — proving the server no longer
+// waits for orch.Up to return before it starts serving.
+func TestUp_APIReachableDuringSlowStartup(t *testing.T) {
+	port := freePort(t)
+	apiPort := freePort(t)
+	proxyPort := freePort(t)
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv.Listener.Close()
+	srv.Listener = ln
+	t.Cleanup(srv.Close)
+
+	// Nothing answers on port until well past this delay — comfortably
+	// longer than the API bind (a plain net.Listen) should ever take, even
+	// on a loaded CI box, so a fast /api/health here can only mean the
+	// server started without waiting on "slow"'s health gate.
+	const startupDelay = 2 * time.Second
+	go func() {
+		time.Sleep(startupDelay)
+		srv.Start()
+	}()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ensemble.yaml")
+	yaml := fmt.Sprintf(`
+services:
+  slow:
+    run: "sleep 30"
+    port: %d
+    health: "/healthz"
+    proxy: %d
+    entry: true
+`, port, proxyPort)
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+	opts := upOptions{ConfigPath: cfgPath, Addr: fmt.Sprintf("127.0.0.1:%d", apiPort)}
+	done := make(chan error, 1)
+	go func() { done <- runUp(ctx, opts, &stdout, &stderr) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("runUp did not return during cleanup")
+		}
+	})
+
+	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
+	reachableAt := time.Now()
+	waitHealthy(t, apiURL)
+	if elapsed := time.Since(reachableAt); elapsed >= startupDelay {
+		t.Fatalf("API took %v to become reachable, want well under the %v \"slow\" is still blocking on — the server waited for orch.Up again", elapsed, startupDelay)
+	}
+
+	// The health gate is eventually satisfied and status catches up.
+	waitServiceHealthy(t, NewClient(apiURL), "slow")
+}
+
+// TestUp_PartialStartupFailureKeepsStackUpAndWarns is the "one service
+// failing health check killed everything" fix: with one healthy service
+// and one that never becomes healthy, runUp must not tear the stack down
+// or return — the healthy service and the API stay up, `ensemble status`
+// reports each service's real state, and a warning naming the failed
+// service lands on stderr. Only cancelling ctx (standing in for SIGINT)
+// tears everything down.
+func TestUp_PartialStartupFailureKeepsStackUpAndWarns(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	t.Cleanup(upstream.Close)
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream url: %v", err)
+	}
+	goodPort, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("upstream port: %v", err)
+	}
+	badPort := freePort(t) // nothing ever listens here — "bad" can never pass its health gate
+	apiPort := freePort(t)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ensemble.yaml")
+	yaml := fmt.Sprintf(`
+services:
+  good:
+    run: "sleep 30"
+    port: %d
+    proxy: %d
+    entry: true
+  bad:
+    run: "sleep 30"
+    port: %d
+    proxy: %d
+    health: "/healthz"
+    startup_timeout_s: 1
+    entry: true
+`, goodPort, freePort(t), badPort, freePort(t))
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+	opts := upOptions{ConfigPath: cfgPath, Addr: fmt.Sprintf("127.0.0.1:%d", apiPort)}
+	done := make(chan error, 1)
+	go func() { done <- runUp(ctx, opts, &stdout, &stderr) }()
+	// Registered before any assertion that could t.Fatalf partway through:
+	// without this, a failed assertion below would abandon two live "sleep
+	// 30" processes for the rest of the test run. shutDown guards against
+	// double-draining done once the test body's own cancel+wait below (the
+	// non-failure path) already did it.
+	shutDown := false
+	t.Cleanup(func() {
+		if shutDown {
+			return
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("runUp did not return during cleanup")
+		}
+	})
+
+	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
+	waitHealthy(t, apiURL)
+
+	c := NewClient(apiURL)
+	waitServiceHealthy(t, c, "good")
+
+	// "bad" settles into failed on its own 1s startup_timeout_s.
+	deadline := time.Now().Add(5 * time.Second)
+	var badStatus string
+	for time.Now().Before(deadline) && badStatus != "failed" {
+		st, err := c.Status(context.Background())
+		if err == nil {
+			for _, s := range st.Services {
+				if s.Name == "bad" {
+					badStatus = string(s.Status)
+				}
+			}
+		}
+		if badStatus != "failed" {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if badStatus != "failed" {
+		t.Fatalf("bad service status = %q, want %q", badStatus, "failed")
+	}
+
+	// The whole point: runUp must still be running, not have torn down or
+	// returned, despite bad's failure.
+	select {
+	case err := <-done:
+		t.Fatalf("runUp returned (err=%v) after a partial startup failure — it should have stayed up with what did start", err)
+	default:
+	}
+
+	// good's (and bad's, since its process started fine — only its health
+	// check failed) service processes must still be alive: proof this
+	// wasn't a "warn but call Down anyway" no-op. PIDs come from the
+	// orchestrator's own bookkeeping (via /api/status), not a pgrep/marker
+	// guess — a native service's argv doesn't reliably keep anything
+	// distinguishing once its shell execs straight into the real command.
+	st, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, name := range []string{"good", "bad"} {
+		var pid int
+		for _, s := range st.Services {
+			if s.Name == name {
+				pid = s.PID
+			}
+		}
+		if pid == 0 {
+			t.Fatalf("%s has no recorded PID in status: %+v", name, st.Services)
+		}
+		if err := exec.Command("ps", "-p", strconv.Itoa(pid)).Run(); err != nil {
+			t.Fatalf("%s (pid %d) is not alive — a partial startup failure must not tear down what already started: %v", name, pid, err)
+		}
+	}
+
+	cancel()
+	shutDown = true
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runUp returned error after cancel: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runUp did not return after cancel")
+	}
+
+	stderrText := stderr.String() // safe now: runUp and every goroutine it spawned have returned
+	if !strings.Contains(stderrText, "WARNING") || !strings.Contains(stderrText, "bad") {
+		t.Fatalf("stderr doesn't contain a startup warning naming the failed service:\n%s", stderrText)
+	}
 }
 
 // TestStubBodyFileResolvesAgainstConfigDirNotCWD guards final-review
