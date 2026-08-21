@@ -223,15 +223,26 @@ func BuildSections(entries []Entry, groups *GroupNames) []Section {
 	return out
 }
 
+// buildSection copies its entries into a fresh backing array unconditionally
+// — on the no-groups path just as much as the declared-groups path — so a
+// Section's Entries never alias Wire.Paired's backing array. Before this,
+// the no-groups path (BuildSections' `return []Section{buildSection("",
+// entries)}`) passed the caller's slice straight through, so
+// Sections[i].Entries[j] and Wire.Paired[k] shared memory on an ungrouped
+// run and only diverged on a grouped one (where the byName map is built by
+// appending copied values). That made the aliasing config-dependent: a
+// write through Sections would mutate Wire.Paired on some runs and not
+// others, which reproduces only under a particular config and looks like
+// haunted data once Task 13 adds per-section review state. Copying always
+// removes the dependency on BuildSections' own implementation shape.
 func buildSection(name string, entries []Entry) Section {
-	if entries == nil {
-		entries = []Entry{}
-	}
+	out := make([]Entry, len(entries))
+	copy(out, entries)
 	counts := map[string]int{}
-	for _, e := range entries {
+	for _, e := range out {
 		for _, c := range e.Classes {
 			counts[c]++
 		}
 	}
-	return Section{Name: name, Entries: entries, Counts: counts}
+	return Section{Name: name, Entries: out, Counts: counts}
 }
