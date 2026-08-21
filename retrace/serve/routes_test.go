@@ -636,6 +636,87 @@ func TestAcceptHonoursTheRunTheCallerNamed(t *testing.T) {
 	}
 }
 
+// R-R. The reject verb's OWN half of F4: rejectRequest.Run decides which
+// run is bundled as the evidence for the rejection, and it must be honoured.
+//
+// This pin existed once, in TestAcceptAndRejectHonourTheRunAndOutTheCaller-
+// Named, and it was lost the way pins are lost with a green suite: R-P
+// resolved that test's `out` half by DELETING the behaviour, correctly, and
+// the test went with it — taking the reject verb's `run` arm, which R-P did
+// not touch and which the product still honours. A test that pins two
+// behaviours has two pins; deleting it for one obsolete behaviour silently
+// drops the other, and nothing goes red because a deleted assertion cannot
+// fail. Every other reject test in this package posts an empty body, so
+// "latest" was the only selector this verb had ever exercised.
+//
+// The failure it guards is quiet and on a SUCCESS path: a reviewer rejecting
+// a named older run gets a repro bundle built from the newest one — the
+// wrong recording, handed over as the evidence, with runId faithfully
+// reporting whatever it did bundle. The artifact outlives the session that
+// made it.
+//
+// Run, unlike Out (R-P), is safe to honour for the same reason it is on
+// accept: it is not a path, and runs.FindRun resolves it against the run ids
+// already under the validated root rather than joining it into one.
+func TestRejectBundlesTheRunTheCallerNamed(t *testing.T) {
+	cwd := threeFlowProject(t)
+	// A THIRD, NEWER run, so "latest" and the named run are unambiguously
+	// different. Without it the fixture is symmetric in the dimension under
+	// test: one run means every selector resolves to the same id and
+	// ignoring req.Run entirely would be invisible.
+	const runC = "20260821T102000Z-ccccccc"
+	recordRun(t, cwd, "web", "cart", runC, map[string][]byte{"cart": shotPNG(t, blue)},
+		[]trace.Hop{hop(1, "GET", "/cart", 500, `{"error":"boom"}`)})
+	ts := newServer(t, cwd)
+
+	doc := mustOK(t, post(t, ts, "/api/queue/web/cart/reject", `{"run":"`+runB+`"}`), "POST reject --run")
+	repro := doc["repro"].(map[string]any)
+	if repro["runId"] != runB {
+		t.Fatalf("reject reported runId %v, want %q — the run the caller named, not the newest one", repro["runId"], runB)
+	}
+	// And on disk, not merely in the response: the echo and the artifact can
+	// disagree, and the artifact is the half that outlives the request.
+	dir := repro["dir"].(string)
+	m, err := runs.ReadManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the repro manifest: %v", err)
+	}
+	if m.RunID != runB {
+		t.Fatalf("the repro bundle on disk is run %q, want %q — the evidence for this rejection is the wrong recording", m.RunID, runB)
+	}
+	// The summary inside it was computed for the SAME run. summaryFor takes
+	// the selector separately, so a bundle can carry the named run's files
+	// under a diff of a different one — which would be a repro bundle whose
+	// own explanation does not describe it.
+	b, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if err != nil {
+		t.Fatalf("reading the repro summary.json: %v", err)
+	}
+	var sum map[string]any
+	if err := json.Unmarshal(b, &sum); err != nil {
+		t.Fatalf("the repro summary.json is not JSON: %v", err)
+	}
+	if bside, _ := sum["b"].(map[string]any); bside["runId"] != runB {
+		t.Fatalf("the repro summary.json diffed run %v, want %q — the bundle's own explanation describes a different run than the bundle", bside["runId"], runB)
+	}
+
+	// The mirror, and it is what stops "always take the oldest" or any other
+	// fixed choice from satisfying the assertions above: an empty body still
+	// selects latest, which is runC and not runB.
+	def := mustOK(t, post(t, ts, "/api/queue/web/cart/reject", ""), "POST reject with no run")
+	drepro := def["repro"].(map[string]any)
+	if drepro["runId"] != runC {
+		t.Fatalf("reject with no run reported runId %v, want the newest run %q", drepro["runId"], runC)
+	}
+	dm, err := runs.ReadManifest(filepath.Join(drepro["dir"].(string), "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the default repro manifest: %v", err)
+	}
+	if dm.RunID != runC {
+		t.Fatalf("the default repro bundle on disk is run %q, want the newest run %q", dm.RunID, runC)
+	}
+}
+
 // R-P. POST .../reject REFUSES a body carrying "out", and refuses it before
 // anything touches the filesystem.
 //
