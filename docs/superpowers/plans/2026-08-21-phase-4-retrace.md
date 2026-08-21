@@ -5515,15 +5515,36 @@ reading disagree: **3 changed wire entries out of 1000 against
 `budget_pct: 2` must PASS**. A 3-of-4 fixture fails under both readings and
 therefore pins neither.
 
-**An empty denominator emits NO gate for that plane.** `observedFor` divides
-for three of the four planes, and returning `0` when the denominator is empty
-reports a **clean gate** for a plane that captured nothing — a run whose B
-side paired no wire entries at all passes its wire budget. "No data" is not
-"0% changed", and a reassuring number derived from an absence of evidence is
-what the Global Constraint on zero values forbids. So `WirePaired == 0` and
-`len(ServiceCounts) == 0` behave exactly as `BudgetMs == 0` already does on
-perf: `budgetsOf` emits no `Gate` for that plane, the same rule as a plane
-`gates:` never mentions. Pin all three the same way.
+**No evidence, no gate — on all four planes.** Returning `0` when there was
+nothing to measure reports a **clean gate** for a plane that captured
+nothing: a run whose B side paired no wire entries at all passes its wire
+budget. "No data" is not "0% changed", and a reassuring number derived from
+an absence of evidence is what the Global Constraint on zero values forbids.
+So `WirePaired == 0`, `len(ServiceCounts) == 0` and `len(Checkpoints) == 0`
+all behave exactly as `BudgetMs == 0` already does on perf: `budgetsOf` emits
+no `Gate` for that plane, the same rule as a plane `gates:` never mentions.
+Pin all four the same way.
+
+An earlier wording scoped this to "the three planes that divide", which was
+a description of the mechanism rather than the rule. Pixel does not divide —
+it takes a max over `Checkpoints` — but a `0` from an empty max asserts
+exactly the same false thing as a `0` from an empty denominator, and
+`applyDefaults` fills `gates.pixel` from `thresholds.gate` whenever the key
+is absent, so the pixel gate is essentially always emitted. `BUDGET: pixel
+0.10% → 0.00% ok` on a run that captured no screenshots is the defect this
+rule exists to remove.
+
+**This does not hide a broken capture, because that case never reaches
+`budgetsOf`.** `capture/trust.go` raises `no-screenshots` at
+`VerdictDegraded` when `ExpectedCheckpoints > 0 && Checkpoints == 0 &&
+TestExitCode == 0`, so a run whose checkpoints went missing is already
+non-`ok` and `quarantineCheck` refuses it first. Suppressing the gate can
+therefore only drop a plane that genuinely had no subject — an API-only flow
+with no checkpoints, which is a correct configuration, not a failure. Under
+`--allow-degraded` a degraded side does reach `budgetsOf` and loses its pixel
+gate; that is intended, and the `no-screenshots` reason still prints in the
+capture-trust banner, which is a truer statement than a gate reading
+`0.00% ok`.
 
 `--no-fail` computes and reports every gate exactly as above but forces
 `ExitCode` to `0` for the verdicts `changed` and `failed` — for a reporting
