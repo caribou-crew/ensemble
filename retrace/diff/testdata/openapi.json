@@ -30,6 +30,39 @@
           }
         }
       }
+    },
+    "/{entity}/{id}": {
+      "get": {
+        "responses": {
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "required": ["orderId"] }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "required": ["orderId"] }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

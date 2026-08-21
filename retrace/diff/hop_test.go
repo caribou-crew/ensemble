@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/caribou-crew/ensemble/core/trace"
@@ -305,6 +307,12 @@ func TestErrorSignaturesAreDedupedToOnePerRouteAndStatus(t *testing.T) {
 	if len(d.NewErrors) != 1 {
 		t.Fatalf("three hops sharing method+path+status must dedup to one finding, got %+v", d.NewErrors)
 	}
+	// Pins MUT-08: the deduped finding must carry a REAL hop's Seq (the
+	// first occurrence's, per the dedup's first-wins map insert), not a
+	// placeholder zero.
+	if d.NewErrors[0].Seq != 1 {
+		t.Fatalf("deduped finding Seq = %d, want 1 (the first occurrence's), got %+v", d.NewErrors[0].Seq, d.NewErrors[0])
+	}
 }
 
 func TestHopRequireMissingRouteIsAFailure(t *testing.T) {
@@ -314,6 +322,12 @@ func TestHopRequireMissingRouteIsAFailure(t *testing.T) {
 	failures := RequiredRouteFailures(b, []config.RequiredRoute{{Method: "GET", Path: "/never-called", Status: 200}})
 	if len(failures) != 1 || failures[0].Reason != "missing" {
 		t.Fatalf("expected one missing failure, got %+v", failures)
+	}
+	// Pins MUT-05: a "missing" failure must carry ActualStatus 0, not the
+	// expected status — there is no actual status to report because no
+	// hop was ever seen.
+	if failures[0].ExpectedStatus != 200 || failures[0].ActualStatus != 0 {
+		t.Fatalf("missing failure = %+v, want ExpectedStatus=200 ActualStatus=0", failures[0])
 	}
 }
 
@@ -373,6 +387,286 @@ func TestRoutesFromLogicalHopsAppliesNormalize(t *testing.T) {
 	routes := CollapsedRoutes(hops, normalize)
 	if len(routes) != 1 || routes[0].Path != "/cart/:id" {
 		t.Fatalf("expected the normalized path, got %+v", routes)
+	}
+}
+
+// --- Fix round 1: ports of the JS reference's missing tests, plus the
+// mutation-survivor-targeted tests the review called for. ---
+
+// C2 — hopExpect, the implementer's own novel wiring, ported from
+// the prototype's test/hop-diff.test.mjs.
+
+func TestHopExpectExcusesAKnownErrorFromBothSidesEntirely(t *testing.T) {
+	a := []trace.Hop{
+		mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "ta2", "client", "bff1", "GET", "/v1/internal/digitalwalletprovisionrequests/eligibility", 400),
+	}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "tb2", "client", "bff1", "GET", "/v1/internal/digitalwalletprovisionrequests/eligibility", 400),
+	}
+	expected := []config.StatusRule{{Path: "/v1/internal/digitalwalletprovisionrequests/eligibility", Status: 400}}
+
+	d := DiffHops(a, b, HopOptions{Expected: expected})
+	if len(d.NewErrors) != 0 || len(d.GoneErrors) != 0 {
+		t.Fatalf("an excused error present on both sides must never surface as new or gone: new=%+v gone=%+v", d.NewErrors, d.GoneErrors)
+	}
+}
+
+func TestAnExcusedErrorOnOnlyOneSideStillNeverSurfacesAsNewOrGone(t *testing.T) {
+	a := []trace.Hop{mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200)}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "tb2", "client", "bff1", "GET", "/v1/internal/digitalwalletprovisionrequests/eligibility", 400),
+	}
+	expected := []config.StatusRule{{Path: "/v1/internal/digitalwalletprovisionrequests/eligibility", Status: 400}}
+
+	d := DiffHops(a, b, HopOptions{Expected: expected})
+	if len(d.NewErrors) != 0 {
+		t.Fatalf("an excused error appearing on only one side must not surface as new: %+v", d.NewErrors)
+	}
+}
+
+// I2 — the "gone" half of every signal, ported/added: nothing in the
+// suite before this asserted a non-empty GoneRoutes or GoneErrors.
+
+func TestARouteOnTheReferenceButAbsentFromTheLatestRunVanished(t *testing.T) {
+	a := []trace.Hop{
+		mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "ta2", "client", "bff1", "GET", "/v2/wallet", 200),
+	}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+	}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewRoutes) != 0 {
+		t.Fatalf("expected no new routes, got %+v", d.NewRoutes)
+	}
+	if !hasRoute(d.GoneRoutes, "bff1", "GET", "/v2/wallet") {
+		t.Fatalf("expected /v2/wallet as a gone route, got %+v", d.GoneRoutes)
+	}
+	if len(d.GoneRoutes) != 1 {
+		t.Fatalf("expected exactly one gone route, got %+v", d.GoneRoutes)
+	}
+}
+
+func TestAnErrorStatusOnlyOnTheReferenceVanished(t *testing.T) {
+	a := []trace.Hop{
+		mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "ta2", "client", "bff1", "GET", "/v1/risk", 500),
+	}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+	}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewErrors) != 0 {
+		t.Fatalf("expected no new errors, got %+v", d.NewErrors)
+	}
+	if len(d.GoneErrors) != 1 || d.GoneErrors[0].Path != "/v1/risk" || d.GoneErrors[0].Status != 500 {
+		t.Fatalf("expected /v1/risk 500 as a gone error, got %+v", d.GoneErrors)
+	}
+}
+
+// I3 — Normalize, applied to routes and to error signatures, driven
+// through DiffHops itself (not CollapsedRoutes, a different entry point).
+
+func normalizeCartIDForHopTests(p string) string {
+	if strings.HasPrefix(p, "/cart/") {
+		return "/cart/{id}"
+	}
+	return p
+}
+
+func TestNormalizeIsAppliedToBothSidesRoutesThroughDiffHops(t *testing.T) {
+	a := []trace.Hop{mkHop(1, "ta1", "client", "bff", "GET", "/cart/1", 200)}
+	b := []trace.Hop{mkHop(1, "tb1", "client", "bff", "GET", "/cart/2", 200)}
+
+	d := DiffHops(a, b, HopOptions{Normalize: normalizeCartIDForHopTests})
+	if len(d.NewRoutes) != 0 || len(d.GoneRoutes) != 0 {
+		t.Fatalf("normalized, /cart/1 and /cart/2 are the same route; want no new/gone routes, got new=%+v gone=%+v", d.NewRoutes, d.GoneRoutes)
+	}
+}
+
+func TestNormalizeIsAppliedToErrorSignaturesThroughDiffHops(t *testing.T) {
+	a := []trace.Hop{mkHop(1, "ta1", "client", "bff", "GET", "/cart/1", 500)}
+	b := []trace.Hop{mkHop(1, "tb1", "client", "bff", "GET", "/cart/2", 500)}
+
+	d := DiffHops(a, b, HopOptions{Normalize: normalizeCartIDForHopTests})
+	if len(d.NewErrors) != 0 || len(d.GoneErrors) != 0 {
+		t.Fatalf("normalized, /cart/1 500 and /cart/2 500 are the same error signature; want no new/gone errors, got new=%+v gone=%+v", d.NewErrors, d.GoneErrors)
+	}
+}
+
+// I4 — hopRequire's glob matching (the implementer's own deviation #2)
+// and its method comparison, ported from the H17 tests plus a
+// method-mismatch case neither the JS source nor the original Go tests
+// covered.
+
+func TestHopRequireWildcardSegmentMatchesARealPathParam(t *testing.T) {
+	b := []trace.Hop{mkHop(1, "t1", "client", "svc", "GET", "/v1/internal/users/98765/profile", 200)}
+	require := []config.RequiredRoute{{Method: "GET", Path: "/v1/internal/users/*/profile", Status: 200}}
+
+	failures := RequiredRouteFailures(b, require)
+	if len(failures) != 0 {
+		t.Fatalf("a wildcard segment must match a hop carrying a real path param, got %+v", failures)
+	}
+}
+
+func TestHopRequireLiteralIdDoesNotMatchADifferentId(t *testing.T) {
+	b := []trace.Hop{mkHop(1, "t1", "client", "svc", "GET", "/v1/internal/users/98765/profile", 200)}
+	require := []config.RequiredRoute{{Method: "GET", Path: "/v1/internal/users/11111/profile", Status: 200}}
+
+	failures := RequiredRouteFailures(b, require)
+	if len(failures) != 1 || failures[0].Reason != "missing" {
+		t.Fatalf("a literal id must not match a hop with a different id at that segment, got %+v", failures)
+	}
+}
+
+func TestHopRequireMethodMustMatchExactly(t *testing.T) {
+	b := []trace.Hop{mkHop(1, "t1", "client", "svc", "POST", "/x", 200)}
+	require := []config.RequiredRoute{{Method: "GET", Path: "/x", Status: 200}}
+
+	failures := RequiredRouteFailures(b, require)
+	if len(failures) != 1 || failures[0].Reason != "missing" {
+		t.Fatalf("a required GET must not be satisfied by a POST to the same path, got %+v", failures)
+	}
+}
+
+// I6 — the fixture-symmetry gap the sweep missed: every relay test above
+// puts the relay on side B. These mirror them onto side A, plus the JS's
+// recurrence test, which — done as a straight port — doesn't actually
+// exercise dedup (see the comment on the second test below).
+
+func TestRelayFoldingAppliesToSideATooNotJustSideB(t *testing.T) {
+	// Side A recorded through a relay; side B calls bff directly. Folded,
+	// both sides made the SAME single logical call. A same-side-only fold
+	// bug (attributing side A's count to the relay, or skipping collapse
+	// on side A only) would have hidden behind every other test in this
+	// file, which all put the relay on side B.
+	a := []trace.Hop{
+		mkHop(1, "t1", "client", "edge", "GET", "/x", 200),
+		mkHop(2, "t1", "edge", "bff", "GET", "/x", 200),
+	}
+	b := []trace.Hop{
+		mkHop(1, "t2", "client", "bff", "GET", "/x", 200),
+	}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewRoutes) != 0 || len(d.GoneRoutes) != 0 {
+		t.Fatalf("both sides made one logical bff call; want no new/gone routes, got new=%+v gone=%+v", d.NewRoutes, d.GoneRoutes)
+	}
+	for _, c := range d.ServiceCounts {
+		if c.Service == "edge" {
+			t.Fatalf("edge must not appear as a service when the relay is on side A: %+v", d.ServiceCounts)
+		}
+	}
+	bff := serviceCount(t, d.ServiceCounts, "bff")
+	if bff.A != 1 || bff.B != 1 {
+		t.Fatalf("bff count = %+v, want A=1 B=1 (folded via Origin on side A too)", bff)
+	}
+}
+
+func TestARouteOnBothSidesIsNeitherNewNorVanishedRegardlessOfRecurrence(t *testing.T) {
+	a := []trace.Hop{
+		mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "ta2", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(3, "ta3", "client", "bff1", "GET", "/v1/cards", 200),
+	}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+	}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewRoutes) != 0 || len(d.GoneRoutes) != 0 {
+		t.Fatalf("the same route recurring 3x on one side and once on the other is present on both; want no new/gone routes, got new=%+v gone=%+v", d.NewRoutes, d.GoneRoutes)
+	}
+}
+
+// TestANewRouteIsListedOnceRegardlessOfHowManyTimesItRecursOnB is the
+// mutation-killer for routesFromLogicalHops' dedup (MUT-24): unlike the
+// test above (where the recurring route is present on both sides and so
+// membership-check diffing hides a missing dedup either way), a route
+// that recurs on the side where it's genuinely NEW must still be listed
+// exactly once, not once per occurrence.
+func TestANewRouteIsListedOnceRegardlessOfHowManyTimesItRecursOnB(t *testing.T) {
+	a := []trace.Hop{mkHop(1, "ta1", "client", "bff1", "GET", "/v1/cards", 200)}
+	b := []trace.Hop{
+		mkHop(1, "tb1", "client", "bff1", "GET", "/v1/cards", 200),
+		mkHop(2, "tb2", "client", "payments", "GET", "/v1/wallet", 200),
+		mkHop(3, "tb3", "client", "payments", "GET", "/v1/wallet", 200),
+		mkHop(4, "tb4", "client", "payments", "GET", "/v1/wallet", 200),
+	}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewRoutes) != 1 {
+		t.Fatalf("a new route recurring 3x on B must be listed once, not %d times: %+v", len(d.NewRoutes), d.NewRoutes)
+	}
+}
+
+// m3 — countDeviates' boundary: JS uses a strict '>', so a ratio exactly
+// at the tolerance must NOT deviate.
+
+func TestServiceCountDriftExactlyAtToleranceIsNotFlagged(t *testing.T) {
+	a := repeatHops(2, "ta", "client", "svc", "GET", "/x", 200) // |2-4|/4 == 0.5, exactly DefaultCountTolerance
+	b := repeatHops(4, "tb", "client", "svc", "GET", "/x", 200)
+
+	d := DiffHops(a, b, HopOptions{})
+	svc := serviceCount(t, d.ServiceCounts, "svc")
+	if svc.Deviates {
+		t.Fatalf("a ratio exactly at the tolerance must not be flagged (strict '>', not '>='), got %+v", svc)
+	}
+}
+
+// m4 — errorSignatures must treat 4xx as an error signature too, not
+// just 5xx (every other error-signature test in this file uses 500).
+
+func TestErrorSignatureDiffCoversFourXXNotJustFiveXX(t *testing.T) {
+	a := []trace.Hop{}
+	b := []trace.Hop{mkHop(1, "t1", "client", "svc", "GET", "/x", 400)}
+
+	d := DiffHops(a, b, HopOptions{})
+	if len(d.NewErrors) != 1 || d.NewErrors[0].Status != 400 {
+		t.Fatalf("a 4xx must be treated as an error signature too, not just 5xx: %+v", d.NewErrors)
+	}
+}
+
+// m9 — ServiceCounts' sort order, load-bearing for summary.json stability.
+
+func TestServiceCountsAreSortedByServiceName(t *testing.T) {
+	a := []trace.Hop{
+		mkHop(1, "t1", "client", "zeta", "GET", "/z", 200),
+		mkHop(2, "t2", "client", "alpha", "GET", "/a", 200),
+		mkHop(3, "t3", "client", "mid", "GET", "/m", 200),
+	}
+
+	d := DiffHops(a, a, HopOptions{})
+	var names []string
+	for _, c := range d.ServiceCounts {
+		names = append(names, c.Service)
+	}
+	want := []string{"alpha", "mid", "zeta"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("ServiceCounts order = %v, want %v (sorted)", names, want)
+	}
+}
+
+// m2/m8 — the JS source's "empty run on both sides" test, ported as an
+// exact-shape comparison: NewRoutes/GoneRoutes/ServiceCounts must all be
+// non-nil empty slices (marshal as `[]`, not `null`), while
+// NewErrors/GoneErrors/RequiredRouteFailures (all `omitempty`) stay nil.
+
+func TestAnEmptyRunOnBothSidesReportsEmptyEverything(t *testing.T) {
+	got := DiffHops(nil, nil, HopOptions{})
+	want := HopDiff{
+		ServiceCounts:        []ServiceCount{},
+		NewRoutes:            []Route{},
+		GoneRoutes:           []Route{},
+		HopRequireConfigured: false,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DiffHops(nil, nil, HopOptions{}) = %+v, want %+v", got, want)
 	}
 }
 

@@ -100,3 +100,62 @@ func TestMatchURLGlobDoubleStarMatchesZeroSegments(t *testing.T) {
 		t.Fatal("'**' must be able to span zero segments, not just one-or-more")
 	}
 }
+
+// TestIsExcusedRequiresTheStatusToMatchToo pins C2's status-mismatch case:
+// a rule excusing one status must never excuse a different one on the
+// same path, even though the path glob matches.
+func TestIsExcusedRequiresTheStatusToMatchToo(t *testing.T) {
+	hops := []trace.Hop{hop(1, "GET", "/x", 500, "", "")}
+	expected := []config.StatusRule{{Path: "/x", Status: 404}}
+
+	got := FindUnexpectedStatuses(hops, expected)
+	if len(got) != 1 {
+		t.Fatalf("a rule excusing 404 on /x must not excuse a 500 on the same path, got %+v", got)
+	}
+}
+
+// TestUnexpectedStatusFindingPathKeepsTheQueryString pins MUT-46: matching
+// strips the query string, but the finding itself must still report the
+// hop's raw path — a consumer joining a finding against hops.jsonl by
+// path needs the actual request, not a normalized-for-matching one.
+func TestUnexpectedStatusFindingPathKeepsTheQueryString(t *testing.T) {
+	hops := []trace.Hop{hop(1, "GET", "/api/orders?page=2", 500, "", "")}
+
+	got := FindUnexpectedStatuses(hops, nil)
+	if len(got) != 1 || got[0].Path != "/api/orders?page=2" {
+		t.Fatalf("the finding must carry the hop's raw path including its query string, got %+v", got)
+	}
+}
+
+// The remaining tests below exercise the intra-segment '*' matcher (a
+// wildcard that matches PART of a segment, not a whole one) — every glob
+// test above uses a whole-segment '*'/'**' or a pure literal, which hits
+// urlSegMatches' fast paths and never reaches the multi-chunk matching
+// logic at all.
+
+func TestMatchURLGlobPartialSegmentWildcard(t *testing.T) {
+	if !MatchURLGlob("/api/card-*", "/api/card-abc123") {
+		t.Fatal("a trailing partial-segment '*' must match the rest of the segment")
+	}
+	if MatchURLGlob("/api/card-*", "/api/xcard-abc") {
+		t.Fatal("the literal prefix before '*' must actually prefix the segment, not just appear within it")
+	}
+}
+
+func TestMatchURLGlobLiteralSegmentIsNotAPrefixMatch(t *testing.T) {
+	// pattern shorter than the path segment, so a HasPrefix(seg, pattern)
+	// bug (the seg contains the pattern as a prefix) would wrongly match
+	// where a reversed-length comparison would not have caught it.
+	if MatchURLGlob("/api/card", "/api/cards") {
+		t.Fatal("a pure-literal pattern segment must match exactly, not as a prefix of the path segment")
+	}
+}
+
+func TestMatchURLGlobMultiChunkWildcardSegment(t *testing.T) {
+	if !MatchURLGlob("/api/*-suffix", "/api/prefix-suffix") {
+		t.Fatal("a pattern with a literal suffix after '*' must match a segment ending in that suffix")
+	}
+	if MatchURLGlob("/api/*-suffix", "/api/prefix-suffixX") {
+		t.Fatal("the literal suffix after '*' must actually end the segment, not just appear before the end")
+	}
+}

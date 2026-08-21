@@ -1,0 +1,32 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "retrace literal-vs-template priority fixture", "version": "1.0.0" },
+  "paths": {
+    "/things/42": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "required": ["literalField"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/things/{id}": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "required": ["templateField"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

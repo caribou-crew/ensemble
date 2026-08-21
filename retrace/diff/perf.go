@@ -33,14 +33,26 @@ type PerfBudget struct {
 // caller passes zero.
 const defaultPerfMarginFactor = 1.5
 
-// TotalCallDurationMs sums hop.T.DoneMs across hops. A sum, not a median
-// or a max: a run with more calls genuinely did more backend work end to
-// end, and that additional work is exactly what a perf budget exists to
-// catch.
+// TotalCallDurationMs sums the folded logical calls' outer-leg DoneMs. A
+// sum, not a median or a max: a run with more calls genuinely did more
+// backend work end to end, and that additional work is exactly what a
+// perf budget exists to catch.
+//
+// Folding is not optional here, unlike DiffHops' NoCollapse: core/trace's
+// own collapse code documents that a relay's OUTER leg's wall clock
+// already CONTAINS the inner one (collapse.go's MergeForDetail:
+// "out.T.DoneMs = l.Hop.T.DoneMs // the outer leg's wall clock contains
+// the inner"). Summing raw, unfolded legs therefore double-counts every
+// relayed call — measured, the same one logical call totals 100ms direct
+// versus 205ms through one relay — which would trip a budget on nothing
+// but the run's own topology. trace.CollapseRelays is the identity on a
+// run with no relays, so folding is universally safe; there is no
+// legitimate case for summing raw legs, so unlike DiffHops there is no
+// knob to turn it off.
 func TotalCallDurationMs(hops []trace.Hop) float64 {
 	var total float64
-	for _, h := range hops {
-		total += h.T.DoneMs
+	for _, lh := range trace.CollapseRelays(hops, true) {
+		total += lh.Hop.T.DoneMs
 	}
 	return total
 }

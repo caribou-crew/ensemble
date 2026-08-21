@@ -117,6 +117,70 @@ func TestAnUnsetBudgetReportsUnsetNotOk(t *testing.T) {
 	}
 }
 
+// TestTotalCallDurationMsFoldsRelaysSoTheOuterLegIsNotDoubleCounted pins
+// I1: core/trace's collapse code documents that a relay's outer leg's
+// wall clock already CONTAINS the inner leg's (MergeForDetail: "the
+// outer leg's wall clock contains the inner"). Summing every raw hop's
+// DoneMs therefore double-counts every relayed call. Two topologies
+// representing the SAME one logical call — one direct, one through a
+// transparent relay — must fold to the same total.
+func TestTotalCallDurationMsFoldsRelaysSoTheOuterLegIsNotDoubleCounted(t *testing.T) {
+	direct := []trace.Hop{
+		{Seq: 1, TraceID: "t1", From: "client", To: "bff", Method: "GET", Path: "/x", Status: 200, T: trace.Timings{DoneMs: 100}},
+	}
+	relayed := []trace.Hop{
+		// The outer (client->edge) leg's DoneMs already contains the
+		// inner (edge->bff) leg's — per the doc comment above, this is
+		// the SAME logical call as `direct`, just observed through one
+		// relay hop.
+		{Seq: 1, TraceID: "t1", From: "client", To: "edge", Method: "GET", Path: "/x", Status: 200, T: trace.Timings{DoneMs: 100}},
+		{Seq: 2, TraceID: "t1", From: "edge", To: "bff", Method: "GET", Path: "/x", Status: 200, T: trace.Timings{DoneMs: 45}},
+	}
+
+	directTotal := TotalCallDurationMs(direct)
+	relayedTotal := TotalCallDurationMs(relayed)
+	if relayedTotal != directTotal {
+		t.Fatalf("folded totals must match: direct=%v relayed=%v (unfolded, relayed would wrongly be %v)",
+			directTotal, relayedTotal, direct[0].T.DoneMs+relayed[1].T.DoneMs)
+	}
+	if relayedTotal != 100 {
+		t.Fatalf("TotalCallDurationMs(relayed) = %v, want 100 (the outer leg only, not 100+45)", relayedTotal)
+	}
+}
+
+func TestDeriveBudgetNegativeMarginFactorIsNotDefaulted(t *testing.T) {
+	// Only an EXACT zero should default — a negative value must flow
+	// through unchanged (even though it produces a budget CheckPerfBudget
+	// will report as "over" for every run; validating the config value
+	// is a caller concern, not this function's). Mirrors the
+	// zero-vs-negative distinction CountTolerance already pins in hop.go.
+	budget, err := DerivePerfBudget([]float64{100}, -1)
+	if err != nil {
+		t.Fatalf("DerivePerfBudget: %v", err)
+	}
+	if budget.MarginFactor != -1 || budget.BudgetMs != -100 {
+		t.Fatalf("a negative marginFactor must not be defaulted; got %+v", budget)
+	}
+}
+
+func TestDeriveBudgetMedianAveragesTheMiddleTwoOnAnEvenSample(t *testing.T) {
+	budget, err := DerivePerfBudget([]float64{10, 20, 30, 40}, 1)
+	if err != nil {
+		t.Fatalf("DerivePerfBudget: %v", err)
+	}
+	if budget.MeasuredMedianMs != 25 {
+		t.Fatalf("MeasuredMedianMs = %v, want 25 (the average of the middle two, 20 and 30)", budget.MeasuredMedianMs)
+	}
+}
+
+func TestCheckPerfBudgetBoundaryEqualsOk(t *testing.T) {
+	hops := []trace.Hop{hopWithDoneMs(1, 100)}
+	got := CheckPerfBudget(hops, 100)
+	if got.Status != "ok" {
+		t.Fatalf("measured == budget must be ok (over requires strictly exceeding it), got %q", got.Status)
+	}
+}
+
 func TestPerfResultAndPerfBudgetJSONKeysMatchContract(t *testing.T) {
 	assertJSONKeys(t, PerfResult{Status: "ok", MeasuredMs: 1, BudgetMs: 2}, []string{"status", "measuredMs", "budgetMs"})
 	assertJSONKeys(t, PerfBudget{BudgetMs: 1, SampleCount: 1, MeasuredMaxMs: 1, MeasuredMedianMs: 1, MarginFactor: 1},

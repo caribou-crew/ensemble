@@ -2,20 +2,26 @@
 //
 // Scope ruling: this is conformance checking, not validation. No
 // JSON-Schema dependency — CheckOpenAPI parses the spec with
-// encoding/json into generic maps and answers four narrow questions per
+// encoding/json into generic maps and answers five narrow questions per
 // call (unknown path, unknown method, undocumented status, a missing
-// top-level required field on a JSON response). It does not validate
-// types, formats, nested shapes, or anything a real JSON-Schema validator
-// would. $refs are followed one level into #/components/schemas/...;
-// anything deeper is reported as checked-what-we-could — the top-level
-// required list at the one level we resolved — never silently treated as
-// a full pass.
+// top-level required field on a JSON response, or the check being unable
+// to run at all). It does not validate types, formats, nested shapes, or
+// anything a real JSON-Schema validator would. $refs are followed one
+// level into #/components/schemas/...; anything deeper is reported as
+// checked-what-we-could — the top-level required list at the one level
+// we resolved — never silently treated as a full pass. "Never silently
+// treated as a full pass" is enforced by a fifth ConformanceFinding.Kind,
+// "unchecked": an unresolvable $ref, an unparseable body, and a
+// redaction-truncated body (trace.Redactor caps bodies and sets
+// Payload.Truncated) all report it explicitly rather than returning zero
+// findings, which would read identically to "verified clean".
 package diff
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,7 +35,17 @@ type ConformanceFinding struct {
 	Path   string `json:"path"`
 	Status int    `json:"status"`
 	// Kind is "unknown-path" | "unknown-method" | "undocumented-status" |
-	// "missing-required-field".
+	// "missing-required-field" | "unchecked".
+	//
+	// "unchecked" is distinct from a pass: it means the required-field
+	// check genuinely could not run (an unresolvable $ref beyond the one
+	// level this file follows, a response body that fails
+	// json.Unmarshal, or a body trace.Redactor truncated at capture) —
+	// never that it ran and found nothing wrong. An empty finding list
+	// and a list containing only "unchecked" entries both mean "nothing
+	// was reported", but only the first means "everything was verified";
+	// a caller that treats "unchecked" as a pass reintroduces exactly the
+	// silent-success failure this Kind exists to rule out.
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 }
@@ -74,8 +90,22 @@ func CheckOpenAPI(hops []trace.Hop, specPath string) ([]ConformanceFinding, erro
 }
 
 // matchOpenAPIPath finds the paths entry matching urlPath: a literal
-// (exact-string) match wins first, then a templated match where each
-// "{...}" pattern segment matches any one path segment.
+// (exact-string) match wins first, then the most specific templated match
+// — fewest "{...}" segments, i.e. the most literal segments pinned — where
+// each "{...}" pattern segment matches any one path segment.
+//
+// paths is a Go map, so iterating it directly is a genuine bug, not a
+// style nit: whenever two templated patterns of the same segment count
+// both match (e.g. "/users/{id}" and "/{entity}/{id}" both match
+// "/users/42"), Go's randomized map-iteration order would return a
+// different winner — and with it a different operation, responses map,
+// and Detail string — on every run of the same binary against the same
+// input. A CI gate that flips at random on unchanged input is worse than
+// one that is simply wrong: the first flake teaches the team to ignore
+// the plane. Sorting candidates and picking by specificity (ties broken
+// by the sorted key order, itself deterministic) makes the result a pure
+// function of (spec, hop) again, and happens to match OpenAPI's own
+// concrete-before-templated resolution convention.
 func matchOpenAPIPath(paths map[string]any, urlPath string) (pattern string, item map[string]any, ok bool) {
 	bare := stripQueryAndFragment(urlPath)
 
@@ -86,16 +116,29 @@ func matchOpenAPIPath(paths map[string]any, urlPath string) (pattern string, ite
 	}
 
 	segs := splitURLPath(bare)
-	for p, raw := range paths {
-		m, isMap := raw.(map[string]any)
+	keys := make([]string, 0, len(paths))
+	for p := range paths {
+		keys = append(keys, p)
+	}
+	sort.Strings(keys)
+
+	bestSpecificity := -1
+	for _, p := range keys {
+		m, isMap := paths[p].(map[string]any)
 		if !isMap {
 			continue
 		}
-		if templatePathMatch(splitURLPath(p), segs) {
-			return p, m, true
+		pSegs := splitURLPath(p)
+		if !templatePathMatch(pSegs, segs) {
+			continue
+		}
+		spec := countTemplateSegments(pSegs)
+		if bestSpecificity == -1 || spec < bestSpecificity {
+			pattern, item, ok = p, m, true
+			bestSpecificity = spec
 		}
 	}
-	return "", nil, false
+	return pattern, item, ok
 }
 
 func templatePathMatch(pattern, path []string) bool {
@@ -111,6 +154,16 @@ func templatePathMatch(pattern, path []string) bool {
 		}
 	}
 	return true
+}
+
+func countTemplateSegments(segs []string) int {
+	n := 0
+	for _, s := range segs {
+		if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+			n++
+		}
+	}
+	return n
 }
 
 // lookupResponse finds the responses entry for status: exact status code
@@ -134,15 +187,10 @@ func lookupResponse(responses map[string]any, status int) (map[string]any, bool)
 	return nil, false
 }
 
-// resolveSchema follows schema["$ref"] one level into
-// #/components/schemas/<name> when present; otherwise returns schema
-// unchanged. A $ref this doesn't recognize (not a components/schemas
-// reference) resolves to nil — checked-what-we-could, never a pass.
-func resolveSchema(spec *openAPISpec, schema map[string]any) map[string]any {
-	ref, isRef := schema["$ref"].(string)
-	if !isRef {
-		return schema
-	}
+// resolveSchemaRef follows a "$ref" value one level into
+// #/components/schemas/<name>. Returns nil if it can't be followed — a
+// $ref outside that prefix, or a name not present in components.schemas.
+func resolveSchemaRef(spec *openAPISpec, ref string) map[string]any {
 	const prefix = "#/components/schemas/"
 	if !strings.HasPrefix(ref, prefix) {
 		return nil
@@ -156,11 +204,25 @@ func resolveSchema(spec *openAPISpec, schema map[string]any) map[string]any {
 	return resolved
 }
 
+// unchecked builds a single "unchecked" finding: the required-field check
+// could not run, which must never be indistinguishable from it running
+// and finding nothing wrong (see ConformanceFinding.Kind's doc comment).
+func unchecked(h trace.Hop, detail string) []ConformanceFinding {
+	return []ConformanceFinding{{
+		Method: h.Method, Path: h.Path, Status: h.Status,
+		Kind: "unchecked", Detail: detail,
+	}}
+}
+
 // requiredFieldFindings checks a hop's JSON response body against the
 // documented response's inline content["application/json"].schema.required
-// list (following one $ref level). A response with no such schema, or a
-// body that doesn't parse as a JSON object, is checked-what-we-could: no
-// finding either way, since there's nothing to check against.
+// list (following one $ref level). A response with no such schema
+// documented at all is checked-what-we-could with nothing to check
+// against: no finding either way. But once a schema IS documented, every
+// reason the check can't actually run — an unresolvable $ref, a
+// truncated body, a body that fails json.Unmarshal — reports "unchecked"
+// rather than silently returning zero findings, which would be
+// indistinguishable from "checked and clean".
 func requiredFieldFindings(spec *openAPISpec, respItem map[string]any, h trace.Hop) []ConformanceFinding {
 	content, _ := respItem["content"].(map[string]any)
 	if content == nil {
@@ -174,18 +236,37 @@ func requiredFieldFindings(spec *openAPISpec, respItem map[string]any, h trace.H
 	if schemaRaw == nil {
 		return nil
 	}
-	schema := resolveSchema(spec, schemaRaw)
-	if schema == nil {
-		return nil
+
+	schema := schemaRaw
+	if refRaw, isRef := schemaRaw["$ref"]; isRef {
+		ref, isString := refRaw.(string)
+		var resolved map[string]any
+		if isString {
+			resolved = resolveSchemaRef(spec, ref)
+		}
+		// Checked structurally, not just "resolveSchemaRef returned nil":
+		// a resolved schema that STILL carries an unresolved "$ref" (e.g.
+		// a $ref this function fell back to returning unchanged) is just
+		// as unchecked as a nil one — the required list a caller would
+		// read off it doesn't exist either way.
+		if _, stillRef := resolved["$ref"]; resolved == nil || stillRef {
+			return unchecked(h, fmt.Sprintf("$ref %v could not be resolved beyond one level", refRaw))
+		}
+		schema = resolved
 	}
+
 	reqList, _ := schema["required"].([]any)
 	if len(reqList) == 0 {
 		return nil
 	}
 
+	if h.Resp.Truncated {
+		return unchecked(h, "response body was truncated at capture; required-field check skipped")
+	}
+
 	var body map[string]any
 	if err := json.Unmarshal([]byte(h.Resp.Body), &body); err != nil {
-		return nil
+		return unchecked(h, fmt.Sprintf("response body is not valid JSON: %v", err))
 	}
 
 	var out []ConformanceFinding

@@ -45,6 +45,12 @@ type Route struct {
 // could not confirm against side B: either no hop matched Method+Path at
 // all ("missing"), or one did but never with the required Status
 // ("wrong-status", carrying the status that was actually seen).
+//
+// ActualStatus is 0 on a "missing" failure — no hop was ever seen, so
+// there is no status to report. 0 cannot be confused with a real value: no
+// HTTP response ever carries status 0, so a reader never has to guess
+// whether 0 means "the server returned 0" versus "nothing was called";
+// only the latter is possible. Pinned by TestHopRequireMissingRouteIsAFailure.
 type RouteFailure struct {
 	Method         string `json:"method"`
 	Path           string `json:"path"`
@@ -61,6 +67,13 @@ type HopDiff struct {
 	// hops and not the other, excluding any status HopOptions.Expected
 	// excuses — an allowlisted 404 appearing for the first time on side B
 	// is not a regression signal, it is the rule doing its job.
+	//
+	// StatusFinding.Seq inside each entry is NOT run-agnostic: on
+	// NewErrors it indexes a hop in the CANDIDATE run (side b), and on
+	// GoneErrors it indexes a hop in the REFERENCE run (side a) — the
+	// dedup key that produced the entry came from that side's hops, not
+	// the other side's. A consumer joining Seq against hops.jsonl must use
+	// GoneErrors → the reference run's file, NewErrors → the candidate's.
 	NewErrors             []StatusFinding `json:"newErrors,omitempty"`
 	GoneErrors            []StatusFinding `json:"goneErrors,omitempty"`
 	NewRoutes             []Route         `json:"newRoutes"`
@@ -140,7 +153,15 @@ func CollapsedRoutes(hops []trace.Hop, normalize func(string) string) []Route {
 	return routesFromLogicalHops(trace.CollapseRelays(hops, true), normalize)
 }
 
+// diffRoutes always returns non-nil slices — NewRoutes/GoneRoutes carry no
+// `omitempty` (Task 10/15 read them unconditionally), so a nil result would
+// marshal as JSON `null` where every other empty-collection field in this
+// package (built with `make`) marshals as `[]`. `null` and `[]` are the
+// same to Go but not to a TS consumer array method; picking `[]` uniformly
+// means "no routes" never needs a null-check.
 func diffRoutes(a, b []Route) (newRoutes, goneRoutes []Route) {
+	newRoutes = []Route{}
+	goneRoutes = []Route{}
 	inA := map[string]bool{}
 	for _, r := range a {
 		inA[routeKey(r.To, r.Method, r.Path)] = true
