@@ -21,11 +21,13 @@ func TestRunBuildStreamsToLog(t *testing.T) {
 	go func() {
 		done <- runBuild("echo first; sleep 2; echo second", dir, logPath)
 	}()
+	// The header line quotes the command, so look for the echoed lines
+	// themselves (newline-delimited), not the bare words.
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for {
 		b, _ := os.ReadFile(logPath)
-		if strings.Contains(string(b), "first") {
-			if strings.Contains(string(b), "second") {
+		if strings.Contains(string(b), "\nfirst\n") {
+			if strings.Contains(string(b), "\nsecond\n") {
 				t.Fatal("'second' should not have been printed yet")
 			}
 			break
