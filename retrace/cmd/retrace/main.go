@@ -27,7 +27,7 @@ Usage:
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
   retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
-  retrace export --out DIR [--flow NAME] [--app NAME]
+  retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace --version
 
 Exit codes:
@@ -74,6 +74,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRef(args[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(args[1:], stdout, stderr)
+	case "export":
+		return cmdExport(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}
