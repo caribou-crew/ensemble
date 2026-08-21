@@ -1,0 +1,26 @@
+services:
+  edge:
+    dir: ./services/edge
+    run: node server.js
+    port: 8080
+    proxy: 9080
+    health: /healthz
+    entry: true
+    depends_on: [catalog]
+
+  catalog:
+    dir: ./services/catalog
+    run: ./gradlew bootRun
+    port: 8081
+    proxy: 9081
+    health: /actuator/health
+
+stubs:
+  payments:
+    port: 9099
+    routes:
+      - match: { method: POST, path: /charges }
+        respond:
+          status: 201
+          headers: { content-type: application/json }
+          body: '{"id":"ch_1","status":"succeeded"}'

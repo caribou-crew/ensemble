@@ -39,8 +39,16 @@ Requires Go 1.25, and Docker only if your config declares databases.
 ```sh
 git clone https://github.com/caribou-crew/ensemble
 cd ensemble
-go build -o ensemble ./ensemble/cmd/ensemble
+go install ./ensemble/cmd/ensemble   # installs to $(go env GOPATH)/bin
 ```
+
+Make sure `$(go env GOPATH)/bin` is on your `PATH` (add
+`export PATH="$PATH:$(go env GOPATH)/bin"` to your shell rc if `ensemble` isn't
+found after installing). Once it is, `ensemble` runs from anywhere — no need
+to `cd` into the repo or reference a local binary path.
+
+Prefer a local binary instead? `go build -o ensemble ./ensemble/cmd/ensemble`
+works the same way, just scoped to the repo directory (run it as `./ensemble`).
 
 Write an `ensemble.yaml` describing your stack:
 
