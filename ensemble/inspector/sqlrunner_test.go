@@ -186,9 +186,39 @@ func trimAllSlice(ss []string) []string {
 // configured map, without touching the filesystem.
 func TestSQLRunnerRunFileUnknownDatabase(t *testing.T) {
 	r := NewSQLRunner(map[string]config.Database{})
-	err := r.RunFile(context.Background(), "nope", "/does/not/matter.sql")
+	err := r.RunFile(context.Background(), "nope", "", "/does/not/matter.sql")
 	if err == nil {
 		t.Fatal("expected an error for an unconfigured database")
+	}
+}
+
+// Test: withTargetDB overrides the resolved database name in the DSN
+// (POSTGRES_DB / MYSQL_DATABASE) without mutating the config.Database
+// passed in — a plain, no-live-DB check of the shared-container override
+// path RunFile's targetDB relies on.
+func TestWithTargetDBOverridesDatabaseName(t *testing.T) {
+	pg := config.Database{
+		Type: "postgres",
+		Port: 5432,
+		Env:  map[string]string{"POSTGRES_USER": "app", "POSTGRES_DB": "appdb"},
+	}
+	if got := PostgresDSN(withTargetDB(pg, "tenant_b")); !strings.Contains(got, "/tenant_b?") {
+		t.Errorf("PostgresDSN with target db = %q, want it to target /tenant_b", got)
+	}
+	if pg.Env["POSTGRES_DB"] != "appdb" {
+		t.Errorf("withTargetDB mutated the original config.Database's env: %v", pg.Env)
+	}
+
+	my := config.Database{
+		Type: "mysql",
+		Port: 3306,
+		Env:  map[string]string{"MYSQL_USER": "app", "MYSQL_PASSWORD": "x", "MYSQL_DATABASE": "appdb"},
+	}
+	if got := MySQLDSN(withTargetDB(my, "tenant_b")); !strings.Contains(got, "/tenant_b") {
+		t.Errorf("MySQLDSN with target db = %q, want it to target tenant_b", got)
+	}
+	if my.Env["MYSQL_DATABASE"] != "appdb" {
+		t.Errorf("withTargetDB mutated the original config.Database's env: %v", my.Env)
 	}
 }
 
@@ -225,7 +255,7 @@ func TestSQLRunnerRunFilePostgres(t *testing.T) {
 	r := NewSQLRunner(map[string]config.Database{
 		"primary": pgDatabaseFromDSN(t, dsn),
 	})
-	if err := r.RunFile(context.Background(), "primary", path); err != nil {
+	if err := r.RunFile(context.Background(), "primary", "", path); err != nil {
 		t.Fatalf("RunFile: %v", err)
 	}
 
@@ -235,6 +265,59 @@ func TestSQLRunnerRunFilePostgres(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("row count = %d, want 2", count)
+	}
+}
+
+// Test: RunFile's targetDB reaches a second logical database on the same
+// postgres server, distinct from the resource's own configured default —
+// the shared-container pattern the target_db field exists for. Skipped
+// unless ENSEMBLE_TEST_PG_DSN is set.
+func TestSQLRunnerRunFilePostgresTargetDB(t *testing.T) {
+	dsn := os.Getenv("ENSEMBLE_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("ENSEMBLE_TEST_PG_DSN not set; skipping live postgres sqlrunner integration test")
+	}
+
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open verification connection: %v", err)
+	}
+	t.Cleanup(func() { admin.Close() })
+
+	const otherDB = "inspector_sqlrunner_targetdb_test"
+	admin.Exec(`DROP DATABASE IF EXISTS ` + otherDB)
+	if _, err := admin.Exec(`CREATE DATABASE ` + otherDB); err != nil {
+		t.Fatalf("create database %s: %v", otherDB, err)
+	}
+	t.Cleanup(func() { admin.Exec(`DROP DATABASE IF EXISTS ` + otherDB) })
+
+	otherDSN := strings.Replace(dsn, pgDatabaseFromDSN(t, dsn).Env["POSTGRES_DB"], otherDB, 1)
+	other, err := sql.Open("pgx", otherDSN)
+	if err != nil {
+		t.Fatalf("open verification connection to %s: %v", otherDB, err)
+	}
+	t.Cleanup(func() { other.Close() })
+
+	dir := t.TempDir()
+	script := "CREATE TABLE inspector_sqlrunner_targetdb (id int);\nINSERT INTO inspector_sqlrunner_targetdb (id) VALUES (1);\n"
+	path := filepath.Join(dir, "seed.sql")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+
+	r := NewSQLRunner(map[string]config.Database{
+		"primary": pgDatabaseFromDSN(t, dsn),
+	})
+	if err := r.RunFile(context.Background(), "primary", otherDB, path); err != nil {
+		t.Fatalf("RunFile: %v", err)
+	}
+
+	var count int
+	if err := other.QueryRow(`SELECT COUNT(*) FROM inspector_sqlrunner_targetdb`).Scan(&count); err != nil {
+		t.Fatalf("verify count in %s: %v", otherDB, err)
+	}
+	if count != 1 {
+		t.Fatalf("row count in %s = %d, want 1", otherDB, count)
 	}
 }
 
@@ -269,7 +352,7 @@ func TestSQLRunnerRunFileMySQL(t *testing.T) {
 	r := NewSQLRunner(map[string]config.Database{
 		"primary": mysqlDatabaseFromDSN(t, dsn),
 	})
-	if err := r.RunFile(context.Background(), "primary", path); err != nil {
+	if err := r.RunFile(context.Background(), "primary", "", path); err != nil {
 		t.Fatalf("RunFile: %v", err)
 	}
 

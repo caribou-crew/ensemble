@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 
@@ -30,8 +31,11 @@ func NewSQLRunner(databases map[string]config.Database) *SQLRunner {
 // statements against dbName, in order, stopping at the first failing
 // statement. dbName must be a postgres or mysql database (the only types
 // with a SQL execution path); anything else — including an unknown name —
-// is an error.
-func (r *SQLRunner) RunFile(ctx context.Context, dbName, path string) error {
+// is an error. targetDB, if non-empty, names a specific logical database
+// on dbName's server to connect to instead of dbName's own configured
+// default — for a shared postgres/mysql container hosting more than one
+// logical database.
+func (r *SQLRunner) RunFile(ctx context.Context, dbName, targetDB, path string) error {
 	db, ok := r.databases[dbName]
 	if !ok {
 		return fmt.Errorf("inspector: sqlrunner: database %q not configured", dbName)
@@ -42,7 +46,7 @@ func (r *SQLRunner) RunFile(ctx context.Context, dbName, path string) error {
 		return fmt.Errorf("inspector: sqlrunner: read %s: %w", path, err)
 	}
 
-	conn, err := openSQL(db)
+	conn, err := openSQL(db, targetDB)
 	if err != nil {
 		return fmt.Errorf("inspector: sqlrunner: %s: %w", dbName, err)
 	}
@@ -61,8 +65,13 @@ func (r *SQLRunner) RunFile(ctx context.Context, dbName, path string) error {
 }
 
 // openSQL opens a database/sql connection for db, dispatching on its
-// configured Type.
-func openSQL(db config.Database) (*sql.DB, error) {
+// configured Type. targetDB, if non-empty, overrides the specific logical
+// database PostgresDSN/MySQLDSN resolve to (see withTargetDB) — db itself
+// is left untouched.
+func openSQL(db config.Database, targetDB string) (*sql.DB, error) {
+	if targetDB != "" {
+		db = withTargetDB(db, targetDB)
+	}
 	switch db.Type {
 	case "postgres":
 		return sql.Open("pgx", PostgresDSN(db))
@@ -71,6 +80,25 @@ func openSQL(db config.Database) (*sql.DB, error) {
 	default:
 		return nil, fmt.Errorf("no SQL execution path for database type %q", db.Type)
 	}
+}
+
+// withTargetDB returns a copy of db whose env names targetDB as the
+// database to connect to, instead of db's own configured default
+// (POSTGRES_DB / MYSQL_DATABASE) — the override PostgresDSN/MySQLDSN pick
+// up to reach a second logical database on a shared postgres/mysql
+// container. db.Env is copied, not mutated, so the caller's config.Database
+// is unaffected.
+func withTargetDB(db config.Database, targetDB string) config.Database {
+	env := make(map[string]string, len(db.Env)+1)
+	maps.Copy(env, db.Env)
+	switch db.Type {
+	case "postgres":
+		env["POSTGRES_DB"] = targetDB
+	case "mysql":
+		env["MYSQL_DATABASE"] = targetDB
+	}
+	db.Env = env
+	return db
 }
 
 // splitSQLStatements splits a SQL script into individual statements on

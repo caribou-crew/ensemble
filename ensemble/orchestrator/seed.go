@@ -13,11 +13,13 @@ import (
 	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
-// SQLRunner executes one seed SQL file (path) against dbName. Task 2.5
+// SQLRunner executes one seed SQL file (path) against dbName. targetDB
+// optionally names a specific logical database on dbName's server,
+// overriding its own default — empty means use dbName's default. Task 2.5
 // owns the concrete pg/mysql/dynamo drivers; this is the seam Seed calls
 // through, set via Orchestrator.SQLRunner.
 type SQLRunner interface {
-	RunFile(ctx context.Context, dbName, path string) error
+	RunFile(ctx context.Context, dbName, targetDB, path string) error
 }
 
 // SeedStepResult is the outcome of one executed seed step.
@@ -80,7 +82,7 @@ func (o *Orchestrator) runSeedSQL(ctx context.Context, s config.SeedSQL) (SeedSt
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(o.cfg.Dir, path)
 		}
-		err = o.SQLRunner.RunFile(ctx, s.Database, path)
+		err = o.SQLRunner.RunFile(ctx, s.Database, s.TargetDB, path)
 	}
 
 	res.DurationMs = msSince(start)
