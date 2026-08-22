@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -118,6 +119,9 @@ func (c *Config) Validate() error {
 					errs = append(errs, fmt.Errorf("gateway %q: route %d: duplicate prefix %q", name, i, p))
 				}
 				seenPrefix[p] = true
+				if route.Rewrite != "" && route.StripPrefix {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: rewrite and strip_prefix are mutually exclusive", name, i))
+				}
 			default: // route.Regex != ""
 				if route.StripPrefix {
 					errs = append(errs, fmt.Errorf("gateway %q: route %d: strip_prefix is only valid with prefix", name, i))
@@ -138,6 +142,17 @@ func (c *Config) Validate() error {
 				default:
 					errs = append(errs, fmt.Errorf("gateway %q: route %d: references unknown service/stub %q", name, i, route.Service))
 				}
+			}
+		}
+		if gw.CORS != nil {
+			if len(gw.CORS.AllowOrigins) == 0 {
+				errs = append(errs, fmt.Errorf("gateway %q: cors: allow_origins is empty", name))
+			}
+			if gw.CORS.AllowCredentials && slices.Contains(gw.CORS.AllowOrigins, "*") {
+				errs = append(errs, fmt.Errorf("gateway %q: cors: allow_origins must not include \"*\" when allow_credentials is true", name))
+			}
+			if gw.CORS.MaxAgeSeconds < 0 {
+				errs = append(errs, fmt.Errorf("gateway %q: cors: max_age_seconds must be >= 0", name))
 			}
 		}
 	}

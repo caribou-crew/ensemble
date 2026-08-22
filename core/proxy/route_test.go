@@ -92,6 +92,41 @@ func TestResolveRouteRegexDeclarationOrder(t *testing.T) {
 	}
 }
 
+func TestResolveRoutePrefixRewrite(t *testing.T) {
+	target := Target{Name: "gw", Routes: []Route{
+		{Prefix: "/v1/widgets", Upstream: "http://widgets", Rewrite: "/internal/v1/widgets"},
+		{Prefix: "/", Upstream: "http://root", Rewrite: "/api"},
+	}}
+	cases := []struct{ path, forward string }{
+		{"/v1/widgets/123", "/internal/v1/widgets/123"}, // remainder appended
+		{"/v1/widgets", "/internal/v1/widgets"},         // exact match, no remainder
+		{"/anything", "/api/anything"},                  // root prefix + rewrite: leading slash restored
+	}
+	for _, c := range cases {
+		_, fwd, ok := target.resolve(c.path)
+		if !ok {
+			t.Errorf("%s: no route", c.path)
+			continue
+		}
+		if fwd != c.forward {
+			t.Errorf("%s: forward = %q, want %q", c.path, fwd, c.forward)
+		}
+	}
+}
+
+func TestResolveRouteRegexRewrite(t *testing.T) {
+	target := Target{Name: "gw", Routes: []Route{
+		{Regex: regexp.MustCompile(`/legacy-export$`), Upstream: "http://orders", Rewrite: "/internal/v1/export"},
+	}}
+	up, fwd, ok := target.resolve("/v1/reports/legacy-export")
+	if !ok || up != "http://orders" {
+		t.Fatalf("got (%s, %v), want (http://orders, true)", up, ok)
+	}
+	if want := "/v1/reports/internal/v1/export"; fwd != want {
+		t.Errorf("forward = %q, want %q", fwd, want)
+	}
+}
+
 func TestResolveRouteNoCatchAll(t *testing.T) {
 	target := Target{Name: "gw", Routes: []Route{{Prefix: "/cart", Upstream: "http://cart"}}}
 	if _, _, ok := target.resolve("/products"); ok {

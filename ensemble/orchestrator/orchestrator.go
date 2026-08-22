@@ -980,6 +980,7 @@ func (o *Orchestrator) wireGateways() error {
 				Prefix:      r.Prefix,
 				Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
 				StripPrefix: r.StripPrefix,
+				Rewrite:     r.Rewrite,
 			}
 			if r.Regex != "" {
 				// Validate already confirmed this compiles; guard anyway
@@ -992,10 +993,21 @@ func (o *Orchestrator) wireGateways() error {
 			}
 			routes = append(routes, route)
 		}
+		var cors *proxy.CORSPolicy
+		if gw.CORS != nil {
+			cors = &proxy.CORSPolicy{
+				AllowOrigins:     gw.CORS.AllowOrigins,
+				AllowCredentials: gw.CORS.AllowCredentials,
+				AllowMethods:     gw.CORS.AllowMethods,
+				AllowHeaders:     gw.CORS.AllowHeaders,
+				MaxAgeSeconds:    gw.CORS.MaxAgeSeconds,
+			}
+		}
 		if _, err := o.px.Serve(proxy.Target{
 			Name:   name,
 			Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
 			Routes: routes,
+			CORS:   cors,
 		}); err != nil {
 			return fmt.Errorf("orchestrator: gateway %s: wiring: %w", name, err)
 		}

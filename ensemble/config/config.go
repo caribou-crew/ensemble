@@ -223,6 +223,10 @@ type StubRespond struct {
 type Gateway struct {
 	Port   int            `yaml:"port"`
 	Routes []GatewayRoute `yaml:"routes"`
+	// CORS, when set, makes this gateway add cross-origin response
+	// headers and answer preflight OPTIONS requests directly. Absent
+	// (nil) by default — fully backward compatible.
+	CORS *CORSConfig `yaml:"cors"`
 }
 
 // GatewayRoute maps a request to a service or stub, matched by exactly one
@@ -235,12 +239,38 @@ type Gateway struct {
 // implicit anchoring — write ^ / $ yourself (e.g. `\.json$` for a
 // suffix match). Prefix routes are tried first; Regex routes are only
 // considered when no Prefix route matches, in declaration order, first
-// match wins. The forwarded path is never modified for a Regex route.
+// match wins.
+//
+// Rewrite replaces the matched portion of the path instead of just
+// removing it — e.g. a /v1 route forwarded as /internal/v1, not just /.
+// On a Prefix route it replaces the matched prefix (remainder appended)
+// and is mutually exclusive with StripPrefix. On a Regex route it's a
+// regexp.ReplaceAllString template (`$1`, `$2`, ...) applied to the whole
+// path — only the matched substring changes, the rest is untouched; an
+// empty Rewrite leaves a Regex route's path unmodified, as before.
 type GatewayRoute struct {
 	Prefix      string `yaml:"prefix"`
 	Regex       string `yaml:"regex"`
 	Service     string `yaml:"service"`
 	StripPrefix bool   `yaml:"strip_prefix"`
+	Rewrite     string `yaml:"rewrite"`
+}
+
+// CORSConfig is a gateway's cross-origin resource sharing configuration —
+// see core/proxy.CORSPolicy for the matching/response-header semantics
+// this compiles down to.
+type CORSConfig struct {
+	// AllowOrigins lists the origins allowed to read a response. A single
+	// "*" entry allows any origin, but only when AllowCredentials is
+	// false (validated) — the Fetch spec forbids combining a wildcard
+	// origin with credentials.
+	AllowOrigins     []string `yaml:"allow_origins"`
+	AllowCredentials bool     `yaml:"allow_credentials"`
+	AllowMethods     []string `yaml:"allow_methods"`
+	AllowHeaders     []string `yaml:"allow_headers"`
+	// MaxAgeSeconds, when > 0, sets Access-Control-Max-Age so the
+	// browser caches a preflight result instead of repeating it.
+	MaxAgeSeconds int `yaml:"max_age_seconds"`
 }
 
 // RoutablePort resolves the port a gateway route targeting name forwards

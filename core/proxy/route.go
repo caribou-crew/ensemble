@@ -16,12 +16,22 @@ import (
 // StripPrefix forwards the path with the matched prefix removed (an empty
 // remainder becomes "/"); the query string is always preserved. StripPrefix
 // only applies to Prefix routes — a Regex route always forwards the path
-// unmodified.
+// unmodified unless Rewrite is set.
+//
+// Rewrite replaces the matched portion of the path instead of just
+// stripping it — the piece strip_prefix can't express (e.g. /v1 forwarded
+// as /internal/v1, not just /). On a Prefix route it replaces the matched
+// prefix, remainder appended (mutually exclusive with StripPrefix — set by
+// at most one). On a Regex route it's a regexp.ReplaceAllString template
+// ($1, $2, ...) applied to the whole path, so only the matched substring
+// changes and the rest of the path is untouched; empty Rewrite leaves a
+// Regex route's path unmodified, as before.
 type Route struct {
 	Prefix      string
 	Regex       *regexp.Regexp
 	Upstream    string
 	StripPrefix bool
+	Rewrite     string
 }
 
 // normalizePrefix drops a trailing slash from every prefix but "/".
@@ -66,18 +76,30 @@ func (t Target) resolve(path string) (upstream, forward string, ok bool) {
 	}
 	if best >= 0 {
 		r := t.Routes[best]
-		forward = path
-		if r.StripPrefix {
+		switch {
+		case r.Rewrite != "":
+			remainder := strings.TrimPrefix(path, normalizePrefix(r.Prefix))
+			if remainder != "" && !strings.HasPrefix(remainder, "/") {
+				remainder = "/" + remainder
+			}
+			forward = r.Rewrite + remainder
+		case r.StripPrefix:
 			forward = strings.TrimPrefix(path, normalizePrefix(r.Prefix))
 			if !strings.HasPrefix(forward, "/") {
 				forward = "/" + forward
 			}
+		default:
+			forward = path
 		}
 		return r.Upstream, forward, true
 	}
 	for _, r := range t.Routes {
 		if r.Regex != nil && r.Regex.MatchString(path) {
-			return r.Upstream, path, true
+			forward := path
+			if r.Rewrite != "" {
+				forward = r.Regex.ReplaceAllString(path, r.Rewrite)
+			}
+			return r.Upstream, forward, true
 		}
 	}
 	return "", "", false
