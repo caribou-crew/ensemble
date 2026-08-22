@@ -11,14 +11,16 @@ deps:
 
 ui:
 	pnpm -r build
-	# dist/index.html is a tracked placeholder that this build overwrites in
-	# place (see .gitignore's note on it), which would otherwise make every
-	# build show up as a dirty commit to both `git status` and go build's
-	# VCS stamping (core/buildinfo) — even on an unmodified checkout.
-	# skip-worktree tells git to stop diffing this specific file against
+	# Both dist/index.html placeholders (ensemble's and retrace's) are
+	# tracked, and `pnpm -r build` overwrites both in place (see
+	# .gitignore's note on them), which would otherwise make every build
+	# show up as a dirty commit to both `git status` and go build's VCS
+	# stamping (core/buildinfo) — even on an unmodified checkout.
+	# skip-worktree tells git to stop diffing these specific files against
 	# the index, since the built content is expected to differ locally and
 	# is never meant to be committed.
 	git update-index --skip-worktree ensemble/server/ui/dist/index.html
+	git update-index --skip-worktree retrace/serve/ui/dist/index.html
 
 build: ui
 	go build -o ensemble ./ensemble/cmd/ensemble
@@ -31,4 +33,5 @@ install: ui
 clean:
 	rm -f ensemble retrace
 	git update-index --no-skip-worktree ensemble/server/ui/dist/index.html
-	git checkout -- ensemble/server/ui/dist
+	git update-index --no-skip-worktree retrace/serve/ui/dist/index.html
+	git checkout -- ensemble/server/ui/dist retrace/serve/ui/dist
