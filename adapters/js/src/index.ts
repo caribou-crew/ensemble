@@ -6,13 +6,16 @@ import type { Handshake } from './handshake.js';
 export type { Handshake };
 export { handshake, requireHandshake, MISSING_HANDSHAKE_MESSAGE };
 
-// VALID_NAME mirrors retrace/runs/paths.go:64's validComponent regex
-// verbatim. R-AE (task-17-rulings.md): TypeScript cannot call the Go guard
-// across the process boundary, so this is the deliberate second
-// implementation of that one rule — checkpoint names (retrace-playwright)
-// and group names (here, and retrace-maestro's CLI) both reach the
-// filesystem or a JSON body from adapter code, where runs.ValidateComponents
-// cannot reach. Keep this in sync with paths.go if that regex ever changes.
+// VALID_NAME mirrors the *character-class* half of
+// retrace/runs.ValidateComponents' guard. F-5 (task-17-review.md; corrects
+// R-AE, which cited only the bare regex): the Go guard is the four-part
+// disjunction in ValidateComponents — empty, a leading dot, a "/" or "\\"
+// separator, or a regex mismatch — not the regex alone, and a leading dot
+// ("." | ".." | ".hidden" | "...") passes this regex while
+// ValidateComponents rejects all of it (dotfile/relative-path components are
+// exactly what it exists to keep off the filesystem, since "." and ".."
+// aren't components a real one can equal either). validateName below
+// reproduces the whole guard, not just this piece.
 export const VALID_NAME = /^[A-Za-z0-9._-]+$/;
 
 // validateName REJECTS by throwing, never by skipping. A skipped checkpoint
@@ -21,11 +24,20 @@ export const VALID_NAME = /^[A-Za-z0-9._-]+$/;
 // unconditionally, in both strict and non-strict mode: strict mode governs
 // whether there is a run to write to, not whether the name the caller typed
 // is safe to write.
+//
+// The condition below is the TypeScript reimplementation of
+// retrace/runs.ValidateComponents' full guard (R-AE/F-5: TypeScript cannot
+// call the Go guard across the process boundary, so this is the deliberate
+// second implementation of that one rule — checkpoint names
+// (retrace-playwright) and group names (here, and retrace-maestro's CLI)
+// both reach the filesystem or a JSON body from adapter code, where
+// ValidateComponents cannot reach). Keep all four clauses in sync with
+// ValidateComponents if it ever changes, not just the regex.
 export function validateName(kind: 'checkpoint' | 'group', name: string): void {
-  if (!VALID_NAME.test(name)) {
+  if (name === '' || name.startsWith('.') || /[/\\]/.test(name) || !VALID_NAME.test(name)) {
     throw new Error(
-      `retrace: invalid ${kind} name ${JSON.stringify(name)} — must match ${VALID_NAME} ` +
-        '(see retrace/runs/paths.go validComponent)',
+      `retrace: invalid ${kind} name ${JSON.stringify(name)} — must be non-empty, not start with ` +
+        `"." and match ${VALID_NAME} (see retrace/runs.ValidateComponents)`,
     );
   }
 }
@@ -53,6 +65,16 @@ async function appendGroupRecord(runDir: string, record: GroupRecord): Promise<v
   await fs.appendFile(path.join(runDir, 'groups.jsonl'), JSON.stringify(record) + '\n', 'utf8');
 }
 
+// joinMarkerPath avoids the `//group` a trailing slash on RETRACE_MARKER_URL
+// would otherwise produce (F-8, task-17-review.md): markers.go registers
+// bare paths, so a subtree redirect never silently drops the POST body, and
+// `//group` is not a bare path the mux matches. Mirrors
+// retrace-maestro/bin/retrace-maestro.mjs's joinMarkerPath — keep the two in
+// sync if this ever changes.
+function joinMarkerPath(markerUrl: string, urlPath: string): string {
+  return markerUrl.replace(/\/+$/, '') + urlPath;
+}
+
 // postMarker is the HTTP fallback (NewMarkerDoor in retrace/capture/markers.go).
 // R-AF (task-17-rulings.md): `fetch` does not throw on a non-2xx response, so
 // response.ok is checked explicitly — an adapter that ignored the status
@@ -63,7 +85,7 @@ async function appendGroupRecord(runDir: string, record: GroupRecord): Promise<v
 // RETRACE_MARKER_URL is set there IS a run, and a failure to record is a
 // failure.
 async function postMarker(markerUrl: string, urlPath: string, body: unknown): Promise<void> {
-  const res = await fetch(markerUrl + urlPath, {
+  const res = await fetch(joinMarkerPath(markerUrl, urlPath), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),

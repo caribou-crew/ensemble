@@ -45,9 +45,10 @@ requireHandshake(); // throws MISSING_HANDSHAKE_MESSAGE if RETRACE_STRICT=1
   write to.
 - `group(name, options?)` / `endGroup()` — append a flow-part marker, to
   `groups.jsonl` in `RETRACE_RUN_DIR` when set, else POSTed to
-  `RETRACE_MARKER_URL`. `name` must match `^[A-Za-z0-9._-]+$` (mirrors
-  `retrace/runs/paths.go`'s path-component guard) — a name outside that set
-  throws rather than silently writing nowhere.
+  `RETRACE_MARKER_URL`. `name` must be non-empty, not start with `.`, and
+  match `^[A-Za-z0-9._-]+$` — this reproduces the full guard
+  `retrace/runs.ValidateComponents` enforces, not just its regex — a name
+  failing any of those clauses throws rather than silently writing nowhere.
 - `shotsDir(env?)` — the directory checkpoints belong in
   (`RETRACE_RUN_DIR/shots`), or `null` outside a run. Used by
   `@caribou-crew/retrace-playwright`.

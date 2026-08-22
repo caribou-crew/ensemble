@@ -39,6 +39,8 @@ to make a missing handshake fail loudly instead — including when a
 checkpoint has nowhere to write because only `RETRACE_MARKER_URL` (no
 filesystem) is available, since screenshots are file-only.
 
-`checkpoint`/`group` names must match `^[A-Za-z0-9._-]+$` — the same rule
-`retrace/runs/paths.go` enforces for on-disk path components — and throw
-rather than silently skip a screenshot when violated.
+`checkpoint`/`group` names must be non-empty, not start with `.`, and match
+`^[A-Za-z0-9._-]+$` — reproducing the full guard
+`retrace/runs.ValidateComponents` enforces for on-disk path components, not
+just its regex — and throw rather than silently skip a screenshot when
+violated.

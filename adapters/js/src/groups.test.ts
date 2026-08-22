@@ -74,22 +74,51 @@ describe('group / endGroup — file path (RETRACE_RUN_DIR)', () => {
 
   it('appends an end record carrying no name', async () => {
     await setup();
+    const before = Date.now();
     await endGroup();
+    const after = Date.now();
 
     const lines = await readLines(path.join(runDir, 'groups.jsonl'));
     expect(lines).toHaveLength(1);
-    expect(lines[0].phase).toBe('end');
+    const rec = lines[0];
+    expect(rec.phase).toBe('end');
     // The writer is stateless — a fresh process cannot know what is open —
     // so an end record must not carry a name at all, not merely a falsy
     // one: DeriveGroups ignores a name on "end" anyway, so emitting one
     // would be a lie the Go reader cannot catch.
-    expect(lines[0]).not.toHaveProperty('name');
+    expect(rec).not.toHaveProperty('name');
+
+    // F-3 (task-17-review.md): the start-record test pins `ts`'s shape;
+    // this one did not, and a bad `end.ts` is the harder-to-see half of
+    // R-AC — DeriveGroups' closeAt(finishedAt) fallback means the group
+    // still closes at *some* time, so only checking bounds against the
+    // RUN's window (as Step 5 must, since there is no other window to
+    // check here) can miss it; checking the encoding itself cannot.
+    expect(typeof rec.ts).toBe('string');
+    expect(rec.ts as string).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    const parsed = Date.parse(rec.ts as string);
+    expect(parsed).toBeGreaterThanOrEqual(before);
+    expect(parsed).toBeLessThanOrEqual(after);
   });
 
   it('rejects a group name that is not a safe path component', async () => {
     await setup();
     await expect(group('cart/item')).rejects.toThrow(/invalid group name/);
     await expect(group('')).rejects.toThrow(/invalid group name/);
+    await expect(fs.stat(path.join(runDir, 'groups.jsonl'))).rejects.toThrow();
+  });
+
+  // F-5 (task-17-review.md): these four all satisfy VALID_NAME's bare
+  // character class — '.', '..', and '.hidden'/'...' contain nothing outside
+  // [A-Za-z0-9._-] — so a validateName that only re-tested the regex (the
+  // old, R-AE-described behavior) would accept every one of them. Go's
+  // runs.ValidateComponents rejects all four via its leading-dot clause, and
+  // this adapter now reproduces that clause, so it must too.
+  it('rejects a leading-dot group name, matching runs.ValidateComponents', async () => {
+    await setup();
+    for (const name of ['.', '..', '.hidden', '...']) {
+      await expect(group(name), `group(${JSON.stringify(name)})`).rejects.toThrow(/invalid group name/);
+    }
     await expect(fs.stat(path.join(runDir, 'groups.jsonl'))).rejects.toThrow();
   });
 });
@@ -146,6 +175,35 @@ describe('group / endGroup — HTTP fallback (RETRACE_MARKER_URL)', () => {
     await expect(group('checkout')).rejects.toThrow(/400/);
     await expect(group('checkout')).rejects.toThrow(/non-empty name/);
     server.close();
+  });
+
+  // F-8 (task-17-review.md): a trailing slash on RETRACE_MARKER_URL is a
+  // realistic misconfiguration (many env-var conventions include one), and
+  // naive `markerUrl + urlPath` concatenation turns it into `//group` —
+  // markers.go registers bare paths, so that is not a path its mux matches.
+  it('POSTs to the right path even when RETRACE_MARKER_URL has a trailing slash', async () => {
+    const requests: { path: string; body: string }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        requests.push({ path: req.url ?? '', body });
+        res.writeHead(204);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (addr === null || typeof addr === 'string') throw new Error('unexpected server address');
+
+    saved = clearHandshakeEnv();
+    process.env.RETRACE_MARKER_URL = `http://127.0.0.1:${addr.port}/`;
+
+    await group('checkout');
+    server.close();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].path).toBe('/group');
   });
 
   it('throws on a network failure (the door is not listening)', async () => {
