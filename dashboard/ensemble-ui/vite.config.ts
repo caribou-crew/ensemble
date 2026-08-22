@@ -7,6 +7,9 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'happy-dom',
+    // See testSetup.ts — a suite-wide guard against a test file quietly reaching a real
+    // socket instead of mocking the api.* call that would use one (F.18).
+    setupFiles: ['./src/testSetup.ts'],
   },
   build: {
     // ensemble/server embeds this directory verbatim via go:embed — see
