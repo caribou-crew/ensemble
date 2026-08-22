@@ -1020,9 +1020,40 @@ func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config
 	o.setState(name, func(s *ServiceState) { s.Placement = "docker" })
 	o.setStatus(name, StatusStarting, "")
 
-	if err := dockerRunDatabase(name, db); err != nil {
+	// Three states, one convergence point. A database container is the one
+	// thing in a stack that is expensive to recreate and usually wanted
+	// intact: postgres and localstack are slow to start, and their whole
+	// value between runs is the data already in them. So an existing
+	// ensemble-<name> container is adopted rather than treated as an
+	// obstacle — `up` after `up` is a normal thing to do.
+	//
+	// Only OUR OWN containers are ever touched. dockerContainerName scopes
+	// every lookup here to the "ensemble-" prefix, so a developer's own
+	// container of the same nominal service is never adopted, started, or
+	// otherwise interfered with; it surfaces as a port conflict in preflight,
+	// which is the correct outcome for something ensemble does not own.
+	exists, running, err := dockerContainerState(ctx, name)
+	if err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: %w", name, err)
+	}
+	switch {
+	case !exists:
+		if err := dockerRunDatabase(name, db); err != nil {
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
+	case running:
+		// Already up: nothing to do but verify it, which the health gate
+		// below does anyway. Logged because "ensemble didn't start this"
+		// is exactly the thing someone debugging stale data needs to know.
+		o.logf("orchestrator: database %s: reusing running container %s", name, dockerContainerName(name))
+	default:
+		o.logf("orchestrator: database %s: starting existing container %s", name, dockerContainerName(name))
+		if err := dockerStart(ctx, name); err != nil {
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
 	}
 	o.mu.Lock()
 	o.dockerNodes[name] = true

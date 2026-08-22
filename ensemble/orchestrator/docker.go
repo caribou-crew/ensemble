@@ -121,6 +121,96 @@ func dockerRemove(name string) error {
 	return nil
 }
 
+// dockerWaitDelay is how long a ctx-cancelled docker command gets to die
+// before its output pipes are closed out from under it. Long enough that a
+// command finishing normally right at the deadline is never truncated, short
+// enough that `ensemble up` still gives up promptly.
+const dockerWaitDelay = 2 * time.Second
+
+// dockerOutput runs a docker command bounded by ctx and returns its combined
+// output.
+//
+// The WaitDelay is what makes the bound real, and it is not optional:
+// CommandContext kills the process when ctx expires, but CombinedOutput does
+// not return until every writer to the output pipe is gone. A killed process
+// that left a child holding that pipe blocks the read forever — so the call
+// outlives its own deadline and the context bounds nothing. WaitDelay closes
+// the pipes shortly after the kill, which is what turns "bounded by ctx" from
+// a claim into a guarantee. Proven by TestDockerContainerStateIsBoundedByContext,
+// which fails without it.
+func dockerOutput(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.WaitDelay = dockerWaitDelay
+	return cmd.CombinedOutput()
+}
+
+// dockerContainerState reports whether name's container exists at all, and if
+// so whether it is running. It is the input to startDatabase's three-way
+// choice: create, adopt, or restart.
+//
+// "Doesn't exist" is a normal answer, not an error — docker signals it by
+// failing `inspect` with "No such object", which is indistinguishable from a
+// real failure by exit status alone, so the message is what separates them.
+// Anything else (daemon unreachable, permission denied) is returned as an
+// error rather than quietly reported as absent: treating a broken daemon as
+// "no container here" would send the caller into `docker run` and turn a
+// clear infrastructure problem into a confusing create failure.
+//
+// The command is bound to ctx. A wedged daemon does not fail `inspect`, it
+// blocks — and this runs inside `ensemble up`, the command a developer runs
+// most, so an unbounded call here would hang the tool outright instead of
+// reporting anything. (Same defect the docker-gated tests' own skip-guard
+// had; see requireDockerIntegration.)
+func dockerContainerState(ctx context.Context, name string) (exists, running bool, err error) {
+	cn := dockerContainerName(name)
+	out, err := dockerOutput(ctx, "inspect", "-f", "{{.State.Running}}", cn)
+	if err != nil {
+		if isNoSuchContainer(string(out)) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("docker inspect %s: %w: %s", cn, err, strings.TrimSpace(string(out)))
+	}
+	return true, strings.TrimSpace(string(out)) == "true", nil
+}
+
+// isNoSuchContainer matches docker's "container is not there" wording. Both
+// spellings are checked because the message has differed across docker
+// versions and podman prints its own; matching case-insensitively on the
+// stable part keeps a version bump from turning "absent" into a hard error.
+func isNoSuchContainer(out string) bool {
+	l := strings.ToLower(out)
+	return strings.Contains(l, "no such object") || strings.Contains(l, "no such container")
+}
+
+// dockerStart restarts an existing, stopped container in place, keeping the
+// volumes and data it already has — which is the entire reason to prefer this
+// over remove-and-recreate for a database.
+func dockerStart(ctx context.Context, name string) error {
+	cn := dockerContainerName(name)
+	out, err := dockerOutput(ctx, "start", cn)
+	if err != nil {
+		return fmt.Errorf("docker start %s: %w: %s", cn, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// DatabaseContainerRunning reports whether the container ensemble manages for
+// database name exists and is currently running — that is, whether Up would
+// adopt it rather than create one.
+//
+// It is exported for the CLI's preflight port check, which runs before the
+// orchestrator and would otherwise refuse to start on the very port the
+// adopted container is holding. A daemon that cannot answer is not an
+// adoptable container, so callers treat an error as "no" and fall back to
+// their normal conflict handling; the error is returned for diagnostics only.
+func DatabaseContainerRunning(ctx context.Context, name string) (bool, error) {
+	exists, running, err := dockerContainerState(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return exists && running, nil
+}
+
 // dockerRunning reports whether name's container is currently running.
 func dockerRunning(name string) (bool, error) {
 	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", dockerContainerName(name)).Output()
