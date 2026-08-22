@@ -4,8 +4,9 @@
 // ServicePanel already covers this per-node in a graph context; this view
 // is the "just show me the list" counterpart the graph doesn't serve well
 // once a stack has more than a handful of services.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
+import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import type { ServiceState, Topology } from '../api/types';
 import InlineError from '../components/InlineError';
@@ -49,44 +50,44 @@ function formatUptime(startedAt: string | undefined): string {
   return `${d}d ${h % 24}h`;
 }
 
-/** Same generation-counter pattern as TopologyView's useTopologyPoll: refresh() runs both from
-    the poll interval and out-of-band after a mutation, so an older in-flight call resolving
-    after a newer one must not clobber it. */
-function useServicesPoll() {
-  const [services, setServices] = useState<ServiceState[] | null>(null);
-  const [topology, setTopology] = useState<Topology | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const generationRef = useRef(0);
+interface ServicesSnapshot {
+  services: ServiceState[];
+  topology: Topology;
+}
 
-  const refresh = useCallback(async () => {
-    const generation = ++generationRef.current;
-    try {
-      const [s, t] = await Promise.all([api.status(true), api.topology()]);
-      if (generation !== generationRef.current) return;
-      setServices(s);
-      setTopology(t);
-      setError(null);
-    } catch (err) {
-      if (generation !== generationRef.current) return;
-      setError(messageOf(err, 'failed to reach the ensemble API'));
-    }
-  }, []);
+/** refresh() runs both from the poll interval and out-of-band after a row mutation, so an
+    older in-flight call resolving after a newer one must not clobber it — that generation
+    guard is now useAsync's (keyed on `tick`), not a hand-rolled ref. `snapshot` exists only to
+    keep the table on screen between polls: useAsync clears its data the instant `tick`
+    changes (by design — see its own doc comment), which is right for "a different resource"
+    but would otherwise flash the whole table back to a loading spinner every 5s. */
+function useServicesPoll() {
+  const [tick, setTick] = useState(0);
+  const { data, error } = useAsync<ServicesSnapshot>(async () => {
+    const [s, t] = await Promise.all([api.status(true), api.topology()]);
+    return { services: s, topology: t };
+  }, [tick]);
+
+  const [snapshot, setSnapshot] = useState<ServicesSnapshot | null>(null);
+  useEffect(() => {
+    if (data !== null) setSnapshot(data);
+  }, [data]);
 
   useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (!cancelled) void refresh();
-    };
-    tick();
-    const id = window.setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      generationRef.current++;
-    };
-  }, [refresh]);
+    const id = window.setInterval(() => setTick((t) => t + 1), POLL_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
-  return { services, topology, error, refresh };
+  const refresh = useCallback(async () => {
+    setTick((t) => t + 1);
+  }, []);
+
+  return {
+    services: snapshot?.services ?? null,
+    topology: snapshot?.topology ?? null,
+    error: error?.message ?? null,
+    refresh,
+  };
 }
 
 type Action = 'start' | 'restart' | 'stop' | 'flip' | 'variant';
