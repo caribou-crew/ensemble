@@ -57,7 +57,7 @@ function useProfiles(refreshTopology: () => Promise<void>) {
   // calls could be in flight with no ordering guarantee and no generation guard — the
   // exact I3 race class this task exists to eliminate, alive four lines from the code
   // migrated to remove it. R-AI ruled this hook out of the original migration set because
-  // it had no `let cancelled` to match on; that was correct on its own terms, but it also
+  // it had no hand-rolled cancellation flag to match on; that was correct on its own terms, but it also
   // meant the migration's completion gate certified this file clean while the bug class
   // was still live in it. `toggle()` now reloads through the same hook instead of writing
   // its own response, so there is only ever one writer, generation-guarded like every
