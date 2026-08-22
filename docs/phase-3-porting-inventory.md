@@ -40,3 +40,9 @@ TrafficTab.tsx inline — src/trace/ alone is NOT the complete trace unit.
 - Old app had product-specific tabs (cards/users/balances/bff1) — those map
   to the GENERIC `entities:` config pages in the new design, not ports.
 - Zero TODO/FIXME in old code; comments explain why — good porting docs.
+- The old app's useState/useEffect + `let cancelled` fetch idiom (above) was
+  itself the source of three race bugs once ported into `ensemble-ui`. Phase
+  4 replaced every hand-rolled copy across both dashboard apps with the
+  shared `@ensemble/design-system/useAsync` hook (Task 14, consumed by
+  Tasks 15 and 18) — a future reader of this inventory should reach for that
+  hook rather than reintroduce the old prototype's fetch-on-mount pattern.
