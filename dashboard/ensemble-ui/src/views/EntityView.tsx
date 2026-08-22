@@ -155,6 +155,31 @@ function EntityDetail({
   // next time [name, id] changes — bumping `version` instead re-triggers this same load,
   // same pattern as LatencyView's mutations and Task 15's `mutate`. The reload is the
   // source of truth; the PUT's own response is discarded once it has done its job.
+  //
+  // WHAT THAT COSTS, STATED HERE RATHER THAN LEFT TO BE REDISCOVERED (re-review N8).
+  // `useAsync` clears `data` on EVERY deps change, and the render below is a single chained
+  // ternary in which the `loading` branch precedes the record branch — so bumping `version`
+  // replaces the record on screen with a bare `<Spinner/>` for the whole duration of a
+  // refetch of the SAME record. This is the one `useAsync` site in the package that re-fires
+  // for an unchanged resource without keeping its last good value beside it; the four
+  // polling sites (App's health strip, ServicesView, TopologyView's topology and profiles,
+  // InspectorView's rows) each hold a sticky snapshot for exactly that reason (final review
+  // F2). Round 2's enumeration said "no fifth F2 site" — which is true of the ERROR half and
+  // not of the data half, and this is the site the difference lands on.
+  //
+  // Left as it is, on purpose. Those four re-fire unattended on a 5s timer, where a periodic
+  // flash back to a spinner is precisely the defect F2 was raised for. This one fires only
+  // from `save()`, one moment after the user pressed Save, where a brief spinner reads as an
+  // acknowledgement and is arguably better than showing a record already known to be stale.
+  // The error half genuinely is unreachable here, and by construction rather than by luck:
+  // `save()` is reachable only through the editor, the editor is gated on `hasRecord`, and
+  // `hasRecord` requires a load that succeeded — so no `version` bump can clear an error
+  // that is on screen.
+  //
+  // If the spinner is ever judged not worth it, the fix is a keep-previous-data option on
+  // `useAsync` itself, which would delete this clause and all four bespoke sticky-snapshot
+  // wrappers together. A fifth bespoke wrapper here would move the opposite way, so there
+  // deliberately is not one.
   const [version, setVersion] = useState(0);
   const { data, error: loadError, loading } = useAsync(() => api.entityGet(name, id), [name, id, version]);
 
