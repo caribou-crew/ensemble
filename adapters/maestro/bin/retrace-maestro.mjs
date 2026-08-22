@@ -5,17 +5,15 @@
 //       file: node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs
 //       env: { ARGS: "group checkout" }
 //
-// Deliberately plain, unbuilt JavaScript (no tsc pass over THIS file) so a
-// Maestro flow never depends on `pnpm build` having run for this package.
-// Its argv/env → HTTP-POST logic mirrors ../src/index.ts's markerRequest —
-// duplicated by hand, not imported, and kept in sync deliberately; see that
-// file's comment for why.
-//
-// @caribou-crew/retrace-js IS imported here (unlike the markerRequest
-// logic): it is a separate, already-built dependency by the time this
-// package is installed from a registry (its dist/ ships with the published
-// package), so importing it does not reintroduce the "depends on a build
-// having run" problem this file exists to avoid.
+// This IS the single implementation of markerRequest — ../src/index.ts
+// re-exports it (see that file) so the copy the unit tests exercise is the
+// copy Maestro actually runs, rather than a hand-synced duplicate. It stays
+// plain, unbuilt JavaScript (no tsc pass over THIS file) so a Maestro flow
+// never depends on `pnpm build` having run for this package; a hand-written
+// bin/retrace-maestro.d.mts gives ../src/index.ts (and anything else that
+// imports this file) its types.
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { MISSING_HANDSHAKE_MESSAGE, handshake, validateName } from '@caribou-crew/retrace-js';
 
 function parseArgv(argv) {
@@ -30,6 +28,14 @@ function parseArgv(argv) {
   return { end: false, name };
 }
 
+// joinMarkerPath avoids the `//group` a trailing slash on RETRACE_MARKER_URL
+// would otherwise produce (F-8): markers.go registers bare paths so a
+// subtree redirect never silently drops the POST body, and `//group` is not
+// a bare path the mux matches.
+function joinMarkerPath(markerUrl, path) {
+  return markerUrl.replace(/\/+$/, '') + path;
+}
+
 export function markerRequest(argv, env) {
   const parsed = parseArgv(argv);
   if (!parsed.end) validateName('group', parsed.name);
@@ -41,8 +47,8 @@ export function markerRequest(argv, env) {
   }
 
   return parsed.end
-    ? { url: h.markerUrl + '/group/end', body: '{}' }
-    : { url: h.markerUrl + '/group', body: JSON.stringify({ name: parsed.name }) };
+    ? { url: joinMarkerPath(h.markerUrl, '/group/end'), body: '{}' }
+    : { url: joinMarkerPath(h.markerUrl, '/group'), body: JSON.stringify({ name: parsed.name }) };
 }
 
 async function main() {
@@ -66,10 +72,23 @@ async function main() {
   }
 }
 
-// Only run when executed directly (Maestro's runScript, or a manual `node
-// bin/retrace-maestro.mjs`) — never when imported, e.g. by a test that wants
-// markerRequest without the network call.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only run when executed directly, never when merely imported (which is
+// exactly what ../src/index.ts's re-export does, and what
+// src/index.test.ts's `markerRequest` tests rely on — importing this module
+// must not itself POST anything).
+//
+// The comparison is realpath-to-realpath on both sides, not a raw string
+// compare: Node resolves import.meta.url to the entry file's REAL path
+// (dereferencing symlinks), but leaves process.argv[1] exactly as the
+// caller typed it. npm's own "bin" mechanism (this package's package.json)
+// materialises a SYMLINK at node_modules/.bin/retrace-maestro — the path
+// every real installation invokes this file through — so a naive
+// `import.meta.url === pathToFileURL(process.argv[1]).href` still fails on
+// that symlink (verified: it also fails on a plain, non-symlinked /tmp path
+// on macOS, where /tmp itself is a symlink to /private/tmp). realpathSync on
+// process.argv[1] is what makes both sides agree; see Node's own "is this
+// the entry module" ESM recipe. bin.test.ts pins the symlinked case.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
