@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
-import { api } from '../api/client';
+import { api, messageOf } from '../api/client';
 import { subscribeHops } from '../api/sse';
 import type { Hop } from '../api/types';
 import { writeParams } from '../urlState';
@@ -61,7 +61,7 @@ function useHopRing() {
     return unsubscribe;
   }, [initial]);
 
-  return { hops, error: error?.message ?? null, loading };
+  return { hops, error: error ? messageOf(error, 'failed to reach the ensemble API') : null, loading };
 }
 
 export default function TrafficView() {
