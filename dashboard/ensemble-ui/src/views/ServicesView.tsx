@@ -118,7 +118,7 @@ interface ServicesSnapshot {
     but would otherwise flash the whole table back to a loading spinner every 5s. */
 function useServicesPoll() {
   const [tick, setTick] = useState(0);
-  const { data, error } = useAsync<ServicesSnapshot>(async () => {
+  const { data, error, loading } = useAsync<ServicesSnapshot>(async () => {
     const [s, t] = await Promise.all([api.status(true), api.topology()]);
     return { services: s, topology: t };
   }, [tick]);
@@ -154,7 +154,7 @@ function useServicesPoll() {
   // usePendingRefresh for why ALL of them are resolved rather than only the newest
   // (re-review N1).
   const bumpTick = useCallback(() => setTick((t) => t + 1), []);
-  const refresh = usePendingRefresh(data, error, bumpTick);
+  const refresh = usePendingRefresh(loading, bumpTick);
 
   return {
     services: snapshot?.services ?? null,

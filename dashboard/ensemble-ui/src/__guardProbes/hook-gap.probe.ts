@@ -8,7 +8,7 @@ import { attemptConnection } from './attempt';
 // apart, since both are just "an attempt while no test is executing".
 describe('first', () => {
   afterAll(() => {
-    attemptConnection('between afterEach and the next beforeEach');
+    attemptConnection('hook-gap');
   });
 
   it('runs and finishes cleanly', () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PROBE_WINDOWS } from './__guardProbes/attempt';
 
 // Re-review R-AL. testSetup.ts's socket guard has now been wrong twice, and both times the
 // prose above it claimed a property the code did not have. So the three windows it says it
@@ -19,6 +20,22 @@ import { describe, expect, it } from 'vitest';
 // are executed here as a CHILD vitest process through `vitest.guard-probes.config.ts`, which
 // loads the very same `src/testSetup.ts`. The assertion is on the child's result, so this
 // test goes red the moment the guard stops observing any one of the three windows.
+//
+// WHY THE ASSERTIONS LOOK AT THE GUARD'S OWN MESSAGE AND NOT JUST AT "IT FAILED"
+// (re-review N6). The earlier version of this test asserted only: non-zero exit, each probe
+// FILENAME present, and `Test Files  3 failed (3)`. Every one of those is satisfied by any
+// failure for any reason. Proven, not supposed: with `attemptConnection` rewritten to touch
+// no socket at all and throw an unrelated error, the child still reported
+// `Test Files  3 failed (3)` and this suite stayed green — so the mechanism whose entire
+// subject is "a probe that silently no-ops proves nothing" was itself satisfied by three
+// probes that proved nothing. That is the same defect class as F4 and R-AL, recurring inside
+// its own fix for the third time in this task, which is why the check below is on the
+// guard's own words: `real socket connection attempt(s)`, reported against each window's own
+// connect target. A probe that stops touching a socket, or a guard that stops noticing,
+// takes that phrase out of the child's output and this test goes red.
+//
+// (The opposite direction was already safe: a probe that no-ops WITHOUT failing makes the
+// child exit 0, which the status assertion catches.)
 
 // This package has no `@types/node`; route the specifier through a non-literal `string` so
 // TypeScript falls back to `Promise<any>` rather than trying to resolve a Node builtin. Same
@@ -34,10 +51,20 @@ const { spawnSync } = (await import(childProcessModuleName)) as {
 
 const proc = (globalThis as unknown as { process: { cwd(): string } }).process;
 
-const PROBES = ['top-level.probe.ts', 'before-all.probe.ts', 'hook-gap.probe.ts'];
+/** The phrase testSetup.ts's `afterEach` assertion puts in front of a human. */
+const GUARD_REPORT = 'real socket connection attempt';
+
+// filename ↔ the port that file's probe connects to, so a guard report can be attributed to
+// one window rather than to "somewhere in the child run". The ports come from the probes'
+// own table, not a copy of it.
+const PROBES = [
+  { file: 'top-level.probe.ts', window: 'top-level' as const },
+  { file: 'before-all.probe.ts', window: 'before-all' as const },
+  { file: 'hook-gap.probe.ts', window: 'hook-gap' as const },
+];
 
 describe('testSetup socket guard', () => {
-  it('fails a run for an attempt made in any of the three pre-beforeEach windows', () => {
+  it('reports a real socket attempt from each of the three pre-beforeEach windows', () => {
     const run = spawnSync(
       'node_modules/.bin/vitest',
       ['run', '--config', 'vitest.guard-probes.config.ts'],
@@ -50,14 +77,31 @@ describe('testSetup socket guard', () => {
       `the guard probes must FAIL the child run; they did not.\n--- child output ---\n${output}`,
     ).not.toBe(0);
 
-    // Not just "something failed" — every one of the three windows individually.
     for (const probe of PROBES) {
+      // Not just "something failed" — every one of the three windows individually...
       expect(
         output,
-        `${probe} did not fail: the guard no longer reports an attempt from that window.\n` +
-          `--- child output ---\n${output}`,
-      ).toContain(probe);
+        `${probe.file} did not fail: the guard no longer reports an attempt from that ` +
+          `window.\n--- child output ---\n${output}`,
+      ).toContain(probe.file);
+
+      // ...and failed for the RIGHT REASON. One line has to carry both the guard's own
+      // report and this window's own connect target; a file that failed some other way
+      // contributes neither.
+      const port = PROBE_WINDOWS[probe.window];
+      const reported = output
+        .split('\n')
+        .some((line) => line.includes(GUARD_REPORT) && line.includes(`"port":${port}`));
+      expect(
+        reported,
+        `the child failed, but nothing in its output is the socket guard reporting the ` +
+          `${probe.window} window's attempt (expected a line containing ` +
+          `"${GUARD_REPORT}" and "port":${port}). A failure for any other reason means this ` +
+          `test is proving "the probe run broke", not "the guard caught it" — re-review ` +
+          `N6.\n--- child output ---\n${output}`,
+      ).toBe(true);
     }
+
     expect(
       output,
       `expected all ${PROBES.length} probe files to fail.\n--- child output ---\n${output}`,

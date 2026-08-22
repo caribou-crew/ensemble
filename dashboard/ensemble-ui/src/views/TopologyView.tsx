@@ -64,7 +64,7 @@ function useProfiles(refreshTopology: () => Promise<void>) {
   // its own response, so there is only ever one writer, generation-guarded like every
   // other poll+mutation pair in this file.
   const [tick, setTick] = useState(0);
-  const { data, error: loadError } = useAsync(() => api.profiles(), [tick]);
+  const { data, loading } = useAsync(() => api.profiles(), [tick]);
 
   // Sticky snapshot, same shape as useTopologyPoll's `snapshot` above: useAsync clears
   // `data` to null the instant `tick` bumps, which would otherwise drop the lane strip
@@ -82,8 +82,9 @@ function useProfiles(refreshTopology: () => Promise<void>) {
   // the rest of the topology healthy produces no error anywhere in the UI, and nothing
   // here claims otherwise. Left undecorated on purpose rather than repeating the retracted
   // claim that `useTopologyPoll`'s own error "already surfaces" it; a real error path for
-  // this specific case is future work, not implied by this comment. (`loadError` itself is
-  // read below only to know a settled attempt happened, never rendered.)
+  // this specific case is future work, not implied by this comment. (The hook's `error` is
+  // not read here at all; `reload` below waits on `loading`, which reports that the attempt
+  // SETTLED without caring how — see usePendingRefresh, re-review N4.)
 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +98,7 @@ function useProfiles(refreshTopology: () => Promise<void>) {
   // rule are stated once instead of three times (re-review N1), and "unreachable today"
   // is the property that quietly stops being true when someone adds a second caller.
   const bumpTick = useCallback(() => setTick((t) => t + 1), []);
-  const reload = usePendingRefresh(data, loadError, bumpTick);
+  const reload = usePendingRefresh(loading, bumpTick);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 5000);
@@ -179,7 +180,7 @@ interface TopologySnapshot {
     which would otherwise drop the graph back to the loading screen on every 5s poll. */
 function useTopologyPoll() {
   const [tick, setTick] = useState(0);
-  const { data, error } = useAsync<TopologySnapshot>(async () => {
+  const { data, error, loading } = useAsync<TopologySnapshot>(async () => {
     const [t, s, hops] = await Promise.all([
       api.topology(),
       api.status(),
@@ -220,7 +221,7 @@ function useTopologyPoll() {
   // refreshes waiting at once — see usePendingRefresh for why ALL of them are resolved
   // rather than only the newest (re-review N1).
   const bumpTick = useCallback(() => setTick((t) => t + 1), []);
-  const refresh = usePendingRefresh(data, error, bumpTick);
+  const refresh = usePendingRefresh(loading, bumpTick);
 
   return {
     topology: snapshot?.topology ?? null,
