@@ -29,7 +29,9 @@ dist/
 # which line 17 already covers; naming it explicitly would contradict the
 # wholesale rule stated above, so it is not named.
 coverage/
-bin/
+# Root-anchored: a bare `bin/` also matches adapters/maestro/bin/, an npm
+# package's tracked bin directory (Task 17) — not a build-output dir at all.
+/bin/
 
 # `ensemble up`'s own run-time state (hop log, build staleness stamps, pid
 # files) — generated fresh by every run, wherever ensemble.yaml lives.
