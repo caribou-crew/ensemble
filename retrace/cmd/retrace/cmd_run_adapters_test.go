@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -258,5 +259,101 @@ func TestARunWithMarkersAndAScreenshotProducesGroupsAndCheckpoints(t *testing.T)
 	}
 	if trimmedCp.Width == 0 || trimmedCp.Height == 0 {
 		t.Errorf("trimmed checkpoint geometry = %dx%d, want a decoded PNG size", trimmedCp.Width, trimmedCp.Height)
+	}
+}
+
+// TestGroupAndEndGroupPostToTheRealMarkerDoor closes F-7 (task-17-review.md,
+// fix round 1): every other test that exercises @caribou-crew/retrace-js's
+// HTTP fallback (adapters/js/src/groups.test.ts, adapters/maestro's
+// bin.test.ts) points it at a fake `http.createServer` stand-in, never the
+// real capture.NewMarkerDoor — and the Step 5 test above always has
+// RETRACE_RUN_DIR set (capture.Session.Env sets both env vars unconditionally,
+// R-AC), so it always takes the file-write branch and never reaches
+// postMarker either. Nothing in this repo had ever proven that a real
+// built @caribou-crew/retrace-js process and the real Go door handler agree
+// on the wire — this is that proof, with RETRACE_MARKER_URL as the ONLY
+// handshake var, so retrace-js's HTTP-fallback branch is the one under test.
+func TestGroupAndEndGroupPostToTheRealMarkerDoor(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		skipOrFatal(t, "node not on PATH")
+	}
+
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	jsPkgDir := filepath.Join(repoRoot, "adapters", "js")
+	if _, err := os.Stat(jsPkgDir); err != nil {
+		skipOrFatal(t, fmt.Sprintf("adapters/js not present at %s: %v", jsPkgDir, err))
+	}
+	if _, err := exec.LookPath("pnpm"); err != nil {
+		skipOrFatal(t, "pnpm not on PATH")
+	}
+
+	build := exec.Command("pnpm", "--filter", "@caribou-crew/retrace-js", "build")
+	build.Dir = repoRoot
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("pnpm --filter @caribou-crew/retrace-js build: %v\n%s", err, out)
+	}
+	jsDistIndex := filepath.Join(jsPkgDir, "dist", "index.js")
+	if _, err := os.Stat(jsDistIndex); err != nil {
+		t.Fatalf("expected %s to exist after build: %v", jsDistIndex, err)
+	}
+
+	cwd := t.TempDir()
+	runID := runs.NewRunID(time.Now(), "")
+	paths, err := runs.Create(runs.RunsRoot(cwd), "web", "checkout", runID)
+	if err != nil {
+		t.Fatalf("runs.Create: %v", err)
+	}
+
+	before := time.Now()
+	door := httptest.NewServer(capture.NewMarkerDoor(paths, time.Now))
+	defer door.Close()
+
+	const groupName = "checkout-http"
+	scriptPath := filepath.Join(cwd, "marker-door-e2e.mjs")
+	script := fmt.Sprintf(`
+import { group, endGroup } from %q;
+await group(%q, { quiet: true });
+await endGroup();
+`, jsDistIndex, groupName)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+		t.Fatalf("write adapter script: %v", err)
+	}
+
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node vanished after LookPath check: %v", err)
+	}
+	cmd := exec.Command(nodePath, scriptPath)
+	// RETRACE_MARKER_URL only — no RETRACE_RUN_DIR — so retrace-js's group()/
+	// endGroup() cannot take the file-write branch and MUST go through
+	// postMarker to the real door for this to succeed at all.
+	cmd.Env = append(os.Environ(), "RETRACE_MARKER_URL="+door.URL)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node %s: %v\n%s", scriptPath, err, out)
+	}
+	after := time.Now()
+
+	recs, err := runs.ReadGroupRecords(paths)
+	if err != nil {
+		t.Fatalf("ReadGroupRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("group records = %+v, want exactly 2 (start, end)", recs)
+	}
+	start, end := recs[0], recs[1]
+	if start.Phase != "start" || start.Name != groupName || !start.Quiet {
+		t.Errorf("start record = %+v, want phase=start name=%q quiet=true", start, groupName)
+	}
+	if start.TS.Before(before) || start.TS.After(after) {
+		t.Errorf("start.ts = %s, want within [%s, %s]", start.TS, before, after)
+	}
+	if end.Phase != "end" || end.Name != "" {
+		t.Errorf("end record = %+v, want phase=end with no name", end)
+	}
+	if end.TS.Before(start.TS) || end.TS.After(after) {
+		t.Errorf("end.ts = %s, want within [%s, %s]", end.TS, start.TS, after)
 	}
 }
