@@ -71,12 +71,17 @@ sample/clients/web-app/playwright-report/
 # Only the placeholder ensemble/server/ui/dist/index.html is committed — the
 # blanket `dist/` rule above would otherwise swallow it too, so unignore
 # this dist/ specifically and its index.html, then re-ignore the built
-# assets/ subtree. `pnpm -r build` overwrites index.html locally with the
-# real bundle, which must never land in a commit — `git restore
+# assets/ subtree (plus the favicon files Vite copies from ensemble-ui/public/
+# verbatim — those live tracked at their public/ source, not here).
+# `pnpm -r build` overwrites index.html locally with the real bundle, which
+# must never land in a commit — `git restore
 # ensemble/server/ui/dist/index.html` after building, before committing.
 !ensemble/server/ui/dist/
 !ensemble/server/ui/dist/index.html
 ensemble/server/ui/dist/assets/
+ensemble/server/ui/dist/favicon.svg
+ensemble/server/ui/dist/favicon.ico
+ensemble/server/ui/dist/apple-touch-icon.png
 
 # Same hazard as ensemble/server/ui/dist, one binary over: retrace's review
 # UI is embedded via go:embed (retrace/serve/ui/ui.go), only the placeholder
