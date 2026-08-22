@@ -155,6 +155,121 @@ func TestUpWiresGatewayRegex(t *testing.T) {
 	}
 }
 
+// TestUpWiresGatewayRewrite: a prefix route with rewrite replaces the
+// matched prefix (not just strips it), and a regex route with rewrite
+// replaces only the matched substring.
+func TestUpWiresGatewayRewrite(t *testing.T) {
+	widgets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "widgets:"+r.URL.Path)
+	}))
+	defer widgets.Close()
+
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"widgets": {Run: "sleep 30", Port: portOf(t, widgets)},
+		},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Routes: []config.GatewayRoute{
+				{Prefix: "/v1/widgets", Service: "widgets", Rewrite: "/internal/v1/widgets"},
+				{Regex: `/legacy-export$`, Service: "widgets", Rewrite: "/internal/v1/export"},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	get := func(path string) string {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", gwPort, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Sprintf("%d %s", resp.StatusCode, b)
+	}
+	if got := get("/v1/widgets/123"); got != "200 widgets:/internal/v1/widgets/123" {
+		t.Errorf("/v1/widgets/123: %q", got)
+	}
+	if got := get("/v1/reports/legacy-export"); got != "200 widgets:/v1/reports/internal/v1/export" {
+		t.Errorf("/v1/reports/legacy-export: %q", got)
+	}
+}
+
+// TestUpWiresGatewayCORS: the gateway answers a preflight directly and adds
+// CORS headers to a forwarded response, driven end to end through Up.
+func TestUpWiresGatewayCORS(t *testing.T) {
+	var upstreamCalls int
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		fmt.Fprint(w, "ok")
+	}))
+	defer svc.Close()
+
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"svc": {Run: "sleep 30", Port: portOf(t, svc)},
+		},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Routes: []config.GatewayRoute{
+				{Prefix: "/", Service: "svc"},
+			}, CORS: &config.CORSConfig{
+				AllowOrigins: []string{"http://localhost:3000"},
+				AllowMethods: []string{"GET", "PUT"},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	req, _ := http.NewRequest(http.MethodOptions, fmt.Sprintf("http://127.0.0.1:%d/x", gwPort), nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("preflight status = %d, want 204", resp.StatusCode)
+	}
+	if upstreamCalls != 0 {
+		t.Errorf("preflight must not call upstream, got %d calls", upstreamCalls)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/x", gwPort), nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Errorf("Access-Control-Allow-Origin = %q", got)
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("forwarded request must call upstream once, got %d calls", upstreamCalls)
+	}
+}
+
 func TestUpGatewayBindFailureNamesGateway(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

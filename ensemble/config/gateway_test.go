@@ -51,6 +51,34 @@ func TestValidateGatewayRegexClean(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayRewriteClean(t *testing.T) {
+	c := gatewayBase()
+	c.Gateways = map[string]Gateway{
+		"public": {Port: 9000, Routes: []GatewayRoute{
+			{Prefix: "/v1/widgets", Service: "catalog", Rewrite: "/internal/v1/widgets"},
+			{Regex: `/legacy-export$`, Service: "legacy", Rewrite: "/internal/v1/export"},
+			{Prefix: "/", Service: "catalog"},
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateGatewayCORSClean(t *testing.T) {
+	c := gatewayBase()
+	c.Gateways = map[string]Gateway{
+		"public": {Port: 9000, Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}, CORS: &CORSConfig{
+			AllowOrigins:  []string{"http://localhost:3000"},
+			AllowMethods:  []string{"GET", "POST"},
+			MaxAgeSeconds: 600,
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateGatewayAbsentIsNoop(t *testing.T) {
 	if err := gatewayBase().Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -98,6 +126,10 @@ func TestValidateGatewayRejections(t *testing.T) {
 		{"invalid regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.(jpg|png$`, Service: "catalog"}}}, []string{"route 0", "invalid regex"}},
 		{"duplicate regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.json$`, Service: "catalog"}, {Regex: `\.json$`, Service: "legacy"}}}, []string{"route 1", "duplicate regex"}},
 		{"strip_prefix with regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.json$`, Service: "catalog", StripPrefix: true}}}, []string{"route 0", "strip_prefix is only valid with prefix"}},
+		{"rewrite with strip_prefix", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/v1", Service: "catalog", StripPrefix: true, Rewrite: "/api/v1"}}}, []string{"route 0", "rewrite and strip_prefix are mutually exclusive"}},
+		{"cors empty allow_origins", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}, CORS: &CORSConfig{}}, []string{`gateway "public"`, "cors", "allow_origins is empty"}},
+		{"cors wildcard with credentials", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}, CORS: &CORSConfig{AllowOrigins: []string{"*"}, AllowCredentials: true}}, []string{"cors", `must not include "*"`}},
+		{"cors negative max age", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}, CORS: &CORSConfig{AllowOrigins: []string{"*"}, MaxAgeSeconds: -1}}, []string{"cors", "max_age_seconds"}},
 	}
 	for _, tc := range cases {
 		c := gatewayBase()

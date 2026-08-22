@@ -28,6 +28,12 @@ type Target struct {
 	// still recorded as a hop, so a mis-routed client shows up in the
 	// traffic stream rather than vanishing.
 	Routes []Route
+	// CORS, when set, adds cross-origin response headers to every request
+	// through this listener and answers a preflight OPTIONS request
+	// directly (204, no upstream call, not recorded as a hop — it's
+	// synthetic browser traffic, not application traffic). nil disables
+	// CORS entirely; see CORSPolicy.
+	CORS *CORSPolicy
 }
 
 // CaptureLimit caps how much request/response body is *captured* (never how
@@ -155,6 +161,16 @@ func flatHeaders(h http.Header) map[string]string {
 
 func (p *Proxy) handler(t Target) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if t.CORS != nil {
+			if h, ok := t.CORS.headers(r.Header.Get("Origin")); ok {
+				copyHeaders(w.Header(), h)
+				if isPreflight(r) {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
+		}
+
 		start := time.Now()
 
 		// Trace context: parse (or mint), then advance one span for this hop.

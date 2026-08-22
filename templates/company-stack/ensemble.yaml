@@ -34,11 +34,21 @@ stubs:
 # only considered when no prefix matches, so the /images suffix rule below
 # never shadows /products or /pay. Regex is a plain Go regexp with no
 # implicit anchoring — write ^ / $ yourself.
+#
+# rewrite replaces the matched portion instead of just removing it: /v1
+# below forwards to catalog as /api/v1 (strip_prefix could only get you to
+# /, dropping v1 entirely). cors is opt-in per gateway — omit it and a
+# gateway behaves exactly as before (no headers, no preflight handling).
 gateways:
   public:
     port: 9000
+    cors:
+      allow_origins: ["http://localhost:5173"]
+      allow_methods: [GET, POST, PUT, DELETE, OPTIONS]
+      allow_headers: [Content-Type, Authorization]
     routes:
       - { prefix: /products, service: catalog }
       - { prefix: /pay,      service: payments, strip_prefix: true }
+      - { prefix: /v1,       service: catalog, rewrite: /api/v1 }
       - { regex: '\.(jpg|png)$', service: catalog }
       - { prefix: /,         service: edge }
