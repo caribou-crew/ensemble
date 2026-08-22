@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MISSING_HANDSHAKE_MESSAGE } from '@caribou-crew/retrace-js';
 import { markerRequest } from './index.js';
 
 describe('markerRequest', () => {
@@ -16,8 +17,13 @@ describe('markerRequest', () => {
     expect(markerRequest(['group', 'checkout'], {})).toBeNull();
   });
 
+  // F-6 (task-17-review.md): assert against the imported constant itself,
+  // not a loose /no active run/ regex — this enforces the "all three
+  // packages say the same thing" invariant handshake.ts's own comment
+  // claims, catching a local re-derivation that merely happened to still
+  // mention "no active run".
   it('throws the handshake message in strict mode', () => {
-    expect(() => markerRequest(['group', 'checkout'], { RETRACE_STRICT: '1' })).toThrow(/no active run/);
+    expect(() => markerRequest(['group', 'checkout'], { RETRACE_STRICT: '1' })).toThrow(MISSING_HANDSHAKE_MESSAGE);
   });
 
   // R-AE: pin the rejection — a bad group name must never reach the marker
