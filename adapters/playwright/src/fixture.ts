@@ -80,7 +80,13 @@ export async function performCheckpoint(
   }
 }
 
-function createRetraceFixture(page: PageLike): RetraceFixture {
+// Exported (not just used internally by test.extend below) so the package's
+// own tests can exercise the fixture object directly with a fake PageLike —
+// proving `group`/`endGroup` actually delegate to @caribou-crew/retrace-js
+// and that `checkpoint`'s options reach performCheckpoint — without needing
+// a real Playwright browser/page (F-4, task-17-review.md: test.extend's own
+// wiring was previously untested; only performCheckpoint in isolation was).
+export function createRetraceFixture(page: PageLike): RetraceFixture {
   return {
     checkpoint: (name, options) => performCheckpoint(page, name, options),
     group: (name) => jsGroup(name),

@@ -68,6 +68,16 @@ describe('handshake', () => {
     expect(() => requireHandshake({ RETRACE_STRICT: '1' })).toThrow(MISSING_HANDSHAKE_MESSAGE);
   });
 
+  // F-6 (task-17-review.md): the test above compares the thrown message to
+  // the very constant it throws, so it cannot fail no matter what that
+  // constant says — it would still pass if MISSING_HANDSHAKE_MESSAGE lost
+  // the spec's "explaining how to invoke retrace" half entirely. This pins
+  // that half's actual content directly, independent of the constant.
+  it('MISSING_HANDSHAKE_MESSAGE explains how to invoke retrace, per the spec', () => {
+    expect(MISSING_HANDSHAKE_MESSAGE).toMatch(/retrace run --flow <name> -- <your test command>/);
+    expect(MISSING_HANDSHAKE_MESSAGE).toMatch(/unset RETRACE_STRICT/);
+  });
+
   it('does not throw in strict mode when a marker URL alone is present', () => {
     expect(() => requireHandshake({ RETRACE_STRICT: '1', RETRACE_MARKER_URL: 'http://127.0.0.1:1' })).not.toThrow();
   });

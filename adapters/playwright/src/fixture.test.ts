@@ -2,7 +2,8 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { performCheckpoint } from './fixture.js';
+import { MISSING_HANDSHAKE_MESSAGE } from '@caribou-crew/retrace-js';
+import { createRetraceFixture, performCheckpoint } from './fixture.js';
 import type { PageLike, ShotTaker } from './fixture.js';
 
 const ENV_KEYS = ['RETRACE_RUN_DIR', 'RETRACE_PROXY_URL', 'RETRACE_MARKER_URL', 'RETRACE_STRICT'] as const;
@@ -109,10 +110,13 @@ describe('checkpoint', () => {
     expect(called).toBe(false);
   });
 
+  // F-6 (task-17-review.md): assert against the imported constant itself,
+  // not a loose /no active run/ regex — see maestro/src/index.test.ts for
+  // the same fix and rationale.
   it('throws the handshake message in strict mode', async () => {
     saved = clearHandshakeEnv();
     process.env.RETRACE_STRICT = '1';
-    await expect(performCheckpoint(fakePage(), 'cart')).rejects.toThrow(/no active run/);
+    await expect(performCheckpoint(fakePage(), 'cart')).rejects.toThrow(MISSING_HANDSHAKE_MESSAGE);
   });
 
   // R-AE: pin the REJECTION, not just the acceptance — a test that only
@@ -131,6 +135,68 @@ describe('checkpoint', () => {
     saved = clearHandshakeEnv();
     process.env.RETRACE_STRICT = '1';
     process.env.RETRACE_MARKER_URL = 'http://127.0.0.1:1';
-    await expect(performCheckpoint(fakePage(), 'cart')).rejects.toThrow(/no active run/);
+    await expect(performCheckpoint(fakePage(), 'cart')).rejects.toThrow(MISSING_HANDSHAKE_MESSAGE);
+  });
+});
+
+// F-4 (task-17-review.md): the suite above only ever calls performCheckpoint
+// directly — it never proves that createRetraceFixture()/test.extend's own
+// wiring (the object a real test actually receives as `retrace`) delegates
+// correctly. M18 (delegation removed) and M18b (options dropped on the way
+// to performCheckpoint) would both survive every test above unnoticed.
+describe('createRetraceFixture', () => {
+  let saved: Record<string, string | undefined>;
+  let runDir: string;
+
+  afterEach(async () => {
+    restoreEnv(saved);
+    if (runDir) await fs.rm(runDir, { recursive: true, force: true });
+  });
+
+  async function withRun(): Promise<string> {
+    saved = clearHandshakeEnv();
+    runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-pw-fixture-'));
+    process.env.RETRACE_RUN_DIR = runDir;
+    return runDir;
+  }
+
+  async function readGroupLines(): Promise<Record<string, unknown>[]> {
+    const raw = await fs.readFile(path.join(runDir, 'groups.jsonl'), 'utf8');
+    return raw
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+  }
+
+  // M18: fixture.group/endGroup must actually reach
+  // @caribou-crew/retrace-js's group()/endGroup() — proven here the same way
+  // adapters/js/src/groups.test.ts proves it, by reading the real
+  // groups.jsonl the delegation is supposed to produce, not by asserting the
+  // fixture object merely has functions of the right names.
+  it('fixture.group/endGroup delegate to @caribou-crew/retrace-js, writing real group records', async () => {
+    await withRun();
+    const fixture = createRetraceFixture(fakePage());
+    await fixture.group('checkout-part');
+    await fixture.endGroup();
+
+    const lines = await readGroupLines();
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ phase: 'start', name: 'checkout-part' });
+    expect(lines[1]).toMatchObject({ phase: 'end' });
+    expect(lines[1]).not.toHaveProperty('name');
+  });
+
+  // M18b: fixture.checkpoint's `options` (selector, trim) must reach
+  // performCheckpoint unchanged, not get dropped on the way through the
+  // fixture wrapper.
+  it("fixture.checkpoint passes selector and trim through to performCheckpoint", async () => {
+    await withRun();
+    const fixture = createRetraceFixture(fakePage());
+    await fixture.checkpoint('cart', { selector: '#cart', trim: true });
+
+    const shot = await fs.readFile(path.join(runDir, 'shots', 'cart.png'));
+    expect(shot).toEqual(SELECTOR_PNG_BYTES); // proves `selector` reached performCheckpoint
+    const marker = await fs.readFile(path.join(runDir, 'shots', 'cart.trim'), 'utf8');
+    expect(marker).toBe(''); // proves `trim: true` reached performCheckpoint
   });
 });
