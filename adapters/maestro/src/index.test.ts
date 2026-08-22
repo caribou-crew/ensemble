@@ -49,4 +49,21 @@ describe('markerRequest', () => {
   it('rejects "group" with neither a name nor --end', () => {
     expect(() => markerRequest(['group'], {})).toThrow(/requires a name/);
   });
+
+  // F-6 (task-17-review.md, original numbering): argv[0..] varies by
+  // invocation form — main() splits Maestro's `ARGS: "group add to cart"`
+  // on whitespace into ['group', 'add', 'to', 'cart'], while direct
+  // invocation with a quoted argument (`group "add to cart"`) yields
+  // ['group', 'add to cart']. Both MUST produce the identical outcome:
+  // parseArgv previously joined only nothing (bare argv[1]), so the first
+  // form silently became name="add" while the second correctly threw. Both
+  // must now throw, naming the FULL string the author wrote, not a
+  // fragment of it.
+  it('treats the whitespace-split and single-quoted-argument forms of a multi-word name identically', () => {
+    const env = { RETRACE_MARKER_URL: 'http://127.0.0.1:9999' };
+    expect(() => markerRequest(['group', 'add', 'to', 'cart'], env)).toThrow(/invalid group name/);
+    expect(() => markerRequest(['group', 'add', 'to', 'cart'], env)).toThrow(/"add to cart"/);
+    expect(() => markerRequest(['group', 'add to cart'], env)).toThrow(/invalid group name/);
+    expect(() => markerRequest(['group', 'add to cart'], env)).toThrow(/"add to cart"/);
+  });
 });
