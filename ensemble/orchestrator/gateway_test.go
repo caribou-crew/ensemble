@@ -99,6 +99,62 @@ func TestUpWiresGateway(t *testing.T) {
 	}
 }
 
+// TestUpWiresGatewayRegex: a regex route matches a suffix that no prefix
+// route claims, and prefix still wins where both could apply.
+func TestUpWiresGatewayRegex(t *testing.T) {
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "catalog:"+r.URL.Path)
+	}))
+	defer catalog.Close()
+	assets := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "assets:"+r.URL.Path)
+	}))
+	defer assets.Close()
+
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"catalog": {Run: "sleep 30", Port: portOf(t, catalog)},
+			"assets":  {Run: "sleep 30", Port: portOf(t, assets)},
+		},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Routes: []config.GatewayRoute{
+				{Prefix: "/products", Service: "catalog"},
+				{Regex: `\.(jpg|png)$`, Service: "assets"},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	get := func(path string) string {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d%s", gwPort, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Sprintf("%d %s", resp.StatusCode, b)
+	}
+	if got := get("/img/cat.jpg"); got != "200 assets:/img/cat.jpg" {
+		t.Errorf("/img/cat.jpg: %q", got)
+	}
+	if got := get("/products/cat.jpg"); got != "200 catalog:/products/cat.jpg" {
+		t.Errorf("/products/cat.jpg: %q (prefix must win over regex)", got)
+	}
+	if got := get("/nope"); !strings.HasPrefix(got, "404 ") {
+		t.Errorf("/nope: %q", got)
+	}
+}
+
 func TestUpGatewayBindFailureNamesGateway(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

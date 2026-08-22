@@ -29,10 +29,16 @@ stubs:
 # payments stub) — the built-in edge router. Routes forward onto each
 # target's proxy port, so gateway -> service hops are captured too. Point
 # your client at 127.0.0.1:9000 instead of the individual proxy ports.
+#
+# Prefix routes are tried first (longest prefix wins); a regex route is
+# only considered when no prefix matches, so the /images suffix rule below
+# never shadows /products or /pay. Regex is a plain Go regexp with no
+# implicit anchoring — write ^ / $ yourself.
 gateways:
   public:
     port: 9000
     routes:
       - { prefix: /products, service: catalog }
       - { prefix: /pay,      service: payments, strip_prefix: true }
+      - { regex: '\.(jpg|png)$', service: catalog }
       - { prefix: /,         service: edge }

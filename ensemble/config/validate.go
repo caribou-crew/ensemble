@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -102,18 +103,31 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("gateway %q: routes is empty", name))
 		}
 		seenPrefix := make(map[string]bool, len(gw.Routes))
+		seenRegex := make(map[string]bool, len(gw.Routes))
 		for i, route := range gw.Routes {
 			switch {
-			case route.Prefix == "":
-				errs = append(errs, fmt.Errorf("gateway %q: route %d: prefix is empty", name, i))
-			case !strings.HasPrefix(route.Prefix, "/"):
-				errs = append(errs, fmt.Errorf("gateway %q: route %d: prefix %q must start with /", name, i, route.Prefix))
-			default:
+			case route.Prefix == "" && route.Regex == "", route.Prefix != "" && route.Regex != "":
+				errs = append(errs, fmt.Errorf("gateway %q: route %d: exactly one of prefix or regex must be set", name, i))
+			case route.Prefix != "":
+				if !strings.HasPrefix(route.Prefix, "/") {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: prefix %q must start with /", name, i, route.Prefix))
+					break
+				}
 				p := normalizeGatewayPrefix(route.Prefix)
 				if seenPrefix[p] {
 					errs = append(errs, fmt.Errorf("gateway %q: route %d: duplicate prefix %q", name, i, p))
 				}
 				seenPrefix[p] = true
+			default: // route.Regex != ""
+				if route.StripPrefix {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: strip_prefix is only valid with prefix", name, i))
+				}
+				if _, err := regexp.Compile(route.Regex); err != nil {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: invalid regex %q: %v", name, i, route.Regex, err))
+				} else if seenRegex[route.Regex] {
+					errs = append(errs, fmt.Errorf("gateway %q: route %d: duplicate regex %q", name, i, route.Regex))
+				}
+				seenRegex[route.Regex] = true
 			}
 			if _, _, ok := c.RoutablePort(route.Service); !ok {
 				switch {

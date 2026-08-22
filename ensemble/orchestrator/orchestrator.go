@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -975,11 +976,21 @@ func (o *Orchestrator) wireGateways() error {
 				// Config can't produce a route to port 0.
 				return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
 			}
-			routes = append(routes, proxy.Route{
+			route := proxy.Route{
 				Prefix:      r.Prefix,
 				Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
 				StripPrefix: r.StripPrefix,
-			})
+			}
+			if r.Regex != "" {
+				// Validate already confirmed this compiles; guard anyway
+				// so a hand-built Config can't panic the orchestrator.
+				re, err := regexp.Compile(r.Regex)
+				if err != nil {
+					return fmt.Errorf("orchestrator: gateway %s: route %q: invalid regex: %w", name, r.Regex, err)
+				}
+				route.Regex = re
+			}
+			routes = append(routes, route)
 		}
 		if _, err := o.px.Serve(proxy.Target{
 			Name:   name,
