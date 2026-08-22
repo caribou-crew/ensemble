@@ -1,14 +1,41 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 )
+
+// dbContainerRunning asks whether a database port is held by the very
+// container Up is about to adopt. Indirected through a var so preflight's
+// tests can answer this without a docker daemon.
+var dbContainerRunning = orchestrator.DatabaseContainerRunning
+
+// preflightDockerTimeout bounds the container lookup. Preflight is the first
+// thing `ensemble up` does, so an unbounded call against a wedged daemon would
+// hang the command before it printed anything at all.
+const preflightDockerTimeout = 5 * time.Second
+
+// adoptableDatabasePort reports whether port's occupant is ensemble's own
+// running container for database name — in which case it is not a conflict,
+// it is the thing the orchestrator is about to reuse.
+//
+// A daemon that errors, times out, or isn't installed answers "no", so the
+// port is reported as a conflict exactly as it was before. This check can only
+// ever excuse a conflict, never invent one.
+func adoptableDatabasePort(name string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), preflightDockerTimeout)
+	defer cancel()
+	running, err := dbContainerRunning(ctx, name)
+	return err == nil && running
+}
 
 // checkPortsFree verifies every port the active stack (cfg filtered
 // through activeProfiles, see Config.ActivePorts) would bind is actually
@@ -27,10 +54,28 @@ func checkPortsFree(cfg *config.Config, activeProfiles []string) error {
 	}
 	sort.Ints(nums)
 
+	// Which ports belong to a managed database, so a conflict on one can be
+	// checked against the container Up would adopt. Built up front, but only
+	// consulted for ports that actually conflict — the clean path never shells
+	// out to docker.
+	dbPort := make(map[int]string, len(cfg.Databases))
+	for name, db := range cfg.Databases {
+		if db.Port != 0 {
+			dbPort[db.Port] = name
+		}
+	}
+
 	var conflicts []string
 	for _, port := range nums {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
+			// A database port held by ensemble's own running container is not
+			// a conflict: the orchestrator reuses that container instead of
+			// creating one, so refusing to start here would make adoption
+			// unreachable — `up` would always fail on the second run.
+			if name, ok := dbPort[port]; ok && adoptableDatabasePort(name) {
+				continue
+			}
 			msg := fmt.Sprintf("port %d (%s) is already in use", port, ports[port])
 			if who := identifyPort(port); who != "" {
 				msg += " by " + who
