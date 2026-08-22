@@ -34,8 +34,12 @@ jobs:
   # until the maintainer has synced npm credentials into the repo secrets and
   # says so; publishing is theirs to authorize, not a condition an agent can
   # observe as met. Enabling it also needs a real publish step (the run below
-  # is a placeholder) and `--access public`, since @caribou-crew packages are
-  # private by default.
+  # is a placeholder), `--access public` (since @caribou-crew packages are
+  # private by default), AND clearing "private": true in each of
+  # adapters/js/package.json, adapters/playwright/package.json, and
+  # adapters/maestro/package.json — that flag is this job's mirror image
+  # (package-level "no accidental publish", see each package's README), and
+  # `npm publish` fails hard on all three until it's cleared.
   npm-publish:
     if: false # maintainer flips this after syncing npm credentials
     runs-on: ubuntu-latest
