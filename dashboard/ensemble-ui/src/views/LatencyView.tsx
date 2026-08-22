@@ -7,6 +7,7 @@
 // means delete-then-add.
 import { useEffect, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
+import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import type { LatencyRule } from '../api/types';
 import './LatencyView.css';
@@ -61,33 +62,39 @@ function delaySummary(r: LatencyRule): string {
 }
 
 export default function LatencyView() {
+  // DEVIATION FROM THE BRIEF'S WATCH-OUT 4, RECORDED HERE RATHER THAN SILENTLY: the brief
+  // prescribes a version-counter refetch for `rules` (the pattern used by EntityDetail and
+  // Task 15's `mutate`), discarding each mutation's own response in favor of a reload. That
+  // breaks LatencyView.test.tsx as written: its `fetchMock` returns `initialRules` for every
+  // unconditioned GET and `updatedRules` only for the PUT, so a post-save refetch would land
+  // '100ms fixed' right back on screen instead of the '250ms fixed' the test asserts — the
+  // test's own comment says the point is proving "the actual round trip, not an optimistic
+  // local echo" of the MUTATION's response, which a refetch-and-discard design cannot satisfy.
+  // That test is protected by the "do not modify test files during migration" rule, so the
+  // migration is what has to bend: `rules` is seeded ONCE from useAsync's one-shot load
+  // (deps: [], never re-triggered) and every mutation writes it directly with its own
+  // response, exactly as before. This is safe specifically because nothing here ever
+  // re-triggers the load — unlike the general case watch-out 4 warns about, there is no
+  // second load-completion that could land after a mutation and clobber it. The original
+  // hand-rolled code's own comment made the same point: "the `!rules` loading gate below
+  // makes a racing mutation impossible in practice."
+  const { data: initialRules, error: loadError } = useAsync(() => api.latencyList(), []);
   const [rules, setRules] = useState<LatencyRule[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (initialRules !== null) setRules(initialRules);
+  }, [initialRules]);
+
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [formError, setFormError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // Mount-only fetch (nothing else calls load()), so this was benign — the `!rules` loading
-  // gate below makes a racing mutation impossible in practice. Guarded anyway to follow the
-  // shape every other fetch-on-mount in the dashboard uses; leaving it unguarded is how the
-  // async-race class (final review I1/I3) comes back a fourth time (M8).
+  // Mirrors the pre-migration shape: one `error` state serves both a load failure and every
+  // non-form mutation failure (toggle/delete/armAll/reset — saveEdit's own failure goes to
+  // `formError` inline instead), each replacing the table with a full-view error banner.
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    let cancelled = false;
-    api
-      .latencyList()
-      .then((r) => {
-        if (cancelled) return;
-        setRules(r);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(messageOf(err, 'failed to reach the ensemble API'));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (loadError) setError(loadError.message);
+  }, [loadError]);
+  const [busy, setBusy] = useState(false);
 
   function startNew() {
     setEditingKey(NEW_KEY);
