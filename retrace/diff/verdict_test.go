@@ -1463,16 +1463,28 @@ func TestAGateThatCouldNotBeEvaluatedFailsTheBuildWhenFailOnNamesIt(t *testing.T
 	}
 }
 
-// TestAnUnevaluatedGateOutsideFailOnIsNamedButNotFatal pins the other arm,
-// and it is the arm that keeps the fix proportionate: config.applyDefaults
-// auto-inserts a pixel gate into EVERY project, so every screenshot-less
-// flow carries an unmeasurable one. Those must be reported, not fatal —
-// fail_on is the project's own statement of which planes may break the
-// build, exactly as failingBudget already reads it.
+// TestAnUnevaluatedGateOutsideFailOnIsNamedButNotFatal pins the other arm of
+// the fix, but the pass/0 it asserts is a KNOWN LIMITATION, not the intended
+// end state — do not read it as design.
 //
-// Without the fail_on scoping this fixture exits 2 and every default-config
-// user's green build turns red; without the naming, it is the pass the
-// finding is about. Only asserting both together pins the rule.
+// The verdict is reached by two routes. failingBudget is scoped to fail_on,
+// and this fix's naming/fatality mirrors that scoping exactly. anyFailed is
+// NOT fail_on-scoped, and it is the route a *measured* breach on this same
+// plane goes through: TestAFailingBudgetOnANonFailOnPlaneAloneMarksTheRunChanged
+// pins changed/1 for a user-written gate outside fail_on that was measured
+// and failed. So the fixture here — the identical gate, just never measured
+// — scores strictly better (pass/0) than that measured-and-breached case
+// (changed/1): a less-informed run outranks a more-informed one.
+//
+// This is not fixed here because it is not safely fixable by mirroring
+// anyFailed alone: config.applyDefaults auto-inserts a pixel gate into
+// EVERY project, and applyDefaults erases provenance while doing it —
+// config.Gate is just {BudgetPct *float64}, so Build has no way to tell a
+// gate the user wrote from one applyDefaults inserted. Routing unmeasured-
+// and-outside-fail_on through anyFailed's mapping without that distinction
+// would flip every screenshot-less default-config build from green to red.
+// The real fix needs a provenance field on config.Gate; the eve of a hold
+// is the wrong moment for that data-model change. Parked as F.23.
 func TestAnUnevaluatedGateOutsideFailOnIsNamedButNotFatal(t *testing.T) {
 	s := unmeasurablePerfGate(t, nil) // gated, but fail_on names nothing
 
