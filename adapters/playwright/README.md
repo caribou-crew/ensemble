@@ -44,3 +44,13 @@ filesystem) is available, since screenshots are file-only.
 `retrace/runs.ValidateComponents` enforces for on-disk path components, not
 just its regex — and throw rather than silently skip a screenshot when
 violated.
+
+## Publishing
+
+`package.json` sets `"private": true` deliberately: it enforces "no
+accidental `npm publish`" at the package level, on top of (not instead of)
+`.github/workflows/release.yml`'s `npm-publish` job being `if: false`. Both
+gates exist because the maintainer has not yet synced npm credentials for
+`@caribou-crew`; publishing is theirs to authorize. When they do, clearing
+`private` here is part of enabling it — see that job's comment for the
+other half.

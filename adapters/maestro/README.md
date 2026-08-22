@@ -41,3 +41,13 @@ markerRequest(['group', '--end'], process.env);
 output, so a Maestro `runScript` step never depends on this package's own
 build having run. Group names must match `^[A-Za-z0-9._-]+$`, same as
 `@caribou-crew/retrace-js` and `@caribou-crew/retrace-playwright`.
+
+## Publishing
+
+`package.json` sets `"private": true` deliberately: it enforces "no
+accidental `npm publish`" at the package level, on top of (not instead of)
+`.github/workflows/release.yml`'s `npm-publish` job being `if: false`. Both
+gates exist because the maintainer has not yet synced npm credentials for
+`@caribou-crew`; publishing is theirs to authorize. When they do, clearing
+`private` here is part of enabling it — see that job's comment for the
+other half.
