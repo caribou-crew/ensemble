@@ -11,10 +11,10 @@
   "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "tsc --noEmit -p tsconfig.json && vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
+    "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"

@@ -15,13 +15,13 @@
   "scripts": {
     "pretest": "pnpm --filter @caribou-crew/retrace-js run build",
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "tsc --noEmit -p tsconfig.json && vitest run"
   },
   "dependencies": {
     "@caribou-crew/retrace-js": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
+    "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
