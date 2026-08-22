@@ -5,7 +5,8 @@
 // drops data out of the ring.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
-import { api, messageOf } from '../api/client';
+import { useAsync } from '@ensemble/design-system/useAsync';
+import { api } from '../api/client';
 import { subscribeHops } from '../api/sse';
 import type { Hop } from '../api/types';
 import { writeParams } from '../urlState';
@@ -35,49 +36,32 @@ const SESSION_FILTER_ITEMS = [
 
 function useHopRing() {
   const [hops, setHops] = useState<Hop[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The seed load and the live SSE stream are one race-safety problem, not two: the initial
+  // GET races nothing else here (deps: []), so useAsync's generation guard alone is enough to
+  // keep a slow/duplicate seed load from clobbering hops the stream has already appended —
+  // the subscription itself only ever starts once, from the effect below, keyed on the
+  // load's own result rather than re-deriving its own cancellation flag.
+  const { data: initial, error, loading } = useAsync(() => api.traffic({ limit: INITIAL_LIMIT }), []);
 
   useEffect(() => {
-    let cancelled = false;
-    let unsubscribe: (() => void) | null = null;
+    if (initial === null) return;
+    setHops(initial);
+    const lastSeq = initial.reduce((max, h) => Math.max(max, h.seq), 0);
+    const unsubscribe = subscribeHops(lastSeq, (hop) => {
+      setHops((cur) => {
+        // The stream can, at worst, redeliver the cursor hop itself on
+        // reconnect — never accept anything at or behind what's
+        // already at the tail.
+        if (cur.length > 0 && hop.seq <= cur[cur.length - 1].seq) return cur;
+        const next = cur.length >= RING_MAX ? cur.slice(cur.length - RING_MAX + 1) : cur.slice();
+        next.push(hop);
+        return next;
+      });
+    });
+    return unsubscribe;
+  }, [initial]);
 
-    async function start() {
-      try {
-        const initial = await api.traffic({ limit: INITIAL_LIMIT });
-        if (cancelled) return;
-        setHops(initial);
-        setLoading(false);
-        setError(null);
-        const lastSeq = initial.reduce((max, h) => Math.max(max, h.seq), 0);
-        unsubscribe = subscribeHops(lastSeq, (hop) => {
-          if (cancelled) return;
-          setHops((cur) => {
-            // The stream can, at worst, redeliver the cursor hop itself on
-            // reconnect — never accept anything at or behind what's
-            // already at the tail.
-            if (cur.length > 0 && hop.seq <= cur[cur.length - 1].seq) return cur;
-            const next = cur.length >= RING_MAX ? cur.slice(cur.length - RING_MAX + 1) : cur.slice();
-            next.push(hop);
-            return next;
-          });
-        });
-      } catch (err) {
-        if (!cancelled) {
-          setLoading(false);
-          setError(messageOf(err, 'failed to reach the ensemble API'));
-        }
-      }
-    }
-
-    void start();
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
-
-  return { hops, error, loading };
+  return { hops, error: error?.message ?? null, loading };
 }
 
 export default function TrafficView() {
