@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Spinner } from "@ensemble/design-system";
 import { useAsync } from "@ensemble/design-system/useAsync";
 import { api, messageOf } from "../api/client";
@@ -52,39 +52,71 @@ function heatByService(hops: Hop[]): Map<string, HeatTier> {
     switches it on the orchestrator and then re-fetches, so the strip reflects what the
     server did rather than what was clicked. */
 function useProfiles(refreshTopology: () => Promise<void>) {
+  // Migrated onto useAsync (final review F6): the hand-rolled version ran `load()` from a
+  // 5s interval AND wrote `setProfiles` directly from `toggle()`, so two `api.profiles()`
+  // calls could be in flight with no ordering guarantee and no generation guard — the
+  // exact I3 race class this task exists to eliminate, alive four lines from the code
+  // migrated to remove it. R-AI ruled this hook out of the original migration set because
+  // it had no `let cancelled` to match on; that was correct on its own terms, but it also
+  // meant the migration's completion gate certified this file clean while the bug class
+  // was still live in it. `toggle()` now reloads through the same hook instead of writing
+  // its own response, so there is only ever one writer, generation-guarded like every
+  // other poll+mutation pair in this file.
+  const [tick, setTick] = useState(0);
+  const { data, error: loadError } = useAsync(() => api.profiles(), [tick]);
+
+  // Sticky snapshot, same shape as useTopologyPoll's `snapshot` above: useAsync clears
+  // `data` to null the instant `tick` bumps, which would otherwise drop the lane strip
+  // every 5s poll.
   const [profiles, setProfiles] = useState<ProfilesState | null>(null);
+  useEffect(() => {
+    if (data !== null) setProfiles(data);
+  }, [data]);
+
+  // A load failure is deliberately swallowed rather than surfaced as its own error banner:
+  // ProfileStrip only mounts once `profiles` is non-null, so a failure on the very first
+  // load means the lane strip never appears at all; a failure on a later poll just leaves
+  // it showing its last good value, same as the graph and services table do on theirs.
+  // Final review F11: this IS a real gap, not a covered case — a profiles-only 500 with
+  // the rest of the topology healthy produces no error anywhere in the UI, and nothing
+  // here claims otherwise. Left undecorated on purpose rather than repeating the retracted
+  // claim that `useTopologyPoll`'s own error "already surfaces" it; a real error path for
+  // this specific case is future work, not implied by this comment. (`loadError` itself is
+  // read below only to know a settled attempt happened, never rendered.)
+
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setProfiles(await api.profiles());
-    } catch {
-      // Silently ignored. NOT "leaves the strip at its last known state" (F.18) — `profiles`
-      // starts `null`, ProfileStrip only mounts once it is non-null, and a failure here never
-      // sets it to anything — so a profiles miss on the very first load means the lane strip
-      // never appears at all, not that it freezes at a prior value. The topology poll already
-      // surfaces connectivity errors for the rest of the view, which is the actual reason a
-      // second error banner here would be redundant.
+  // Lets `toggle` (below) wait for the reload IT triggered to actually land, rather than
+  // resolving the instant the tick bump is scheduled — same reasoning as
+  // useTopologyPoll.refresh's own pendingRefreshRef (final review F7).
+  const pendingReloadRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (data !== null || loadError) {
+      pendingReloadRef.current?.();
+      pendingReloadRef.current = null;
     }
+  }, [data, loadError]);
+
+  const reload = useCallback(() => {
+    return new Promise<void>((resolve) => {
+      pendingReloadRef.current = resolve;
+      setTick((t) => t + 1);
+    });
   }, []);
 
   useEffect(() => {
-    void load();
-    const id = setInterval(() => void load(), 5000);
+    const id = setInterval(() => setTick((t) => t + 1), 5000);
     return () => clearInterval(id);
-  }, [load]);
+  }, []);
 
   const toggle = useCallback(
     async (p: ProfileInfo) => {
       setBusy(p.name);
       setError(null);
       try {
-        setProfiles(
-          p.active
-            ? await api.profileDown(p.name)
-            : await api.profileUp(p.name),
-        );
+        await (p.active ? api.profileDown(p.name) : api.profileUp(p.name));
+        await reload();
         await refreshTopology();
       } catch (err) {
         setError(messageOf(err, `could not switch profile ${p.name}`));
@@ -92,7 +124,7 @@ function useProfiles(refreshTopology: () => Promise<void>) {
         setBusy(null);
       }
     },
-    [refreshTopology],
+    [refreshTopology, reload],
   );
 
   return { profiles, busy, error, toggle };
@@ -167,20 +199,50 @@ function useTopologyPoll() {
     if (data !== null) setSnapshot(data);
   }, [data]);
 
+  // Sticky error, mirroring the sticky `snapshot` above: useAsync clears BOTH `data` and
+  // `error` to null the instant a new poll starts (tick bumps), so reading `error` straight
+  // off the hook flashed the "offline" banner back to the stale-but-good graph for the
+  // whole duration of every in-flight poll while the backend was down (final review F2).
+  // Cleared only on an actual successful load, never merely because the next poll started —
+  // matching pre-migration's `setError(null)` on the success path only.
+  const [staleError, setStaleError] = useState<string | null>(null);
+  useEffect(() => {
+    if (error) setStaleError(messageOf(error, 'failed to reach the ensemble API'));
+    else if (data !== null) setStaleError(null);
+  }, [error, data]);
+
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), POLL_MS);
     return () => window.clearInterval(id);
   }, []);
 
-  const refresh = useCallback(async () => {
-    setTick((t) => t + 1);
+  // Bumping `tick` alone resolves as soon as the state update is scheduled, not once the
+  // triggered reload actually lands — callers that `await refresh()` (restart/flip/
+  // setVariant below, and useProfiles' toggle) need the promise to settle only once the
+  // NEW data (or a new error) is actually on screen, or their `busy` flag clears while the
+  // panel still shows the pre-action state (final review F7). useAsync's own generation
+  // guard already ensures only the latest-started load's result is ever applied, so it is
+  // also the only completion this needs to wait for.
+  const pendingRefreshRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (data !== null || error) {
+      pendingRefreshRef.current?.();
+      pendingRefreshRef.current = null;
+    }
+  }, [data, error]);
+
+  const refresh = useCallback(() => {
+    return new Promise<void>((resolve) => {
+      pendingRefreshRef.current = resolve;
+      setTick((t) => t + 1);
+    });
   }, []);
 
   return {
     topology: snapshot?.topology ?? null,
     statuses: snapshot?.statuses ?? null,
     traffic: snapshot?.traffic ?? [],
-    error: error?.message ?? null,
+    error: staleError,
     refresh,
   };
 }
@@ -195,7 +257,7 @@ function useTracePoll(traceId: string | null) {
     return r.hops;
   }, [traceId]);
 
-  return { hops, error: error?.message ?? null };
+  return { hops, error: error ? messageOf(error, `failed to load trace ${traceId}`) : null };
 }
 
 function ServicePanel({
