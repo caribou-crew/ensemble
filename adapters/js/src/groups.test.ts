@@ -101,6 +101,31 @@ describe('group / endGroup — file path (RETRACE_RUN_DIR)', () => {
     expect(parsed).toBeLessThanOrEqual(after);
   });
 
+  // F-4 (task-17-review.md, original numbering): every other test in this
+  // file writes exactly ONE record, so nothing here ever pinned the NDJSON
+  // FRAMING itself — only its per-record content. Two records concatenated
+  // onto one line (a dropped newline separator, or a write mode that lets
+  // them collide) is exactly R-AC's silent-loss failure mode reached through
+  // framing instead of through the timestamp: runs.ReadGroupRecords cannot
+  // parse the merged line as valid JSON and SKIPS it, silently losing BOTH
+  // records rather than erroring loudly.
+  it('appends a real sequence of markers as four separate, correctly-ordered records', async () => {
+    await setup();
+    await group('a');
+    await endGroup();
+    await group('b');
+    await endGroup();
+
+    const lines = await readLines(path.join(runDir, 'groups.jsonl'));
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toMatchObject({ phase: 'start', name: 'a' });
+    expect(lines[1]).toMatchObject({ phase: 'end' });
+    expect(lines[1]).not.toHaveProperty('name');
+    expect(lines[2]).toMatchObject({ phase: 'start', name: 'b' });
+    expect(lines[3]).toMatchObject({ phase: 'end' });
+    expect(lines[3]).not.toHaveProperty('name');
+  });
+
   it('rejects a group name that is not a safe path component', async () => {
     await setup();
     await expect(group('cart/item')).rejects.toThrow(/invalid group name/);

@@ -21,7 +21,17 @@ function parseArgv(argv) {
     throw new Error(`retrace-maestro: unknown command ${JSON.stringify(argv[0] ?? '')}; expected "group"`);
   }
   if (argv[1] === '--end') return { end: true };
-  const name = argv[1];
+  // F-6 (task-17-review.md, original numbering): join ALL remaining
+  // arguments, not just argv[1]. Maestro's documented form is
+  // `env: { ARGS: "group add to cart" }`, which main() below splits on
+  // whitespace into ['group', 'add', 'to', 'cart'] — a bare `argv[1]` would
+  // silently truncate that to "add", while the honest single-argument form
+  // (`group "add to cart"`, argv = ['group', 'add to cart']) correctly
+  // throws. Joining first means both forms produce the SAME name and the
+  // SAME validateName outcome. Do NOT loosen validateName to accept spaces
+  // instead: Go's ValidateComponents rejects them too, and the two guards
+  // must stay in agreement.
+  const name = argv.slice(1).join(' ');
   if (!name) {
     throw new Error('retrace-maestro: "group" requires a name (e.g. `group checkout`), or `--end`');
   }
