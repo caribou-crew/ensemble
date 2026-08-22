@@ -225,11 +225,20 @@ type Gateway struct {
 	Routes []GatewayRoute `yaml:"routes"`
 }
 
-// GatewayRoute maps a "/"-rooted path prefix to a service or stub. The
-// longest matching prefix wins; a trailing "/" on Prefix is ignored. With
-// StripPrefix the matched prefix is removed from the forwarded path.
+// GatewayRoute maps a request to a service or stub, matched by exactly one
+// of Prefix or Regex. Prefix is a "/"-rooted path prefix; the longest
+// matching prefix among a gateway's routes wins, and a trailing "/" on
+// Prefix is ignored. With StripPrefix the matched prefix is removed from
+// the forwarded path (Prefix routes only).
+//
+// Regex is a Go regexp matched against the full request path with no
+// implicit anchoring — write ^ / $ yourself (e.g. `\.json$` for a
+// suffix match). Prefix routes are tried first; Regex routes are only
+// considered when no Prefix route matches, in declaration order, first
+// match wins. The forwarded path is never modified for a Regex route.
 type GatewayRoute struct {
 	Prefix      string `yaml:"prefix"`
+	Regex       string `yaml:"regex"`
 	Service     string `yaml:"service"`
 	StripPrefix bool   `yaml:"strip_prefix"`
 }

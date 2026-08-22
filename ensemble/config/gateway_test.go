@@ -37,6 +37,20 @@ func TestValidateGatewayClean(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayRegexClean(t *testing.T) {
+	c := gatewayBase()
+	c.Gateways = map[string]Gateway{
+		"public": {Port: 9000, Routes: []GatewayRoute{
+			{Prefix: "/products", Service: "catalog"},
+			{Regex: `\.(jpg|png)$`, Service: "catalog"},
+			{Prefix: "/", Service: "catalog"},
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateGatewayAbsentIsNoop(t *testing.T) {
 	if err := gatewayBase().Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -80,6 +94,10 @@ func TestValidateGatewayRejections(t *testing.T) {
 		{"unknown target", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/x", Service: "nope"}}}, []string{"route 0", `"nope"`}},
 		{"database target", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/x", Service: "pg"}}}, []string{"route 0", `"pg"`}},
 		{"duplicate prefix", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/cart", Service: "catalog"}, {Prefix: "/cart/", Service: "legacy"}}}, []string{"route 1", "duplicate prefix", "/cart"}},
+		{"both prefix and regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Prefix: "/x", Regex: `\.json$`, Service: "catalog"}}}, []string{"route 0", "exactly one of prefix or regex"}},
+		{"invalid regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.(jpg|png$`, Service: "catalog"}}}, []string{"route 0", "invalid regex"}},
+		{"duplicate regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.json$`, Service: "catalog"}, {Regex: `\.json$`, Service: "legacy"}}}, []string{"route 1", "duplicate regex"}},
+		{"strip_prefix with regex", Gateway{Port: 9000, Routes: []GatewayRoute{{Regex: `\.json$`, Service: "catalog", StripPrefix: true}}}, []string{"route 0", "strip_prefix is only valid with prefix"}},
 	}
 	for _, tc := range cases {
 		c := gatewayBase()

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -40,6 +41,54 @@ func TestResolveRoute(t *testing.T) {
 		if up != c.upstream || fwd != c.forward {
 			t.Errorf("%s: got (%s, %s), want (%s, %s)", c.path, up, fwd, c.upstream, c.forward)
 		}
+	}
+}
+
+func TestResolveRouteRegexFallback(t *testing.T) {
+	target := Target{Name: "gw", Routes: []Route{
+		{Prefix: "/products", Upstream: "http://catalog"},
+		{Regex: regexp.MustCompile(`\.(jpg|png)$`), Upstream: "http://assets"},
+		{Regex: regexp.MustCompile(`^/v[0-9]+/legacy`), Upstream: "http://legacy"},
+	}}
+	cases := []struct {
+		path, upstream string
+		ok             bool
+	}{
+		{"/products/1", "http://catalog", true},       // prefix wins
+		{"/img/cat.jpg", "http://assets", true},       // regex fallback
+		{"/v2/legacy/x", "http://legacy", true},       // second regex, ^ anchor
+		{"/nope", "", false},                          // no route matches
+		{"/products.jpg", "http://assets", true},      // no prefix match (segment boundary): regex still applies
+		{"/products/cat.jpg", "http://catalog", true}, // prefix DOES match here, and wins over the regex
+	}
+	for _, c := range cases {
+		up, fwd, ok := target.resolve(c.path)
+		if ok != c.ok {
+			t.Errorf("%s: ok = %v, want %v", c.path, ok, c.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if up != c.upstream {
+			t.Errorf("%s: upstream = %q, want %q", c.path, up, c.upstream)
+		}
+		if fwd != c.path {
+			t.Errorf("%s: regex/prefix-without-strip must forward unmodified path, got %q", c.path, fwd)
+		}
+	}
+}
+
+func TestResolveRouteRegexDeclarationOrder(t *testing.T) {
+	// Among regex routes (no prefix routes at all), the first declared
+	// match wins even if a later one would also match.
+	target := Target{Name: "gw", Routes: []Route{
+		{Regex: regexp.MustCompile(`\.json$`), Upstream: "http://first"},
+		{Regex: regexp.MustCompile(`data\.json$`), Upstream: "http://second"},
+	}}
+	up, _, ok := target.resolve("/data.json")
+	if !ok || up != "http://first" {
+		t.Fatalf("got (%s, %v), want (http://first, true)", up, ok)
 	}
 }
 
