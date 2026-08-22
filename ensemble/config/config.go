@@ -262,10 +262,15 @@ type Seed struct {
 	HTTP []SeedHTTP `yaml:"http"`
 }
 
-// SeedSQL loads File (relative to Config.Dir) into Database.
+// SeedSQL loads File (relative to Config.Dir) into Database. TargetDB
+// optionally names a specific logical database on Database's server,
+// overriding the resource's own default (its POSTGRES_DB/MYSQL_DATABASE)
+// — for a shared postgres/mysql container hosting more than one logical
+// database, where Database alone can't say which one to seed.
 type SeedSQL struct {
 	Database string `yaml:"database"`
 	File     string `yaml:"file"`
+	TargetDB string `yaml:"target_db"`
 }
 
 // SeedHTTP issues one HTTP request as part of a seed.

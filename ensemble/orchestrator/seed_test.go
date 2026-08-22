@@ -19,8 +19,8 @@ type fakeSQLRunner struct {
 	err   error
 }
 
-func (f *fakeSQLRunner) RunFile(ctx context.Context, dbName, path string) error {
-	f.calls = append(f.calls, dbName+":"+path)
+func (f *fakeSQLRunner) RunFile(ctx context.Context, dbName, targetDB, path string) error {
+	f.calls = append(f.calls, dbName+":"+targetDB+":"+path)
 	return f.err
 }
 
@@ -152,7 +152,39 @@ func TestSeedSQLThenHTTPOrder(t *testing.T) {
 	if !httpCalled {
 		t.Fatal("http step did not run")
 	}
-	want := "primary:" + sqlPath
+	want := "primary::" + sqlPath
+	if len(runner.calls) != 1 || runner.calls[0] != want {
+		t.Fatalf("SQLRunner calls = %v, want [%q]", runner.calls, want)
+	}
+}
+
+// Test: a SeedSQL step's TargetDB reaches the SQLRunner alongside
+// Database — the resource name and the specific logical database to seed
+// on it are independent.
+func TestSeedSQLPassesTargetDB(t *testing.T) {
+	dir := t.TempDir()
+	sqlPath := filepath.Join(dir, "seed.sql")
+	if err := os.WriteFile(sqlPath, []byte("-- seed"), 0o644); err != nil {
+		t.Fatalf("write seed.sql: %v", err)
+	}
+
+	cfg := &config.Config{
+		Dir: dir,
+		Seeds: map[string]config.Seed{
+			"baseline": {
+				SQL: []config.SeedSQL{{Database: "shared-pg", TargetDB: "tenant_b", File: "seed.sql"}},
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	runner := &fakeSQLRunner{}
+	o.SQLRunner = runner
+
+	if _, err := o.Seed(context.Background(), "baseline"); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	want := "shared-pg:tenant_b:" + sqlPath
 	if len(runner.calls) != 1 || runner.calls[0] != want {
 		t.Fatalf("SQLRunner calls = %v, want [%q]", runner.calls, want)
 	}
