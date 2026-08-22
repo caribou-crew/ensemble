@@ -567,3 +567,57 @@ func TestRunFlowDeadProxyIsAlwaysRecorded(t *testing.T) {
 		t.Fatal("ProxyFailure = nil, want recorded — the watcher must be joined before the read")
 	}
 }
+
+// TestRunFlowReportsDroppedMarkersOnStderr pins F-2's visibility half (N-2):
+// runFlow's `retrace: ignored N unusable marker record(s)…` line was wired
+// but unpinned — the re-review deleted it outright and the whole
+// retrace/cmd/retrace package stayed green. A record silently dropped is the
+// same defect as a record silently accepted, which is why the drop must be
+// printed at all.
+//
+// The bad record is written raw, past AppendGroupRecord's own refusal,
+// mirroring the actual threat model: groups.jsonl is a documented file-drop
+// protocol (adapters/js/README.md), so a third-party adapter — not just the
+// shipped one — can still land a `ts`-less line as valid JSON.
+func TestRunFlowReportsDroppedMarkersOnStderr(t *testing.T) {
+	t.Setenv("RETRACE_TEST_HELPER", "fetch")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	s, err := capture.StartStandalone(capture.Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	f, err := os.OpenFile(s.Paths.GroupsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open groups.jsonl: %v", err)
+	}
+	if _, err := f.WriteString("{\"phase\":\"start\",\"name\":\"warmup\",\"quiet\":true}\n"); err != nil {
+		t.Fatalf("write raw marker: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close groups.jsonl: %v", err)
+	}
+
+	var stderr strings.Builder
+	_, err = runFlow(s, runOptions{
+		Cwd:     t.TempDir(),
+		App:     "web",
+		Flow:    "checkout",
+		TestCmd: selfCmd(t, "TestHelperFetchesThroughProxy")[1:], // drop the leading "--"
+		Stdout:  io.Discard,
+		Stderr:  &stderr,
+		Now:     time.Now,
+	})
+	if err != nil {
+		t.Fatalf("runFlow: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "ignored 1 unusable marker record") {
+		t.Fatalf("stderr = %q, want it to report the dropped marker — a `ts`-less record must never vanish silently", got)
+	}
+}
