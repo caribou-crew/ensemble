@@ -27,6 +27,7 @@ function hop(seq: number, from: string | undefined, to: string): Hop {
 
 const EMPTY_TOPOLOGY: Topology = { nodes: [], edges: [] };
 const NO_STATUSES: ServiceState[] = [];
+const PLACEHOLDER_SERVICE: ServiceState = { name: 'edge', status: 'healthy', placement: 'docker' };
 
 describe('TopologyView: ?trace= race', () => {
   let container: HTMLDivElement;
@@ -38,6 +39,17 @@ describe('TopologyView: ?trace= race', () => {
     vi.spyOn(api, 'topology').mockResolvedValue(EMPTY_TOPOLOGY);
     vi.spyOn(api, 'status').mockResolvedValue(NO_STATUSES);
     vi.spyOn(api, 'traffic').mockResolvedValue([]);
+    // TopologyView calls nine distinct api.* methods (useProfiles' own 5s poll runs
+    // unconditionally from mount, independently of anything this test clicks) — mock every
+    // one of them, not just the ones this test's own interactions reach, so a real socket is
+    // never one unmocked call site away (F.18; see testSetup.ts's suite-wide assertion of the
+    // same property).
+    vi.spyOn(api, 'profiles').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'profileUp').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'profileDown').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'restart').mockResolvedValue(PLACEHOLDER_SERVICE);
+    vi.spyOn(api, 'flip').mockResolvedValue(PLACEHOLDER_SERVICE);
+    vi.spyOn(api, 'setVariant').mockResolvedValue(PLACEHOLDER_SERVICE);
   });
 
   afterEach(() => {

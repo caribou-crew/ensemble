@@ -34,6 +34,17 @@ describe('TopologyView: useTopologyPoll.refresh race', () => {
     document.body.appendChild(container);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
     vi.spyOn(api, 'traffic').mockResolvedValue([]);
+    // TopologyView calls nine distinct api.* methods (useProfiles' own 5s poll runs
+    // unconditionally from mount, independently of anything this test clicks) — mock every
+    // one of them, not just the ones this test's own interactions reach, so a real socket is
+    // never one unmocked call site away (F.18; see testSetup.ts's suite-wide assertion of the
+    // same property).
+    vi.spyOn(api, 'profiles').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'profileUp').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'profileDown').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'flip').mockResolvedValue(statusOf('healthy')[0]);
+    vi.spyOn(api, 'setVariant').mockResolvedValue(statusOf('healthy')[0]);
+    vi.spyOn(api, 'trace').mockRejectedValue(new Error('this test never sets ?trace='));
   });
 
   afterEach(() => {

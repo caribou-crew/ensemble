@@ -59,8 +59,12 @@ function useProfiles(refreshTopology: () => Promise<void>) {
     try {
       setProfiles(await api.profiles());
     } catch {
-      // The topology poll already surfaces connectivity errors; a profiles miss just
-      // leaves the strip at its last known state.
+      // Silently ignored. NOT "leaves the strip at its last known state" (F.18) — `profiles`
+      // starts `null`, ProfileStrip only mounts once it is non-null, and a failure here never
+      // sets it to anything — so a profiles miss on the very first load means the lane strip
+      // never appears at all, not that it freezes at a prior value. The topology poll already
+      // surfaces connectivity errors for the rest of the view, which is the actual reason a
+      // second error banner here would be redundant.
     }
   }, []);
 
