@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, messageOf } from '../api/client';
 import { subscribeChanges } from '../api/sse';
 import type { Column, Table } from '../api/types';
 import { renderCellValue } from '../format';
@@ -27,7 +27,7 @@ function useDatabases() {
   return {
     databases: unavailable ? [] : data,
     unavailable,
-    error: unavailable ? null : (error?.message ?? null),
+    error: unavailable ? null : error ? messageOf(error, 'failed to reach the ensemble API') : null,
   };
 }
 
@@ -37,7 +37,7 @@ function useSchema(db: string | null) {
     return api.databaseSchema(db);
   }, [db]);
 
-  return { tables, error: error?.message ?? null };
+  return { tables, error: error ? messageOf(error, `failed to load schema for ${db}`) : null };
 }
 
 function useRows(db: string | null, table: string | null, limit: number, offset: number) {
@@ -70,7 +70,7 @@ function useRows(db: string | null, table: string | null, limit: number, offset:
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
-  return { rows, error: error?.message ?? null, loading, refresh };
+  return { rows, error: error ? messageOf(error, `failed to load rows for ${table}`) : null, loading, refresh };
 }
 
 function columnsFor(tables: Table[] | null, table: string | null): Column[] {
