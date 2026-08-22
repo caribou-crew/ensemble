@@ -329,6 +329,39 @@ func TestServicesForProfilesUnionOverridesInactiveGroup(t *testing.T) {
 	}
 }
 
+func TestActivePortsExcludesInactiveProfileGatedService(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"catalog": {Run: "x", Port: 8081, Proxy: 9081},
+			"order":   {Run: "x", Port: 8083, Profile: "full"},
+		},
+		Databases: map[string]Database{"pg": {Image: "postgres:16", Port: 55432}},
+		Stubs:     map[string]Stub{"payments": {Port: 9099}},
+		Gateways:  map[string]Gateway{"public": {Port: 9000, Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}}},
+	}
+	ports := c.ActivePorts(nil)
+	want := map[int]string{
+		8081:  "service catalog",
+		9081:  "service catalog (proxy)",
+		55432: "database pg",
+		9099:  "stub payments",
+		9000:  "gateway public",
+	}
+	for port, label := range want {
+		if ports[port] != label {
+			t.Errorf("port %d: got %q, want %q", port, ports[port], label)
+		}
+	}
+	if _, ok := ports[8083]; ok {
+		t.Error("inactive profile-gated service's port must be excluded")
+	}
+
+	activated := c.ActivePorts([]string{"full"})
+	if activated[8083] != "service order" {
+		t.Errorf("active profile: port 8083 = %q, want %q", activated[8083], "service order")
+	}
+}
+
 func TestProfileNamesAndMembers(t *testing.T) {
 	c := &Config{
 		Services: map[string]Service{

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,12 +33,44 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// standinBackendDelay is how long startStandinBackend waits, after runUp
+// has been kicked off, before it actually binds a service's stand-in
+// backend on the service's own configured port. runUp's preflight port
+// check (checkPortsFree) runs synchronously, before anything else, right
+// at the top of runUp — a handful of near-instant net.Listen/Close calls —
+// so this only needs to outlast that, not the service's full startup.
+// Generous on purpose: a slower CI box is more likely than a hang.
+const standinBackendDelay = 100 * time.Millisecond
+
+// startStandinBackend binds handler on 127.0.0.1:port and registers its
+// cleanup, but only after standinBackendDelay — giving a concurrently
+// running runUp's preflight port check time to see the port free before
+// this test's stand-in backend (simulating "the real service", since the
+// process ensemble itself spawns for these tests, "sleep 30", never binds
+// anything) occupies it. Binding it any earlier would make runUp's own
+// preflight check reject the port as already in use.
+func startStandinBackend(t *testing.T, port int, handler http.Handler) {
+	t.Helper()
+	time.Sleep(standinBackendDelay)
+	srv := httptest.NewUnstartedServer(handler)
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("listen on stand-in backend port %d: %v", port, err)
+	}
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+}
+
 // writeConfig writes a minimal ensemble.yaml declaring one native service
-// ("svc") whose real port is the httptest upstream's port and whose
-// intercept port is proxyPort — the same shape ensemble/server's own tests
-// use (a long-lived dummy process just to give the orchestrator something
-// to supervise; traffic actually flows to the already-running httptest
-// server on the same port).
+// ("svc") whose real port is upPort (a reserved-but-not-yet-bound port a
+// caller will start a stand-in httptest backend on shortly after runUp
+// begins — see startEnsemble) and whose intercept port is proxyPort — the
+// same shape ensemble/server's own tests use (a long-lived dummy process
+// just to give the orchestrator something to supervise; traffic actually
+// flows to the httptest server once it starts listening on the same
+// port).
 func writeConfig(t *testing.T, dir string, upPort, proxyPort int) string {
 	t.Helper()
 	path := filepath.Join(dir, "ensemble.yaml")
@@ -91,20 +122,7 @@ func (e *upTestEnv) wait(t *testing.T, timeout time.Duration) error {
 func startEnsemble(t *testing.T) *upTestEnv {
 	t.Helper()
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello from svc"))
-	}))
-	t.Cleanup(upstream.Close)
-
-	u, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatalf("parse upstream url: %v", err)
-	}
-	upPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("upstream port: %v", err)
-	}
-
+	upPort := freePort(t)
 	proxyPort := freePort(t)
 	apiPort := freePort(t)
 	cfgPath := writeConfig(t, t.TempDir(), upPort, proxyPort)
@@ -119,6 +137,10 @@ func startEnsemble(t *testing.T) *upTestEnv {
 
 	result := make(chan error, 1)
 	go func() { result <- runUp(ctx, opts, stdout, stderr) }()
+
+	startStandinBackend(t, upPort, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello from svc"))
+	}))
 
 	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
 	waitHealthy(t, apiURL)
@@ -299,19 +321,11 @@ func findPID(t *testing.T, marker string) (int, bool) {
 // a self-reporting pid file could plausibly never get written if Down()
 // reaps the process before the OS ever schedules it.
 func TestRunUp_BindFailureTearsDownAndReturnsError(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello"))
-	}))
-	defer upstream.Close()
-
-	u, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatalf("parse upstream url: %v", err)
-	}
-	upPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("upstream port: %v", err)
-	}
+	// upPort is reserved but not yet bound — see startStandinBackend below,
+	// called only after runUp's preflight port check has already run, so
+	// this test exercises the API-bind-failure path it's named for rather
+	// than tripping the (correct, but different) preflight conflict.
+	upPort := freePort(t)
 	proxyPort := freePort(t)
 	apiPort := freePort(t)
 
@@ -351,6 +365,10 @@ services:
 	done := make(chan error, 1)
 	go func() { done <- runUp(context.Background(), opts, &stdout, &stderr) }()
 
+	startStandinBackend(t, upPort, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+
 	select {
 	case runErr := <-done:
 		if runErr == nil {
@@ -386,21 +404,25 @@ func TestUp_APIReachableDuringSlowStartup(t *testing.T) {
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	srv.Listener.Close()
-	srv.Listener = ln
 	t.Cleanup(srv.Close)
 
 	// Nothing answers on port until well past this delay — comfortably
 	// longer than the API bind (a plain net.Listen) should ever take, even
 	// on a loaded CI box, so a fast /api/health here can only mean the
-	// server started without waiting on "slow"'s health gate.
+	// server started without waiting on "slow"'s health gate. The listen
+	// itself (not just srv.Start) is deferred into the goroutine: runUp's
+	// preflight port check runs synchronously right at the top of runUp,
+	// so port must still be free when that check runs.
 	const startupDelay = 2 * time.Second
 	go func() {
 		time.Sleep(startupDelay)
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			t.Errorf("listen: %v", err)
+			return
+		}
+		srv.Listener.Close()
+		srv.Listener = ln
 		srv.Start()
 	}()
 
@@ -452,19 +474,8 @@ services:
 // service lands on stderr. Only cancelling ctx (standing in for SIGINT)
 // tears everything down.
 func TestUp_PartialStartupFailureKeepsStackUpAndWarns(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello"))
-	}))
-	t.Cleanup(upstream.Close)
-	u, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatalf("parse upstream url: %v", err)
-	}
-	goodPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("upstream port: %v", err)
-	}
-	badPort := freePort(t) // nothing ever listens here — "bad" can never pass its health gate
+	goodPort := freePort(t) // stand-in backend bound after runUp's preflight check — see startStandinBackend
+	badPort := freePort(t)  // nothing ever listens here — "bad" can never pass its health gate
 	apiPort := freePort(t)
 
 	dir := t.TempDir()
@@ -510,6 +521,10 @@ services:
 			t.Fatal("runUp did not return during cleanup")
 		}
 	})
+
+	startStandinBackend(t, goodPort, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
 
 	apiURL := "http://127.0.0.1:" + strconv.Itoa(apiPort)
 	waitHealthy(t, apiURL)
@@ -1117,6 +1132,26 @@ func TestCLI_UpWithProfileAttachesToRunningStack(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "attached to "+ts.URL) || !strings.Contains(stdout.String(), "lane2") {
 		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+// TestCLI_UpNoArgsNoopWhenAlreadyRunning: plain `ensemble up` (no
+// positional profiles) against an already-running stack must not error or
+// try to start anything — just report it's already up. Distinct from
+// TestCLI_UpWithProfileAttachesToRunningStack, which drives the
+// positional-profile attach path instead.
+func TestCLI_UpNoArgsNoopWhenAlreadyRunning(t *testing.T) {
+	ts, calls := fakeProfileServer(t, true)
+	t.Setenv("ENSEMBLE_API", ts.URL)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"up"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "already running") {
+		t.Errorf("stdout = %q, want mention of already running", stdout.String())
+	}
+	if len(*calls) != 0 {
+		t.Errorf("no-op path must not call any profile endpoint, got %v", *calls)
 	}
 }
 

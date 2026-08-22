@@ -96,15 +96,21 @@ func cmdUp(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
-	if len(opts.Positional) > 0 {
-		// `ensemble up lane2`: attach to a running stack when there is one,
-		// otherwise it's a cold start with those profiles active.
-		c := NewClient(defaultAPIURL())
-		if err := c.Health(context.Background()); err == nil {
-			return switchProfiles(c, opts.Positional, true, false, stdout, stderr)
-		}
+	c := NewClient(defaultAPIURL())
+	running := c.Health(context.Background()) == nil
+	switch {
+	case len(opts.Positional) > 0 && running:
+		// `ensemble up lane2`: attach to a running stack when there is one.
+		return switchProfiles(c, opts.Positional, true, false, stdout, stderr)
+	case len(opts.Positional) > 0:
 		fmt.Fprintf(stderr, "ensemble: no running stack at %s; starting with profiles %s\n", c.BaseURL, strings.Join(opts.Positional, ", "))
 		opts.Profiles = append(opts.Profiles, opts.Positional...)
+	case running:
+		// Plain `ensemble up` with no positional profiles: a stack is
+		// already up, so there's nothing to start — don't touch it.
+		// `ensemble up <profile>` attaches; `ensemble down` stops it.
+		fmt.Fprintf(stdout, "ensemble: already running at %s; nothing to do\n", c.BaseURL)
+		return 0
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -132,6 +138,10 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	cfg, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	if err := checkPortsFree(cfg, opts.Profiles); err != nil {
+		return err
 	}
 
 	hopsPath := filepath.Join(cfg.Dir, ".ensemble", "hops.jsonl")

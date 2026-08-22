@@ -478,3 +478,40 @@ func (c *Config) ServicesForProfiles(active []string) map[string]Service {
 	}
 	return out
 }
+
+// ActivePorts returns every port a stack started with activeProfiles would
+// bind, labeled by what claims it ("service catalog", "service catalog
+// (proxy)", "database pg", "stub payments", "gateway public" — the same
+// labels Validate's duplicate-port check uses). Databases, stubs, and
+// gateways have no profile field and always run, so they're always
+// included; only services are filtered through ServicesForProfiles. Used
+// by `ensemble up`'s preflight port check, so a profile-gated service that
+// isn't active right now doesn't make its port's use by something else
+// look like a conflict.
+func (c *Config) ActivePorts(activeProfiles []string) map[int]string {
+	ports := make(map[int]string)
+	for name, svc := range c.ServicesForProfiles(activeProfiles) {
+		if svc.Port != 0 {
+			ports[svc.Port] = "service " + name
+		}
+		if svc.Proxy != 0 {
+			ports[svc.Proxy] = "service " + name + " (proxy)"
+		}
+	}
+	for name, db := range c.Databases {
+		if db.Port != 0 {
+			ports[db.Port] = "database " + name
+		}
+	}
+	for name, stub := range c.Stubs {
+		if stub.Port != 0 {
+			ports[stub.Port] = "stub " + name
+		}
+	}
+	for name, gw := range c.Gateways {
+		if gw.Port != 0 {
+			ports[gw.Port] = "gateway " + name
+		}
+	}
+	return ports
+}

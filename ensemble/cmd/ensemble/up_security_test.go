@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,18 +55,7 @@ func TestUp_WarnsOnExposedBind(t *testing.T) {
 // captured request/response bodies, so it must not be readable by other
 // users on the machine.
 func TestUp_HopLogIsNotWorldReadable(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello from svc"))
-	}))
-	defer upstream.Close()
-	u, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatalf("parse upstream url: %v", err)
-	}
-	upPort, err := strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatalf("upstream port: %v", err)
-	}
+	upPort := freePort(t) // stand-in backend bound after runUp's preflight check — see startStandinBackend
 
 	// Own dir (rather than startEnsemble's, which keeps its temp dir to
 	// itself) so the .ensemble directory runUp creates can be stat'ed.
@@ -85,6 +72,9 @@ func TestUp_HopLogIsNotWorldReadable(t *testing.T) {
 			Addr:       fmt.Sprintf("127.0.0.1:%d", apiPort),
 		}, stdout, stderr)
 	}()
+	startStandinBackend(t, upPort, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello from svc"))
+	}))
 	waitHealthy(t, "http://127.0.0.1:"+strconv.Itoa(apiPort))
 	defer func() {
 		cancel()
