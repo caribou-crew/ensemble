@@ -1,0 +1,29 @@
+{
+  "name": "@caribou-crew/retrace-maestro",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "bin": {
+    "retrace-maestro": "./bin/retrace-maestro.mjs"
+  },
+  "files": ["dist", "bin", "README.md"],
+  "scripts": {
+    "pretest": "pnpm --filter @caribou-crew/retrace-js run build",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@caribou-crew/retrace-js": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}

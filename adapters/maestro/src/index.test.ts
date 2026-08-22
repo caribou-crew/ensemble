@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { markerRequest } from './index.js';
+
+describe('markerRequest', () => {
+  it('builds a start marker request', () => {
+    const req = markerRequest(['group', 'checkout'], { RETRACE_MARKER_URL: 'http://127.0.0.1:9999' });
+    expect(req).toEqual({ url: 'http://127.0.0.1:9999/group', body: JSON.stringify({ name: 'checkout' }) });
+  });
+
+  it('builds an end marker request', () => {
+    const req = markerRequest(['group', '--end'], { RETRACE_MARKER_URL: 'http://127.0.0.1:9999' });
+    expect(req).toEqual({ url: 'http://127.0.0.1:9999/group/end', body: '{}' });
+  });
+
+  it('returns null (a silent no-op) outside a run when strict is off', () => {
+    expect(markerRequest(['group', 'checkout'], {})).toBeNull();
+  });
+
+  it('throws the handshake message in strict mode', () => {
+    expect(() => markerRequest(['group', 'checkout'], { RETRACE_STRICT: '1' })).toThrow(/no active run/);
+  });
+
+  // R-AE: pin the rejection — a bad group name must never reach the marker
+  // door at all, on the CLI path just as much as the file/HTTP paths in
+  // @caribou-crew/retrace-js.
+  it('throws on a group name that is not a safe path component', () => {
+    expect(() => markerRequest(['group', 'cart/item'], { RETRACE_MARKER_URL: 'http://127.0.0.1:9999' })).toThrow(
+      /invalid group name/,
+    );
+  });
+
+  // R-AD: an unrecognised RETRACE_STRICT value is a loud error here too —
+  // markerRequest reuses @caribou-crew/retrace-js's handshake(), so this
+  // pins that the sharing actually happened rather than a local re-parse.
+  it('throws on an unrecognised RETRACE_STRICT value', () => {
+    expect(() => markerRequest(['group', 'checkout'], { RETRACE_STRICT: 'enabled' })).toThrow(/RETRACE_STRICT/);
+  });
+
+  it('rejects an unknown command', () => {
+    expect(() => markerRequest(['end'], {})).toThrow(/unknown command/);
+  });
+
+  it('rejects "group" with neither a name nor --end', () => {
+    expect(() => markerRequest(['group'], {})).toThrow(/requires a name/);
+  });
+});
