@@ -8,10 +8,11 @@
 //
 //   - On `Summary`, every array-valued field really is always an array:
 //     `checkpoints`, `sections`, `unexpectedStatuses`, `conformance`,
-//     `budgets`, `quarantined` and `gates` all carry a bare `json:"…"` tag
-//     and Task 10 initialises every one of them. `summary.budgets.map(...)`
-//     is safe on a flow that produced no gates at all, which is a real case:
-//     "no evidence, no gate" applies to all four planes.
+//     `budgets`, `unmeasuredGates`, `quarantined` and `gates` all carry a
+//     bare `json:"…"` tag and Task 10 initialises every one of them.
+//     `summary.budgets.map(...)` is safe on a flow that produced no gates at
+//     all, which is a real case: "no evidence, no gate" applies to all four
+//     planes — and `unmeasuredGates` is how such a flow says so out loud.
 //   - On `Item` it was NOT true, and the two types use the field name
 //     `gates` on the same REST surface. `Item.Gates` carried `omitempty`, so
 //     a HEALTHY row omitted the key and `item.gates.length` threw
@@ -382,6 +383,18 @@ export interface Summary {
   counts: Counts;
   gates: string[];
   budgets: Gate[];
+  /**
+   * The planes `gates:` configures that this comparison could not measure —
+   * gated, and no evidence to gate against. Mirrors diff.Summary's own
+   * field; it is NOT derived here, and must not be: a consumer that
+   * re-derived "gated but unmeasured" privately while the others read
+   * `budgets` alone is the bug this field exists to close.
+   *
+   * `budgets` alone cannot say it. A plane nobody gated and a plane gated
+   * with nothing to measure are the same missing row, so rendering only
+   * `budgets` reports the second as the first.
+   */
+  unmeasuredGates: string[];
 }
 
 /**

@@ -55,3 +55,43 @@ func TestUIServesIndexAndSPAFallback(t *testing.T) {
 		t.Fatalf("GET /assets/missing.js status = %d, want 404 (real asset paths must not fall back)", missingResp.StatusCode)
 	}
 }
+
+// TestTheServedShellIsEitherARealBundleOrSaysItIsNotBuilt is the mirror of
+// retrace/serve/ui's test of the same name, and it is here because the
+// review that found retrace's placeholder blank also found that nothing
+// would have gone red if THIS one had drifted the same way.
+//
+// This placeholder is the one README.md's recovery instruction is written
+// against ("If you ever see \"UI not built\" in the dashboard…"), so its
+// text is a documented contract, not a message.
+//
+// Both states are asserted, neither is skipped: `pnpm -r build` overwrites
+// this file with the real bundle, and CI builds it.
+func TestTheServedShellIsEitherARealBundleOrSaysItIsNotBuilt(t *testing.T) {
+	ts := httptest.NewServer(ui.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	page := string(body)
+
+	if strings.Contains(page, "/assets/") {
+		if !strings.Contains(page, "<script") {
+			t.Fatalf("the built bundle references /assets/ but loads no script — this shell renders nothing:\n%s", page)
+		}
+		return
+	}
+	if !strings.Contains(page, "UI not built") {
+		t.Fatalf("a Go-only build serves a shell that never says the UI is missing, and README's recovery is keyed on that exact string:\n%s", page)
+	}
+	if !strings.Contains(page, "pnpm -r build") {
+		t.Fatalf("the placeholder names no recovery command:\n%s", page)
+	}
+}

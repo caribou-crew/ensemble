@@ -157,6 +157,24 @@ type Summary struct {
 	// Gates, because Gates []string above already answers to that json
 	// key.
 	Budgets []Gate `json:"budgets"`
+	// UnmeasuredGates names the planes `gates:` configures and Budgets has
+	// NO row for: gated, and this run carried no evidence to measure them
+	// against. It is the other half of Budgets' rule, and it lives on the
+	// Summary because Budgets alone cannot express it — a plane nobody
+	// gated and a plane gated-but-unmeasurable are the same absence, and
+	// every consumer that read the absence alone reported "pass".
+	//
+	// Derived once, here, from the config's own keys and the Summary's own
+	// rows; there is no second plane list to drift out of step with
+	// budgetsOf's. Four surfaces consume it (text, --json, the review UI,
+	// the static export) and none re-derives it — the static export
+	// re-deriving it privately, correctly, while the other three stayed
+	// silent is exactly how this field came to exist.
+	//
+	// A plane named here AND in fail_on is a verdict "failed" (see
+	// unevaluatedGateReasons): a gate the user asked to break the build
+	// which could not be evaluated is not a gate that passed.
+	UnmeasuredGates []string `json:"unmeasuredGates"`
 	// Quarantined lists the sides excluded from this comparison because
 	// their own capture-trust verdict was not "ok". Empty unless
 	// --allow-degraded was NOT passed and at least one side warranted it.
@@ -518,6 +536,11 @@ func Build(in BuildInput) (Summary, error) {
 	// budgetsOf builds one Gate per plane cfg.Gates configures — NEVER one
 	// per plane that merely exists.
 	s.Budgets = budgetsOf(s, in.Cfg)
+	// ...and unmeasuredGatesOf names the planes budgetsOf REFUSED to emit a
+	// row for. The refusal is right; reading the resulting absence as "no
+	// gate failed" is what made an unevaluatable gate exit 0.
+	s.UnmeasuredGates = unmeasuredGatesOf(s, in.Cfg)
+	s.Gates = append(s.Gates, unevaluatedGateReasons(s.UnmeasuredGates, in.Cfg.FailOn)...)
 	switch {
 	case len(s.Gates) > 0 || failingBudget(s.Budgets, in.Cfg.FailOn):
 		s.Verdict = "failed"
@@ -772,6 +795,70 @@ func observedFor(s Summary, plane string) (observed float64, measurable bool) {
 	}
 }
 
+// unmeasuredGatesOf names the planes cfg gates and s has no Budget row for,
+// sorted so the result is deterministic regardless of Go's randomized map
+// iteration order.
+//
+// It reads the CONFIG's own keys and the Summary's own rows rather than a
+// third plane list, so it cannot fall out of step with budgetsOf: whatever
+// budgetsOf declines to emit for a configured plane lands here, including
+// any plane either function gains later.
+//
+// Note that budgetsOf skips a plane for TWO reasons — `gates:` never named
+// it, and `gates:` named it but observedFor found no evidence — and only
+// the second belongs here. The `g.BudgetPct == nil` test is what separates
+// them: it is the same test budgetsOf uses to decide the plane is
+// configured at all.
+func unmeasuredGatesOf(s Summary, cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	measured := map[string]bool{}
+	for _, g := range s.Budgets {
+		measured[g.Plane] = true
+	}
+	var out []string
+	for plane, g := range cfg.Gates {
+		if g.BudgetPct == nil || measured[plane] {
+			continue
+		}
+		out = append(out, plane)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unevaluatedGateReasons turns "gated, unmeasurable, and named in fail_on"
+// into a Gates reason — which is to say, into verdict "failed" and exit 2.
+//
+// The fail_on scoping is deliberate and mirrors failingBudget's: fail_on is
+// the project's own statement of which planes may break the build, and a
+// plane outside it does not break the build whether it was measured or not.
+// The auto-inserted pixel gate (config.applyDefaults) is the case this
+// protects — every screenshot-less flow carries one, and turning those into
+// failures would punish projects that never asked pixel to gate anything.
+// Such a plane is still NAMED on every surface via UnmeasuredGates; it is
+// reported, just not fatal.
+//
+// Exit 2 rather than 3: exit 3 means the comparison itself is unusable
+// (quarantine — Build returns before any plane is computed). Here the
+// comparison is entirely usable and one configured gate is not; reporting
+// it as 3 would tell CI to discard findings the other planes did produce.
+func unevaluatedGateReasons(unmeasured []string, failOn []string) []string {
+	allowed := map[string]bool{}
+	for _, p := range failOn {
+		allowed[p] = true
+	}
+	var out []string
+	for _, plane := range unmeasured {
+		if !allowed[plane] {
+			continue
+		}
+		out = append(out, fmt.Sprintf("gate not evaluated: %s is gated and named in fail_on, but this run carried no evidence to measure it against — that is not a gate that passed", plane))
+	}
+	return out
+}
+
 func failingBudget(budgets []Gate, failOn []string) bool {
 	allowed := map[string]bool{}
 	for _, p := range failOn {
@@ -884,6 +971,14 @@ func RenderText(w io.Writer, s Summary) {
 		}
 		fmt.Fprintf(w, "BUDGET: %s %.2f%% → %.2f%% %s\n", b.Plane, b.Threshold, b.Observed, status)
 	}
+	// Printed after the BUDGET rows and before the verdict, because it is
+	// read as one list with them: these are the gates this project
+	// configured whose rows are absent above. Without this line the reader
+	// infers "no BUDGET row for wire" means "wire is not gated", which is a
+	// claim about configuration they cannot check from the report.
+	for _, plane := range s.UnmeasuredGates {
+		fmt.Fprintf(w, "BUDGET: %s NOT EVALUATED — gated by this project's config, and this run carried no evidence to measure it against. That is not a gate that passed.\n", plane)
+	}
 
 	renderConformance(w, s.Conformance)
 
@@ -972,6 +1067,9 @@ func (s *Summary) ensureArrays() {
 	}
 	if s.Budgets == nil {
 		s.Budgets = []Gate{}
+	}
+	if s.UnmeasuredGates == nil {
+		s.UnmeasuredGates = []string{}
 	}
 	if s.Quarantined == nil {
 		s.Quarantined = []Quarantine{}

@@ -24,7 +24,7 @@ func TestMarkerDoorAppendsStartAndEndRecords(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("end marker status = %d", resp.StatusCode)
 	}
-	recs, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir})
+	recs, _, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir})
 	if len(recs) != 2 || recs[0].Name != "checkout" || recs[1].Phase != "end" {
 		t.Fatalf("records = %+v", recs)
 	}
@@ -88,7 +88,71 @@ func TestMarkerDoorRejectsCrossSiteAndReboundHosts(t *testing.T) {
 		t.Fatalf("rebound-Host status = %d, want 403", rec.Code)
 	}
 
-	if recs, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir}); len(recs) != 0 {
+	if recs, _, _ := runs.ReadGroupRecords(runs.Paths{RunDir: dir}); len(recs) != 0 {
 		t.Fatalf("a rejected request wrote %d marker records", len(recs))
+	}
+}
+
+// TestOnAdmittedCountsWhatTheGuardAdmittedNotWhatTheRouterAccepted turns
+// NewMarkerDoorCounted's doc comment into something a mutation can kill.
+//
+// The comment used to assert the opposite of the code for half its cases —
+// it named "a nameless-marker 400" among the requests the hook never fires
+// for, when the hook is installed OUTSIDE the mux and therefore fires
+// before dispatch. capture.Assess's doc described the same mechanism
+// correctly ("the mux counts the plan's own preflight probe, and a
+// 405/404/malformed-body 400") and neutralises the inflation by
+// construction. The code was right and the comment was wrong; nothing
+// pinned either reading, which is how they came to disagree.
+//
+// Both halves are asserted from one table, because the boundary is the
+// whole point: the GUARD's rejections are uncounted, the MUX's are not.
+func TestOnAdmittedCountsWhatTheGuardAdmittedNotWhatTheRouterAccepted(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		path, body string
+		crossSite  bool
+		wantStatus int
+		wantFired  int
+	}{
+		{"a good marker", "/group", `{"name":"checkout"}`, false, http.StatusNoContent, 1},
+		// Admitted by the guard, refused by the router. Counted — this is
+		// the row the old comment denied.
+		{"a nameless marker", "/group", `{"name":""}`, false, http.StatusBadRequest, 1},
+		{"a malformed body", "/group", `{`, false, http.StatusBadRequest, 1},
+		{"a stray port probe", "/nope", `{}`, false, http.StatusNotFound, 1},
+		// Refused by the guard, never reaches the router. Uncounted — and
+		// this is the half the placement exists for: Session.RequestsSeen()
+		// == 0 is how Task 6 says "the app never routed through us", so a
+		// cross-site POST must not be able to disarm it.
+		{"a cross-site POST", "/group", `{"name":"checkout"}`, true, http.StatusForbidden, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fired := 0
+			srv := httptest.NewServer(NewMarkerDoorCounted(runs.Paths{RunDir: t.TempDir()}, nil, func() { fired++ }))
+			defer srv.Close()
+
+			req, err := http.NewRequest(http.MethodPost, srv.URL+tc.path, strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.crossSite {
+				req.Header.Set("Origin", "http://evil.example")
+				req.Header.Set("Sec-Fetch-Site", "cross-site")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+			if fired != tc.wantFired {
+				t.Fatalf("onAdmitted fired %d time(s), want %d — the hook counts what the GUARD admitted, not what the ROUTER accepted", fired, tc.wantFired)
+			}
+		})
 	}
 }

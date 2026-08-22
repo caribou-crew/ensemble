@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
-	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -211,6 +210,12 @@ type reportItem struct {
 	// answers "did my wire gate run on this build?" with "wire is not
 	// gated", which is a claim about CONFIGURATION, and configuration is
 	// the one thing a reader of a CI artifact cannot check for themselves.
+	//
+	// COPIED from diff.Summary.UnmeasuredGates, never re-derived. This page
+	// used to compute it privately, and it was the only one of the four
+	// consumers that did — the CLI, --json and the review UI all read
+	// Summary.Budgets alone and reported an unevaluated gate as a pass. One
+	// signal with four consumers cannot drift; two derivations already did.
 	UnmeasuredGates []string
 }
 
@@ -481,7 +486,7 @@ func (e *exporter) item(it Item) (reportRow, error) {
 	}
 	return row, e.render(path.Join(dir, "index.html"), "item", reportItem{
 		Generated: e.generated, Row: row, Summary: &sum, Shots: shots,
-		UnmeasuredGates: unmeasuredGates(e.opts.Deps.Cfg, sum),
+		UnmeasuredGates: sum.UnmeasuredGates,
 	})
 }
 
@@ -618,33 +623,6 @@ func comparedCheckpoints(s diff.Summary) int {
 		}
 	}
 	return n
-}
-
-// unmeasuredGates names the planes cfg gates and s has no Budget row for.
-//
-// It is derived from the CONFIG's own keys and the Summary's own rows —
-// there is no plane list here to drift out of step with diff.budgetsOf's.
-// A plane appears here when the project asked for it to be gated and the
-// run carried no evidence to measure it against, which is the state the
-// Summary encodes as an absence and prose would otherwise report as "not
-// gated".
-func unmeasuredGates(cfg *config.Config, s diff.Summary) []string {
-	if cfg == nil {
-		return nil
-	}
-	measured := map[string]bool{}
-	for _, g := range s.Budgets {
-		measured[g.Plane] = true
-	}
-	var out []string
-	for plane, g := range cfg.Gates {
-		if g.BudgetPct == nil || measured[plane] {
-			continue
-		}
-		out = append(out, plane)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // --- writing -------------------------------------------------------------

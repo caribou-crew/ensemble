@@ -336,12 +336,15 @@ await endGroup();
 	}
 	after := time.Now()
 
-	recs, err := runs.ReadGroupRecords(paths)
+	recs, skipped, err := runs.ReadGroupRecords(paths)
 	if err != nil {
 		t.Fatalf("ReadGroupRecords: %v", err)
 	}
 	if len(recs) != 2 {
 		t.Fatalf("group records = %+v, want exactly 2 (start, end)", recs)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d, want 0 — the shipped adapter must not be writing markers the reader has to drop", skipped)
 	}
 	start, end := recs[0], recs[1]
 	if start.Phase != "start" || start.Name != groupName || !start.Quiet {

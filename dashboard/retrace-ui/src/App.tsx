@@ -248,7 +248,14 @@ function ItemScreen({
             <HopDeltaList hops={summary.hops} />
           </section>
 
-          {summary.budgets.length > 0 ? (
+          {/* The unmeasured planes are rendered INSIDE this section and
+              open it on their own, because the reader's question is "did my
+              gates run?" and a section that appears only when some budget
+              was measured answers it with silence. `budgets.length > 0`
+              alone hid the very case the section is most needed for: every
+              plane the project gated was unmeasurable, so nothing rendered
+              at all, so the page read as "not gated". */}
+          {summary.budgets.length > 0 || summary.unmeasuredGates.length > 0 ? (
             <section className="item__plane">
               <h2>budgets</h2>
               <ul className="item__budgets">
@@ -256,6 +263,17 @@ function ItemScreen({
                   <li key={g.plane}>
                     <Badge tone={g.failed ? 'red' : 'green'}>{g.plane}</Badge> {g.observed} of{' '}
                     {g.threshold}
+                  </li>
+                ))}
+                {summary.unmeasuredGates.map((plane) => (
+                  <li key={`unmeasured-${plane}`}>
+                    {/* amber, the same tone `quarantined` gets: "could not
+                        evaluate", not "evaluated and bad" — and emphatically
+                        not green, which is what an absent row rendered as
+                        before. */}
+                    <Badge tone="amber">{plane}</Badge> not evaluated — gated by this project's
+                    config, and this run carried no evidence to measure it against. That is not a
+                    gate that passed.
                   </li>
                 ))}
               </ul>

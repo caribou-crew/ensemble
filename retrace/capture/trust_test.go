@@ -274,3 +274,57 @@ func TestFatalExcludesOKAndSuspectOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestAMarkerWithNoTimestampCannotSuppressGapDetection is the CONSEQUENCE
+// half of runs.ErrMarkerWithoutTimestamp, asserted where the damage
+// actually landed rather than at the seam that guards it — the two are in
+// different packages, and this test is the one that would go red if
+// DeriveGroups' filter were removed while runs' own tests were rewritten
+// around it.
+//
+// The chain: a `quiet` GroupRecord with no TS sorts first, opens a group at
+// 0001-01-01, and closeAt(finishedAt) runs it to the end of the run. That
+// is a declared-silent interval covering all of history, which FindGaps
+// subtracts from every gap. A proxy that died for ten minutes mid-run went
+// from "suspect" to "ok" — and "ok" is the one verdict diff's quarantine
+// and Fatal both let through.
+//
+// Both arms are asserted from ONE fixture: the same two hops, ten minutes
+// apart, with and without the bad marker. A fixture that only ran the
+// with-marker case could not tell "the marker was ignored" from "there was
+// never a gap to find".
+func TestAMarkerWithNoTimestampCannotSuppressGapDetection(t *testing.T) {
+	t0 := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	finished := t0.Add(11 * time.Minute)
+	traffic := []trace.Hop{
+		{T: trace.Timings{Start: t0}},
+		{T: trace.Timings{Start: t0.Add(10 * time.Minute)}},
+	}
+	assess := func(groups []runs.Group) runs.CaptureTrust {
+		return Assess(AssessInput{
+			Hops: traffic, Quiet: groups, RequestsSeen: len(traffic),
+			Checkpoints: 0, ExpectedCheckpoints: 0,
+		})
+	}
+
+	bare := assess(nil)
+	if bare.Status != trace.VerdictSuspect {
+		t.Fatalf("test setup: status = %s (%s), want suspect — without the marker this run must already look wrong", bare.Status, bare.Summary)
+	}
+
+	// One omitted struct field, in ordinary Go, through the exported API.
+	groups := runs.DeriveGroups([]runs.GroupRecord{
+		{Phase: "start", Name: "warmup", Quiet: true},
+	}, finished)
+	if len(groups) != 0 {
+		t.Fatalf("DeriveGroups returned %+v for a marker with no ts", groups)
+	}
+
+	got := assess(groups)
+	if got.Status != trace.VerdictSuspect {
+		t.Fatalf("status = %s (%s), want suspect — a marker with no timestamp silenced a 600s hole in the capture for the whole run", got.Status, got.Summary)
+	}
+	if gaps := FindGaps(traffic, DefaultGapThreshold, groups); len(gaps) != 1 || gaps[0].Seconds != 600 {
+		t.Fatalf("gaps = %+v, want the one 600s gap", gaps)
+	}
+}

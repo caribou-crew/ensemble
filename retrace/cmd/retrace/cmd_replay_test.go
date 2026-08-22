@@ -496,34 +496,51 @@ func TestListenRefusesANonLoopbackAddressBeforeItBinds(t *testing.T) {
 	port := freePort(t)
 	before := len(runs.ListRuns(replaysRoot(cwd), "web", "checkout"))
 
-	for _, addr := range []string{"0.0.0.0:" + port, ":" + port, hostIP(t) + ":" + port} {
-		t.Run(addr, func(t *testing.T) {
-			args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--listen", addr},
-				selfCmd(t, "TestHelperFetchesThroughProxy")...)
-			res := runRetrace(t, bin, cwd, "fetch", args...)
-			if res.code == 0 {
-				t.Fatalf("--listen %s was accepted\nstdout: %s\nstderr: %s", addr, res.stdout, res.stderr)
-			}
-			if !strings.Contains(res.stderr, addr) || !strings.Contains(res.stderr, "loopback") {
-				t.Fatalf("stderr does not name the address and why it was refused:\n%s", res.stderr)
-			}
-			if !strings.Contains(res.stderr, "ssh -L") {
-				t.Fatalf("stderr does not point at the way to reach it from another host:\n%s", res.stderr)
-			}
-			// NO LISTENER WAS OPENED. Two independent facts: nothing is
-			// accepting on the address that was asked for, and the refusal
-			// landed before the run directory is created — which is before
-			// net.Listen, and before the test command runs.
-			conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, time.Second)
-			if err == nil {
-				conn.Close()
-				t.Fatalf("something is accepting on port %s after the refusal", port)
-			}
-			if got := len(runs.ListRuns(replaysRoot(cwd), "web", "checkout")); got != before {
-				t.Fatalf("a replay run directory was created (%d -> %d) — the refusal came after the server was set up", before, got)
-			}
-		})
+	// One body, called from every case below — including the one that may
+	// have to skip, which is why the skip cannot live out here.
+	refuses := func(t *testing.T, addr string) {
+		t.Helper()
+		args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--listen", addr},
+			selfCmd(t, "TestHelperFetchesThroughProxy")...)
+		res := runRetrace(t, bin, cwd, "fetch", args...)
+		if res.code == 0 {
+			t.Fatalf("--listen %s was accepted\nstdout: %s\nstderr: %s", addr, res.stdout, res.stderr)
+		}
+		if !strings.Contains(res.stderr, addr) || !strings.Contains(res.stderr, "loopback") {
+			t.Fatalf("stderr does not name the address and why it was refused:\n%s", res.stderr)
+		}
+		if !strings.Contains(res.stderr, "ssh -L") {
+			t.Fatalf("stderr does not point at the way to reach it from another host:\n%s", res.stderr)
+		}
+		// NO LISTENER WAS OPENED. Two independent facts: nothing is
+		// accepting on the address that was asked for, and the refusal
+		// landed before the run directory is created — which is before
+		// net.Listen, and before the test command runs.
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, time.Second)
+		if err == nil {
+			conn.Close()
+			t.Fatalf("something is accepting on port %s after the refusal", port)
+		}
+		if got := len(runs.ListRuns(replaysRoot(cwd), "web", "checkout")); got != before {
+			t.Fatalf("a replay run directory was created (%d -> %d) — the refusal came after the server was set up", before, got)
+		}
 	}
+
+	for _, addr := range []string{"0.0.0.0:" + port, ":" + port} {
+		t.Run(addr, func(t *testing.T) { refuses(t, addr) })
+	}
+
+	// The real-interface case is its own subtest, and hostIP is called
+	// INSIDE it. It used to sit in the range expression above — which the
+	// parent goroutine evaluates before the loop, so hostIP's t.Skip
+	// Goexit'd the PARENT: on a machine with no non-loopback IPv4 (a
+	// hermetic CI container) not one subtest ran, the 0.0.0.0 and :port
+	// cases and the over-refusal mirror below all vanished, and the suite
+	// reported PASS. A guard that silently removes unrelated assertions is
+	// worse than the missing interface it guards against.
+	t.Run("a real non-loopback interface", func(t *testing.T) {
+		refuses(t, hostIP(t)+":"+port)
+	})
 
 	// The over-refusal mirror, which is not optional: the ordinary case
 	// still binds AND SERVES. A refusal that swallowed 127.0.0.1 would

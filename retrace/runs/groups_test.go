@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,12 +74,15 @@ func TestAppendAndReadGroupRecordsSkipsCorruptLines(t *testing.T) {
 	if err := AppendGroupRecord(p, GroupRecord{Phase: "end", TS: ts("2026-08-21T10:00:05Z")}); err != nil {
 		t.Fatalf("AppendGroupRecord: %v", err)
 	}
-	got, err := ReadGroupRecords(p)
+	got, skipped, err := ReadGroupRecords(p)
 	if err != nil {
 		t.Fatalf("ReadGroupRecords: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("a corrupt marker line must be dropped, not fatal: %+v", got)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 — a dropped line the caller is never told about is indistinguishable from a line that was never written", skipped)
 	}
 }
 
@@ -125,4 +129,104 @@ func appendRaw(runDir, line string) error {
 	defer f.Close()
 	_, err = f.WriteString(line)
 	return err
+}
+
+// --- a marker with no timestamp is not a marker ---------------------------
+//
+// The three tests below pin one rule at the three seams that can see it.
+// The rule matters far out of proportion to its size: TS is a bare
+// time.Time on an EXPORTED struct that an exported function takes by
+// value, so `GroupRecord{Phase: "start", Name: "warmup", Quiet: true}` —
+// one omitted field, ordinary Go — used to become a declared-silent
+// interval spanning [0001-01-01, run end) that suppressed gap detection for
+// the ENTIRE run. See ErrMarkerWithoutTimestamp.
+
+// TestAppendGroupRecordRefusesAMarkerWithNoTimestamp pins the write seam.
+// It also asserts that nothing reached disk: a refusal that still appends
+// is a refusal only in the return value.
+func TestAppendGroupRecordRefusesAMarkerWithNoTimestamp(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Exactly the literal a caller writes when they forget the field —
+	// well-formed in every other respect, and `quiet`, which is what makes
+	// it expensive.
+	err = AppendGroupRecord(p, GroupRecord{Phase: "start", Name: "warmup", Quiet: true})
+	if !errors.Is(err, ErrMarkerWithoutTimestamp) {
+		t.Fatalf("AppendGroupRecord error = %v, want ErrMarkerWithoutTimestamp — a zero TS is invalid input, not a quiet interval starting at the beginning of time", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(p.RunDir, "groups.jsonl")); !os.IsNotExist(statErr) {
+		body, _ := os.ReadFile(filepath.Join(p.RunDir, "groups.jsonl"))
+		t.Fatalf("the refused marker was written anyway: %q", body)
+	}
+}
+
+// TestReadGroupRecordsDropsAndCountsAMarkerWithNoTimestamp pins the read
+// seam, which is the one a third-party file-drop reaches: `groups.jsonl` is
+// a documented protocol (adapters/js/README.md), and a line with no `ts` is
+// VALID JSON, so the fail-open reader honoured it where it would have
+// dropped a corrupt one. Being fail-open made a half-correct record worse
+// than a broken one.
+//
+// The count is asserted because the drop alone is invisible, and an
+// invisible drop is the same defect wearing a different hat: the flow that
+// wrote the bad marker is still wrong, and its declared-quiet interval is
+// silently gone.
+func TestReadGroupRecordsDropsAndCountsAMarkerWithNoTimestamp(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := AppendGroupRecord(p, GroupRecord{Phase: "start", Name: "real", TS: ts("2026-08-21T10:00:00Z")}); err != nil {
+		t.Fatalf("AppendGroupRecord: %v", err)
+	}
+	// Written raw, because AppendGroupRecord now refuses to produce it —
+	// which is precisely why the read seam still needs its own guard.
+	if err := appendRaw(p.RunDir, "{\"phase\":\"start\",\"name\":\"warmup\",\"quiet\":true}\n"); err != nil {
+		t.Fatalf("appendRaw: %v", err)
+	}
+
+	got, skipped, err := ReadGroupRecords(p)
+	if err != nil {
+		t.Fatalf("ReadGroupRecords: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "real" {
+		t.Fatalf("records = %+v, want only the timestamped one", got)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 — a `ts`-less line is valid JSON that is not a record, and the caller must be able to say so", skipped)
+	}
+}
+
+// TestDeriveGroupsIgnoresAMarkerWithNoTimestamp pins the third seam — the
+// one records assembled in memory reach without passing either of the
+// others — and, in the same fixture, that the surviving records still
+// derive correctly. Dropping the bad record at the cost of the good ones
+// would trade this defect for a quieter one.
+func TestDeriveGroupsIgnoresAMarkerWithNoTimestamp(t *testing.T) {
+	records := []GroupRecord{
+		{Phase: "start", Name: "warmup", Quiet: true}, // no TS
+		{Phase: "start", Name: "browse", TS: ts("2026-08-21T10:00:00Z")},
+		{Phase: "start", Name: "checkout", TS: ts("2026-08-21T10:00:10Z")},
+	}
+	got := DeriveGroups(records, ts("2026-08-21T10:00:20Z"))
+
+	for _, g := range got {
+		if g.Name == "warmup" {
+			t.Fatalf("a marker with no ts opened a group: %+v", g)
+		}
+		if g.StartedAt.IsZero() {
+			t.Fatalf("a group starting at the zero time reached the manifest: %+v — with Quiet it covers all of history and capture.FindGaps subtracts it from every gap in the run", g)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("groups = %+v, want the two real ones — rejecting the bad record must not cost the good ones", got)
+	}
+	if got[0].Name != "browse" || !got[0].StartedAt.Equal(ts("2026-08-21T10:00:00Z")) {
+		t.Fatalf("groups[0] = %+v, want browse at 10:00:00", got[0])
+	}
+	if got[1].Name != "checkout" || !got[1].EndedAt.Equal(ts("2026-08-21T10:00:20Z")) {
+		t.Fatalf("groups[1] = %+v, want checkout closing at finishedAt", got[1])
+	}
 }
