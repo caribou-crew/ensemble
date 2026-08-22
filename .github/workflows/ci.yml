@@ -12,6 +12,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      # cmd_run_adapters_test.go (Task 17 Step 5) is the only test that
+      # crosses the adapters(TS)/retrace(Go) boundary. It needs node+pnpm to
+      # build @caribou-crew/retrace-js before it can run — without this, the
+      # `go` job has no toolchain to run it with, and it must not just skip
+      # quietly (see the `CI` gate in that file).
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: go vet ./core/... ./ensemble/... ./retrace/...
       - run: go test -race ./core/... ./ensemble/... ./retrace/...
       - name: goreleaser config check
