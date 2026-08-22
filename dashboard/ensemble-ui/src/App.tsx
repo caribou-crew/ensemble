@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs, type TabItem } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
-import { api } from './api/client';
+import { api, messageOf } from './api/client';
 import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
 import TopologyView from './views/TopologyView';
@@ -39,12 +39,27 @@ function useHealthPoll(intervalMs = 5000) {
     if (data !== null) setServices(data);
   }, [data]);
 
+  // Sticky error, mirroring the sticky `services` snapshot above: useAsync clears BOTH
+  // `data` and `error` to null the instant a new poll starts (tick bumps), so reading
+  // `error` straight off the hook flashed the "offline" banner back to the stale-but-good
+  // table for the whole duration of every in-flight poll while the backend was down (final
+  // review F2) — for a poll that keeps failing every ~5s, that is effectively the entire
+  // outage. Pre-migration `setError(null)` ran only on the SUCCESS path, so once the
+  // banner appeared it stayed until a poll actually succeeded again; this reproduces that
+  // by clearing only on an actual successful load (`data !== null`), never merely because
+  // the next poll started.
+  const [staleError, setStaleError] = useState<string | null>(null);
+  useEffect(() => {
+    if (error) setStaleError(messageOf(error, 'failed to reach the ensemble API'));
+    else if (data !== null) setStaleError(null);
+  }, [error, data]);
+
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), intervalMs);
     return () => window.clearInterval(id);
   }, [intervalMs]);
 
-  return { services, error: error?.message ?? null };
+  return { services, error: staleError };
 }
 
 function HealthStrip() {
