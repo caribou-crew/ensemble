@@ -125,3 +125,75 @@ describe('TopologyView: useTopologyPoll.refresh race', () => {
     expect(panel?.textContent).not.toContain('starting');
   });
 });
+
+// Final review F2, TopologyView's half — the third site of the sticky-error fix and, like
+// App.tsx's, added by round 1 with nothing exercising it: the re-review's mutation
+// (collapsing the two-branch effect to one that also clears when the next poll STARTS) left
+// the whole suite green. Same property as ServicesView.stale-error.test.ts asserts for its
+// own view.
+describe('TopologyView: the offline banner is sticky across an in-flight poll', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    vi.spyOn(api, 'traffic').mockResolvedValue([]);
+    vi.spyOn(api, 'profiles').mockResolvedValue({ active: [], profiles: [] });
+    vi.spyOn(api, 'trace').mockRejectedValue(new Error('this test never sets ?trace='));
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('keeps "offline" up while the next poll is in flight, and clears it only on success', async () => {
+    let call = 0;
+    let resolveThird!: (t: Topology) => void;
+    vi.spyOn(api, 'status').mockResolvedValue(statusOf('healthy'));
+    vi.spyOn(api, 'topology').mockImplementation(() => {
+      call += 1;
+      if (call === 1) return Promise.resolve(TOPOLOGY);
+      if (call === 2) return Promise.reject(new TypeError('Failed to fetch'));
+      if (call === 3) {
+        return new Promise<Topology>((r) => {
+          resolveThird = r;
+        });
+      }
+      throw new Error(`unexpected topology() call #${call}`);
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(TopologyView));
+    });
+    expect(container.querySelector('.topo-view--error')).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    expect(container.querySelector('.topo-view--error')).toBeTruthy();
+    // The fallback, not the raw TypeError message.
+    expect(container.textContent).toContain('failed to reach the ensemble API');
+    expect(container.textContent).not.toContain('Failed to fetch');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    expect(
+      container.querySelector('.topo-view--error'),
+      'the offline banner must survive the in-flight poll (F2), not flash back to the graph',
+    ).toBeTruthy();
+    expect(container.querySelector('.topo-node')).toBeNull();
+
+    await act(async () => {
+      resolveThird(TOPOLOGY);
+    });
+    expect(container.querySelector('.topo-view--error')).toBeNull();
+  });
+});
