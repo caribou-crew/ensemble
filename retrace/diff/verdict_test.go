@@ -14,6 +14,7 @@ package diff
 // the same test rather than on whichever arm was convenient.
 
 import (
+	"encoding/json"
 	"image"
 	"image/color"
 	"math"
@@ -1404,4 +1405,130 @@ func writeShotAt(t *testing.T, runDir, name, rel string, png []byte) runs.Checkp
 		t.Fatal(err)
 	}
 	return runs.Checkpoint{Name: name, File: rel}
+}
+
+// --- an unmeasurable gate is not a gate that passed ------------------------
+//
+// The three tests below are one finding: budgetsOf rightly emits no Gate row
+// for a plane it cannot measure, and every consumer read that absence as "no
+// gate failed". The absence is now stated as UnmeasuredGates, and each of
+// these pins a different half of what the statement is for — the verdict,
+// the fail_on scoping, and the wire shape agents read.
+
+// unmeasurablePerfGate builds the exact reproduction from the review: a
+// project that gates the perf plane but never configures a
+// flows.<flow>.perf_budget_ms, so DerivePerfBudget leaves BudgetMs at 0 and
+// observedFor calls the plane unmeasurable. Everything else is identical on
+// both sides, so no other mechanism can move the verdict.
+func unmeasurablePerfGate(t *testing.T, failOn []string) Summary {
+	t.Helper()
+	dirA, dirB := t.TempDir(), t.TempDir()
+	h := hop(1, "GET", "/cart", 200, "", `{}`)
+	writeWireFile(t, dirA, []trace.Hop{h})
+	writeWireFile(t, dirB, []trace.Hop{h})
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", nil, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", nil, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Gates["perf"] = gatePct(10) // gated...
+	cfg.FailOn = failOn
+	// ...and cfg.Flows carries no perf_budget_ms, so there is no budget for
+	// a percentage to be over.
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if gateFor(s, "perf") != nil {
+		t.Fatalf("test setup: Budgets = %+v, want NO perf row — the whole finding is that the row is absent", s.Budgets)
+	}
+	if s.Perf.BudgetMs != 0 {
+		t.Fatalf("test setup: Perf.BudgetMs = %v, want 0 (unmeasurable)", s.Perf.BudgetMs)
+	}
+	return s
+}
+
+// TestAGateThatCouldNotBeEvaluatedFailsTheBuildWhenFailOnNamesIt is the
+// finding itself: `gates.perf.budget_pct` + `fail_on: [perf]` with no
+// perf_budget_ms reported VERDICT pass / exit 0, permanently, on every run.
+// An operator who configured that gate believes perf regressions break the
+// build; they never can.
+func TestAGateThatCouldNotBeEvaluatedFailsTheBuildWhenFailOnNamesIt(t *testing.T) {
+	s := unmeasurablePerfGate(t, []string{"perf"})
+
+	if got := s.UnmeasuredGates; len(got) != 1 || got[0] != "perf" {
+		t.Fatalf("UnmeasuredGates = %v, want [perf] — the plane is gated and no row was emitted for it", got)
+	}
+	if len(s.Gates) != 1 || !strings.Contains(s.Gates[0], "perf") || !strings.Contains(s.Gates[0], "not evaluated") {
+		t.Fatalf("Gates = %v, want one reason naming perf and saying it was not evaluated", s.Gates)
+	}
+	if s.Verdict != "failed" || ExitCode(s) != 2 {
+		t.Fatalf("verdict = %q / exit %d, want failed / 2 — a gate the project asked to break the build, which could not be evaluated, must never read as a pass",
+			s.Verdict, ExitCode(s))
+	}
+}
+
+// TestAnUnevaluatedGateOutsideFailOnIsNamedButNotFatal pins the other arm,
+// and it is the arm that keeps the fix proportionate: config.applyDefaults
+// auto-inserts a pixel gate into EVERY project, so every screenshot-less
+// flow carries an unmeasurable one. Those must be reported, not fatal —
+// fail_on is the project's own statement of which planes may break the
+// build, exactly as failingBudget already reads it.
+//
+// Without the fail_on scoping this fixture exits 2 and every default-config
+// user's green build turns red; without the naming, it is the pass the
+// finding is about. Only asserting both together pins the rule.
+func TestAnUnevaluatedGateOutsideFailOnIsNamedButNotFatal(t *testing.T) {
+	s := unmeasurablePerfGate(t, nil) // gated, but fail_on names nothing
+
+	if got := s.UnmeasuredGates; len(got) != 1 || got[0] != "perf" {
+		t.Fatalf("UnmeasuredGates = %v, want [perf] — fail_on does not decide whether the fact is REPORTED", got)
+	}
+	if len(s.Gates) != 0 {
+		t.Fatalf("Gates = %v, want empty — fail_on names no plane, so nothing may fail the build", s.Gates)
+	}
+	if s.Verdict != "pass" || ExitCode(s) != 0 {
+		t.Fatalf("verdict = %q / exit %d, want pass / 0 — a plane outside fail_on does not break the build whether or not it was measured",
+			s.Verdict, ExitCode(s))
+	}
+}
+
+// TestTheJsonSurfaceNamesAGateItCouldNotEvaluate pins the `--json` face —
+// the agent contract, and the one this finding's own report shows saying
+// `"budgets": []`, `"verdict":"pass"` and nothing else. `retrace diff
+// --json` marshals this Summary verbatim, so the tag is the surface.
+//
+// It also pins the array-ness: a nil here decodes to `null`, and the TS
+// mirror declares `unmeasuredGates: string[]`, so `.map` on it would throw
+// in the review UI on every flow that has none.
+func TestTheJsonSurfaceNamesAGateItCouldNotEvaluate(t *testing.T) {
+	s := unmeasurablePerfGate(t, []string{"perf"})
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got struct {
+		Verdict         string   `json:"verdict"`
+		Budgets         []Gate   `json:"budgets"`
+		UnmeasuredGates []string `json:"unmeasuredGates"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Budgets) != 0 {
+		t.Fatalf("budgets = %+v, want empty — the row's absence is the premise of this test", got.Budgets)
+	}
+	if len(got.UnmeasuredGates) != 1 || got.UnmeasuredGates[0] != "perf" {
+		t.Fatalf("unmeasuredGates = %v, want [perf] — an agent reading `budgets: []` alone cannot tell \"not gated\" from \"gated, and never evaluated\"", got.UnmeasuredGates)
+	}
+	if got.Verdict != "failed" {
+		t.Fatalf("verdict = %q, want failed", got.Verdict)
+	}
+
+	// The empty case ships as [] rather than null, on the same surface.
+	clean := unmeasurablePerfGate(t, nil)
+	clean.UnmeasuredGates = nil
+	clean.ensureArrays()
+	rawClean, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(rawClean), `"unmeasuredGates":[]`) {
+		t.Fatalf("empty unmeasuredGates did not marshal as []: %s", rawClean)
+	}
 }

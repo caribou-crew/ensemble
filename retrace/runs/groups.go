@@ -3,6 +3,7 @@ package runs
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,32 @@ type GroupRecord struct {
 	TS    time.Time `json:"ts"`
 	Quiet bool      `json:"quiet,omitempty"` // declared silence: suppresses gap suspicion
 }
+
+// ErrMarkerWithoutTimestamp is what AppendGroupRecord returns for a record
+// whose TS is the zero time.
+//
+// A marker with no timestamp is NOT a marker at the beginning of time. It
+// is the Zero-Value Constraint's first clause at its most expensive: TS is
+// a bare time.Time, `runs.GroupRecord{Phase: "start", Name: "warmup", Quiet:
+// true}` is one omitted field in ordinary Go, and a record that omits `ts`
+// unmarshals cleanly to the same value. DeriveGroups sorts by TS, so such a
+// record sorts first and opens a group at 0001-01-01 that closeAt runs
+// forward to the run's finish — a DECLARED-SILENT interval covering all of
+// history, which capture.FindGaps then subtracts from every gap in the run.
+// A proxy that died for ten minutes mid-run goes from "suspect" to "ok",
+// and "ok" is the one verdict diff's quarantine and capture.Fatal both let
+// through.
+//
+// AppendGroupRecord is exported and groups.jsonl is a documented file-drop
+// protocol (adapters/js/README.md), so the shipped adapters all writing a
+// real timestamp is not a defence — it is the absence of one.
+var ErrMarkerWithoutTimestamp = errors.New("runs: group marker has no ts — a marker with no timestamp is not a marker")
+
+// timestamped is the ONE predicate all three seams below share. Written
+// once because the alternative is three copies of `!r.TS.IsZero()` that can
+// drift: the whole finding this guards against was born from a producer and
+// a consumer disagreeing about what an absent value meant.
+func (r GroupRecord) timestamped() bool { return !r.TS.IsZero() }
 
 // Group is a derived half-open interval [StartedAt, EndedAt).
 type Group struct {
@@ -40,6 +67,15 @@ type Group struct {
 // Paths' doc comment) — the goal here is removing the accidental door, not
 // making Paths unforgeable.
 func AppendGroupRecord(p Paths, r GroupRecord) error {
+	// The WRITE seam, refusing loudly, in the same spirit as
+	// WriteManifest's rejection of an empty Capture.Status: a caller that
+	// forgot the timestamp gets an error it must handle, not a marker that
+	// quietly disables gap detection for the whole run. This is checked
+	// before the directory is created so a rejected marker leaves nothing
+	// behind.
+	if !r.timestamped() {
+		return ErrMarkerWithoutTimestamp
+	}
 	if err := os.MkdirAll(p.RunDir, 0o755); err != nil {
 		return err
 	}
@@ -63,17 +99,30 @@ func AppendGroupRecord(p Paths, r GroupRecord) error {
 // every NDJSON reader in this package, not two behaviors: skip and
 // continue past a corrupt record rather than erroring the whole file,
 // and never discard records already parsed on either side of it (see the
-// `return out, s.Err()` below — a real scanner error still surfaces
-// alongside whatever was already collected). Unlike ReadHops this
-// function does not count drops (review finding 12, parked as an
-// acceptable Minor for this task).
-func ReadGroupRecords(p Paths) ([]GroupRecord, error) {
+// `return out, skipped, s.Err()` below — a real scanner error still
+// surfaces alongside whatever was already collected).
+//
+// A line with no `ts` is counted into skipped exactly like a corrupt one,
+// and for exactly ReadHops' stated reason: it is valid JSON that is not a
+// record. json.Unmarshal never complains about an absent field, so such a
+// line arrives as a well-formed, declared-quiet marker at 0001-01-01 —
+// see ErrMarkerWithoutTimestamp for what that does to the whole run. Being
+// fail-open makes this WORSE than corruption rather than better: a corrupt
+// line is dropped, a half-correct one is honoured.
+//
+// skipped is returned rather than logged here (this package writes nothing
+// to stderr) and the caller is expected to say so — a dropped marker that
+// silently restores gap detection is still a fact the operator's flow
+// definition is wrong, and `retrace run` prints it. This is review finding
+// 12, previously parked: the parking was acceptable while a dropped record
+// could only cost a section name.
+func ReadGroupRecords(p Paths) (records []GroupRecord, skipped int, err error) {
 	f, err := os.Open(filepath.Join(p.RunDir, "groups.jsonl"))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
@@ -87,11 +136,16 @@ func ReadGroupRecords(p Paths) ([]GroupRecord, error) {
 		}
 		var r GroupRecord
 		if err := json.Unmarshal(line, &r); err != nil {
+			skipped++
+			continue
+		}
+		if !r.timestamped() {
+			skipped++
 			continue
 		}
 		out = append(out, r)
 	}
-	return out, s.Err()
+	return out, skipped, s.Err()
 }
 
 // DeriveGroups folds markers into intervals in start order. A name may
@@ -99,7 +153,22 @@ func ReadGroupRecords(p Paths) ([]GroupRecord, error) {
 // finishedAt — a marker placed after the traffic it meant to bracket then
 // shows as an empty part, which is exactly the symptom worth seeing.
 func DeriveGroups(records []GroupRecord, finishedAt time.Time) []Group {
-	sorted := append([]GroupRecord(nil), records...)
+	// The third seam, and the last one that can see a zero TS: records
+	// assembled in memory never pass through either of the other two. It
+	// drops silently because it has no error channel and because the drop
+	// is the SAFE direction — gap detection is restored, not disabled —
+	// while the two seams that do have a channel (AppendGroupRecord's
+	// error, ReadGroupRecords' skipped count) are the ones that report.
+	//
+	// Filtering before the sort, not inside the loop: an unfiltered zero TS
+	// sorts FIRST, and the damage is entirely in where it sorts.
+	sorted := make([]GroupRecord, 0, len(records))
+	for _, r := range records {
+		if !r.timestamped() {
+			continue
+		}
+		sorted = append(sorted, r)
+	}
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
 
 	var out []Group

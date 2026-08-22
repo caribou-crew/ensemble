@@ -111,6 +111,7 @@ const summary = (over: Partial<Summary> = {}): Summary => ({
   counts: zeroCounts,
   gates: [],
   budgets: [],
+  unmeasuredGates: [],
   ...over,
 });
 
@@ -557,5 +558,54 @@ describe('the item screen', () => {
     expect(badge!.className).not.toContain('ds-badge--neutral');
     expect(badge!.className).toContain('ds-badge--amber');
     expect(text()).toContain('This flow was not compared');
+  });
+
+  /**
+   * F-1. `diff.budgetsOf` emits no budget row for a plane it could not
+   * measure — by the same code path as a plane nobody gated — so the
+   * absence of a row means one of two opposite things and only the config
+   * separates them. This screen rendered the budgets section on
+   * `budgets.length > 0` alone, so the case where EVERY gated plane was
+   * unmeasurable rendered nothing at all: the reviewer saw a page with no
+   * budgets section and read it as "this project gates nothing".
+   *
+   * The static HTML export said the honest sentence; the CLI, `--json` and
+   * this screen did not. One signal on the Summary, four consumers.
+   */
+  it('names a gate that could not be evaluated instead of rendering nothing', async () => {
+    const calls = stubServer({
+      item: summary({ budgets: [], unmeasuredGates: ['perf', 'pixel'] }),
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const section = container.querySelector('.item__budgets');
+    expect(section).not.toBeNull();
+    expect(section?.textContent).toContain('perf');
+    expect(section?.textContent).toContain('pixel');
+    expect(section?.textContent).toContain('not evaluated');
+    expect(section?.textContent).toContain('not a gate that passed');
+
+    // Amber, the tone `quarantined` gets — "could not evaluate", not
+    // "evaluated and fine". Green here would restate the defect in colour.
+    const badges = Array.from(container.querySelectorAll('.item__budgets .ds-badge'));
+    expect(badges.map((b) => b.className)).toEqual([
+      expect.stringContaining('ds-badge--amber'),
+      expect.stringContaining('ds-badge--amber'),
+    ]);
+  });
+
+  it('says nothing about unevaluated gates when every gate ran', async () => {
+    const calls = stubServer({
+      item: summary({
+        budgets: [{ plane: 'pixel', threshold: 5, observed: 0.2, failed: false }],
+        unmeasuredGates: [],
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+    const section = container.querySelector('.item__budgets');
+    expect(section?.textContent).toContain('pixel');
+    expect(section?.textContent).not.toContain('not evaluated');
   });
 });

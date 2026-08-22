@@ -362,3 +362,98 @@ func TestSectionsComeFromTheManifestsGroups(t *testing.T) {
 // TestASignalKilledTestCommandIsQuarantinedNotDiffed and
 // TestAllowDegradedDoesNotOverrideASignalKilledTestCommand. cmd_run.go
 // itself is out of scope for this task per that ruling.
+
+// TestDiffRefusesToPassAGateItCouldNotEvaluate drives the reproduction from
+// the phase's final review through the REAL binary, on both CLI faces at
+// once.
+//
+// `gates.perf.budget_pct` with `fail_on: [perf]` and no
+// `flows.<flow>.perf_budget_ms` gates nothing, forever: budgetsOf refuses to
+// emit a row for a plane with no budget to measure against, and
+// failingBudget reads the absent row as "not failing". Before this was
+// fixed the command printed `VERDICT: pass`, emitted `"budgets": []` with
+// `"verdict":"pass"`, and exited 0 — on every run, permanently, for an
+// operator who believed perf regressions broke their build.
+//
+// Driven through the binary rather than diff.Build because the finding is
+// that the fact existed in one consumer (the static HTML export) and not in
+// the two the CLI serves; a package-level test cannot tell those apart. All
+// three assertions share one fixture because they are one run of one
+// command — a `retrace diff` that exits 2 while printing "pass" would be a
+// worse bug than the one being fixed.
+func TestDiffRefusesToPassAGateItCouldNotEvaluate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	// The date rule is why this fixture can make its point at all: without
+	// it the two runs differ on the Date header, the wire plane reports a
+	// change, and the verdict moves for a reason that has nothing to do
+	// with the gate under test.
+	writeConfig(t, cwd, `app: web
+wire_rules:
+  - headers:
+      date: http-date
+gates:
+  perf:
+    budget_pct: 10
+fail_on: [perf]
+`)
+
+	aID := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+	bID := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+
+	res := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web", "--a", aID, "--b", bID)
+	if res.code != 2 {
+		t.Fatalf("exit = %d, want 2 — a gate this project asked to break the build could not be evaluated, and exit 0 tells CI the build is clean\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+	if strings.Contains(res.stdout, "VERDICT: pass") {
+		t.Errorf("the text report says the run passed:\n%s", res.stdout)
+	}
+	for _, plane := range []string{"perf", "pixel"} {
+		if !strings.Contains(res.stdout, plane+" NOT EVALUATED") {
+			t.Errorf("the text report never names the %s gate it could not evaluate:\n%s", plane, res.stdout)
+		}
+	}
+
+	// Exit 3 is deliberately NOT the answer here: 3 means the comparison
+	// itself is unusable (a quarantined side, a bad flag), and this
+	// comparison is entirely usable — the wire plane really did compare.
+	// Reporting 3 would tell CI to discard findings the other planes
+	// produced.
+	if strings.Contains(res.stdout, "QUARANTINED") {
+		t.Errorf("the run was quarantined, so this fixture is not testing the gate at all:\n%s", res.stdout)
+	}
+
+	// ...and the same fact on the agent contract, which is a separate
+	// consumer of the same Summary and was separately silent.
+	jsonRes := runRetrace(t, bin, cwd, "", "diff", "--flow", "checkout", "--app", "web", "--a", aID, "--b", bID, "--json")
+	if jsonRes.code != 2 {
+		t.Fatalf("--json exit = %d, want 2\nstdout: %s\nstderr: %s", jsonRes.code, jsonRes.stdout, jsonRes.stderr)
+	}
+	var got struct {
+		Verdict         string   `json:"verdict"`
+		Budgets         []any    `json:"budgets"`
+		UnmeasuredGates []string `json:"unmeasuredGates"`
+	}
+	if err := json.Unmarshal([]byte(jsonRes.stdout), &got); err != nil {
+		t.Fatalf("--json is not parseable: %v\n%s", err, jsonRes.stdout)
+	}
+	if len(got.Budgets) != 0 {
+		t.Fatalf("budgets = %v, want empty — the absent row is the premise of this test", got.Budgets)
+	}
+	if got.Verdict != "failed" {
+		t.Errorf("--json verdict = %q, want failed", got.Verdict)
+	}
+	// perf AND pixel: config.applyDefaults gates pixel in every project, and
+	// this flow takes no screenshots, so the default gate is unmeasurable
+	// too. That is the case the review called "not a corner case" — it is
+	// every screenshot-less flow on the DEFAULT config — and it is reported
+	// here without being fatal, because fail_on names only perf.
+	if len(got.UnmeasuredGates) != 2 || got.UnmeasuredGates[0] != "perf" || got.UnmeasuredGates[1] != "pixel" {
+		t.Errorf("--json unmeasuredGates = %v, want [perf pixel] — an agent reading budgets alone cannot tell an ungated plane from one that was never evaluated", got.UnmeasuredGates)
+	}
+}

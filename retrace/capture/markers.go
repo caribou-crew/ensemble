@@ -25,12 +25,32 @@ func NewMarkerDoor(p runs.Paths, now func() time.Time) http.Handler {
 }
 
 // NewMarkerDoorCounted is NewMarkerDoor plus an onAdmitted hook, called once
-// per request that reaches the router — i.e. AFTER httpguard.Handler has
-// let it through, never for a request the guard rejected. A cross-site
-// POST, a nameless-marker 400, or a stray port probe must never count as
-// "traffic that reached retrace": Session.RequestsSeen()==0 is the signal
-// Task 6 keys "the app never routed through us" on, and Session.WatchProxy's
-// fallback leans on it too — counting rejected requests disarms both.
+// per request the GUARD admits — after httpguard.Handler has let it
+// through, and never for one the guard rejected. A cross-site POST, a
+// rebound Host, an `Origin: null` therefore never count (verified: 403, and
+// the hook does not fire).
+//
+// It is NOT a count of requests the ROUTER accepted, and must not be read
+// as one. The hook sits between the guard and the mux, so everything the
+// guard admits is counted whatever the mux then answers: a nameless-marker
+// 400, a malformed-body 400 and a stray port probe's 404 all increment it.
+// (This comment used to claim the opposite of that, naming the
+// nameless-marker 400 as uncounted. The hook placement is correct and the
+// sentence was wrong — capture.Assess's doc, written against the same
+// mechanism, has always said so.)
+//
+// The placement is deliberate and load-bearing on that reading:
+// Session.RequestsSeen()==0 is the signal Task 6 keys "the app never routed
+// through us" on, and Session.WatchProxy's fallback leans on it too, so a
+// guard-rejected request must not disarm either. The inflation the mux
+// contributes is handled one layer up rather than here — Assess reads
+// RequestsSeen in exactly one branch, where it can only demote `broken` to
+// `degraded` and can never reach VerdictOK (pinned by
+// TestInflatedRequestsSeenNeverReadsAsClean).
+//
+// So RequestsSeen > 0 means "something cleared the door's guard", NOT "real
+// traffic flowed". Do not key a new decision on it as though it meant the
+// second.
 func NewMarkerDoorCounted(p runs.Paths, now func() time.Time, onAdmitted func()) http.Handler {
 	if now == nil {
 		now = time.Now

@@ -515,8 +515,30 @@ func TestAllowDegradedDropsThePixelGateAndKeepsTheNoScreenshotsReason(t *testing
 	if !strings.Contains(buf.String(), "capture b: degraded") {
 		t.Fatalf("RenderText does not flag side B's capture as degraded:\n%s", buf.String())
 	}
-	if strings.Contains(buf.String(), "BUDGET: pixel") {
-		t.Fatalf("RenderText still prints a pixel budget line:\n%s", buf.String())
+	// A MEASURED pixel line is what must never appear: "0.00% ok" for a
+	// plane whose screenshots are missing is the reassuring number this
+	// whole rule exists to withhold. The NOT EVALUATED line is the
+	// opposite claim and is required — dropping the gate is only
+	// acceptable while the report still says the gate was dropped.
+	assertNoMeasuredBudgetLine(t, buf.String(), "pixel")
+	if !strings.Contains(buf.String(), "BUDGET: pixel NOT EVALUATED") {
+		t.Fatalf("RenderText drops the pixel gate silently — the plane is gated by this config and the reader is never told it went unmeasured:\n%s", buf.String())
+	}
+}
+
+// assertNoMeasuredBudgetLine fails if RenderText printed a MEASURED budget
+// row for one plane — a threshold, an observed percentage and ok/FAILED.
+// The "not evaluated" row for the same plane is explicitly allowed: the two
+// lines share a prefix and say opposite things, so a bare
+// strings.Contains("BUDGET: pixel") cannot tell them apart, and the version
+// of this helper that could not is what let an unevaluated gate read as a
+// clean one.
+func assertNoMeasuredBudgetLine(t *testing.T, out, plane string) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "BUDGET: "+plane) && !strings.Contains(line, "NOT EVALUATED") {
+			t.Fatalf("RenderText printed a measured budget row for %s, which this run has no evidence for: %q\n%s", plane, line, out)
+		}
 	}
 }
 
@@ -544,6 +566,11 @@ func hasReason(c runs.CaptureTrust, code string) bool {
 //
 // This asserts the semantic — no entries — and deliberately not the JSON
 // encoding of the empty case, which is a separate open question.
+//
+// The empty Budgets is now accompanied by UnmeasuredGates naming pixel: an
+// empty Budgets on a fully-defaulted config was newly reachable, and it
+// read as "nothing gated here" on every surface. Zero MEASURED entries and
+// "nothing gated" are different facts and both are asserted below.
 func TestAnApiOnlyFlowReportsNoBudgetsAtAll(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	h := hop(1, "GET", "/cart", 200, "", `{}`)
@@ -564,11 +591,19 @@ func TestAnApiOnlyFlowReportsNoBudgetsAtAll(t *testing.T) {
 	if s.Verdict != "pass" || ExitCode(s) != 0 {
 		t.Fatalf("verdict = %q / exit %d, want pass / 0", s.Verdict, ExitCode(s))
 	}
-	// And the report must not print a BUDGET line for it either.
+	// And the report must not print a MEASURED budget row for it. It does
+	// print the honest counterpart: the plane IS gated by this config, and
+	// "no BUDGET row for pixel" was previously read by every human as
+	// "pixel is not gated here" — a claim about configuration the reader
+	// cannot check from the report.
 	var buf bytes.Buffer
 	RenderText(&buf, s)
-	if strings.Contains(buf.String(), "BUDGET:") {
-		t.Fatalf("RenderText prints a BUDGET line for a flow with no measurable plane:\n%s", buf.String())
+	assertNoMeasuredBudgetLine(t, buf.String(), "pixel")
+	if !strings.Contains(buf.String(), "BUDGET: pixel NOT EVALUATED") {
+		t.Fatalf("RenderText says nothing at all about the pixel plane this project gates:\n%s", buf.String())
+	}
+	if got := s.UnmeasuredGates; len(got) != 1 || got[0] != "pixel" {
+		t.Fatalf("UnmeasuredGates = %v, want [pixel]", got)
 	}
 }
 
@@ -939,4 +974,50 @@ func TestAnUnchangedPairedCallShipsEveryArrayKeyThroughBuild(t *testing.T) {
 		}
 		checkBuild(t, s)
 	})
+}
+
+// TestRenderTextNamesAGateItCouldNotEvaluate pins the TEXT face of the
+// unmeasured-gate signal — the face a human reads in CI logs, and the one
+// that printed `VERDICT: pass` and no other word about a gate the project
+// had configured.
+//
+// It asserts the plane name AND the sentence, because the plane name alone
+// would also be produced by an ordinary `BUDGET: perf …` row: a reader must
+// be able to tell "measured, and within budget" from "never measured", and
+// those two are one word apart in this output.
+func TestRenderTextNamesAGateItCouldNotEvaluate(t *testing.T) {
+	var buf bytes.Buffer
+	RenderText(&buf, Summary{
+		Verdict:         "failed",
+		Capture:         CaptureBanner{A: okCapture(), B: okCapture()},
+		Budgets:         []Gate{},
+		UnmeasuredGates: []string{"perf", "pixel"},
+		Gates:           []string{"gate not evaluated: perf is gated and named in fail_on, but this run carried no evidence to measure it against — that is not a gate that passed"},
+	})
+	out := buf.String()
+	for _, plane := range []string{"perf", "pixel"} {
+		if !strings.Contains(out, plane+" NOT EVALUATED") {
+			t.Errorf("text report does not name %s as unevaluated:\n%s", plane, out)
+		}
+	}
+	if !strings.Contains(out, "not a gate that passed") {
+		t.Errorf("text report names the planes but never says what that means:\n%s", out)
+	}
+}
+
+// TestRenderTextSaysNothingAboutUnevaluatedGatesWhenEveryGateRan is the
+// other arm: the line must not appear on a run whose gates all measured, or
+// it becomes noise every reader learns to skip — which is the same as not
+// printing it.
+func TestRenderTextSaysNothingAboutUnevaluatedGatesWhenEveryGateRan(t *testing.T) {
+	var buf bytes.Buffer
+	RenderText(&buf, Summary{
+		Verdict:         "pass",
+		Capture:         CaptureBanner{A: okCapture(), B: okCapture()},
+		Budgets:         []Gate{{Plane: "perf", Threshold: 10, Observed: 1}},
+		UnmeasuredGates: []string{},
+	})
+	if out := buf.String(); strings.Contains(out, "NOT EVALUATED") {
+		t.Errorf("text report claims a gate was not evaluated on a run where every gate ran:\n%s", out)
+	}
 }

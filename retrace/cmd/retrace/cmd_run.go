@@ -319,9 +319,18 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	// door and by file-writing adapters. THIS is where they stop being a
 	// log and become part of the run. Without these three lines the wire
 	// diff has no sections and nothing anywhere reports that.
-	records, err := runs.ReadGroupRecords(s.Paths)
+	records, droppedMarkers, err := runs.ReadGroupRecords(s.Paths)
 	if err != nil {
 		return runs.Manifest{}, err
+	}
+	// A dropped marker is REPORTED, not swallowed. The expensive case is a
+	// record with no `ts`: it is well-formed JSON, so nothing else in the
+	// pipeline would ever mention it, and a `quiet` one of those disables
+	// gap detection for the entire run (runs.ErrMarkerWithoutTimestamp).
+	// The reader drops it, which restores detection — and the flow that
+	// wrote it is still wrong, which is what this line is for.
+	if droppedMarkers > 0 {
+		fmt.Fprintf(o.Stderr, "retrace: ignored %d unusable marker record(s) in groups.jsonl — a marker needs a `ts`; flow parts and declared-quiet intervals from those records are missing from this run\n", droppedMarkers)
 	}
 	groups := runs.DeriveGroups(records, o.Now())
 
