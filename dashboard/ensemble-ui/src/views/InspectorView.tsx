@@ -5,9 +5,10 @@
 // to the first available option rather than erroring.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
-import { api, ApiError, messageOf } from '../api/client';
+import { useAsync } from '@ensemble/design-system/useAsync';
+import { api, ApiError } from '../api/client';
 import { subscribeChanges } from '../api/sse';
-import type { Column, DatabaseInfo, Table } from '../api/types';
+import type { Column, Table } from '../api/types';
 import { renderCellValue } from '../format';
 import { useUrlParam } from '../urlState';
 import InlineError from '../components/InlineError';
@@ -18,116 +19,58 @@ const ROWS_LIMIT = 50;
 const FLASH_MS = 1200;
 
 function useDatabases() {
-  const [databases, setDatabases] = useState<DatabaseInfo[] | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { data, error } = useAsync(() => api.databases(), []);
+  // 501 ("inspection isn't configured for this stack") is not a failure to report — it's its
+  // own rendered state, same as before migration.
+  const unavailable = error instanceof ApiError && error.status === 501;
 
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .databases()
-      .then((dbs) => {
-        if (cancelled) return;
-        setDatabases(dbs);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 501) {
-          setUnavailable(true);
-          setDatabases([]);
-        } else {
-          setError(messageOf(err, 'failed to reach the ensemble API'));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return { databases, unavailable, error };
+  return {
+    databases: unavailable ? [] : data,
+    unavailable,
+    error: unavailable ? null : (error?.message ?? null),
+  };
 }
 
 function useSchema(db: string | null) {
-  const [tables, setTables] = useState<Table[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!db) {
-      setTables(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    setTables(null);
-    api
-      .databaseSchema(db)
-      .then((t) => {
-        if (cancelled) return;
-        setTables(t);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(messageOf(err, `failed to load schema for ${db}`));
-      });
-    return () => {
-      cancelled = true;
-    };
+  const { data: tables, error } = useAsync(async () => {
+    if (!db) return null;
+    return api.databaseSchema(db);
   }, [db]);
 
-  return { tables, error };
+  return { tables, error: error?.message ?? null };
 }
 
 function useRows(db: string | null, table: string | null, limit: number, offset: number) {
-  const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
 
-  // Clears `rows` when db/table/offset actually change (a stale table's rows must never
+  const { data, error, loading } = useAsync(async () => {
+    if (!db || !table) return null;
+    return api.databaseRows(db, table, limit, offset);
+    // refreshToken is a manual re-fetch trigger (SSE-driven), not itself data.
+  }, [db, table, limit, offset, refreshToken]);
+
+  // `rows` must clear when db/table/offset actually change (a stale table's rows must never
   // render under a different table's just-switched headers — final review I1) but NOT on the
   // SSE-driven `refreshToken` bump alone, which deliberately wants to stay flicker-free for
-  // the currently-selected table.
+  // the currently-selected table. useAsync clears `data` on ANY deps change, refreshToken
+  // included, so `rows` is its own state, cleared only by the identity-keyed effect below and
+  // otherwise fed by whatever `data` last resolved to.
+  const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const keyRef = useRef('');
-
   useEffect(() => {
-    if (!db || !table) {
-      keyRef.current = '';
-      setRows(null);
-      setError(null);
-      return;
-    }
-    const key = `${db} ${table} ${offset}`;
+    const key = db && table ? `${db} ${table} ${offset}` : '';
     if (keyRef.current !== key) {
       keyRef.current = key;
       setRows(null);
     }
-    setError(null); // an error must never outlive the request that produced it
-    let cancelled = false;
-    setLoading(true);
-    api
-      .databaseRows(db, table, limit, offset)
-      .then((r) => {
-        if (cancelled) return;
-        setRows(r);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(messageOf(err, `failed to load rows for ${table}`));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // refreshToken is a manual re-fetch trigger (SSE-driven), not itself data.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, table, limit, offset, refreshToken]);
+  }, [db, table, offset]);
+  useEffect(() => {
+    if (data !== null) setRows(data);
+  }, [data]);
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
-  return { rows, error, loading, refresh };
+  return { rows, error: error?.message ?? null, loading, refresh };
 }
 
 function columnsFor(tables: Table[] | null, table: string | null): Column[] {
