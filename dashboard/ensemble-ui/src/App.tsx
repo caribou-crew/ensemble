@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs, type TabItem } from '@ensemble/design-system';
-import { api, messageOf } from './api/client';
+import { useAsync } from '@ensemble/design-system/useAsync';
+import { api } from './api/client';
 import type { ServiceState } from './api/types';
 import { useUrlParam } from './urlState';
 import TopologyView from './views/TopologyView';
@@ -23,35 +24,27 @@ const VIEWS: TabItem[] = [
 const DEFAULT_VIEW = VIEWS[0].id;
 
 function useHealthPoll(intervalMs = 5000) {
+  // A tick counter, not a mount-only load — useAsync re-runs `fn` whenever `deps` changes, so
+  // bumping `tick` on the interval is what keeps this polling rather than fetching once.
+  const [tick, setTick] = useState(0);
+  const { data, error } = useAsync(() => api.status(), [tick]);
+
+  // useAsync clears `data` to null the instant `tick` changes (deliberately — see its own
+  // doc comment), which is correct for "a different record" but wrong for "the same poll,
+  // again": without this, the strip would flash back to "connecting…" every intervalMs. This
+  // mirrors the last-good-value it kept before migration, sourced from useAsync's `data`
+  // instead of a hand-rolled setter.
   const [services, setServices] = useState<ServiceState[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (data !== null) setServices(data);
+  }, [data]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function poll() {
-      try {
-        const result = await api.status();
-        if (!cancelled) {
-          setServices(result);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(messageOf(err, 'failed to reach the ensemble API'));
-        }
-      }
-    }
-
-    poll();
-    const id = window.setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
+    const id = window.setInterval(() => setTick((t) => t + 1), intervalMs);
+    return () => window.clearInterval(id);
   }, [intervalMs]);
 
-  return { services, error };
+  return { services, error: error?.message ?? null };
 }
 
 function HealthStrip() {
