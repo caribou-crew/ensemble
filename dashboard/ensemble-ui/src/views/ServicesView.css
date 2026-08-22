@@ -28,11 +28,39 @@
   text-align: left;
   color: var(--text-tertiary);
   font-weight: 500;
-  padding: 0.4rem 0.6rem;
+  padding: 0;
   border-bottom: 1px solid var(--border-hairline-strong);
   position: sticky;
   top: 0;
   background: var(--bg-base);
+}
+
+.services-table__sort {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.services-table th.services-table__num .services-table__sort {
+  justify-content: flex-end;
+}
+
+.services-table__sort:hover {
+  color: var(--text-primary);
+}
+
+.services-table__sort-indicator {
+  font-size: 0.6rem;
+  color: var(--accent-strong);
+  min-width: 0.7em;
 }
 
 .services-table__row td {

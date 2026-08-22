@@ -50,6 +50,60 @@ function formatUptime(startedAt: string | undefined): string {
   return `${d}d ${h % 24}h`;
 }
 
+type SortKey = 'name' | 'status' | 'placement' | 'variant' | 'port' | 'proxyPort' | 'rss' | 'uptime';
+type SortDir = 'asc' | 'desc';
+interface SortState {
+  key: SortKey;
+  dir: SortDir;
+}
+
+const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
+  { key: 'name', label: 'name' },
+  { key: 'status', label: 'status' },
+  { key: 'placement', label: 'placement' },
+  { key: 'variant', label: 'variant' },
+  { key: 'port', label: 'port', numeric: true },
+  { key: 'proxyPort', label: 'proxy', numeric: true },
+  { key: 'rss', label: 'rss', numeric: true },
+  { key: 'uptime', label: 'uptime', numeric: true },
+];
+
+/** A missing value sorts as "least" in either direction, so e.g. a stopped service (no
+    uptime/rss) always lands at the ends of the list rather than jumping around when the
+    sort direction flips. */
+function sortValue(s: ServiceState, key: SortKey): string | number {
+  switch (key) {
+    case 'name':
+      return s.name;
+    case 'status':
+      return s.status;
+    case 'placement':
+      return s.placement;
+    case 'variant':
+      return s.variant ?? '';
+    case 'port':
+      return s.port ?? -1;
+    case 'proxyPort':
+      return s.proxyPort ?? -1;
+    case 'rss':
+      return s.rssKB ?? -1;
+    case 'uptime':
+      return s.startedAt ? new Date(s.startedAt).getTime() : -1;
+  }
+}
+
+function sortServices(services: ServiceState[], sort: SortState | null): ServiceState[] {
+  if (!sort) return services;
+  const { key, dir } = sort;
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...services].sort((a, b) => {
+    const va = sortValue(a, key);
+    const vb = sortValue(b, key);
+    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb));
+    return cmp * sign;
+  });
+}
+
 interface ServicesSnapshot {
   services: ServiceState[];
   topology: Topology;
@@ -174,6 +228,13 @@ function ServiceRow({
 
 export default function ServicesView() {
   const { services, topology, error, refresh } = useServicesPoll();
+  const [sort, setSort] = useState<SortState | null>(null);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSort((prev) =>
+      prev?.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' },
+    );
+  }, []);
 
   async function handleAction(name: string, action: Action, extra?: string) {
     switch (action) {
@@ -215,32 +276,39 @@ export default function ServicesView() {
   const variantsByName = new Map(
     (topology?.nodes ?? []).map((n) => [n.name, n.variants ?? []]),
   );
+  const sorted = sortServices(services, sort);
 
   return (
     <div className="services-view">
       <table className="services-table">
         <thead>
           <tr>
-            <th>name</th>
-            <th>status</th>
-            <th>placement</th>
-            <th>variant</th>
-            <th>port</th>
-            <th>proxy</th>
-            <th>rss</th>
-            <th>uptime</th>
+            {COLUMNS.map((col) => (
+              <th
+                key={col.key}
+                className={col.numeric ? 'services-table__num' : undefined}
+                aria-sort={sort?.key === col.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+              >
+                <button type="button" className="services-table__sort" onClick={() => toggleSort(col.key)}>
+                  {col.label}
+                  <span className="services-table__sort-indicator">
+                    {sort?.key === col.key ? (sort.dir === 'asc' ? '▲' : '▼') : ''}
+                  </span>
+                </button>
+              </th>
+            ))}
             <th />
           </tr>
         </thead>
         <tbody>
-          {services.length === 0 && (
+          {sorted.length === 0 && (
             <tr>
               <td colSpan={9} className="services-table__empty">
                 no services configured
               </td>
             </tr>
           )}
-          {services.map((s) => (
+          {sorted.map((s) => (
             <ServiceRow
               key={s.name}
               state={s}
