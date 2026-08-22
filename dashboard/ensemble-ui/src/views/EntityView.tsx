@@ -19,7 +19,7 @@ const MUTATION_NOTE =
 
 function useEntities() {
   const { data: entities, error } = useAsync(() => api.entities(), []);
-  return { entities, error: error?.message ?? null };
+  return { entities, error: error ? messageOf(error, 'failed to reach the ensemble API') : null };
 }
 
 /** GET /api/entities/{name}'s body is whatever the upstream returns —
@@ -57,7 +57,7 @@ function EntityList({
   const { data, error, loading } = useAsync(() => api.entityList(name), [name]);
 
   if (error) {
-    return <InlineError message={error.message} />;
+    return <InlineError message={messageOf(error, `failed to load ${name}`)} />;
   }
 
   if (loading) {
@@ -167,14 +167,32 @@ function EntityDetail({
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // `data` is `null` for BOTH "still loading" and "the load already settled to a real
+  // `null` body" — `loading` is what tells those apart. Gating on this (rather than on
+  // `data !== undefined` alone, per useAsync's contract) is what keeps `edit`/`delete`
+  // from firing mid-load (final review F3) and keeps the draft/cancel effects below from
+  // writing the loading sentinel into the textarea as the literal string "null" (F12).
+  const hasRecord = !loading && data !== undefined;
+
   useEffect(() => {
-    if (data !== undefined) setDraftText(JSON.stringify(data, null, 2) ?? '');
-  }, [data]);
+    if (hasRecord) setDraftText(JSON.stringify(data, null, 2) ?? '');
+  }, [data, hasRecord]);
+
+  // actionError (a failed delete) has no relation to which record is on screen — it must
+  // not outlive the record it was raised against. EntityDetail is deliberately NOT
+  // remounted when `?id=` changes (see the comment above), so without this a failed
+  // delete on row 1 would keep replacing every row selected afterwards with "failed to
+  // delete" for the rest of the view's life (final review F1). Pre-migration this reset
+  // came for free from the shared `error` state's load effect; useAsync owns only the
+  // load half now, so the action half needs its own reset, keyed the same way.
+  useEffect(() => {
+    setActionError(null);
+  }, [name, id]);
 
   // The original single `error` state served both a load failure and a delete failure —
   // useAsync now owns the load half, so a delete failure gets its own state, combined the
   // same way for rendering: either one replaces the detail view with an error banner.
-  const error = loadError ? loadError.message : actionError;
+  const error = loadError ? messageOf(loadError, `failed to load ${name}/${id}`) : actionError;
 
   async function save() {
     let parsed: unknown;
@@ -219,12 +237,12 @@ function EntityDetail({
         <span className="entity-detail__id">
           {name}/{id}
         </span>
-        {data !== undefined && !error && !editing && (
+        {hasRecord && !error && !editing && (
           <button type="button" onClick={() => setEditing(true)} disabled={busy}>
             edit
           </button>
         )}
-        {data !== undefined && !error && (
+        {hasRecord && !error && (
           <button type="button" className="entity-view__danger" onClick={() => void del()} disabled={busy}>
             delete
           </button>
@@ -256,7 +274,7 @@ function EntityDetail({
               type="button"
               onClick={() => {
                 setEditing(false);
-                setDraftText(JSON.stringify(data, null, 2));
+                if (hasRecord) setDraftText(JSON.stringify(data, null, 2));
                 setFormError(null);
               }}
               disabled={busy}
