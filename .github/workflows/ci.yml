@@ -7,6 +7,13 @@ on:
 jobs:
   go:
     runs-on: ubuntu-latest
+    # Without this, a hung step runs to GitHub's 6-hour default before anyone
+    # sees red. The Go suite's own worst case is retrace/cmd/retrace at ~215s,
+    # so the whole job sits comfortably inside 25 minutes; anything past that
+    # is wedged, not slow. See also the timeout on `docker info` in
+    # ensemble/orchestrator/docker_integration_test.go — a skip-guard with no
+    # timeout of its own is how a job hangs here in the first place.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -32,6 +39,9 @@ jobs:
 
   ts:
     runs-on: ubuntu-latest
+    # The JS suite runs in well under a minute; 15 is pure headroom. Same
+    # reasoning as the `go` job: a ceiling exists so a hang reports as a hang.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

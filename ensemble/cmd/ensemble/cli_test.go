@@ -177,13 +177,31 @@ func waitHealthy(t *testing.T, apiURL string) {
 }
 
 // waitServiceHealthy polls c.Status until name reports "healthy", or fails
-// the test after 5s. Used where the API being reachable (waitHealthy) isn't
-// enough on its own — orch.Up now runs concurrently with the API server, so
-// a service can still be mid-startup, or absent from Status entirely, for a
-// moment after /api/health first answers.
+// the test after waitServiceHealthyTimeout. Used where the API being
+// reachable (waitHealthy) isn't enough on its own — orch.Up now runs
+// concurrently with the API server, so a service can still be mid-startup, or
+// absent from Status entirely, for a moment after /api/health first answers.
+//
+// This is an EVENTUALLY assertion, so the deadline is headroom and not a
+// budget anyone should tune against: nothing here is checking that a service
+// becomes healthy *quickly*. Where a test does care about elapsed time it
+// measures that itself — TestUp_APIReachableDuringSlowStartup asserts the API
+// answers well inside its own startupDelay, and that assertion is unaffected
+// by the value below.
+//
+// It was 5s and went flaky on CI (never locally). The preflight port-conflict
+// check means TestUp_APIReachableDuringSlowStartup must now keep its port
+// closed until preflight has run, so its fixture deliberately answers nothing
+// for the first 2s — 40% of the old deadline gone before the health poller
+// can succeed even once. Under -race on a shared runner the rest was not
+// enough. Raising the ceiling costs a passing run nothing (it returns as soon
+// as the status flips) and only changes how long a genuinely broken run waits
+// before it reports.
+const waitServiceHealthyTimeout = 30 * time.Second
+
 func waitServiceHealthy(t *testing.T, c *Client, name string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitServiceHealthyTimeout)
 	for time.Now().Before(deadline) {
 		st, err := c.Status(context.Background())
 		if err == nil {

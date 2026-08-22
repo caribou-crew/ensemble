@@ -35,8 +35,20 @@ func requireDockerIntegration(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not found in PATH; skipping docker-gated test")
 	}
-	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skip("docker daemon not reachable (docker info failed); skipping docker-gated test")
+	// A skip-guard has to be able to answer. `docker info` against a wedged
+	// daemon does not fail — it blocks indefinitely, and an unbounded call here
+	// takes the whole package down with Go's 10-minute panic, reported as a test
+	// failure rather than as the unavailable daemon it actually is. That is not
+	// hypothetical: it is what this guard did on a developer machine whose
+	// daemon had hung, and CI had no job timeout to catch it either.
+	//
+	// "Cannot answer within a few seconds" is the same outcome as "not usable",
+	// so both take the skip: ctx.Err() covers the timeout, err the ordinary
+	// failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil || ctx.Err() != nil {
+		t.Skip("docker daemon not reachable (docker info failed or timed out); skipping docker-gated test")
 	}
 }
 

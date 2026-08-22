@@ -49,10 +49,28 @@ const { spawnSync } = (await import(childProcessModuleName)) as {
   ) => { status: number | null; stdout: string; stderr: string };
 };
 
-const proc = (globalThis as unknown as { process: { cwd(): string } }).process;
+const proc = (globalThis as unknown as {
+  process: { cwd(): string; env: Record<string, string | undefined> };
+}).process;
 
 /** The phrase testSetup.ts's `afterEach` assertion puts in front of a human. */
 const GUARD_REPORT = 'real socket connection attempt';
+
+// The child's output is matched as text, so it must be PLAIN text. On a developer machine it
+// is: vitest sees a non-TTY pipe and emits no colour, which is why every assertion below
+// passed locally. On GitHub Actions it is not — vitest turns on its `github-actions` reporter
+// and colourises, so the summary line arrives as
+// `\x1b[2m Test Files \x1b[22m \x1b[1m\x1b[31m3 failed\x1b[39m...` and a literal
+// `Test Files  3 failed (3)` cannot match. That is exactly what happened: this suite was
+// green locally and red in CI for a reason that had nothing to do with the guard it tests.
+//
+// Belt AND braces, deliberately. The env vars ask the child not to colourise; `stripAnsi`
+// makes the assertions hold even if something colourises anyway (a future vitest, a reporter
+// that ignores NO_COLOR, a CI provider with its own opinion). Relying on the env alone would
+// leave this test's correctness depending on a setting in someone else's tool.
+const stripAnsi = (s: string): string =>
+  // eslint-disable-next-line no-control-regex -- matching ANSI SGR escapes is the point
+  s.replace(/\x1b\[[0-9;]*m/g, '');
 
 // filename ↔ the port that file's probe connects to, so a guard report can be attributed to
 // one window rather than to "somewhere in the child run". The ports come from the probes'
@@ -68,9 +86,17 @@ describe('testSetup socket guard', () => {
     const run = spawnSync(
       'node_modules/.bin/vitest',
       ['run', '--config', 'vitest.guard-probes.config.ts'],
-      { cwd: proc.cwd(), encoding: 'utf8' },
+      {
+        cwd: proc.cwd(),
+        encoding: 'utf8',
+        // NO_COLOR is the cross-tool convention; FORCE_COLOR=0 covers anything that only
+        // honours the node/chalk one. GITHUB_ACTIONS is cleared because vitest switches on its
+        // `github-actions` reporter when it sees that variable, which is what colourised this
+        // child's output on the runner in the first place.
+        env: { ...proc.env, NO_COLOR: '1', FORCE_COLOR: '0', GITHUB_ACTIONS: '' },
+      },
     );
-    const output = `${run.stdout}\n${run.stderr}`;
+    const output = stripAnsi(`${run.stdout}\n${run.stderr}`);
 
     expect(
       run.status,
