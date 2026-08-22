@@ -559,7 +559,39 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 			continue
 		}
 	}
+
+	// on_ready only runs once every active node came up clean — a partial
+	// stack (see the per-node failure handling above) isn't "ready" in the
+	// sense a seed script or postinstall step cares about.
+	if len(errs) == 0 {
+		if err := o.runOnReady(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// runOnReady runs cfg.OnReady, once, after Up has confirmed every active
+// node clean: cfg.OnReady.Seeds in declared order (the same mechanism a
+// manual seed uses), then cfg.OnReady.Run if set. Stops at the first
+// failure — a seed or postinstall step that only makes sense given the
+// ones before it succeeded shouldn't run against a stack that hasn't been
+// prepared the way it expects.
+func (o *Orchestrator) runOnReady(ctx context.Context) error {
+	for _, name := range o.cfg.OnReady.Seeds {
+		o.logf("orchestrator: on_ready: seeding %s", name)
+		if _, err := o.Seed(ctx, name); err != nil {
+			return fmt.Errorf("orchestrator: on_ready: seed %s: %w", name, err)
+		}
+	}
+	if o.cfg.OnReady.Run != "" {
+		o.logf("orchestrator: on_ready: running postinstall step")
+		logPath := filepath.Join(o.opts.LogDir, "on-ready.log")
+		if err := runShellStep("on_ready hook", o.cfg.OnReady.Run, o.cfg.Dir, logPath); err != nil {
+			return fmt.Errorf("orchestrator: on_ready: %w", err)
+		}
+	}
+	return nil
 }
 
 // firstFailedDep returns the first of deps present in failed, so a service
@@ -822,7 +854,7 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 			logPath := filepath.Join(o.opts.LogDir, name+".log")
 			o.logf("orchestrator: building %s (output: %s)", name, logPath)
 			buildStart := time.Now()
-			if err := runBuild(svc.Build, workDir, logPath); err != nil {
+			if err := runShellStep("build", svc.Build, workDir, logPath); err != nil {
 				o.fail(name, err)
 				return fmt.Errorf("orchestrator: %s: build: %w", name, err)
 			}
@@ -835,6 +867,11 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 	}
 
 	o.setStatus(name, StatusStarting, "")
+
+	// Computed once, unconditionally: both placements can write here (a
+	// docker-placed service still gets its build output logged above), and
+	// the on_healthy hook below needs it regardless of placement too.
+	logPath := filepath.Join(o.opts.LogDir, name+".log")
 
 	if placement == "docker" {
 		if svc.Docker == nil {
@@ -855,7 +892,6 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)
 		}
-		logPath := filepath.Join(o.opts.LogDir, name+".log")
 		cmd, err := startNativeProcess(svc.Run, workDir, svc.Env, logPath)
 		if err != nil {
 			o.fail(name, err)
@@ -872,6 +908,16 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 	if err := o.gateHealth(ctx, name, svc.Health, svc.Port, placement == "docker", svc.StartupTimeoutS); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: %w", name, err)
+	}
+
+	if svc.OnHealthy != "" {
+		o.logf("orchestrator: %s: healthy — running on_healthy hook", name)
+		hookStart := time.Now()
+		if err := runShellStep("on_healthy hook", svc.OnHealthy, workDir, logPath); err != nil {
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: on_healthy: %w", name, err)
+		}
+		o.logf("orchestrator: %s: on_healthy hook finished in %s", name, time.Since(hookStart).Round(time.Millisecond))
 	}
 
 	o.setState(name, func(s *ServiceState) {
@@ -1074,16 +1120,19 @@ func buildStale(stampPath, workDir string, watch []string) (bool, error) {
 	return false, nil
 }
 
-// buildTailBytes bounds how much build output a failed build's error
-// carries — enough for the compiler's complaint, not the whole log.
-const buildTailBytes = 4 * 1024
+// shellStepTailBytes bounds how much output a failed shell step's error
+// carries — enough for the compiler's (or seed script's) complaint, not
+// the whole log.
+const shellStepTailBytes = 4 * 1024
 
-// runBuild runs build in workDir, streaming its output to logPath (the
-// service's own log, appended under a header naming the command) so a
-// multi-minute `docker build` or `gradle` run is visible as it happens
-// rather than only once it ends. A failure's error carries the last
-// buildTailBytes of output, so ServiceState.LastErr still says why.
-func runBuild(build, workDir, logPath string) error {
+// runShellStep runs command in workDir under `/bin/sh -c`, streaming its
+// output to logPath (the service's own log, appended under a header naming
+// the step) so a multi-minute step (a `docker build`, `gradle`, or seed
+// script) is visible as it happens rather than only once it ends. label
+// names the kind of step for the log header and error text — "build",
+// "on_healthy hook", "on_ready hook". A failure's error carries the last
+// shellStepTailBytes of output, so ServiceState.LastErr still says why.
+func runShellStep(label, command, workDir, logPath string) error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
@@ -1092,18 +1141,18 @@ func runBuild(build, workDir, logPath string) error {
 		return fmt.Errorf("open log %s: %w", logPath, err)
 	}
 	defer logFile.Close()
-	fmt.Fprintf(logFile, "=== build: %s ===\n", build)
+	fmt.Fprintf(logFile, "=== %s: %s ===\n", label, command)
 
-	tail := &tailBuffer{limit: buildTailBytes}
-	cmd := exec.Command("/bin/sh", "-c", build)
+	tail := &tailBuffer{limit: shellStepTailBytes}
+	cmd := exec.Command("/bin/sh", "-c", command)
 	cmd.Dir = workDir
 	cmd.Stdout = io.MultiWriter(logFile, tail)
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(logFile, "=== build failed: %v ===\n", err)
-		return fmt.Errorf("%q: %w: %s", build, err, strings.TrimSpace(tail.String()))
+		fmt.Fprintf(logFile, "=== %s failed: %v ===\n", label, err)
+		return fmt.Errorf("%s: %q: %w: %s", label, command, err, strings.TrimSpace(tail.String()))
 	}
-	fmt.Fprintln(logFile, "=== build ok ===")
+	fmt.Fprintf(logFile, "=== %s ok ===\n", label)
 	return nil
 }
 
