@@ -119,4 +119,63 @@ describe('TopologyView: concurrent refresh waiters', () => {
     expect(stuck.length, 'no lane button may be left disabled').toBe(0);
     expect(container.querySelector('.topo-panel .ds-spinner'), 'Restart must not still be busy').toBeNull();
   });
+
+  // Final review F7's third site. `useProfiles.reload` was fixed alongside the other two but
+  // nothing pinned it: the re-review reverted it to the resolve-immediately shape and the
+  // whole suite stayed green, because the test above is satisfied by the WAIT that
+  // `refreshTopology()` does one line later. Isolating it needs the topology refresh to
+  // complete while the profiles reload is still in flight — then a `reload()` that resolves
+  // early lets `toggle`'s `finally` run, and the lane un-busies while the strip still shows
+  // its pre-toggle state, which is precisely the bug F7 exists for.
+  it('keeps the lane busy until the profiles reload IT triggered has landed (F7)', async () => {
+    vi.spyOn(api, 'status').mockResolvedValue(statusOf('healthy'));
+
+    let profilesCall = 0;
+    let resolveReload!: (p: ProfilesState) => void;
+    const ACTIVATED: ProfilesState = {
+      active: ['lane-x'],
+      profiles: [{ name: 'lane-x', active: true, services: ['edge'] }],
+    };
+    vi.spyOn(api, 'profiles').mockImplementation(() => {
+      profilesCall += 1;
+      if (profilesCall === 1) return Promise.resolve(PROFILES);
+      return new Promise<ProfilesState>((r) => {
+        resolveReload = r;
+      });
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(TopologyView));
+    });
+
+    const lane = Array.from(container.querySelectorAll<HTMLButtonElement>('.topo-view__profile')).find(
+      (b) => b.textContent?.includes('lane-x'),
+    );
+    expect(lane, 'expected the lane-x profile button').toBeTruthy();
+    await act(async () => {
+      lane!.click();
+    });
+
+    // api.profileUp has resolved and the topology refresh (whose calls all resolve
+    // immediately here) is done — the ONLY thing still outstanding is the profiles reload.
+    expect(profilesCall, "the toggle's own reload must have started").toBe(2);
+    const strip = container.querySelector('.topo-view__profiles');
+    expect(
+      strip?.querySelector('.ds-spinner'),
+      'the lane must stay busy until its own profiles reload lands, not un-busy as soon as ' +
+        'the tick bump is scheduled',
+    ).toBeTruthy();
+    expect(strip?.textContent, 'and the strip must still show its pre-toggle state').toBeTruthy();
+    expect(
+      strip?.querySelector('.topo-view__profile--active'),
+      'lane-x must not read as active before the reload that confirms it has landed',
+    ).toBeNull();
+
+    await act(async () => {
+      resolveReload(ACTIVATED);
+    });
+    expect(container.querySelector('.topo-view__profiles .ds-spinner')).toBeNull();
+    expect(container.querySelector('.topo-view__profile--active')).toBeTruthy();
+  });
 });
