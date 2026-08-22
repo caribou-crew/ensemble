@@ -56,21 +56,45 @@ function useRows(db: string | null, table: string | null, limit: number, offset:
   // included, so `rows` is its own state, cleared only by the identity-keyed effect below and
   // otherwise fed by whatever `data` last resolved to.
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
+  // Sticky error, and for exactly the reason `rows` is sticky (final review F2, re-review
+  // N2 — this hook is the fourth site of that finding, and the one the F2 round missed).
+  // useAsync clears BOTH `data` and `error` to null the moment ANY dep changes, and
+  // `refreshToken` is a dep: the SSE stream bumps it on every change event for the selected
+  // table, and the toolbar's own `refresh` button bumps it too. Reading `error` straight off
+  // the hook therefore made a persistently-failing rows query show its banner only in the
+  // gaps between re-fetches — an error that blinks is worse than one that stays, because the
+  // reader concludes it recovered. Cleared on a successful load, and on a real identity
+  // change (below), never merely because the next fetch started.
+  const [staleError, setStaleError] = useState<Error | null>(null);
   const keyRef = useRef('');
   useEffect(() => {
     const key = db && table ? `${db} ${table} ${offset}` : '';
     if (keyRef.current !== key) {
       keyRef.current = key;
       setRows(null);
+      // Unlike the other three F2 sites, this one loads a DIFFERENT thing over its lifetime.
+      // "failed to load rows for orders" must not survive a switch to `customers`, so the
+      // identity change that clears `rows` clears the error with it. This effect is declared
+      // before the mirror below, so on an identity change the clear wins.
+      setStaleError(null);
     }
   }, [db, table, offset]);
   useEffect(() => {
     if (data !== null) setRows(data);
   }, [data]);
+  useEffect(() => {
+    if (error) setStaleError(error);
+    else if (data !== null) setStaleError(null);
+  }, [error, data]);
 
   const refresh = useCallback(() => setRefreshToken((t) => t + 1), []);
 
-  return { rows, error: error ? messageOf(error, `failed to load rows for ${table}`) : null, loading, refresh };
+  return {
+    rows,
+    error: staleError ? messageOf(staleError, `failed to load rows for ${table}`) : null,
+    loading,
+    refresh,
+  };
 }
 
 function columnsFor(tables: Table[] | null, table: string | null): Column[] {

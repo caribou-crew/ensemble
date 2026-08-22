@@ -4,12 +4,13 @@
 // ServicePanel already covers this per-node in a graph context; this view
 // is the "just show me the list" counterpart the graph doesn't serve well
 // once a stack has more than a handful of services.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import type { ServiceState, Topology } from '../api/types';
 import InlineError from '../components/InlineError';
+import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
 
 const POLL_MS = 5000;
@@ -148,23 +149,12 @@ function useServicesPoll() {
   // triggered reload actually lands — callers that `await refresh()` (below) need the
   // promise to settle only once the NEW data (or a new error) is actually on screen, or
   // their `busy` flag clears while the row still shows the pre-action state (final review
-  // F7). `pendingRefresh` tracks the one most recently requested resolver; useAsync's own
-  // generation guard already ensures only the latest-started load's result is ever applied,
-  // so it is also the only completion this needs to wait for.
-  const pendingRefreshRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    if (data !== null || error) {
-      pendingRefreshRef.current?.();
-      pendingRefreshRef.current = null;
-    }
-  }, [data, error]);
-
-  const refresh = useCallback(() => {
-    return new Promise<void>((resolve) => {
-      pendingRefreshRef.current = resolve;
-      setTick((t) => t + 1);
-    });
-  }, []);
+  // F7). Every ServiceRow owns its own `busy` and disables only its OWN buttons, so two
+  // rows are concurrently actionable and two refreshes can be waiting at once — see
+  // usePendingRefresh for why ALL of them are resolved rather than only the newest
+  // (re-review N1).
+  const bumpTick = useCallback(() => setTick((t) => t + 1), []);
+  const refresh = usePendingRefresh(data, error, bumpTick);
 
   return {
     services: snapshot?.services ?? null,
