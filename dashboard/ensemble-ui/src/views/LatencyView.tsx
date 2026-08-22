@@ -92,7 +92,7 @@ export default function LatencyView() {
   // `formError` inline instead), each replacing the table with a full-view error banner.
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (loadError) setError(loadError.message);
+    if (loadError) setError(messageOf(loadError, 'failed to reach the ensemble API'));
   }, [loadError]);
   const [busy, setBusy] = useState(false);
 
