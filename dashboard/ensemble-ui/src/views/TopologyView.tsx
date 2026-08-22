@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Spinner } from "@ensemble/design-system";
+import { useAsync } from "@ensemble/design-system/useAsync";
 import { api, messageOf } from "../api/client";
 import type {
   Hop,
@@ -137,97 +138,64 @@ function ProfileStrip({
   );
 }
 
+interface TopologySnapshot {
+  topology: Topology;
+  statuses: ServiceState[];
+  traffic: Hop[];
+}
+
+/** refresh() is called both from the 5s poll interval AND out-of-band from restart()/flip()
+    (below), so more than one call can be in flight at once with no guarantee which resolves
+    first (final review I3). That generation guard — "only the latest-STARTED call's result is
+    ever applied, regardless of resolution order" — is now useAsync's, keyed on `tick`; the
+    hand-rolled ref this used to need is gone with it. `snapshot` exists only for the cosmetic
+    half of the old behaviour: useAsync clears its data the instant `tick` changes (by design),
+    which would otherwise drop the graph back to the loading screen on every 5s poll. */
 function useTopologyPoll() {
-  const [topology, setTopology] = useState<Topology | null>(null);
-  const [statuses, setStatuses] = useState<ServiceState[] | null>(null);
-  const [traffic, setTraffic] = useState<Hop[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const { data, error } = useAsync<TopologySnapshot>(async () => {
+    const [t, s, hops] = await Promise.all([
+      api.topology(),
+      api.status(),
+      api.traffic({ limit: TRAFFIC_SAMPLE }),
+    ]);
+    return { topology: t, statuses: s, traffic: hops };
+  }, [tick]);
 
-  // Generation guard: refresh() is called both from the 5s poll interval AND out-of-band
-  // from restart()/flip() (:321-329), so more than one call can be in flight at once with no
-  // guarantee which resolves first. A `cancelled` boolean threaded from the effect (App.tsx's
-  // shape) only covers unmount — it says nothing about an OLDER refresh() resolving after a
-  // NEWER one, which is exactly the case that matters here (see final review I3). Comparing
-  // against a ref counter bumped on every entry means only the latest-STARTED call's result
-  // is ever applied, regardless of resolution order.
-  const generationRef = useRef(0);
-
-  const refresh = useCallback(async () => {
-    const generation = ++generationRef.current;
-    try {
-      const [t, s, hops] = await Promise.all([
-        api.topology(),
-        api.status(),
-        api.traffic({ limit: TRAFFIC_SAMPLE }),
-      ]);
-      if (generation !== generationRef.current) return;
-      setTopology(t);
-      setStatuses(s);
-      setTraffic(hops);
-      setError(null);
-    } catch (err) {
-      if (generation !== generationRef.current) return;
-      setError(messageOf(err, "failed to reach the ensemble API"));
-    }
-  }, []);
+  const [snapshot, setSnapshot] = useState<TopologySnapshot | null>(null);
+  useEffect(() => {
+    if (data !== null) setSnapshot(data);
+  }, [data]);
 
   useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (!cancelled) void refresh();
-    };
-    tick();
-    const id = window.setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      // Bumping here retires every in-flight refresh() too. `cancelled` only stops the
-      // interval from STARTING another one; a request already awaiting Promise.all would
-      // still pass the :62 guard and set state after unmount. React 19 makes those setters
-      // no-ops rather than warnings, so this is hygiene, not a live bug — but it is the one
-      // clause of final review I3 the generation counter did not yet cover.
-      generationRef.current++;
-    };
-  }, [refresh]);
+    const id = window.setInterval(() => setTick((t) => t + 1), POLL_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
-  return { topology, statuses, traffic, error, refresh };
+  const refresh = useCallback(async () => {
+    setTick((t) => t + 1);
+  }, []);
+
+  return {
+    topology: snapshot?.topology ?? null,
+    statuses: snapshot?.statuses ?? null,
+    traffic: snapshot?.traffic ?? [],
+    error: error?.message ?? null,
+    refresh,
+  };
 }
 
 function useTracePoll(traceId: string | null) {
-  const [hops, setHops] = useState<Hop[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!traceId) {
-      setHops(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    // Clear the previous trace's hops immediately — otherwise switching ?trace= ids flashes
-    // the OLD trace's graph/waterfall until the new fetch resolves.
-    setHops(null);
-    setError(null);
-    api
-      .trace(traceId)
-      .then((r) => {
-        if (!cancelled) {
-          setHops(r.hops);
-          setError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setHops(null);
-          setError(messageOf(err, `failed to load trace ${traceId}`));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+  // useAsync clears `data` to null synchronously on every deps change — exactly the "clear the
+  // previous trace's hops immediately" behaviour af48831 fixed by hand, now for free from the
+  // hook (TopologyView.trace-race.test.ts's third case pins this).
+  const { data: hops, error } = useAsync(async () => {
+    if (!traceId) return null;
+    const r = await api.trace(traceId);
+    return r.hops;
   }, [traceId]);
 
-  return { hops, error };
+  return { hops, error: error?.message ?? null };
 }
 
 function ServicePanel({
