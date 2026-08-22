@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Spinner } from "@ensemble/design-system";
 import { useAsync } from "@ensemble/design-system/useAsync";
 import { api, messageOf } from "../api/client";
@@ -12,6 +12,7 @@ import type {
 import { categoryOf } from "../topology/categories";
 import { layoutClustered } from "../topology/layout";
 import { layoutTrace, causalHopOrder } from "../topology/traceLayout";
+import { usePendingRefresh } from "../usePendingRefresh";
 import {
   heatTier,
   hopDepths,
@@ -89,21 +90,14 @@ function useProfiles(refreshTopology: () => Promise<void>) {
 
   // Lets `toggle` (below) wait for the reload IT triggered to actually land, rather than
   // resolving the instant the tick bump is scheduled — same reasoning as
-  // useTopologyPoll.refresh's own pendingRefreshRef (final review F7).
-  const pendingReloadRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    if (data !== null || loadError) {
-      pendingReloadRef.current?.();
-      pendingReloadRef.current = null;
-    }
-  }, [data, loadError]);
-
-  const reload = useCallback(() => {
-    return new Promise<void>((resolve) => {
-      pendingReloadRef.current = resolve;
-      setTick((t) => t + 1);
-    });
-  }, []);
+  // useTopologyPoll.refresh (final review F7). Unlike that one, two waiters here are NOT
+  // reachable from today's UI: `reload` is called only by `toggle`, and ProfileStrip
+  // disables the whole strip for the duration of `busy`. It shares usePendingRefresh
+  // anyway — the hook is where the all-waiters-resolved rule and the resolve-on-unmount
+  // rule are stated once instead of three times (re-review N1), and "unreachable today"
+  // is the property that quietly stops being true when someone adds a second caller.
+  const bumpTick = useCallback(() => setTick((t) => t + 1), []);
+  const reload = usePendingRefresh(data, loadError, bumpTick);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 5000);
@@ -220,23 +214,13 @@ function useTopologyPoll() {
   // triggered reload actually lands — callers that `await refresh()` (restart/flip/
   // setVariant below, and useProfiles' toggle) need the promise to settle only once the
   // NEW data (or a new error) is actually on screen, or their `busy` flag clears while the
-  // panel still shows the pre-action state (final review F7). useAsync's own generation
-  // guard already ensures only the latest-started load's result is ever applied, so it is
-  // also the only completion this needs to wait for.
-  const pendingRefreshRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    if (data !== null || error) {
-      pendingRefreshRef.current?.();
-      pendingRefreshRef.current = null;
-    }
-  }, [data, error]);
-
-  const refresh = useCallback(() => {
-    return new Promise<void>((resolve) => {
-      pendingRefreshRef.current = resolve;
-      setTick((t) => t + 1);
-    });
-  }, []);
+  // panel still shows the pre-action state (final review F7). ProfileStrip and ServicePanel
+  // hold independent `busy` state and are simultaneously clickable, so a profile toggle
+  // (which ends in `await refreshTopology()`) can overlap a service action and leave two
+  // refreshes waiting at once — see usePendingRefresh for why ALL of them are resolved
+  // rather than only the newest (re-review N1).
+  const bumpTick = useCallback(() => setTick((t) => t + 1), []);
+  const refresh = usePendingRefresh(data, error, bumpTick);
 
   return {
     topology: snapshot?.topology ?? null,

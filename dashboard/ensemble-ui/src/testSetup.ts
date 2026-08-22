@@ -22,12 +22,27 @@
 // assertion fails the test regardless of what happens to the promise it came from.
 //
 // So the guard now counts attempts instead of relying on the throw being observed, and
-// installs itself ONCE at module load rather than per-test — a per-test install/teardown
-// left three things unguarded: a test file's own top-level code, any `beforeAll` hook (both
-// run before the first `beforeEach`), and whatever a leaked interval does in the gap between
-// one test's `afterEach` and the next test's `beforeEach`. Installing once, for the whole
-// file's lifetime, and resetting only the counter around each test closes all three.
-import { afterEach, beforeEach, expect } from 'vitest';
+// installs itself ONCE at module load rather than per-test. A per-test install/teardown left
+// three windows completely UNWATCHED: a test file's own top-level code, any `beforeAll` hook
+// (both run before the first `beforeEach`), and the gap between one test's `afterEach` and
+// the next test's `beforeEach`, where a leaked interval fires. Installing once, for the whole
+// file's lifetime, is what makes an attempt from those windows get COUNTED.
+//
+// Counting it is not the same as REPORTING it, and an earlier version of this comment
+// claimed installing once "closes all three" holes when it closed only the installation half
+// (re-review R-AL). The reporting half was defeated by a `beforeEach` that reset the counter:
+// `beforeEach` runs AFTER module top-level code and AFTER `beforeAll`, so an attempt from
+// either window was counted and then wiped before any `afterEach` could read it — and an
+// attempt in the hook gap was wiped by the NEXT test's `beforeEach` before that test's
+// `afterEach` ran. That reset is gone. `afterEach` below both reads AND resets, which is all
+// the per-test isolation this ever needed; resetting on the way in only ever discarded
+// evidence gathered on the way there.
+//
+// All three windows are pinned, not asserted in prose: `src/__guardProbes/*.probe.ts` makes a
+// real swallowed attempt from each one, and `src/testSetup.guard.test.ts` runs them as a
+// child vitest process and fails if any of them is not caught. Reinstate a `beforeEach` reset
+// and that test goes red.
+import { afterEach, expect } from 'vitest';
 
 // This package has no `@types/node` dependency (nothing else here runs outside the browser),
 // and TypeScript refuses a `declare module` augmentation for a name it already recognizes as
@@ -56,11 +71,6 @@ net.Socket.prototype.connect = function connectGuard(...args: unknown[]) {
   // `net.Socket['connect']`'s real signature is a large overload set; a test-only guard
   // that never returns doesn't need to match it beyond "callable with anything".
 } as unknown as typeof net.Socket.prototype.connect;
-
-beforeEach(() => {
-  connectAttempts = 0;
-  lastAttempt = undefined;
-});
 
 afterEach(() => {
   // The load-bearing check: an `expect` failure here fails the test even when the guard's
