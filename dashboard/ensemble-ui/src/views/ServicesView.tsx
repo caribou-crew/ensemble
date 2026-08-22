@@ -4,7 +4,7 @@
 // ServicePanel already covers this per-node in a graph context; this view
 // is the "just show me the list" counterpart the graph doesn't serve well
 // once a stack has more than a handful of services.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
@@ -127,19 +127,49 @@ function useServicesPoll() {
     if (data !== null) setSnapshot(data);
   }, [data]);
 
+  // Sticky error, mirroring the sticky `snapshot` above: useAsync clears BOTH `data` and
+  // `error` to null the instant a new poll starts (tick bumps), so reading `error` straight
+  // off the hook flashed the "offline" banner back to the stale-but-good table for the
+  // whole duration of every in-flight poll while the backend was down (final review F2).
+  // Cleared only on an actual successful load, never merely because the next poll started —
+  // matching pre-migration's `setError(null)` on the success path only.
+  const [staleError, setStaleError] = useState<string | null>(null);
+  useEffect(() => {
+    if (error) setStaleError(messageOf(error, 'failed to reach the ensemble API'));
+    else if (data !== null) setStaleError(null);
+  }, [error, data]);
+
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), POLL_MS);
     return () => window.clearInterval(id);
   }, []);
 
-  const refresh = useCallback(async () => {
-    setTick((t) => t + 1);
+  // Bumping `tick` alone resolves as soon as the state update is scheduled, not once the
+  // triggered reload actually lands — callers that `await refresh()` (below) need the
+  // promise to settle only once the NEW data (or a new error) is actually on screen, or
+  // their `busy` flag clears while the row still shows the pre-action state (final review
+  // F7). `pendingRefresh` tracks the one most recently requested resolver; useAsync's own
+  // generation guard already ensures only the latest-started load's result is ever applied,
+  // so it is also the only completion this needs to wait for.
+  const pendingRefreshRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (data !== null || error) {
+      pendingRefreshRef.current?.();
+      pendingRefreshRef.current = null;
+    }
+  }, [data, error]);
+
+  const refresh = useCallback(() => {
+    return new Promise<void>((resolve) => {
+      pendingRefreshRef.current = resolve;
+      setTick((t) => t + 1);
+    });
   }, []);
 
   return {
     services: snapshot?.services ?? null,
     topology: snapshot?.topology ?? null,
-    error: error?.message ?? null,
+    error: staleError,
     refresh,
   };
 }
