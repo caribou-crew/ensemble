@@ -148,6 +148,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	for _, name := range c.OnReady.Seeds {
+		if _, ok := c.Seeds[name]; !ok {
+			errs = append(errs, fmt.Errorf("on_ready: seeds references unknown seed %q", name))
+		}
+	}
+
 	return errors.Join(errs...)
 }
 

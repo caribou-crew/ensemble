@@ -19,7 +19,7 @@ func TestRunBuildStreamsToLog(t *testing.T) {
 	logPath := filepath.Join(dir, "svc.log")
 	done := make(chan error, 1)
 	go func() {
-		done <- runBuild("echo first; sleep 2; echo second", dir, logPath)
+		done <- runShellStep("build", "echo first; sleep 2; echo second", dir, logPath)
 	}()
 	// The header line quotes the command, so look for the echoed lines
 	// themselves (newline-delimited), not the bare words.
@@ -50,15 +50,15 @@ func TestRunBuildStreamsToLog(t *testing.T) {
 
 func TestRunBuildFailureCarriesOutputTail(t *testing.T) {
 	dir := t.TempDir()
-	err := runBuild("echo 'reason: base image pull denied' >&2; exit 3", dir, filepath.Join(dir, "svc.log"))
+	err := runShellStep("build", "echo 'reason: base image pull denied' >&2; exit 3", dir, filepath.Join(dir, "svc.log"))
 	if err == nil || !strings.Contains(err.Error(), "base image pull denied") || !strings.Contains(err.Error(), "exit status 3") {
 		t.Fatalf("err = %v", err)
 	}
 	// The tail is bounded.
 	// (Generate the output in the shell: the command itself is quoted into
 	// the error, so a 10 KB command would defeat the point of the test.)
-	err = runBuild("head -c 10240 /dev/zero | tr '\\0' x; exit 1", dir, filepath.Join(dir, "svc.log"))
-	if err == nil || len(err.Error()) > buildTailBytes+200 {
+	err = runShellStep("build", "head -c 10240 /dev/zero | tr '\\0' x; exit 1", dir, filepath.Join(dir, "svc.log"))
+	if err == nil || len(err.Error()) > shellStepTailBytes+200 {
 		t.Fatalf("tail not bounded: %d bytes", len(err.Error()))
 	}
 }

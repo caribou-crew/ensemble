@@ -24,23 +24,45 @@ type Config struct {
 	Seeds     map[string]Seed     `yaml:"seeds"`
 	Profiles  map[string][]string `yaml:"profiles"`
 	Redact    []string            `yaml:"redact"` // extra redaction keys
-	Dir       string              `yaml:"-"`      // dir containing the config file (set by Load)
+	OnReady   OnReady             `yaml:"on_ready"`
+	Dir       string              `yaml:"-"` // dir containing the config file (set by Load)
+}
+
+// OnReady runs once `ensemble up` has brought every active service and
+// database up healthy — a stack-level postinstall step, for work that only
+// makes sense once the whole stack is reachable (seeding data that spans
+// several services, warming a cache, announcing readiness to an external
+// system). Seeds names targets from the `seeds:` map, run in declared
+// order through the same mechanism a manual seed uses; Run is a plain
+// shell command, executed in Config.Dir after every named seed. Both are
+// optional and may be combined; neither runs if Up itself reports any
+// node failed.
+type OnReady struct {
+	Seeds []string `yaml:"seeds"`
+	Run   string   `yaml:"run"`
 }
 
 // Service describes one process or container ensemble supervises.
 type Service struct {
-	Dir       string            `yaml:"dir"`
-	Build     string            `yaml:"build"`
-	Watch     []string          `yaml:"watch"` // globs for build freshness
-	Run       string            `yaml:"run"`
-	Port      int               `yaml:"port"`  // real service port
-	Proxy     int               `yaml:"proxy"` // intercept port (0 = auto-assign later)
-	Env       map[string]string `yaml:"env"`
-	Health    string            `yaml:"health"` // path, e.g. /healthz
-	DependsOn []string          `yaml:"depends_on"`
-	Docker    *DockerPlacement  `yaml:"docker"`
-	Entry     bool              `yaml:"entry"`   // clients call this directly
-	Profile   string            `yaml:"profile"` // "" = always on
+	Dir    string            `yaml:"dir"`
+	Build  string            `yaml:"build"`
+	Watch  []string          `yaml:"watch"` // globs for build freshness
+	Run    string            `yaml:"run"`
+	Port   int               `yaml:"port"`  // real service port
+	Proxy  int               `yaml:"proxy"` // intercept port (0 = auto-assign later)
+	Env    map[string]string `yaml:"env"`
+	Health string            `yaml:"health"` // path, e.g. /healthz
+	// OnHealthy is a shell command run once each time this service's
+	// health gate passes — e.g. a database seed script that only makes
+	// sense once this service (and whatever it depends on) is actually
+	// reachable. Runs in Dir, the same as Build; a failure here fails the
+	// start the same way a Build failure does, before the service is
+	// reported healthy.
+	OnHealthy string           `yaml:"on_healthy"`
+	DependsOn []string         `yaml:"depends_on"`
+	Docker    *DockerPlacement `yaml:"docker"`
+	Entry     bool             `yaml:"entry"`   // clients call this directly
+	Profile   string           `yaml:"profile"` // "" = always on
 	// StartupTimeoutS overrides Orchestrator.Opts.HealthTimeout (default 30s)
 	// for this service's health gate only. 0 = use the default. For a slow
 	// starter (a JVM service paying classloading/Spring-context cost on

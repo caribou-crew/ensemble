@@ -174,6 +174,17 @@ func TestValidateSeedUnknownDatabase(t *testing.T) {
 	}
 }
 
+func TestValidateOnReadyUnknownSeed(t *testing.T) {
+	c := &Config{OnReady: OnReady{Seeds: []string{"ghost"}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error does not name the unknown seed: %v", err)
+	}
+}
+
 func TestValidateEntityEmptyBase(t *testing.T) {
 	c := &Config{Entities: map[string]Entity{
 		"users": {Base: "", ID: "token"},
@@ -225,6 +236,16 @@ func TestLoadValidFullConfig(t *testing.T) {
 	with := c.ServicesForProfiles([]string{"full"})
 	if _, ok := with["ledger"]; !ok {
 		t.Error(`ServicesForProfiles(["full"]) should include ledger`)
+	}
+
+	if got := c.Services["bff"].OnHealthy; got != "./scripts/notify-ready.sh" {
+		t.Errorf("bff.on_healthy: got %q", got)
+	}
+	if got := c.OnReady.Seeds; len(got) != 1 || got[0] != "baseline" {
+		t.Errorf("on_ready.seeds: got %v", got)
+	}
+	if got := c.OnReady.Run; got != "./scripts/postinstall.sh" {
+		t.Errorf("on_ready.run: got %q", got)
 	}
 }
 

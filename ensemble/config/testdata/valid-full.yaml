@@ -8,6 +8,7 @@ services:
     env:
       DOWNSTREAM_SVC_A: "http://localhost:7004"
     health: /healthz
+    on_healthy: ./scripts/notify-ready.sh
     depends_on: [svc-a, postgres]
     entry: true
   svc-a:
@@ -56,3 +57,6 @@ seeds:
         file: ./seeds/init.sql
 profiles:
   full: [ledger]
+on_ready:
+  seeds: [baseline]
+  run: ./scripts/postinstall.sh
