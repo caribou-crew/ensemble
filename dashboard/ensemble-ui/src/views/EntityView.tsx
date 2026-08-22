@@ -6,8 +6,8 @@
 // no router — matching the rest of the dashboard.
 import { useEffect, useState } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
+import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import type { EntityInfo } from '../api/types';
 import { renderCellValue, unionKeys } from '../format';
 import { useUrlParam } from '../urlState';
 import JsonView from '../components/JsonView';
@@ -18,28 +18,8 @@ const MUTATION_NOTE =
   "Mutations here only show up in Traffic when this entity's configured base points at an ensemble intercept port — a raw upstream base leaves them unrecorded.";
 
 function useEntities() {
-  const [entities, setEntities] = useState<EntityInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .entities()
-      .then((r) => {
-        if (!cancelled) {
-          setEntities(r);
-          setError(null);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(messageOf(err, 'failed to reach the ensemble API'));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return { entities, error };
+  const { data: entities, error } = useAsync(() => api.entities(), []);
+  return { entities, error: error?.message ?? null };
 }
 
 /** GET /api/entities/{name}'s body is whatever the upstream returns —
@@ -71,36 +51,13 @@ function EntityList({
   onSelectRow: (id: string) => void;
   onCreate: () => void;
 }) {
-  const [data, setData] = useState<unknown>(undefined);
   // See EntityDetail: `undefined` alone cannot distinguish "not fetched yet" from
-  // "fetched, and the upstream sent an empty body".
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setData(undefined);
-    setError(null);
-    api
-      .entityList(name)
-      .then((d) => {
-        if (cancelled) return;
-        setData(d);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(messageOf(err, `failed to load ${name}`));
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [name]);
+  // "fetched, and the upstream sent an empty body" — useAsync's `loading` still makes that
+  // distinction, same as the hand-rolled version did.
+  const { data, error, loading } = useAsync(() => api.entityList(name), [name]);
 
   if (error) {
-    return <InlineError message={error} />;
+    return <InlineError message={error.message} />;
   }
 
   if (loading) {
@@ -186,45 +143,38 @@ function EntityDetail({
   onDeleted: () => void;
   onBack: () => void;
 }) {
-  const [data, setData] = useState<unknown>(undefined);
+  // EntityDetail is NOT remounted when id changes (EntityView renders it without a
+  // key prop), so this load re-fires on the same instance and a previous in-flight
+  // request would otherwise still be live. useAsync's generation guard is what keeps a
+  // stale response from overwriting both the rendered record and draftText — and save()
+  // PUTs draftText against the CURRENT id, so that used to write one row's data onto
+  // another. Pinned by EntityView.detail-race.test.ts.
+  //
+  // `version` replaces the old save()'s direct `setData(result)`: useAsync hands back no
+  // setter, so a mutation can't write its own response into `data` without stranding it the
+  // next time [name, id] changes — bumping `version` instead re-triggers this same load,
+  // same pattern as LatencyView's mutations and Task 15's `mutate`. The reload is the
+  // source of truth; the PUT's own response is discarded once it has done its job.
+  const [version, setVersion] = useState(0);
+  const { data, error: loadError, loading } = useAsync(() => api.entityGet(name, id), [name, id, version]);
+
   // Tracked separately from `data`: a 200 with an empty body also yields undefined,
   // and overloading one sentinel for "not fetched yet" and "fetched nothing" showed
   // the user a permanent spinner with no error.
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // EntityDetail is NOT remounted when id changes (EntityView renders it without a
-  // key prop), so this effect re-fires on the same instance and a previous in-flight
-  // request would otherwise still be live. Without the cancelled guard a stale
-  // response overwrites both the rendered record and draftText — and save() PUTs
-  // draftText against the CURRENT id, so that writes one row's data onto another.
-  // Guarded here and pinned by EntityView.detail-race.test.ts.
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setData(undefined);
-    setError(null);
-    api
-      .entityGet(name, id)
-      .then((d) => {
-        if (cancelled) return;
-        setData(d);
-        setDraftText(JSON.stringify(d, null, 2) ?? '');
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(messageOf(err, `failed to load ${name}/${id}`));
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [name, id]);
+    if (data !== undefined) setDraftText(JSON.stringify(data, null, 2) ?? '');
+  }, [data]);
+
+  // The original single `error` state served both a load failure and a delete failure —
+  // useAsync now owns the load half, so a delete failure gets its own state, combined the
+  // same way for rendering: either one replaces the detail view with an error banner.
+  const error = loadError ? loadError.message : actionError;
 
   async function save() {
     let parsed: unknown;
@@ -236,10 +186,10 @@ function EntityDetail({
     }
     setBusy(true);
     try {
-      const result = await api.entityUpdate(name, id, parsed);
-      setData(result ?? parsed);
+      await api.entityUpdate(name, id, parsed);
       setEditing(false);
       setFormError(null);
+      setVersion((v) => v + 1);
     } catch (err) {
       setFormError(messageOf(err, 'failed to save'));
     } finally {
@@ -254,7 +204,7 @@ function EntityDetail({
       await api.entityDelete(name, id);
       onDeleted();
     } catch (err) {
-      setError(messageOf(err, 'failed to delete'));
+      setActionError(messageOf(err, 'failed to delete'));
     } finally {
       setBusy(false);
     }
