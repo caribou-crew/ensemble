@@ -1,3 +1,4 @@
+trace_header: x-local-trace-id
 services:
   bff:
     dir: ../my-company/bff-service

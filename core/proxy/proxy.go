@@ -63,6 +63,14 @@ type Proxy struct {
 	// stay honest; the injected amount lands in Hop.InjectedDelayMs.
 	Latency *LatencyStore
 
+	// TraceHeader names a stack's own correlation header (e.g.
+	// "x-local-trace-id"), read as a fallback trace id whenever a request
+	// carries no real traceparent — see trace.ResolveInbound. Stack-wide,
+	// not per-Target, since it's a convention the whole company's services
+	// already share. Empty (the default) disables the fallback entirely,
+	// preserving the exact prior behavior of always minting a fresh trace.
+	TraceHeader string
+
 	mu      sync.Mutex
 	servers []*http.Server
 }
@@ -183,11 +191,11 @@ func (p *Proxy) handler(t Target) http.Handler {
 		start := time.Now()
 
 		// Trace context: parse (or mint), then advance one span for this hop.
-		ctx := trace.ParseCtx(r.Header.Get("traceparent"), r.Header.Get("baggage"))
-		incomingSpan := ""
-		if r.Header.Get("traceparent") != "" {
-			incomingSpan = ctx.SpanID
+		customTraceID := ""
+		if p.TraceHeader != "" {
+			customTraceID = r.Header.Get(p.TraceHeader)
 		}
+		ctx, incomingSpan := trace.ResolveInbound(r.Header.Get("traceparent"), r.Header.Get("baggage"), customTraceID)
 		hopCtx := ctx.Child()
 		for k, v := range t.InjectBaggage {
 			hopCtx.Baggage[k] = v

@@ -273,6 +273,9 @@ func TestLoadValidFullConfig(t *testing.T) {
 	if got := c.OnReady.Run; got != "./scripts/postinstall.sh" {
 		t.Errorf("on_ready.run: got %q", got)
 	}
+	if got := c.TraceHeader; got != "x-local-trace-id" {
+		t.Errorf("trace_header: got %q", got)
+	}
 }
 
 // --- ServicesForProfiles: reconciling Service.Profile with top-level

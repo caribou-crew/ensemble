@@ -47,6 +47,25 @@ func ParseCtx(traceparent, baggage string) Ctx {
 // NewCtx returns a fresh root context.
 func NewCtx() Ctx { return ParseCtx("", "") }
 
+// ResolveInbound picks the trace context for an inbound request, in order:
+// a valid W3C traceparent always wins outright, returning its real span id
+// as incomingSpanID so the caller can look up who owns it (SpanOwner); else
+// customHeaderValue (a stack's own correlation header — see
+// core/proxy.Proxy.TraceHeader — read by the caller before this call) is
+// adopted as the trace id, since a flat correlation id has no span
+// structure of its own to extract a real incomingSpanID from; else a wholly
+// fresh trace is minted, exactly as ParseCtx alone does.
+func ResolveInbound(traceparent, baggage, customHeaderValue string) (ctx Ctx, incomingSpanID string) {
+	ctx = ParseCtx(traceparent, baggage)
+	if traceparent != "" {
+		return ctx, ctx.SpanID
+	}
+	if customHeaderValue != "" {
+		ctx.TraceID = customHeaderValue
+	}
+	return ctx, ""
+}
+
 // Child returns a context for the next hop: same trace, new span,
 // parent linkage to this span. Baggage is copied, not shared.
 func (c Ctx) Child() Ctx {

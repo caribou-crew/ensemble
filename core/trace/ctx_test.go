@@ -79,3 +79,35 @@ func TestEnsureCorrelationIDStableAndAdditive(t *testing.T) {
 		t.Fatal("adding baggage clobbered correlation id")
 	}
 }
+
+func TestResolveInboundPrefersRealTraceparent(t *testing.T) {
+	ctx, spanID := ResolveInbound("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01", "", "some-custom-value")
+	if ctx.TraceID != "0af7651916cd43dd8448eb211c80319c" {
+		t.Fatalf("trace id = %q, want the real traceparent's, not the custom header", ctx.TraceID)
+	}
+	if spanID != "b7ad6b7169203331" {
+		t.Fatalf("incoming span id = %q, want the real traceparent's", spanID)
+	}
+}
+
+func TestResolveInboundFallsBackToCustomHeader(t *testing.T) {
+	ctx, spanID := ResolveInbound("", "", "company-correlation-id-123")
+	if ctx.TraceID != "company-correlation-id-123" {
+		t.Fatalf("trace id = %q, want the custom header's raw value", ctx.TraceID)
+	}
+	// A flat correlation header carries no span structure of its own — no
+	// span id to look an owner up by, unlike a real traceparent.
+	if spanID != "" {
+		t.Fatalf("incoming span id = %q, want empty (no real span to attribute)", spanID)
+	}
+}
+
+func TestResolveInboundMintsFreshWhenNeitherPresent(t *testing.T) {
+	ctx, spanID := ResolveInbound("", "", "")
+	if !traceparentRe.MatchString(ctx.Traceparent()) {
+		t.Fatalf("expected a freshly minted, well-formed trace id, got %q", ctx.Traceparent())
+	}
+	if spanID != "" {
+		t.Fatalf("incoming span id = %q, want empty", spanID)
+	}
+}

@@ -196,3 +196,34 @@ func TestStubUnmatchedIs404AndStillRecorded(t *testing.T) {
 		t.Fatalf("unmatched call not recorded: %+v", hops)
 	}
 }
+
+// TestStubTraceHeaderAdoptsCustomTraceID mirrors core/proxy's
+// TestProxyTraceHeaderAdoptsCustomTraceID: a stub is as much a real hop as
+// any proxied service, so a call with no traceparent but carrying the
+// stack's own correlation header must land in that trace, not a fresh one.
+func TestStubTraceHeaderAdoptsCustomTraceID(t *testing.T) {
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	s := New("aws-kms", []Route{{
+		Match:   Match{Method: "GET", Path: "/x"},
+		Respond: Respond{Status: 200, Body: "ok"},
+	}}, rec)
+	s.TraceHeader = "x-local-trace-id"
+	addr, err := s.Serve("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("x-local-trace-id", "company-corr-stub-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 || hops[0].TraceID != "company-corr-stub-1" {
+		t.Fatalf("hop.TraceID = %q, want the custom header's value: %+v", hops[0].TraceID, hops)
+	}
+}

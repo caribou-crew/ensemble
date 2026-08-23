@@ -163,6 +163,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	})
 
 	px := proxy.New(rec)
+	px.TraceHeader = cfg.TraceHeader
 	lat := proxy.NewLatencyStore(nil)
 	px.Latency = lat
 	for _, d := range cfg.Latency.Defaults {
@@ -502,6 +503,7 @@ func startStubs(cfg *config.Config, rec *proxy.Recorder) ([]*stub.Stub, error) {
 			}
 		}
 		s := stub.New(name, routes, rec)
+		s.TraceHeader = cfg.TraceHeader
 		listen := "127.0.0.1:0"
 		if st.Port != 0 {
 			listen = fmt.Sprintf("127.0.0.1:%d", st.Port)

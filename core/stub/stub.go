@@ -59,6 +59,11 @@ type Stub struct {
 	routes []Route
 	rec    *proxy.Recorder
 	srv    *http.Server
+
+	// TraceHeader mirrors core/proxy.Proxy.TraceHeader — a stack's own
+	// correlation header, read as a fallback trace id when a request
+	// carries no real traceparent. Empty (the default) disables it.
+	TraceHeader string
 }
 
 func New(name string, routes []Route, rec *proxy.Recorder) *Stub {
@@ -105,11 +110,11 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, respBody)
 
 	if s.rec != nil {
-		ctx := trace.ParseCtx(r.Header.Get("traceparent"), r.Header.Get("baggage"))
-		incomingSpan := ""
-		if r.Header.Get("traceparent") != "" {
-			incomingSpan = ctx.SpanID
+		customTraceID := ""
+		if s.TraceHeader != "" {
+			customTraceID = r.Header.Get(s.TraceHeader)
 		}
+		ctx, incomingSpan := trace.ResolveInbound(r.Header.Get("traceparent"), r.Header.Get("baggage"), customTraceID)
 		hopCtx := ctx.Child()
 		hopCtx.EnsureCorrelationID()
 		// Cap what's *captured* into the hop at the same limit core/proxy

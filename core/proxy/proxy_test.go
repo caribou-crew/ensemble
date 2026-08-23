@@ -368,3 +368,104 @@ func TestCalledByFallbackDoesNotOverrideRealAttribution(t *testing.T) {
 		t.Errorf("Attribution = %q, want empty (real attribution, not inferred)", backendHop.Attribution)
 	}
 }
+
+// TestProxyTraceHeaderAdoptsCustomTraceID: Proxy.TraceHeader names a
+// stack's own correlation header (e.g. "x-local-trace-id"). With no
+// traceparent on the inbound request, its value is adopted as the hop's
+// TraceID instead of minting an unrelated one.
+func TestProxyTraceHeaderAdoptsCustomTraceID(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.TraceHeader = "x-local-trace-id"
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("x-local-trace-id", "company-corr-abc123")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("want 1 hop, got %d", len(hops))
+	}
+	if hops[0].TraceID != "company-corr-abc123" {
+		t.Errorf("TraceID = %q, want the custom header's value", hops[0].TraceID)
+	}
+}
+
+// TestProxyTraceHeaderStitchesChainAcrossUninstrumentedHop is the actual
+// bug this exists to fix: an un-instrumented middle service (svcA) that
+// doesn't forward traceparent but DOES forward the company's own
+// correlation header (its own established convention, unrelated to W3C
+// tracing) must still land both hops in the SAME trace, so the dashboard
+// groups and causally orders them together instead of splitting them into
+// two unrelated traces.
+func TestProxyTraceHeaderStitchesChainAcrossUninstrumentedHop(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.TraceHeader = "x-local-trace-id"
+	defer p.Close()
+
+	svcBUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer svcBUp.Close()
+	proxyB, err := p.Serve(Target{Name: "svc-b", Listen: "127.0.0.1:0", Upstream: svcBUp.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// svcA is the un-instrumented middle hop: it forwards the company's
+	// own correlation header (as its real process would, by their
+	// existing convention) but NOT traceparent (it has no idea what W3C
+	// tracing is) — exactly the scenario that used to mint svcA -> svcB a
+	// wholly unrelated trace id.
+	svcAUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequest("GET", "http://"+proxyB+"/inner", nil)
+		req.Header.Set("x-local-trace-id", r.Header.Get("x-local-trace-id"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		w.Write([]byte("ok"))
+	}))
+	defer svcAUp.Close()
+	proxyA, err := p.Serve(Target{Name: "svc-a", Listen: "127.0.0.1:0", Upstream: svcAUp.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+proxyA+"/outer", nil)
+	req.Header.Set("x-local-trace-id", "company-corr-xyz789")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 2 {
+		t.Fatalf("want 2 hops, got %d: %+v", len(hops), hops)
+	}
+	if hops[0].TraceID != hops[1].TraceID {
+		t.Errorf("hops landed in different traces: %q vs %q", hops[0].TraceID, hops[1].TraceID)
+	}
+	if hops[0].TraceID != "company-corr-xyz789" {
+		t.Errorf("TraceID = %q, want the company's own correlation id", hops[0].TraceID)
+	}
+}

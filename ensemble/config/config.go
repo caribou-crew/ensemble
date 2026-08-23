@@ -26,7 +26,16 @@ type Config struct {
 	Profiles  map[string][]string `yaml:"profiles"`
 	Redact    []string            `yaml:"redact"` // extra redaction keys
 	OnReady   OnReady             `yaml:"on_ready"`
-	Dir       string              `yaml:"-"` // dir containing the config file (set by Load)
+	// TraceHeader names a stack's own correlation header (e.g.
+	// "x-local-trace-id") — read as a fallback trace id whenever a request
+	// carries no real W3C traceparent, so hops still land in one trace
+	// instead of scattering across synthetic ones (see
+	// core/trace.ResolveInbound, core/proxy.Proxy.TraceHeader). Stack-wide
+	// because it's a convention the whole company's services already
+	// share, not a per-service setting. Empty (the default) disables the
+	// fallback entirely.
+	TraceHeader string `yaml:"trace_header"`
+	Dir         string `yaml:"-"` // dir containing the config file (set by Load)
 }
 
 // OnReady runs once `ensemble up` has brought every active service and
