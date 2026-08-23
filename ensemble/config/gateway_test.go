@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // gatewayBase is a clean config with one proxied service, one unproxied
@@ -34,6 +36,35 @@ func TestValidateGatewayClean(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGatewayExposeInTrafficDefaultsFalse(t *testing.T) {
+	var gw Gateway
+	if err := yaml.Unmarshal([]byte(`port: 9000
+routes:
+  - prefix: /bff
+    service: storefront
+`), &gw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if gw.ExposeInTraffic {
+		t.Fatalf("expose_in_traffic should default to false when absent from yaml, got true")
+	}
+}
+
+func TestGatewayExposeInTrafficParsesTrue(t *testing.T) {
+	var gw Gateway
+	if err := yaml.Unmarshal([]byte(`port: 9000
+expose_in_traffic: true
+routes:
+  - prefix: /bff
+    service: storefront
+`), &gw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !gw.ExposeInTraffic {
+		t.Fatalf("expose_in_traffic: true did not parse onto Gateway.ExposeInTraffic")
 	}
 }
 

@@ -164,6 +164,7 @@ describe('messageOf fallback at every load site', () => {
 
   it('TrafficView.tsx — the seed load', async () => {
     vi.spyOn(api, 'traffic').mockImplementation(netFail);
+    vi.spyOn(api, 'topology').mockResolvedValue({ nodes: [], edges: [] });
     await render(TrafficView);
     expectFallback(container, API_FALLBACK);
   });

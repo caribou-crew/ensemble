@@ -39,6 +39,7 @@ describe('TrafficView: seeds from the initial GET and opens the SSE tail', () =>
 
   it('renders the seeded hop and subscribes to the live tail', async () => {
     vi.spyOn(api, 'traffic').mockResolvedValue([HOP]);
+    vi.spyOn(api, 'topology').mockResolvedValue({ nodes: [], edges: [] });
     const unsubscribe = vi.fn();
     const subscribeSpy = vi.spyOn(sse, 'subscribeHops').mockReturnValue(unsubscribe);
 
@@ -63,6 +64,7 @@ describe('TrafficView: seeds from the initial GET and opens the SSE tail', () =>
 
   it('clear empties the table without closing the live SSE subscription', async () => {
     vi.spyOn(api, 'traffic').mockResolvedValue([HOP]);
+    vi.spyOn(api, 'topology').mockResolvedValue({ nodes: [], edges: [] });
     let deliver: ((hop: Hop) => void) | undefined;
     const unsubscribe = vi.fn();
     vi.spyOn(sse, 'subscribeHops').mockImplementation((_cursor, onHop) => {

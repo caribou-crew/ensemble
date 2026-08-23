@@ -99,6 +99,52 @@ func TestTopologyGatewayNodeAndEdges(t *testing.T) {
 	}
 }
 
+func TestTopologyGatewayExposeInTraffic(t *testing.T) {
+	e, _ := newGatewayEnv(t)
+	// newGatewayEnv's "public" gateway leaves ExposeInTraffic at its zero value (false) — the
+	// dashboard's Traffic tab should collapse it into its target by default.
+	resp, body := e.get(t, "/api/topology")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got server.TopologyResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	var gw *server.TopologyNode
+	for i := range got.Nodes {
+		if got.Nodes[i].Name == "public" {
+			gw = &got.Nodes[i]
+		}
+	}
+	if gw == nil || gw.ExposeInTraffic {
+		t.Fatalf("gateway node exposeInTraffic = %+v, want false (the config default)", gw)
+	}
+
+	e.cfg.Gateways["public"] = config.Gateway{
+		Port:            e.cfg.Gateways["public"].Port,
+		Routes:          e.cfg.Gateways["public"].Routes,
+		ExposeInTraffic: true,
+	}
+	resp2, body2 := e.get(t, "/api/topology")
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp2.StatusCode, body2)
+	}
+	var got2 server.TopologyResponse
+	if err := json.Unmarshal(body2, &got2); err != nil {
+		t.Fatal(err)
+	}
+	for i := range got2.Nodes {
+		if got2.Nodes[i].Name == "public" {
+			if !got2.Nodes[i].ExposeInTraffic {
+				t.Fatalf("gateway node exposeInTraffic = %+v, want true after opting in", got2.Nodes[i])
+			}
+			return
+		}
+	}
+	t.Fatalf("gateway node %q not found in %+v", "public", got2.Nodes)
+}
+
 func TestSessionStartWithGatewayEntry(t *testing.T) {
 	e, _ := newGatewayEnv(t)
 	reqBody, _ := json.Marshal(map[string]string{"id": "gw1", "entry": "public"})

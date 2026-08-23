@@ -58,6 +58,9 @@ export interface TopologyNode {
   /** Set only for a service declaring `variants:` — the current choice and every option. */
   variant?: string;
   variants?: string[];
+  /** "gateway" nodes only — mirrors config.Gateway.ExposeInTraffic. When false (the default),
+   * the Traffic tab collapses this gateway's own hop into its target's. */
+  exposeInTraffic?: boolean;
 }
 
 export interface TopologyEdge {

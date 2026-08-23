@@ -9,9 +9,11 @@ import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import { subscribeHops } from '../api/sse';
 import type { Hop } from '../api/types';
-import { writeParams } from '../urlState';
+import { categoryOf } from '../topology/categories';
+import { collapseGatewayHops } from '../topology/gatewayCollapse';
 import HopTable from '../components/HopTable';
 import HopDetail from '../components/HopDetail';
+import TraceDrawer from '../components/TraceDrawer';
 import './TrafficView.css';
 
 /** Seed page size for the initial GET /api/traffic — comfortably covers a
@@ -76,27 +78,56 @@ function useHopRing() {
 
 export default function TrafficView() {
   const { hops, clear, error, loading } = useHopRing();
+  // Best-effort: the gateway show/hide split is a nice-to-have, so a topology fetch failure
+  // just leaves showGateways' default (collapse nothing configured) rather than erroring the
+  // whole Traffic tab.
+  const { data: topology } = useAsync(() => api.topology(), []);
 
   const [textFilter, setTextFilter] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [following, setFollowing] = useState(true);
+  // Off by default: a gateway hop collapses into its target's unless the gateway opted in via
+  // ensemble.yaml's `expose_in_traffic: true`, or the user flips this on for the session.
+  const [showGateways, setShowGateways] = useState(false);
+  const [drawerTraceId, setDrawerTraceId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  const categoryByName = useMemo(() => {
+    const m = new Map(topology?.nodes.map((n) => [n.name, categoryOf(n)]) ?? []);
+    return m;
+  }, [topology]);
+
+  // Gateways with `expose_in_traffic: true` stay visible regardless of the session toggle;
+  // flipping showGateways on reveals every gateway hop, overriding that default for the
+  // session without touching config.
+  const collapse = useMemo(() => {
+    if (showGateways) return new Set<string>();
+    return new Set(
+      (topology?.nodes ?? [])
+        .filter((n) => n.category === 'gateway' && !n.exposeInTraffic)
+        .map((n) => n.name),
+    );
+  }, [topology, showGateways]);
+
+  const collapsed = useMemo(() => collapseGatewayHops(hops, collapse), [hops, collapse]);
+
   const filtered = useMemo(() => {
     const needle = textFilter.trim().toLowerCase();
-    return hops.filter((h) => {
+    return collapsed.filter((h) => {
       if (needle && !`${h.to} ${h.path ?? ''}`.toLowerCase().includes(needle)) return false;
       if (errorsOnly && !((h.status ?? 0) >= 400 || h.err)) return false;
       if (sessionFilter === 'session' && !h.session) return false;
       if (sessionFilter === 'ambient' && h.session) return false;
       return true;
     });
-  }, [hops, textFilter, errorsOnly, sessionFilter]);
+  }, [collapsed, textFilter, errorsOnly, sessionFilter]);
 
-  const selectedHop = useMemo(() => hops.find((h) => h.seq === selectedSeq) ?? null, [hops, selectedSeq]);
+  // From `collapsed`, not raw `hops` — the detail panel should mirror whatever `to` the table
+  // row it was opened from actually shows.
+  const selectedHop = useMemo(() => collapsed.find((h) => h.seq === selectedSeq) ?? null, [collapsed, selectedSeq]);
 
   // Auto-scroll to bottom whenever the visible rows grow, but only while
   // following — this is the ONLY effect of the toggle; the SSE
@@ -129,15 +160,10 @@ export default function TrafficView() {
     setSelectedSeq(null);
   }, [clear]);
 
-  const viewTrace = useCallback((traceId: string) => {
-    // App's ?view= tab state and TopologyView's ?trace= state are separate
-    // useUrlParam instances; writeParams alone patches the URL but neither
-    // hook notices without a popstate — the same pattern used to
-    // synchronize an external URL patch elsewhere in this dashboard (see
-    // TopologyView.trace-race.test.ts).
-    writeParams({ view: 'topology', trace: traceId });
-    window.dispatchEvent(new PopStateEvent('popstate'));
-  }, []);
+  // Datadog-style: opens the trace drawer in place, docked over the right side of this same
+  // view, rather than navigating to the Topology tab — closing it returns to Traffic exactly
+  // where it was left.
+  const viewTrace = useCallback((traceId: string) => setDrawerTraceId(traceId), []);
 
   if (error) {
     return (
@@ -180,8 +206,16 @@ export default function TrafficView() {
           onSelect={(id) => setSessionFilter(id as SessionFilter)}
         />
         <span className="traffic-view__count">
-          {filtered.length} / {hops.length}
+          {filtered.length} / {collapsed.length}
         </span>
+        <button
+          type="button"
+          className={`traffic-view__toggle${showGateways ? ' traffic-view__toggle--active' : ''}`}
+          onClick={() => setShowGateways((v) => !v)}
+          title="Show client -> gateway -> target as separate hops instead of collapsing the gateway leg"
+        >
+          {showGateways ? 'hide gateways' : 'show gateways'}
+        </button>
         <button
           type="button"
           className="traffic-view__clear"
@@ -220,6 +254,11 @@ export default function TrafficView() {
           )}
         </div>
       </div>
+      <TraceDrawer
+        traceId={drawerTraceId}
+        onClose={() => setDrawerTraceId(null)}
+        categoryByName={categoryByName}
+      />
     </div>
   );
 }

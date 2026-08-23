@@ -180,6 +180,11 @@ type TopologyNode struct {
 	// client can offer the switch exactly where it applies.
 	Variant  string   `json:"variant,omitempty"`
 	Variants []string `json:"variants,omitempty"`
+	// ExposeInTraffic mirrors config.Gateway.ExposeInTraffic; set only for
+	// "gateway" category nodes. The dashboard's Traffic tab uses it to
+	// decide whether to collapse this gateway's hops into its target's, or
+	// show them as their own row.
+	ExposeInTraffic bool `json:"exposeInTraffic,omitempty"`
 }
 
 // TopologyEdge is a directed dependency: From calls/depends on To.
@@ -246,7 +251,7 @@ func (s *server) buildTopology() TopologyResponse {
 		// A gateway is a static listener the proxy binds at Up, not a
 		// supervised node — same lifecycle story as a stub. Clients call
 		// it directly by definition, so it is always an entry.
-		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true})
+		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true, ExposeInTraffic: cfg.Gateways[name].ExposeInTraffic})
 	}
 
 	// portToService resolves an env-wired "127.0.0.1:<port>" reference back

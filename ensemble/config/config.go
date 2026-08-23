@@ -233,6 +233,11 @@ type Gateway struct {
 	// headers and answer preflight OPTIONS requests directly. Absent
 	// (nil) by default — fully backward compatible.
 	CORS *CORSConfig `yaml:"cors"`
+	// ExposeInTraffic opts this gateway INTO being shown as its own hop in
+	// the dashboard's Traffic tab. Default false: the Traffic tab collapses
+	// "client -> gateway -> target" down to "client -> target", since most
+	// users care about the logical call, not the router hop in front of it.
+	ExposeInTraffic bool `yaml:"expose_in_traffic"`
 }
 
 // GatewayRoute maps a request to a service or stub, matched by exactly one

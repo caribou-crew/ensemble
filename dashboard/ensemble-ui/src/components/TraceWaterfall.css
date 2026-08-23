@@ -1,0 +1,110 @@
+/* --- trace-mode hop timing waterfall (shared by TopologyView and TrafficView's TraceDrawer) --- */
+
+.topo-hop-panel {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.topo-hop-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40%;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border-hairline);
+  background: transparent;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.topo-hop-row:hover {
+  background: var(--bg-raised);
+}
+
+.topo-hop-row-selected {
+  background: var(--accent-dim);
+}
+
+.topo-hop-meta {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topo-hop-seq {
+  color: var(--text-tertiary);
+}
+
+/* Nested-call indent, ported from local-stack-console's TopologyTab.tsx: paddingLeft scales
+   with hopDepths()'s reconstructed call-stack depth, so a sub-call visibly nests under the
+   hop that made it rather than reading as another sibling row. */
+.topo-hop-consumer {
+  padding-left: 0;
+}
+
+.topo-hop-nest-glyph {
+  color: var(--text-tertiary);
+  margin-right: 0.25rem;
+}
+
+.topo-hop-method {
+  color: var(--status-blue);
+}
+
+.topo-hop-status {
+  color: var(--text-tertiary);
+}
+
+.topo-hop-track {
+  position: relative;
+  height: 10px;
+  background: var(--bg-raised);
+  border-radius: 3px;
+}
+
+.topo-hop-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--status-blue);
+}
+
+.topo-hop-bar-warm {
+  background: var(--status-amber);
+}
+
+.topo-hop-bar-hot {
+  background: var(--status-red);
+}
+
+/* The injected-delay hatch — a diagonal stripe over the bar's leading edge, distinct from
+   the bar's own heat color so "artificial" reads as a texture, not another hue. */
+.topo-hop-bar-delay {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px 0 0 3px;
+  /* Deliberate literal, not a palette color (final review M4): a black hatch drawn OVER
+     whichever heat-tier color the bar underneath happens to be (topo-hop-bar-cold/warm/hot,
+     all tokens.css --status-* hues) — it needs to read as a texture against any of them, so
+     it can't itself be one of those tokens. */
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(0, 0, 0, 0.35) 0,
+    rgba(0, 0, 0, 0.35) 2px,
+    transparent 2px,
+    transparent 5px
+  );
+}
