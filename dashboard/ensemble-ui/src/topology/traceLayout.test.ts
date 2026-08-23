@@ -151,4 +151,16 @@ describe('layoutTrace', () => {
     ]);
     expect(l.nodes.length).toBe(2);
   });
+
+  it('marks an edge inferred when its hop carries attribution "inferred" — a config guess, not a trace fact', () => {
+    const l = layoutTrace([{ ...LINEAR_HOPS[0], from: 'bff', to: 'backend', attribution: 'inferred' }]);
+    const e = l.edges.find((x) => x.from === 'bff' && x.to === 'backend');
+    expect(e?.inferred).toBe(true);
+  });
+
+  it('leaves a real, trace-derived edge unmarked', () => {
+    const l = layoutTrace([{ ...LINEAR_HOPS[0], from: 'bff', to: 'backend' }]);
+    const e = l.edges.find((x) => x.from === 'bff' && x.to === 'backend');
+    expect(e?.inferred).toBeFalsy();
+  });
 });

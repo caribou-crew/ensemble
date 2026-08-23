@@ -408,3 +408,63 @@ func TestProfileNamesAndMembers(t *testing.T) {
 		t.Errorf("ProfileMembers(nope) = %v", got)
 	}
 }
+
+func TestValidateCalledByUnknownReference(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"backend": {Run: "x", Port: 1, CalledBy: []string{"ghost"}},
+	}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error does not name the unknown caller: %v", err)
+	}
+}
+
+func TestValidateCalledByAcceptsGateway(t *testing.T) {
+	c := &Config{
+		Services: map[string]Service{
+			"backend": {Run: "x", Port: 1, CalledBy: []string{"edge-api"}},
+		},
+		Gateways: map[string]Gateway{
+			"edge-api": {Port: 2, Routes: []GatewayRoute{{Prefix: "/", Service: "backend"}}},
+		},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfigCalledByExplicitOverridesDependsOn(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"backend": {Run: "x", Port: 1, CalledBy: []string{"explicit-caller"}},
+		"bff":     {Run: "x", Port: 2, DependsOn: []string{"backend"}},
+	}}
+	got := c.CalledBy("backend")
+	if strings.Join(got, ",") != "explicit-caller" {
+		t.Errorf("CalledBy(backend) = %v, want [explicit-caller]", got)
+	}
+}
+
+func TestConfigCalledByDefaultsFromDependsOn(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"backend": {Run: "x", Port: 1},
+		"bff":     {Run: "x", Port: 2, DependsOn: []string{"backend"}},
+		"worker":  {Run: "x", Port: 3, DependsOn: []string{"backend"}},
+		"other":   {Run: "x", Port: 4},
+	}}
+	got := c.CalledBy("backend")
+	if strings.Join(got, ",") != "bff,worker" {
+		t.Errorf("CalledBy(backend) = %v, want [bff worker]", got)
+	}
+}
+
+func TestConfigCalledByEmptyWhenNoCallers(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"backend": {Run: "x", Port: 1},
+	}}
+	if got := c.CalledBy("backend"); len(got) != 0 {
+		t.Errorf("CalledBy(backend) = %v, want empty", got)
+	}
+}

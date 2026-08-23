@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -58,11 +59,20 @@ type Service struct {
 	// reachable. Runs in Dir, the same as Build; a failure here fails the
 	// start the same way a Build failure does, before the service is
 	// reported healthy.
-	OnHealthy string           `yaml:"on_healthy"`
-	DependsOn []string         `yaml:"depends_on"`
-	Docker    *DockerPlacement `yaml:"docker"`
-	Entry     bool             `yaml:"entry"`   // clients call this directly
-	Profile   string           `yaml:"profile"` // "" = always on
+	OnHealthy string   `yaml:"on_healthy"`
+	DependsOn []string `yaml:"depends_on"`
+	// CalledBy is a caller-attribution hint for the dashboard's traffic
+	// view: who calls this service, used only as a fallback when the real
+	// caller can't be identified via W3C trace-context propagation (see
+	// core/proxy.Target.CalledBy) — typically because this service is a
+	// real/vendored backend with no tracing instrumentation of its own.
+	// Left empty, Config.CalledBy derives it from every other service's
+	// depends_on instead (see that method). A hop attributed this way is
+	// marked "inferred" in the UI, never presented as ground truth.
+	CalledBy []string         `yaml:"called_by"`
+	Docker   *DockerPlacement `yaml:"docker"`
+	Entry    bool             `yaml:"entry"`   // clients call this directly
+	Profile  string           `yaml:"profile"` // "" = always on
 	// StartupTimeoutS overrides Orchestrator.Opts.HealthTimeout (default 30s)
 	// for this service's health gate only. 0 = use the default. For a slow
 	// starter (a JVM service paying classloading/Spring-context cost on
@@ -282,6 +292,31 @@ type CORSConfig struct {
 	// MaxAgeSeconds, when > 0, sets Access-Control-Max-Age so the
 	// browser caches a preflight result instead of repeating it.
 	MaxAgeSeconds int `yaml:"max_age_seconds"`
+}
+
+// CalledBy resolves the caller-attribution hint for service name: its own
+// declared CalledBy when set, else every other service that lists name in
+// its own depends_on, sorted — the natural default, since depends_on
+// already describes who calls whom for most stacks. Empty when neither
+// source names a caller. See Service.CalledBy and core/proxy.Target.CalledBy
+// for how the proxy uses this.
+func (c *Config) CalledBy(name string) []string {
+	if svc, ok := c.Services[name]; ok && len(svc.CalledBy) > 0 {
+		out := append([]string(nil), svc.CalledBy...)
+		sort.Strings(out)
+		return out
+	}
+	var out []string
+	for other, svc := range c.Services {
+		if other == name {
+			continue
+		}
+		if slices.Contains(svc.DependsOn, name) {
+			out = append(out, other)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RoutablePort resolves the port a gateway route targeting name forwards

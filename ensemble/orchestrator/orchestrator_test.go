@@ -338,6 +338,60 @@ func TestUpProxyWiring(t *testing.T) {
 	}
 }
 
+// TestUpProxyWiringDerivesCalledByFromDependsOn: wireProxy must pass each
+// service's Config.CalledBy hint (derived here from depends_on, since
+// "backend" declares no explicit called_by) into proxy.Target, so a hit
+// with no traceparent — an un-instrumented backend's own behavior — still
+// gets attributed instead of falling back to the synthetic "client" root.
+func TestUpProxyWiringDerivesCalledByFromDependsOn(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	upURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	upPort, err := strconv.Atoi(upURL.Port())
+	if err != nil {
+		t.Fatalf("upstream port: %v", err)
+	}
+	proxyPort := freePort(t)
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"backend": {Run: "sleep 30", Port: upPort, Proxy: proxyPort},
+			"bff":     {Run: "sleep 30", DependsOn: []string{"backend"}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", proxyPort))
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) == 0 {
+		t.Fatal("expected at least one hop in the recorder")
+	}
+	if hops[0].From != "bff" {
+		t.Fatalf("hop.From = %q, want %q", hops[0].From, "bff")
+	}
+	if hops[0].Attribution != "inferred" {
+		t.Fatalf("hop.Attribution = %q, want %q", hops[0].Attribution, "inferred")
+	}
+}
+
 // Restart must not re-wire the proxy: px.Serve binds a listener with no
 // release mechanism, so a second bind on the same Listen address would
 // fail with "address already in use". The original wiring from Up keeps

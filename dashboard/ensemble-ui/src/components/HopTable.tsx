@@ -9,6 +9,7 @@ import { Badge } from '@ensemble/design-system';
 import type { Hop } from '../api/types';
 import { causalHopOrder } from '../topology/traceLayout';
 import { hopDepths } from '../topology/hopTimeline';
+import { INFERRED_CALLER_TITLE, isInferredCaller } from './attribution';
 import './HopTable.css';
 
 export interface HopTableProps {
@@ -175,7 +176,13 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
               <td className="hop-table__route">
                 <span className="hop-table__route-indent" style={{ paddingLeft: depth * 12 }}>
                   {depth > 0 && <span className="hop-table__nest-glyph">↳</span>}
-                  {hop.from ?? 'client'} → {hop.to}
+                  {isInferredCaller(hop) ? (
+                    <span className="hop-table__caller--inferred" title={INFERRED_CALLER_TITLE}>
+                      {hop.from}
+                    </span>
+                  ) : (
+                    hop.from ?? 'client'
+                  )} → {hop.to}
                 </span>
               </td>
               <td className="hop-table__request">

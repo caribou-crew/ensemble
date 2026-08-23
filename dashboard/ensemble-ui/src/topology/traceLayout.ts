@@ -196,6 +196,7 @@ export function layoutTrace(hops: Hop[]): GraphLayout {
       to: h.to,
       points: route(a, b),
       hopLabels: [h.seq],
+      inferred: h.attribution === 'inferred',
     });
   });
 

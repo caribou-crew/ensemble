@@ -82,6 +82,13 @@ func (c *Config) Validate() error {
 				errs = append(errs, fmt.Errorf("service %q: depends_on references unknown service/database %q", name, dep))
 			}
 		}
+		for _, caller := range svc.CalledBy {
+			if _, ok := c.Services[caller]; !ok {
+				if _, ok := c.Gateways[caller]; !ok {
+					errs = append(errs, fmt.Errorf("service %q: called_by references unknown service/gateway %q", name, caller))
+				}
+			}
+		}
 	}
 
 	for name, stub := range c.Stubs {

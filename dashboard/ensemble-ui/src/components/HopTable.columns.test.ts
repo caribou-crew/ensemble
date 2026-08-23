@@ -78,4 +78,27 @@ describe('HopTable time and size columns', () => {
     );
     expect(markup).toContain('>12B<');
   });
+
+  it('marks a config-inferred caller visually distinct from a real, trace-derived one', () => {
+    const inferred: Hop = {
+      schema: 'ensemble/1',
+      seq: 1,
+      from: 'bff',
+      attribution: 'inferred',
+      to: 'backend',
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    };
+    const real: Hop = {
+      schema: 'ensemble/1',
+      seq: 2,
+      from: 'bff',
+      to: 'other-backend',
+      t: { start: '2026-01-01T00:00:01.000Z' },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, { hops: [inferred, real], selectedSeq: null, onSelectHop: () => {} }),
+    );
+    // Exactly the inferred hop's row gets the marker class — the real one must not.
+    expect(markup.match(/hop-table__caller--inferred/g)?.length).toBe(1);
+  });
 });

@@ -166,6 +166,12 @@
   stroke: var(--accent-strong);
 }
 
+/* Attributed from config.called_by, not real trace-context propagation (traceLayout.ts's
+   GraphEdge.inferred) — dashed to read as a guess, not a fact. */
+.topo-edge-inferred .topo-edge-line {
+  stroke-dasharray: 4 3;
+}
+
 .topo-edge-pill {
   fill: var(--bg-panel);
   stroke: var(--border-hairline-strong);

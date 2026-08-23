@@ -18,21 +18,27 @@ const SchemaVersion = "ensemble/1"
 
 // Hop is one proxied request/response observed between two services.
 type Hop struct {
-	Schema        string  `json:"schema"`
-	Seq           uint64  `json:"seq"`
-	TraceID       string  `json:"traceId,omitempty"`
-	SpanID        string  `json:"spanId,omitempty"`
-	ParentSpanID  string  `json:"parentSpanId,omitempty"`
-	CorrelationID string  `json:"correlationId,omitempty"`
-	Session       string  `json:"session,omitempty"` // retrace-run id; "" = ambient traffic
-	From          string  `json:"from,omitempty"`
-	To            string  `json:"to"`
-	Method        string  `json:"method,omitempty"`
-	Path          string  `json:"path,omitempty"`
-	Status        int     `json:"status,omitempty"`
-	T             Timings `json:"t"`
-	Req           Payload `json:"req,omitzero"`
-	Resp          Payload `json:"resp,omitzero"`
+	Schema        string `json:"schema"`
+	Seq           uint64 `json:"seq"`
+	TraceID       string `json:"traceId,omitempty"`
+	SpanID        string `json:"spanId,omitempty"`
+	ParentSpanID  string `json:"parentSpanId,omitempty"`
+	CorrelationID string `json:"correlationId,omitempty"`
+	Session       string `json:"session,omitempty"` // retrace-run id; "" = ambient traffic
+	From          string `json:"from,omitempty"`
+	// Attribution is "inferred" when From came from a config-declared
+	// CalledBy hint (see core/proxy.Target) rather than real W3C
+	// trace-context propagation — SpanOwner had nothing to look up, so the
+	// proxy fell back to a guess. Empty means From (if set) is a real,
+	// trace-derived fact.
+	Attribution string  `json:"attribution,omitempty"`
+	To          string  `json:"to"`
+	Method      string  `json:"method,omitempty"`
+	Path        string  `json:"path,omitempty"`
+	Status      int     `json:"status,omitempty"`
+	T           Timings `json:"t"`
+	Req         Payload `json:"req,omitzero"`
+	Resp        Payload `json:"resp,omitzero"`
 	// InjectedDelayMs is artificial latency added by a rule, kept distinct
 	// from upstream time so timings stay honest.
 	InjectedDelayMs float64 `json:"injectedDelayMs,omitempty"`

@@ -50,6 +50,14 @@
   color: var(--text-secondary);
 }
 
+/* A caller name resolved from config.called_by, not real trace-context propagation — see
+   HopTable.css's identical rule for the rationale. */
+.hop-detail__caller--inferred {
+  text-decoration: dotted underline;
+  text-decoration-color: var(--text-tertiary);
+  text-underline-offset: 2px;
+}
+
 .hop-detail__trace-link {
   margin-left: auto;
   border: none;

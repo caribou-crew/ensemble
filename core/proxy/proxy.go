@@ -34,6 +34,15 @@ type Target struct {
 	// synthetic browser traffic, not application traffic). nil disables
 	// CORS entirely; see CORSPolicy.
 	CORS *CORSPolicy
+	// CalledBy is a config-declared fallback caller hint, used only when
+	// SpanOwner has no real trace-derived answer (the inbound request
+	// carried no traceparent this proxy claimed, or none at all — typical
+	// of an off-the-shelf backend with no trace-context propagation). One
+	// entry attributes the hop directly; more than one means the hint is
+	// ambiguous, so every candidate is surfaced jointly. Either way the hop
+	// is marked Hop.Attribution = "inferred" so the UI never presents a
+	// guess as ground truth.
+	CalledBy []string
 }
 
 // CaptureLimit caps how much request/response body is *captured* (never how
@@ -192,13 +201,21 @@ func (p *Proxy) handler(t Target) http.Handler {
 		// can trust this ordering.
 		p.rec.ClaimTrace(hopCtx.TraceID, hopCtx.Session())
 
+		from := p.rec.SpanOwner(incomingSpan)
+		attribution := ""
+		if from == "" && len(t.CalledBy) > 0 {
+			from = strings.Join(t.CalledBy, "|")
+			attribution = "inferred"
+		}
+
 		hop := trace.Hop{
 			TraceID:       hopCtx.TraceID,
 			SpanID:        hopCtx.SpanID,
 			ParentSpanID:  hopCtx.ParentSpanID,
 			CorrelationID: hopCtx.CorrelationID(),
 			Session:       hopCtx.Session(),
-			From:          p.rec.SpanOwner(incomingSpan),
+			From:          from,
+			Attribution:   attribution,
 			To:            t.Name,
 			Method:        r.Method,
 			Path:          r.URL.RequestURI(),

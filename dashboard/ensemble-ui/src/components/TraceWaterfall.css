@@ -58,6 +58,14 @@
   margin-right: 0.25rem;
 }
 
+/* A caller name resolved from config.called_by, not real trace-context propagation — see
+   HopTable.css's identical rule for the rationale. */
+.topo-hop-caller--inferred {
+  text-decoration: dotted underline;
+  text-decoration-color: var(--text-tertiary);
+  text-underline-offset: 2px;
+}
+
 .topo-hop-method {
   color: var(--status-blue);
 }

@@ -946,6 +946,7 @@ func (o *Orchestrator) wireProxy(name string, svc config.Service) error {
 		Name:     name,
 		Listen:   fmt.Sprintf("127.0.0.1:%d", svc.Proxy),
 		Upstream: upstream,
+		CalledBy: o.cfg.CalledBy(name),
 	}); err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: proxy wiring: %w", name, err)

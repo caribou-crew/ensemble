@@ -65,6 +65,14 @@
   margin-right: 0.25rem;
 }
 
+/* A caller name resolved from config.called_by, not real trace-context propagation — a
+   dotted underline flags it as a guess rather than a fact (see attribution.ts). */
+.hop-table__caller--inferred {
+  text-decoration: dotted underline;
+  text-decoration-color: var(--text-tertiary);
+  text-underline-offset: 2px;
+}
+
 .hop-table__trace-link {
   border: none;
   background: transparent;

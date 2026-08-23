@@ -24,6 +24,10 @@ export interface Hop {
   correlationId?: string;
   session?: string;
   from?: string;
+  /** "inferred" when `from` came from a config-declared called_by hint rather than real
+   * trace-context propagation (core/proxy's SpanOwner had nothing to look up). Absent means
+   * `from`, if set, is a trace-derived fact. */
+  attribution?: 'inferred';
   to: string;
   method?: string;
   path?: string;

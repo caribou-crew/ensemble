@@ -6,6 +6,7 @@ import { api, messageOf } from "../api/client";
 import type { Hop } from "../api/types";
 import { causalHopOrder } from "../topology/traceLayout";
 import { heatTier, hopDepths, hopTimeline } from "../topology/hopTimeline";
+import { INFERRED_CALLER_TITLE, isInferredCaller } from "./attribution";
 import "./TraceWaterfall.css";
 
 export function useTracePoll(traceId: string | null) {
@@ -71,7 +72,13 @@ export function HopTimingPanel({
                 style={{ paddingLeft: depth * 12 }}
               >
                 {depth > 0 && <span className="topo-hop-nest-glyph">↳</span>}
-                {h.from ?? "client"}
+                {isInferredCaller(h) ? (
+                  <span className="topo-hop-caller--inferred" title={INFERRED_CALLER_TITLE}>
+                    {h.from}
+                  </span>
+                ) : (
+                  h.from ?? "client"
+                )}
               </span>
               {" → "}
               {h.to}

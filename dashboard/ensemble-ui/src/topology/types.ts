@@ -56,6 +56,10 @@ export interface GraphEdge {
   bundleExpanded?: boolean;
   /** Hop ordinals carried by this edge (trace mode only). */
   hopLabels?: number[];
+  /** True when this edge's caller came from a config-declared called_by hint rather than
+   * real trace-context propagation (Hop.attribution === 'inferred') — a guess, not a fact
+   * derived from the trace itself. Trace mode only. */
+  inferred?: boolean;
 }
 
 export interface GraphCluster {

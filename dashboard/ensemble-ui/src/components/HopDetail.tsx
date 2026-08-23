@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@ensemble/design-system';
 import type { Hop, Timings } from '../api/types';
 import { isRedactedValue } from '../redaction';
+import { INFERRED_CALLER_TITLE, isInferredCaller } from './attribution';
 import JsonView from './JsonView';
 import './HopDetail.css';
 
@@ -120,7 +121,13 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
       <div className="hop-detail__meta">
         <Badge tone={isError ? 'red' : 'green'}>{hop.err ? 'err' : (hop.status ?? '—')}</Badge>
         <span className="hop-detail__route">
-          {hop.from ?? 'client'} → {hop.to}
+          {isInferredCaller(hop) ? (
+            <span className="hop-detail__caller--inferred" title={INFERRED_CALLER_TITLE}>
+              {hop.from}
+            </span>
+          ) : (
+            hop.from ?? 'client'
+          )} → {hop.to}
         </span>
         {hop.traceId && onViewTrace && (
           <button type="button" className="hop-detail__trace-link" onClick={() => onViewTrace(hop.traceId as string)}>

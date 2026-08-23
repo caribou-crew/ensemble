@@ -237,3 +237,134 @@ func TestCapturedBodyIsValidJSONForRedaction(t *testing.T) {
 		t.Fatalf("recorded body leaked pan: %s", h.Resp.Body)
 	}
 }
+
+// TestCalledByFallbackAttribution: a call arrives with no traceparent at
+// all — an un-instrumented backend whose HTTP client never propagates
+// trace context, so SpanOwner has nothing to look up. Target.CalledBy
+// gives the proxy a config-declared hint to fall back to instead of the
+// synthetic "client" root, marked Attribution: "inferred" since it's a
+// guess, not something derived from the trace itself.
+func TestCalledByFallbackAttribution(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL, CalledBy: []string{"bff"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("want 1 hop, got %d", len(hops))
+	}
+	if hops[0].From != "bff" {
+		t.Errorf("From = %q, want %q", hops[0].From, "bff")
+	}
+	if hops[0].Attribution != "inferred" {
+		t.Errorf("Attribution = %q, want %q", hops[0].Attribution, "inferred")
+	}
+}
+
+// TestCalledByFallbackAttributionAmbiguous: more than one CalledBy
+// candidate can't be narrowed to a single caller, so all of them are
+// surfaced jointly rather than silently picking one — still marked
+// "inferred", never presented as if it were a real trace-derived fact.
+func TestCalledByFallbackAttributionAmbiguous(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL, CalledBy: []string{"bff", "acme-svc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get("http://" + addr + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "bff|acme-svc" {
+		t.Errorf("From = %q, want %q", hops[0].From, "bff|acme-svc")
+	}
+	if hops[0].Attribution != "inferred" {
+		t.Errorf("Attribution = %q, want %q", hops[0].Attribution, "inferred")
+	}
+}
+
+// TestCalledByFallbackDoesNotOverrideRealAttribution: when the caller DOES
+// propagate trace context, SpanOwner resolves the real caller and the
+// CalledBy hint (deliberately wrong here) must be ignored entirely — real
+// attribution always wins over a config guess.
+func TestCalledByFallbackDoesNotOverrideRealAttribution(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	backendUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer backendUp.Close()
+	backendAddr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: backendUp.URL, CalledBy: []string{"wrong-guess"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callerUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequest("GET", "http://"+backendAddr+"/x", nil)
+		forwardCtx(req, r)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		w.Write([]byte("ok"))
+	}))
+	defer callerUp.Close()
+	callerAddr, err := p.Serve(Target{Name: "caller", Listen: "127.0.0.1:0", Upstream: callerUp.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get("http://" + callerAddr + "/y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	var backendHop *trace.Hop
+	for i := range hops {
+		if hops[i].To == "backend" {
+			backendHop = &hops[i]
+		}
+	}
+	if backendHop == nil {
+		t.Fatalf("no hop recorded to backend: %+v", hops)
+	}
+	if backendHop.From != "caller" {
+		t.Errorf("From = %q, want %q", backendHop.From, "caller")
+	}
+	if backendHop.Attribution != "" {
+		t.Errorf("Attribution = %q, want empty (real attribution, not inferred)", backendHop.Attribution)
+	}
+}
