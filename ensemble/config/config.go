@@ -174,7 +174,7 @@ type DockerPlacement struct {
 type Database struct {
 	Image string `yaml:"image"`
 	Port  int    `yaml:"port"`
-	Type  string `yaml:"type"` // postgres|mysql|redis|dynamodb|localstack
+	Type  string `yaml:"type"` // postgres|mysql|redis|dynamodb|localstack|http
 	// ContainerPort overrides the port the orchestrator publishes Port to,
 	// inside the container. Databases are always published to a fixed
 	// default port per Type (5432 for postgres, etc — see
@@ -186,6 +186,12 @@ type Database struct {
 	Seed          string            `yaml:"seed"`
 	Env           map[string]string `yaml:"env"`
 	Services      []string          `yaml:"services"`
+	// URL and Headers are meaningful only for Type "http": URL is the base
+	// URL of the service's own inspection endpoint (see
+	// inspector.NewHTTPDriver), and Headers are sent on every request
+	// against it (auth for a protected debug surface).
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
 }
 
 // Stub is a config-defined fake HTTP service.

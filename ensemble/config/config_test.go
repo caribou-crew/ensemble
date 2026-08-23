@@ -148,6 +148,32 @@ func TestValidateDatabaseTypeDefaultedFromImage(t *testing.T) {
 	}
 }
 
+func TestValidateDatabaseHTTPTypeValid(t *testing.T) {
+	c := &Config{Databases: map[string]Database{
+		"cardco-go-inspect": {
+			Type:    "http",
+			URL:     "http://127.0.0.1:4281/ensemble-inspect",
+			Headers: map[string]string{"Authorization": "Basic xyz"},
+		},
+	}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateDatabaseHTTPTypeMissingURL(t *testing.T) {
+	c := &Config{Databases: map[string]Database{
+		"cardco-go-inspect": {Type: "http"},
+	}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cardco-go-inspect") || !strings.Contains(err.Error(), "url") {
+		t.Errorf("error does not name the database and missing url: %v", err)
+	}
+}
+
 func TestValidateStubRouteEmptyPath(t *testing.T) {
 	c := &Config{Stubs: map[string]Stub{
 		"aws-kms": {Port: 7020, Routes: []StubRoute{{Match: StubMatch{Method: "POST", Path: ""}}}},

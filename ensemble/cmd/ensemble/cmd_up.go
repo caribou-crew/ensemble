@@ -354,16 +354,18 @@ func logStartupWarning(stderr io.Writer, upErr error) {
 // for every cfg.Databases entry whose type ensemble knows how to inspect
 // (postgres, mysql, dynamodb — reusing the same DSN-building conventions
 // as inspector.NewSQLRunner's seed-SQL path so a database's connection
-// details are computed exactly one way). redis/localstack are provisioned
-// but have no inspector.Driver yet, so they're silently left unregistered
-// — GET /api/databases only ever lists cfg.Databases ∩ registered drivers,
-// so an unregistered database just doesn't show up there rather than
-// erroring.
+// details are computed exactly one way — plus http, for a service that
+// exposes its own state over the three-route contract NewHTTPDriver
+// speaks). redis/localstack are provisioned but have no inspector.Driver
+// yet, so they're silently left unregistered — GET /api/databases only
+// ever lists cfg.Databases ∩ registered drivers, so an unregistered
+// database just doesn't show up there rather than erroring.
 //
-// All three constructors connect lazily (database/sql pools and dials on
-// first query; NewDynamoDriver is a plain http.Client wrapper) — this never
-// blocks on or requires a live database, so it's safe to call unconditionally
-// during startup even before the database's container is healthy.
+// All four constructors connect lazily (database/sql pools and dials on
+// first query; NewDynamoDriver and NewHTTPDriver are plain http.Client
+// wrappers) — this never blocks on or requires a live database, so it's
+// safe to call unconditionally during startup even before the database's
+// container is healthy.
 func buildInspector(cfg *config.Config, logf func(string, ...any)) *inspector.Inspector {
 	insp := inspector.New()
 	for name, db := range cfg.Databases {
@@ -384,14 +386,16 @@ func buildInspector(cfg *config.Config, logf func(string, ...any)) *inspector.In
 			insp.Register(name, drv)
 		case "dynamodb":
 			insp.Register(name, inspector.NewDynamoDriver(fmt.Sprintf("http://127.0.0.1:%d", db.Port)))
+		case "http":
+			insp.Register(name, inspector.NewHTTPDriver(db.URL, db.Headers))
 		}
 	}
 	return insp
 }
 
 // dbReadyProbe builds an orchestrator.DBReadyFunc backed by insp: for a
-// database with a registered inspector.Driver (postgres, mysql, dynamodb —
-// see buildInspector), readiness is a real protocol-level check — the same
+// database with a registered inspector.Driver (postgres, mysql, dynamodb,
+// http — see buildInspector), readiness is a real protocol-level check — the same
 // Schema/Tables call the dashboard uses to inspect the database, so
 // startDatabase's health gate and the dashboard's reads exercise identical
 // connection logic (task 3.6, defect D3: a bare TCP dial can't tell a live

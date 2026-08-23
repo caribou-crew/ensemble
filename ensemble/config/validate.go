@@ -15,6 +15,7 @@ var validDatabaseTypes = map[string]bool{
 	"redis":      true,
 	"dynamodb":   true,
 	"localstack": true,
+	"http":       true,
 }
 
 // Validate checks a Config for internal consistency, applying defaults
@@ -42,6 +43,9 @@ func (c *Config) Validate() error {
 		}
 		if !validDatabaseTypes[db.Type] {
 			errs = append(errs, fmt.Errorf("database %q: invalid type %q (image %q)", name, db.Type, db.Image))
+		}
+		if db.Type == "http" && db.URL == "" {
+			errs = append(errs, fmt.Errorf("database %q: url is required when type is http", name))
 		}
 		if db.Port != 0 {
 			usedPorts[db.Port] = append(usedPorts[db.Port], "database "+name)

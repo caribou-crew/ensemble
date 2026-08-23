@@ -191,6 +191,48 @@ ensemble up --variant monolith=real     # one-off override of `default`
 column, and build stamps are kept per variant so switching never skips a
 stale build.
 
+### Databases
+
+```yaml
+databases:
+  catalog-db:
+    image: postgres:16              # type inferred from the image when omitted
+    port: 5432
+    seed: ./seed/catalog.sql
+    services: [catalog]             # ties this database's health/inspection to catalog
+```
+
+`type` is `postgres`, `mysql`, `redis`, `dynamodb`, or `localstack` for a
+real emulator ensemble provisions as a container — or `http`, for a service
+that keeps its own state outside a database (an in-memory store, a SQLite
+file, a wrapped third-party API) and exposes it for inspection itself:
+
+```yaml
+databases:
+  cardco-go-inspect:
+    type: http
+    url: http://127.0.0.1:4281/ensemble-inspect
+    headers:
+      Authorization: "Basic YWRtaW5fY29uc3VtZXI6bWFycWV0YQ=="
+    services: [cardco]
+```
+
+`url` (required) is the base URL of three GET routes the service itself
+implements — `{url}/tables`, `{url}/rows?table=&limit=&offset=`, and
+`{url}/fingerprint?table=` — mirroring the same `Tables`/`Rows`/`Fingerprint`
+shape every other database driver already exposes; `headers` (optional) are
+sent on every request, for a debug surface that needs auth. No container is
+provisioned for a `http` database — it just points at a port the service
+already owns. Once registered, it behaves exactly like a real database
+everywhere else: `GET /api/databases`, the dashboard's schema/rows views,
+and the SSE change stream.
+
+local-stack's `cardco-go` (the in-memory Go stand-in for real cardco) is the
+reference implementation: it mounts the contract at `/ensemble-inspect/*`,
+guarded by the same Basic auth its other routes already require, and serves
+`users`/`accounts`/`cards`/`cardProducts`/`digitalWalletTokens`/
+`transactions` as JSON round-trips of the structs its own REST API returns.
+
 ### Gateways
 
 `proxy:` is one-in, one-out — a single intercept port in front of a single

@@ -14,7 +14,7 @@ import (
 )
 
 // TestBuildInspectorRegistersKnownTypesOnly guards buildInspector's
-// contract: postgres/mysql/dynamodb databases get a registered Driver;
+// contract: postgres/mysql/dynamodb/http databases get a registered Driver;
 // types the inspector package has no Driver for (redis, localstack) are
 // provisioned by the orchestrator but left unregistered, matching GET
 // /api/databases' "cfg.Databases ∩ registered drivers" behavior.
@@ -44,12 +44,19 @@ func TestBuildInspectorRegistersKnownTypesOnly(t *testing.T) {
 		t.Fatalf("dynamo fake port: %v", err)
 	}
 
+	httpFake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"tables": []map[string]any{}})
+	}))
+	t.Cleanup(httpFake.Close)
+
 	cfg := &config.Config{
 		Databases: map[string]config.Database{
 			"pg":      {Type: "postgres", Port: 15432},
 			"mysqldb": {Type: "mysql", Port: 13306},
 			"ddb":     {Type: "dynamodb", Port: dynamoPort},
 			"cache":   {Type: "redis", Port: 16379},
+			"cardcogo": {Type: "http", URL: httpFake.URL},
 		},
 	}
 
@@ -58,7 +65,7 @@ func TestBuildInspectorRegistersKnownTypesOnly(t *testing.T) {
 
 	insp := buildInspector(cfg, logf)
 
-	for _, name := range []string{"pg", "mysqldb", "ddb"} {
+	for _, name := range []string{"pg", "mysqldb", "ddb", "cardcogo"} {
 		if !insp.Has(name) {
 			t.Errorf("buildInspector: %q not registered, want registered (logs: %v)", name, logs)
 		}
@@ -70,7 +77,7 @@ func TestBuildInspectorRegistersKnownTypesOnly(t *testing.T) {
 	// Wire it into a real server.New handler and hit GET /api/databases,
 	// the same way cmd_up.go's runUp does — proving the dynamodb driver
 	// this produced actually round-trips against a live endpoint, and that
-	// only the three inspectable databases are listed.
+	// only the four inspectable databases are listed.
 	handler := server.New(server.Deps{Cfg: cfg, Version: "test", Insp: insp})
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
@@ -89,8 +96,8 @@ func TestBuildInspectorRegistersKnownTypesOnly(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got.Databases) != 3 {
-		t.Fatalf("databases = %+v, want 3 (pg, mysqldb, ddb)", got.Databases)
+	if len(got.Databases) != 4 {
+		t.Fatalf("databases = %+v, want 4 (pg, mysqldb, ddb, cardcogo)", got.Databases)
 	}
 
 	// And the dynamodb driver specifically works end-to-end against the
