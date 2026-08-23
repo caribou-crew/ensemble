@@ -1017,6 +1017,16 @@ func (o *Orchestrator) wireGateways() error {
 }
 
 func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config.Database) error {
+	// type: http owns no container — the backing service (already started
+	// elsewhere, typically as its own `services:` entry) exposes its own
+	// state over the inspector's HTTP contract instead. Falling through to
+	// the docker path below would `docker run` with db.Image empty
+	// ("invalid reference format"), since an http-typed entry never sets
+	// Image.
+	if db.Type == "http" {
+		return o.startHTTPDatabase(ctx, name, db)
+	}
+
 	o.setState(name, func(s *ServiceState) { s.Placement = "docker" })
 	o.setStatus(name, StatusStarting, "")
 
@@ -1067,6 +1077,35 @@ func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config
 	o.setState(name, func(s *ServiceState) {
 		s.Status = StatusHealthy
 		s.Port = db.Port
+		s.StartedAt = time.Now()
+		s.LastErr = ""
+	})
+	return nil
+}
+
+// startHTTPDatabase brings up a `type: http` databases entry: no container,
+// no process — just a readiness check against whatever the backing
+// service's own inspector contract reports. buildInspector always
+// registers an http-typed entry's Driver, so o.DBReady (when the caller
+// has wired one at all) is populated for it exactly as it is for
+// postgres/mysql/dynamodb; with no DBReady wired (e.g. a bare
+// *Orchestrator in a test), there's nothing else to check, so it's
+// trivially healthy.
+func (o *Orchestrator) startHTTPDatabase(ctx context.Context, name string, db config.Database) error {
+	o.setStatus(name, StatusStarting, "")
+
+	if o.DBReady != nil {
+		if err := pollUntil(ctx, o.opts.HealthTimeout, func() (bool, error) {
+			err := o.DBReady(ctx, name, db)
+			return err == nil, err
+		}); err != nil {
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
+	}
+
+	o.setState(name, func(s *ServiceState) {
+		s.Status = StatusHealthy
 		s.StartedAt = time.Now()
 		s.LastErr = ""
 	})
