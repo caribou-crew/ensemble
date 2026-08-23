@@ -180,12 +180,21 @@ export default function TrafficView() {
           {filtered.length === 0 ? (
             <p className="traffic-view__empty">no traffic matches these filters</p>
           ) : (
-            <HopTable hops={filtered} selectedSeq={selectedSeq} onSelectHop={(h) => setSelectedSeq(h.seq)} />
+            <HopTable
+              hops={filtered}
+              selectedSeq={selectedSeq}
+              onSelectHop={(h) => setSelectedSeq(h.seq)}
+              onViewTrace={viewTrace}
+            />
           )}
         </div>
-        {selectedHop && (
-          <HopDetail hop={selectedHop} onClose={() => setSelectedSeq(null)} onViewTrace={viewTrace} />
-        )}
+        <div className="traffic-view__detail">
+          {selectedHop ? (
+            <HopDetail hop={selectedHop} onClose={() => setSelectedSeq(null)} onViewTrace={viewTrace} />
+          ) : (
+            <p className="traffic-view__detail-empty">select a request to inspect it</p>
+          )}
+        </div>
       </div>
     </div>
   );

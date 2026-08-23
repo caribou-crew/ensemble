@@ -1,7 +1,7 @@
 .hop-detail {
-  flex-shrink: 0;
-  width: 380px;
-  border-left: 1px solid var(--border-hairline);
+  flex: 1;
+  min-width: 0;
+  width: 100%;
   background: var(--bg-panel);
   padding: 0.9rem;
   overflow-y: auto;

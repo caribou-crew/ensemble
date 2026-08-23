@@ -82,21 +82,44 @@
   margin-left: auto;
 }
 
+/* Charles-style split: requests on top, the selected request's detail
+   pinned to the bottom of the same pane — never a side popup that eats
+   into the table's width. */
 .traffic-view__body {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
 }
 
 .traffic-view__table {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
 .traffic-view__empty {
   padding: 1.5rem;
   text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+}
+
+.traffic-view__detail {
+  flex: 0 0 42%;
+  min-height: 220px;
+  max-height: 60%;
+  border-top: 1px solid var(--border-hairline);
+  overflow: hidden;
+  display: flex;
+}
+
+.traffic-view__detail-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
   color: var(--text-tertiary);
   font-size: 0.8rem;
 }

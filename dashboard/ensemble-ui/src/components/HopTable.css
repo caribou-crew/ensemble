@@ -56,6 +56,24 @@
   margin-right: 0.25rem;
 }
 
+.hop-table__trace-link {
+  border: none;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0;
+}
+
+.hop-table__trace-link:hover {
+  text-decoration: underline;
+}
+
+.hop-table__trace-none {
+  color: var(--text-tertiary);
+}
+
 .hop-table__method {
   color: var(--status-blue);
   margin-right: 0.35rem;

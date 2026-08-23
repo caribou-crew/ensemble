@@ -15,6 +15,9 @@ export interface HopTableProps {
   hops: Hop[];
   selectedSeq: number | null;
   onSelectHop: (hop: Hop) => void;
+  /** Jumps straight to the trace's topology waterfall, bypassing row
+   * selection — same destination as HopDetail's "view in topology" link. */
+  onViewTrace?: (traceId: string) => void;
 }
 
 interface Row {
@@ -51,7 +54,7 @@ function sessionLabel(session?: string): string {
   return session ? session.slice(0, 8) : 'ambient';
 }
 
-export default function HopTable({ hops, selectedSeq, onSelectHop }: HopTableProps) {
+export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }: HopTableProps) {
   const rows = useMemo(() => buildRows(hops), [hops]);
 
   return (
@@ -60,6 +63,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop }: HopTablePro
         <tr>
           <th>seq</th>
           <th>session</th>
+          <th>trace</th>
           <th>route</th>
           <th>request</th>
           <th>status</th>
@@ -88,6 +92,25 @@ export default function HopTable({ hops, selectedSeq, onSelectHop }: HopTablePro
               <td className="hop-table__seq">#{hop.seq}</td>
               <td>
                 <Badge tone={hop.session ? 'accent' : 'neutral'}>{sessionLabel(hop.session)}</Badge>
+              </td>
+              <td className="hop-table__trace">
+                {hop.traceId ? (
+                  <button
+                    type="button"
+                    className="hop-table__trace-link"
+                    title={hop.traceId}
+                    onClick={(e) => {
+                      // Don't also select the row underneath — this is a
+                      // dedicated jump to the trace waterfall, not a detail lookup.
+                      e.stopPropagation();
+                      onViewTrace?.(hop.traceId as string);
+                    }}
+                  >
+                    {hop.traceId.slice(0, 8)}
+                  </button>
+                ) : (
+                  <span className="hop-table__trace-none">—</span>
+                )}
               </td>
               <td className="hop-table__route">
                 <span className="hop-table__route-indent" style={{ paddingLeft: depth * 12 }}>
