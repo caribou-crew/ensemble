@@ -51,7 +51,11 @@ function useHopRing() {
       setHops((cur) => {
         // The stream can, at worst, redeliver the cursor hop itself on
         // reconnect — never accept anything at or behind what's
-        // already at the tail.
+        // already at the tail. Comparing against the tail alone (rather
+        // than requiring monotonic growth from the ring's start) is also
+        // what makes `clear` safe: after it empties the ring, the very
+        // next delivered hop always passes (cur.length === 0) regardless
+        // of its seq.
         if (cur.length > 0 && hop.seq <= cur[cur.length - 1].seq) return cur;
         const next = cur.length >= RING_MAX ? cur.slice(cur.length - RING_MAX + 1) : cur.slice();
         next.push(hop);
@@ -61,11 +65,17 @@ function useHopRing() {
     return unsubscribe;
   }, [initial]);
 
-  return { hops, error: error ? messageOf(error, 'failed to reach the ensemble API') : null, loading };
+  // Visual-only: empties the client-side ring so the table reads clean.
+  // The SSE subscription above keeps running — new hops still land as
+  // they happen — and nothing server-side is touched, so a page reload
+  // (or another dashboard tab) still sees the full history.
+  const clear = useCallback(() => setHops([]), []);
+
+  return { hops, clear, error: error ? messageOf(error, 'failed to reach the ensemble API') : null, loading };
 }
 
 export default function TrafficView() {
-  const { hops, error, loading } = useHopRing();
+  const { hops, clear, error, loading } = useHopRing();
 
   const [textFilter, setTextFilter] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
@@ -113,6 +123,11 @@ export default function TrafficView() {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
+
+  const handleClear = useCallback(() => {
+    clear();
+    setSelectedSeq(null);
+  }, [clear]);
 
   const viewTrace = useCallback((traceId: string) => {
     // App's ?view= tab state and TopologyView's ?trace= state are separate
@@ -167,6 +182,15 @@ export default function TrafficView() {
         <span className="traffic-view__count">
           {filtered.length} / {hops.length}
         </span>
+        <button
+          type="button"
+          className="traffic-view__clear"
+          onClick={handleClear}
+          disabled={hops.length === 0}
+          title="Clear the traffic list (visual only — new requests still stream in)"
+        >
+          clear
+        </button>
         <button
           type="button"
           className={`traffic-view__follow${following ? ' traffic-view__follow--active' : ''}`}

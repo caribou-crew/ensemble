@@ -26,32 +26,89 @@ interface Row {
   chainStart: boolean;
 }
 
-/** Groups consecutive same-traceId hops into a "chain", reorders each
- * chain by causal call order, and indents by call-stack depth within it.
- * A hop with no traceId (or one that breaks the run) is its own
- * single-hop chain at depth 0. Exported for the grouping test. */
+/** Groups every hop sharing a traceId into one "chain" — wherever in the
+ * array they landed, not just when they happen to sit consecutively —
+ * then reorders each chain by causal call order and indents by
+ * call-stack depth within it. A hop with no traceId is its own
+ * single-hop chain at depth 0. Chains are emitted in the order their
+ * first hop originally appeared, so unrelated traffic keeps its own
+ * relative position.
+ *
+ * Hops within one trace are RECORDED inner-first (see core/proxy/proxy.go:
+ * a gateway's own "client → gateway" hop only completes, and gets
+ * Recorded, after the "gateway → bff" hop it's waiting on) — the two legs
+ * of a single request are adjacent in the array only when nothing else
+ * completes in between. On a live stack, concurrent unrelated traffic
+ * (parallel page-load fetches, health-check polling) routinely lands a
+ * hop between them; a strict-adjacency scan used to treat that as two
+ * separate one-hop "chains" and leave both in raw completion order —
+ * "gateway → bff" reading before "client → gateway", the reverse of what
+ * actually happened. Exported for the grouping test. */
 export function buildRows(hops: Hop[]): Row[] {
-  const rows: Row[] = [];
-  let i = 0;
-  while (i < hops.length) {
-    const traceId = hops[i].traceId;
-    let j = i + 1;
-    if (traceId) {
-      while (j < hops.length && hops[j].traceId === traceId) j += 1;
+  const order: string[] = [];
+  const groups = new Map<string, Hop[]>();
+  hops.forEach((hop, i) => {
+    // A hop with no traceId never groups with anything else, including
+    // another traceId-less hop — each key is unique to its index.
+    const key = hop.traceId ?? `__no-trace-${i}`;
+    let chain = groups.get(key);
+    if (!chain) {
+      chain = [];
+      groups.set(key, chain);
+      order.push(key);
     }
-    const chain = hops.slice(i, j);
-    const ordered = traceId ? causalHopOrder(chain) : chain;
-    const depths = traceId ? hopDepths(ordered) : [0];
+    chain.push(hop);
+  });
+
+  const rows: Row[] = [];
+  order.forEach((key) => {
+    const chain = groups.get(key) as Hop[];
+    const hasTraceId = chain[0].traceId !== undefined;
+    const ordered = hasTraceId ? causalHopOrder(chain) : chain;
+    const depths = hasTraceId ? hopDepths(ordered) : [0];
     ordered.forEach((hop, idx) => {
       rows.push({ hop, depth: depths[idx] ?? 0, chainStart: idx === 0 });
     });
-    i = j;
-  }
+  });
   return rows;
 }
 
 function sessionLabel(session?: string): string {
   return session ? session.slice(0, 8) : 'ambient';
+}
+
+/** HH:MM:SS:mmm in the viewer's local time, from t.start (when the proxy
+ * first saw the request, before any injected latency). */
+function formatTimestamp(start: string): string {
+  const d = new Date(start);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n: number, len = 2) => String(n).padStart(len, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}:${pad(d.getMilliseconds(), 3)}`;
+}
+
+const textEncoder = new TextEncoder();
+
+/** Byte length of a captured body — TextEncoder, not .length, so a
+ * multi-byte UTF-8 body (unicode text, not just ASCII JSON) reports its
+ * real wire size rather than its UTF-16 code-unit count. */
+function byteLength(body?: string): number {
+  return body ? textEncoder.encode(body).length : 0;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
+
+/** Combined request+response payload size. Bodies are captured up to
+ * core/proxy.CaptureLimit — a truncated one reports only what was
+ * actually captured, flagged with a trailing "+" so it doesn't read as
+ * the true wire size. */
+function payloadSize(hop: Hop): string {
+  const bytes = byteLength(hop.req?.body) + byteLength(hop.resp?.body);
+  const truncated = Boolean(hop.req?.truncated || hop.resp?.truncated);
+  return formatBytes(bytes) + (truncated ? '+' : '');
 }
 
 export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }: HopTableProps) {
@@ -62,11 +119,13 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
       <thead>
         <tr>
           <th>seq</th>
+          <th>time</th>
           <th>session</th>
           <th>trace</th>
           <th>route</th>
           <th>request</th>
           <th>status</th>
+          <th>size</th>
           <th>done</th>
           <th>delay</th>
         </tr>
@@ -90,6 +149,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
               onClick={() => onSelectHop(hop)}
             >
               <td className="hop-table__seq">#{hop.seq}</td>
+              <td className="hop-table__time">{formatTimestamp(hop.t.start)}</td>
               <td>
                 <Badge tone={hop.session ? 'accent' : 'neutral'}>{sessionLabel(hop.session)}</Badge>
               </td>
@@ -124,6 +184,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
               <td className={`hop-table__status${isError ? ' hop-table__status--error' : ''}`}>
                 {hop.err ? 'err' : (hop.status ?? '—')}
               </td>
+              <td className="hop-table__size">{payloadSize(hop)}</td>
               <td className="hop-table__done">
                 {hop.t.doneMs !== undefined ? `${Math.round(hop.t.doneMs)}ms` : '—'}
               </td>

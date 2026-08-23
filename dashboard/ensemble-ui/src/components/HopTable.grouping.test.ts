@@ -41,6 +41,28 @@ describe('HopTable buildRows', () => {
     expect(rows.map((r) => r.chainStart)).toEqual([true, false, false]);
   });
 
+  it('reorders a same-trace pair even when unrelated concurrent traffic lands between their recorded positions', () => {
+    // Mirrors a gateway request's real recording order: the inner leg
+    // (gateway -> bff) completes and gets Recorded first, the outer leg
+    // (client -> gateway) only completes — and gets Recorded — once the
+    // inner one has returned (see core/proxy/proxy.go). An unrelated
+    // concurrent request (health-check, seq 2) completes in between,
+    // breaking strict array-adjacency for the trace's own two hops.
+    const hops: Hop[] = [
+      hop(1, 't1', 'gateway', 'bff', '2026-01-01T00:00:00.010Z', 5),
+      hop(2, 't2', undefined, 'health-check', '2026-01-01T00:00:00.015Z', 1),
+      hop(3, 't1', undefined, 'gateway', '2026-01-01T00:00:00.000Z', 20),
+    ];
+
+    const rows = buildRows(hops);
+    // client -> gateway (seq 3) is causally first even though it was
+    // recorded last; the unrelated health-check (seq 2) keeps its own
+    // place, not spliced into the middle of the reordered chain.
+    expect(rows.map((r) => r.hop.seq)).toEqual([3, 1, 2]);
+    expect(rows.map((r) => r.depth)).toEqual([0, 1, 0]);
+    expect(rows.map((r) => r.chainStart)).toEqual([true, false, true]);
+  });
+
   it('breaks the chain at a traceId boundary — a standalone hop is its own depth-0 chain', () => {
     const hops: Hop[] = [
       hop(1, 't1', undefined, 'edge-gateway', '2026-01-01T00:00:00.000Z', 100),

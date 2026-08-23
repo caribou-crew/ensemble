@@ -60,4 +60,39 @@ describe('TrafficView: seeds from the initial GET and opens the SSE tail', () =>
     expect(unsubscribe, 'unmounting must close the SSE subscription').toHaveBeenCalledTimes(1);
     root = createRoot(container); // afterEach unmounts again; keep it well-defined
   });
+
+  it('clear empties the table without closing the live SSE subscription', async () => {
+    vi.spyOn(api, 'traffic').mockResolvedValue([HOP]);
+    let deliver: ((hop: Hop) => void) | undefined;
+    const unsubscribe = vi.fn();
+    vi.spyOn(sse, 'subscribeHops').mockImplementation((_cursor, onHop) => {
+      deliver = onHop;
+      return unsubscribe;
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(TrafficView));
+    });
+    expect(container.innerHTML).toContain('svc-a');
+
+    const clearButton = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'clear',
+    ) as HTMLButtonElement;
+    expect(clearButton).toBeDefined();
+    await act(async () => {
+      clearButton.click();
+    });
+
+    expect(container.innerHTML).not.toContain('svc-a');
+    expect(container.innerHTML).toContain('no traffic matches these filters');
+    // The subscription stays open — clear is visual-only, not a real reset.
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    // A hop delivered after clear still lands normally.
+    await act(async () => {
+      deliver?.({ ...HOP, seq: 2, to: 'svc-b' });
+    });
+    expect(container.innerHTML).toContain('svc-b');
+  });
 });

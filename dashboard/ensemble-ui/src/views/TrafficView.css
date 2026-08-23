@@ -48,6 +48,7 @@
 }
 
 .traffic-view__toggle,
+.traffic-view__clear,
 .traffic-view__follow {
   border: 1px solid var(--border-hairline-strong);
   background: var(--bg-raised);
@@ -57,6 +58,11 @@
   font-size: 0.75rem;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.traffic-view__clear:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .traffic-view__toggle--active {
@@ -78,7 +84,7 @@
   white-space: nowrap;
 }
 
-.traffic-view__follow {
+.traffic-view__clear {
   margin-left: auto;
 }
 
@@ -93,7 +99,7 @@
 }
 
 .traffic-view__table {
-  flex: 1 1 auto;
+  flex: 1 1 50%;
   min-height: 0;
   overflow: auto;
 }
@@ -106,9 +112,8 @@
 }
 
 .traffic-view__detail {
-  flex: 0 0 42%;
-  min-height: 220px;
-  max-height: 60%;
+  flex: 1 1 50%;
+  min-height: 0;
   border-top: 1px solid var(--border-hairline);
   overflow: hidden;
   display: flex;

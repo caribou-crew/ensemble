@@ -46,6 +46,15 @@
   color: var(--text-tertiary);
 }
 
+.hop-table__time {
+  color: var(--text-tertiary);
+}
+
+.hop-table__size {
+  color: var(--text-secondary);
+  text-align: right;
+}
+
 .hop-table__route-indent {
   display: inline-flex;
   align-items: center;

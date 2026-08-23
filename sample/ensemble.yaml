@@ -199,6 +199,20 @@ stubs:
           headers: { content-type: application/json }
           body: '{"ciphertext":"stub-ciphertext"}'
 
+# Exercises ensemble's own gateways: feature (distinct from edge-gw above,
+# which is a real Go service the sample app happens to call "edge" — this
+# is ensemble's config-only router). `curl http://127.0.0.1:9100/bff/healthz`
+# produces a two-hop chain — client -> public, public -> storefront — the
+# fixture used to verify the dashboard's Traffic tab renders a gateway
+# chain in real causal order (client -> gateway before gateway -> bff),
+# not raw recording order (see core/proxy/proxy.go: hops are recorded
+# inner-first, so gateway -> bff is Recorded before client -> gateway).
+gateways:
+  public:
+    port: 9100
+    routes:
+      - { prefix: /bff, service: storefront, strip_prefix: true }
+
 seeds:
   baseline:
     sql:
