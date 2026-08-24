@@ -4,7 +4,7 @@
 // returned rows (see format.ts's unionKeys), and create/edit are raw-JSON
 // textareas. Navigation (?entity=&id=&new=1) is plain useUrlParam state —
 // no router — matching the rest of the dashboard.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
@@ -38,6 +38,59 @@ function extractId(data: unknown, idField: string): string | null {
     if (v !== undefined && v !== null) return String(v);
   }
   return null;
+}
+
+/** A small copy-to-clipboard icon after one cell's value — its own click must not bubble
+    into the row's onClick (which opens the record). The "copied"/"copy failed" toast is
+    this button's own tooltip-like bubble rather than a page-level toast: many of these can
+    exist on screen at once (one per cell), so each tracks its own feedback independently. */
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const idleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+    };
+  }, []);
+
+  async function handleCopy(e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      setStatus('copied');
+    } catch {
+      setStatus('failed');
+    } finally {
+      if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = window.setTimeout(() => {
+        idleTimerRef.current = null;
+        setStatus('idle');
+      }, 1000);
+    }
+  }
+
+  return (
+    <span className="entity-table__copy">
+      <button
+        type="button"
+        className="entity-table__copy-btn"
+        aria-label={`copy ${label}`}
+        title={`copy ${label}`}
+        onClick={(e) => void handleCopy(e)}
+      >
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.3" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M2.7 10V3.3A1.3 1.3 0 0 1 4 2h6.7" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+      </button>
+      {status !== 'idle' && (
+        <span className="entity-table__copy-toast" role="status">
+          {status === 'copied' ? 'copied' : 'copy failed'}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function EntityList({
@@ -118,9 +171,18 @@ function EntityList({
                     onClick={() => rid && onSelectRow(rid)}
                     title={rid ? undefined : `row is missing its "${idField}" field — detail view unavailable`}
                   >
-                    {keys.map((k) => (
-                      <td key={k}>{renderCellValue(row[k])}</td>
-                    ))}
+                    {keys.map((k) => {
+                      const raw = row[k];
+                      const text = renderCellValue(raw);
+                      return (
+                        <td key={k}>
+                          <span className="entity-table__cell">
+                            <span className="entity-table__cell-value">{text}</span>
+                            {raw !== null && raw !== undefined && <CopyButton value={text} label={k} />}
+                          </span>
+                        </td>
+                      );
+                    })}
                   </tr>
                 );
               })}

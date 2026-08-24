@@ -150,10 +150,62 @@
   padding: 0.3rem 0.6rem;
   border-bottom: 1px solid var(--border-hairline);
   color: var(--text-primary);
+}
+
+.entity-table__cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+}
+
+.entity-table__cell-value {
   white-space: nowrap;
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.entity-table__copy {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.entity-table__copy-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.entity-table__copy-btn:hover,
+.entity-table__copy-btn:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-raised);
+}
+
+.entity-table__copy-toast {
+  position: absolute;
+  bottom: calc(100% + 0.25rem);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.65rem;
+  white-space: nowrap;
+  z-index: 5;
 }
 
 .entity-table__row {
