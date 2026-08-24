@@ -101,4 +101,35 @@ describe('HopTable time and size columns', () => {
     // Exactly the inferred hop's row gets the marker class — the real one must not.
     expect(markup.match(/hop-table__caller--inferred/g)?.length).toBe(1);
   });
+
+  it('marks a self-declared caller distinct from both a real one and a config-inferred one', () => {
+    const declared: Hop = {
+      schema: 'ensemble/1',
+      seq: 1,
+      from: 'external-app',
+      attribution: 'declared',
+      to: 'backend',
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    };
+    const inferred: Hop = {
+      schema: 'ensemble/1',
+      seq: 2,
+      from: 'bff',
+      attribution: 'inferred',
+      to: 'backend',
+      t: { start: '2026-01-01T00:00:01.000Z' },
+    };
+    const real: Hop = {
+      schema: 'ensemble/1',
+      seq: 3,
+      from: 'bff',
+      to: 'other-backend',
+      t: { start: '2026-01-01T00:00:02.000Z' },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, { hops: [declared, inferred, real], selectedSeq: null, onSelectHop: () => {} }),
+    );
+    expect(markup.match(/hop-table__caller--declared/g)?.length).toBe(1);
+    expect(markup.match(/hop-table__caller--inferred/g)?.length).toBe(1);
+  });
 });

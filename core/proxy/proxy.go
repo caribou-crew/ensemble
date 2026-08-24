@@ -45,6 +45,15 @@ type Target struct {
 	CalledBy []string
 }
 
+// CallerHeader is a request header letting a caller ensemble doesn't manage
+// (a dev-only client, another team's tool, a bare curl) self-declare its
+// name when it has no real trace context and no config-declared CalledBy
+// hint to fall back on. Honored only when SpanOwner has no real
+// trace-derived answer; the resulting hop is marked Hop.Attribution =
+// "declared" — a caller-asserted name, not ground truth, but more specific
+// than a static config guess.
+const CallerHeader = "X-Ensemble-Caller"
+
 // CaptureLimit caps how much request/response body is *captured* (never how
 // much is forwarded). Exported so other capture paths — notably
 // core/stub, which has no upstream to stream through and so can't reuse
@@ -211,7 +220,13 @@ func (p *Proxy) handler(t Target) http.Handler {
 
 		from := p.rec.SpanOwner(incomingSpan)
 		attribution := ""
-		if from == "" && len(t.CalledBy) > 0 {
+		switch {
+		case from != "":
+			// real, trace-derived — leave attribution unset
+		case r.Header.Get(CallerHeader) != "":
+			from = r.Header.Get(CallerHeader)
+			attribution = "declared"
+		case len(t.CalledBy) > 0:
 			from = strings.Join(t.CalledBy, "|")
 			attribution = "inferred"
 		}

@@ -56,10 +56,11 @@ export interface GraphEdge {
   bundleExpanded?: boolean;
   /** Hop ordinals carried by this edge (trace mode only). */
   hopLabels?: number[];
-  /** True when this edge's caller came from a config-declared called_by hint rather than
-   * real trace-context propagation (Hop.attribution === 'inferred') — a guess, not a fact
-   * derived from the trace itself. Trace mode only. */
-  inferred?: boolean;
+  /** Mirrors Hop.attribution when this edge's caller isn't a real, trace-derived fact:
+   * "declared" (the caller self-asserted its name via X-Ensemble-Caller) or "inferred" (a
+   * config-declared called_by guess). Undefined means the edge is trace-derived. Trace mode
+   * only. */
+  attribution?: 'inferred' | 'declared';
 }
 
 export interface GraphCluster {

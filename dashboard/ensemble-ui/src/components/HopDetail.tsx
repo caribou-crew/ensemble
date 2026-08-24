@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@ensemble/design-system';
 import type { Hop, Timings } from '../api/types';
 import { isRedactedValue } from '../redaction';
-import { INFERRED_CALLER_TITLE, isInferredCaller } from './attribution';
+import { CALLER_ATTRIBUTION_TITLE, callerAttribution } from './attribution';
 import JsonView from './JsonView';
 import './HopDetail.css';
 
@@ -121,8 +121,11 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
       <div className="hop-detail__meta">
         <Badge tone={isError ? 'red' : 'green'}>{hop.err ? 'err' : (hop.status ?? '—')}</Badge>
         <span className="hop-detail__route">
-          {isInferredCaller(hop) ? (
-            <span className="hop-detail__caller--inferred" title={INFERRED_CALLER_TITLE}>
+          {callerAttribution(hop) ? (
+            <span
+              className={`hop-detail__caller--${callerAttribution(hop)}`}
+              title={CALLER_ATTRIBUTION_TITLE[callerAttribution(hop) as 'inferred' | 'declared']}
+            >
               {hop.from}
             </span>
           ) : (

@@ -155,12 +155,18 @@ describe('layoutTrace', () => {
   it('marks an edge inferred when its hop carries attribution "inferred" — a config guess, not a trace fact', () => {
     const l = layoutTrace([{ ...LINEAR_HOPS[0], from: 'bff', to: 'backend', attribution: 'inferred' }]);
     const e = l.edges.find((x) => x.from === 'bff' && x.to === 'backend');
-    expect(e?.inferred).toBe(true);
+    expect(e?.attribution).toBe('inferred');
+  });
+
+  it('marks an edge declared when its hop carries attribution "declared" — a caller self-asserted its name, not a trace fact', () => {
+    const l = layoutTrace([{ ...LINEAR_HOPS[0], from: 'external-app', to: 'backend', attribution: 'declared' }]);
+    const e = l.edges.find((x) => x.from === 'external-app' && x.to === 'backend');
+    expect(e?.attribution).toBe('declared');
   });
 
   it('leaves a real, trace-derived edge unmarked', () => {
     const l = layoutTrace([{ ...LINEAR_HOPS[0], from: 'bff', to: 'backend' }]);
     const e = l.edges.find((x) => x.from === 'bff' && x.to === 'backend');
-    expect(e?.inferred).toBeFalsy();
+    expect(e?.attribution).toBeFalsy();
   });
 });

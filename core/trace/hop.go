@@ -26,11 +26,13 @@ type Hop struct {
 	CorrelationID string `json:"correlationId,omitempty"`
 	Session       string `json:"session,omitempty"` // retrace-run id; "" = ambient traffic
 	From          string `json:"from,omitempty"`
-	// Attribution is "inferred" when From came from a config-declared
-	// CalledBy hint (see core/proxy.Target) rather than real W3C
-	// trace-context propagation — SpanOwner had nothing to look up, so the
-	// proxy fell back to a guess. Empty means From (if set) is a real,
-	// trace-derived fact.
+	// Attribution flags how From was resolved when it isn't a real W3C
+	// trace-context fact (SpanOwner had nothing to look up): "declared"
+	// means the caller self-asserted its name via core/proxy.CallerHeader
+	// (a caller ensemble doesn't manage, e.g. a dev-only client); "inferred"
+	// means it came from a config-declared CalledBy hint (see
+	// core/proxy.Target) instead, a static guess rather than a live
+	// assertion. Empty means From (if set) is a real, trace-derived fact.
 	Attribution string  `json:"attribution,omitempty"`
 	To          string  `json:"to"`
 	Method      string  `json:"method,omitempty"`

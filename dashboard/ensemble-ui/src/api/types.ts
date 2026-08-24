@@ -24,10 +24,12 @@ export interface Hop {
   correlationId?: string;
   session?: string;
   from?: string;
-  /** "inferred" when `from` came from a config-declared called_by hint rather than real
-   * trace-context propagation (core/proxy's SpanOwner had nothing to look up). Absent means
-   * `from`, if set, is a trace-derived fact. */
-  attribution?: 'inferred';
+  /** How `from` was resolved when it isn't a real trace-context fact (core/proxy's SpanOwner
+   * had nothing to look up): "declared" means the caller self-asserted its name via the
+   * X-Ensemble-Caller header (a caller ensemble doesn't manage); "inferred" means it came
+   * from a config-declared called_by hint instead, a static guess rather than a live
+   * assertion. Absent means `from`, if set, is a trace-derived fact. */
+  attribution?: 'inferred' | 'declared';
   to: string;
   method?: string;
   path?: string;

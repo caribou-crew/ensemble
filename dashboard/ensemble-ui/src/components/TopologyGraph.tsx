@@ -331,7 +331,7 @@ export default function TopologyGraph({
               return (
                 <g
                   key={e.key}
-                  className={`topo-edge${selected ? ' topo-edge-selected' : ''}${e.bundleCount ? ' topo-edge-bundled' : ''}${dimmed ? ' topo-edge-dim' : ''}${e.inferred ? ' topo-edge-inferred' : ''}`}
+                  className={`topo-edge${selected ? ' topo-edge-selected' : ''}${e.bundleCount ? ' topo-edge-bundled' : ''}${dimmed ? ' topo-edge-dim' : ''}${e.attribution ? ` topo-edge-${e.attribution}` : ''}`}
                   onClick={() => {
                     if (e.bundleKey && onToggleBundle) onToggleBundle(e.bundleKey);
                     else if (!e.hopLabels) selectEdge(selected ? null : e.key);
@@ -352,7 +352,12 @@ export default function TopologyGraph({
                       ? `${e.from} → ${e.to} — one of ${e.bundleCount} (click to collapse)`
                       : e.bundleCount
                         ? `${e.from} → ${e.bundleCount} services in ${e.to} (click to expand)`
-                        : `${e.from} → ${e.to}`) + (e.inferred ? ' (inferred from config, not trace context)' : '')}
+                        : `${e.from} → ${e.to}`) +
+                      (e.attribution === 'declared'
+                        ? ' (caller self-declared, not trace context)'
+                        : e.attribution === 'inferred'
+                          ? ' (inferred from config, not trace context)'
+                          : '')}
                   </title>
                 </g>
               );

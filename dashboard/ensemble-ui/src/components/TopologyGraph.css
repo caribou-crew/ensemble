@@ -167,9 +167,17 @@
 }
 
 /* Attributed from config.called_by, not real trace-context propagation (traceLayout.ts's
-   GraphEdge.inferred) — dashed to read as a guess, not a fact. */
+   GraphEdge.attribution === 'inferred') — dashed to read as a guess, not a fact. */
 .topo-edge-inferred .topo-edge-line {
   stroke-dasharray: 4 3;
+}
+
+/* Caller self-declared its own name via the X-Ensemble-Caller header (a caller ensemble
+   doesn't manage) rather than real trace-context propagation (GraphEdge.attribution ===
+   'declared') — a distinct dash from -inferred: a live assertion, not a static config
+   guess, but still not a trace-derived fact. */
+.topo-edge-declared .topo-edge-line {
+  stroke-dasharray: 1.5 3;
 }
 
 .topo-edge-pill {

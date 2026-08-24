@@ -66,6 +66,14 @@
   text-underline-offset: 2px;
 }
 
+/* A caller name the request itself asserted (X-Ensemble-Caller) — see HopTable.css's
+   --declared rule for the rationale. */
+.topo-hop-caller--declared {
+  text-decoration: dotted underline;
+  text-decoration-color: var(--accent-strong);
+  text-underline-offset: 2px;
+}
+
 .topo-hop-method {
   color: var(--status-blue);
 }

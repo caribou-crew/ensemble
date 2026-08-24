@@ -73,6 +73,15 @@
   text-underline-offset: 2px;
 }
 
+/* A caller name the request itself asserted (X-Ensemble-Caller), not real trace-context
+   propagation — same dotted-underline "not a hard fact" treatment as --inferred, but in
+   the accent color: a live assertion from the caller, not a static config guess. */
+.hop-table__caller--declared {
+  text-decoration: dotted underline;
+  text-decoration-color: var(--accent-strong);
+  text-underline-offset: 2px;
+}
+
 .hop-table__trace-link {
   border: none;
   background: transparent;

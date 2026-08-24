@@ -369,6 +369,140 @@ func TestCalledByFallbackDoesNotOverrideRealAttribution(t *testing.T) {
 	}
 }
 
+// TestCallerHeaderDeclaresAttribution: a caller ensemble doesn't manage
+// (never claims a span, has no CalledBy hint) can self-identify via the
+// X-Ensemble-Caller request header — honored as From, marked "declared"
+// rather than "inferred" since it's an assertion from the actual caller,
+// not a static config guess.
+func TestCallerHeaderDeclaresAttribution(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Ensemble-Caller", "external-app")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("want 1 hop, got %d", len(hops))
+	}
+	if hops[0].From != "external-app" {
+		t.Errorf("From = %q, want %q", hops[0].From, "external-app")
+	}
+	if hops[0].Attribution != "declared" {
+		t.Errorf("Attribution = %q, want %q", hops[0].Attribution, "declared")
+	}
+}
+
+// TestCallerHeaderDoesNotOverrideRealAttribution: a caller ensemble DOES
+// manage still wins via real trace-context propagation even if it (oddly)
+// also sent the header — a self-declared name is never allowed to shadow
+// ground truth.
+func TestCallerHeaderDoesNotOverrideRealAttribution(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	backendUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer backendUp.Close()
+	backendAddr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: backendUp.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callerUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequest("GET", "http://"+backendAddr+"/x", nil)
+		forwardCtx(req, r)
+		req.Header.Set("X-Ensemble-Caller", "wrong-self-declared-name")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		w.Write([]byte("ok"))
+	}))
+	defer callerUp.Close()
+	callerAddr, err := p.Serve(Target{Name: "caller", Listen: "127.0.0.1:0", Upstream: callerUp.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get("http://" + callerAddr + "/y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	var backendHop *trace.Hop
+	for i := range hops {
+		if hops[i].To == "backend" {
+			backendHop = &hops[i]
+		}
+	}
+	if backendHop == nil {
+		t.Fatalf("no hop recorded to backend: %+v", hops)
+	}
+	if backendHop.From != "caller" {
+		t.Errorf("From = %q, want %q", backendHop.From, "caller")
+	}
+	if backendHop.Attribution != "" {
+		t.Errorf("Attribution = %q, want empty (real attribution, not declared)", backendHop.Attribution)
+	}
+}
+
+// TestCallerHeaderTakesPrecedenceOverCalledBy: the header is a live
+// assertion from the actual request, so it wins over the static CalledBy
+// config guess when both are present.
+func TestCallerHeaderTakesPrecedenceOverCalledBy(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL, CalledBy: []string{"bff"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Ensemble-Caller", "external-app")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "external-app" {
+		t.Errorf("From = %q, want %q", hops[0].From, "external-app")
+	}
+	if hops[0].Attribution != "declared" {
+		t.Errorf("Attribution = %q, want %q", hops[0].Attribution, "declared")
+	}
+}
+
 // TestProxyTraceHeaderAdoptsCustomTraceID: Proxy.TraceHeader names a
 // stack's own correlation header (e.g. "x-local-trace-id"). With no
 // traceparent on the inbound request, its value is adopted as the hop's
