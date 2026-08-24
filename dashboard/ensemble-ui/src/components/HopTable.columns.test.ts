@@ -158,4 +158,26 @@ describe('HopTable time and size columns', () => {
     );
     expect(markup.match(/ds-badge--blue/g)?.length).toBe(1);
   });
+
+  it('colors the status cell by HTTP status class, Charles-style', () => {
+    const hopWith = (status: number, err?: string): Hop => ({
+      schema: 'ensemble/1',
+      seq: status,
+      to: 'catalog',
+      status,
+      err,
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    });
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, {
+        hops: [hopWith(200), hopWith(302), hopWith(404), hopWith(500)],
+        selectedSeq: null,
+        onSelectHop: () => {},
+      }),
+    );
+    expect(markup).toContain('hop-table__status--2xx');
+    expect(markup).toContain('hop-table__status--3xx');
+    expect(markup).toContain('hop-table__status--4xx');
+    expect(markup).toContain('hop-table__status--5xx');
+  });
 });

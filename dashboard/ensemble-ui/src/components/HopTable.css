@@ -111,6 +111,16 @@
   max-width: 320px;
 }
 
+.hop-table__status--2xx {
+  color: var(--status-green);
+}
+
+.hop-table__status--3xx {
+  color: var(--status-blue);
+}
+
+.hop-table__status--4xx,
+.hop-table__status--5xx,
 .hop-table__status--error {
   color: var(--status-red);
   font-weight: 600;

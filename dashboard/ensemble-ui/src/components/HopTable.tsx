@@ -112,6 +112,19 @@ function payloadSize(hop: Hop): string {
   return formatBytes(bytes) + (truncated ? '+' : '');
 }
 
+/** Charles-style status coloring: green success, blue redirect, red
+ * client/server error. A hop with no status but a transport-level err
+ * (e.g. connection refused) still reads as an error. */
+function statusClass(hop: Hop): string {
+  const status = hop.status ?? 0;
+  if (status >= 500) return 'hop-table__status--5xx';
+  if (status >= 400) return 'hop-table__status--4xx';
+  if (status >= 300) return 'hop-table__status--3xx';
+  if (status >= 200) return 'hop-table__status--2xx';
+  if (hop.err) return 'hop-table__status--error';
+  return '';
+}
+
 export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }: HopTableProps) {
   const rows = useMemo(() => buildRows(hops), [hops]);
 
@@ -133,7 +146,6 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
       </thead>
       <tbody>
         {rows.map(({ hop, depth, chainStart }) => {
-          const isError = (hop.status ?? 0) >= 400 || Boolean(hop.err);
           const classes = [
             'hop-table__row',
             chainStart ? 'hop-table__row--chain-start' : '',
@@ -192,7 +204,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
                 {hop.method && <span className="hop-table__method">{hop.method}</span>} {hop.path}
                 {hop.preflight && <Badge tone="blue">preflight</Badge>}
               </td>
-              <td className={`hop-table__status${isError ? ' hop-table__status--error' : ''}`}>
+              <td className={`hop-table__status ${statusClass(hop)}`}>
                 {hop.err ? 'err' : (hop.status ?? '—')}
               </td>
               <td className="hop-table__size">{payloadSize(hop)}</td>
