@@ -7,6 +7,7 @@ import { layoutTrace } from "../topology/traceLayout";
 import type { CategoryId } from "../topology/types";
 import TopologyGraph from "./TopologyGraph";
 import InlineError from "./InlineError";
+import HopDetail from "./HopDetail";
 import { useTracePoll, HopTimingPanel } from "./TraceWaterfall";
 import "./TraceDrawer.css";
 
@@ -48,6 +49,11 @@ export default function TraceDrawer({
     };
   }, [hops, categoryByName]);
 
+  const selectedHopData = useMemo(
+    () => hops?.find((h) => h.seq === selectedHop) ?? null,
+    [hops, selectedHop],
+  );
+
   if (!traceId) return null;
 
   return (
@@ -77,6 +83,11 @@ export default function TraceDrawer({
               <TopologyGraph layout={layout} showLegend={false} selectedHop={selectedHop} onSelectHop={setSelectedHop} />
             </div>
             {hops && <HopTimingPanel hops={hops} selectedHop={selectedHop} onSelectHop={setSelectedHop} />}
+            {selectedHopData && (
+              <div className="trace-drawer__detail">
+                <HopDetail hop={selectedHopData} onClose={() => setSelectedHop(null)} />
+              </div>
+            )}
           </>
         )}
       </div>

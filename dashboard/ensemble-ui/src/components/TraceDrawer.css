@@ -73,3 +73,11 @@
   display: flex;
   flex-direction: column;
 }
+
+.trace-drawer__detail {
+  flex-shrink: 0;
+  max-height: 45%;
+  min-height: 0;
+  display: flex;
+  border-top: 1px solid var(--border-hairline);
+}
