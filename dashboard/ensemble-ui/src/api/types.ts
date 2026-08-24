@@ -39,6 +39,9 @@ export interface Hop {
   resp?: Payload;
   injectedDelayMs?: number;
   err?: string;
+  /** True when ensemble answered a CORS preflight itself rather than
+   * forwarding it to an upstream — never set on real proxied traffic. */
+  preflight?: boolean;
 }
 
 export interface ServiceState {

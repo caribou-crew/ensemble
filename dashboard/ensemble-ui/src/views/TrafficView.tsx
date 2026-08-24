@@ -85,6 +85,9 @@ export default function TrafficView() {
 
   const [textFilter, setTextFilter] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
+  // Off by default: a CORS preflight ensemble answers itself is real debugging signal but noisy
+  // (one per cross-origin request), so it stays out of the way until asked for.
+  const [showPreflight, setShowPreflight] = useState(false);
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [following, setFollowing] = useState(true);
@@ -119,11 +122,12 @@ export default function TrafficView() {
     return collapsed.filter((h) => {
       if (needle && !`${h.to} ${h.path ?? ''}`.toLowerCase().includes(needle)) return false;
       if (errorsOnly && !((h.status ?? 0) >= 400 || h.err)) return false;
+      if (!showPreflight && h.preflight) return false;
       if (sessionFilter === 'session' && !h.session) return false;
       if (sessionFilter === 'ambient' && h.session) return false;
       return true;
     });
-  }, [collapsed, textFilter, errorsOnly, sessionFilter]);
+  }, [collapsed, textFilter, errorsOnly, showPreflight, sessionFilter]);
 
   // From `collapsed`, not raw `hops` — the detail panel should mirror whatever `to` the table
   // row it was opened from actually shows.
@@ -199,6 +203,13 @@ export default function TrafficView() {
           onClick={() => setErrorsOnly((v) => !v)}
         >
           errors only
+        </button>
+        <button
+          type="button"
+          className={`traffic-view__toggle${showPreflight ? ' traffic-view__toggle--active' : ''}`}
+          onClick={() => setShowPreflight((v) => !v)}
+        >
+          show CORS preflight
         </button>
         <Tabs
           items={SESSION_FILTER_ITEMS}

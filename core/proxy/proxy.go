@@ -218,6 +218,16 @@ func (p *Proxy) handler(t Target) http.Handler {
 			if h, ok := t.CORS.headers(r.Header.Get("Origin")); ok {
 				copyHeaders(w.Header(), h)
 				if isPreflight(r) {
+					p.rec.Record(trace.Hop{
+						To:        t.Name,
+						Method:    r.Method,
+						Path:      r.URL.RequestURI(),
+						Status:    http.StatusNoContent,
+						Preflight: true,
+						T:         trace.Timings{Start: time.Now()},
+						Req:       trace.Payload{Headers: flatHeaders(r.Header)},
+						Resp:      trace.Payload{Headers: flatHeaders(h)},
+					})
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}

@@ -45,6 +45,10 @@ type Hop struct {
 	// from upstream time so timings stay honest.
 	InjectedDelayMs float64 `json:"injectedDelayMs,omitempty"`
 	Err             string  `json:"err,omitempty"`
+	// Preflight marks a hop as a CORS preflight ensemble answered directly
+	// (never forwarded to an upstream), so consumers can distinguish it
+	// from real proxied traffic.
+	Preflight bool `json:"preflight,omitempty"`
 }
 
 // Timings breaks a hop into the three observable moments at the proxy.
