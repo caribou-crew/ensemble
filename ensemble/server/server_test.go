@@ -683,6 +683,66 @@ func TestTraceExportRewritesHostToProxyPort(t *testing.T) {
 	}
 }
 
+// TestHopExport covers the per-hop (not per-trace) export endpoint the
+// dashboard's HopDetail panel uses for its "copy request/response/curl/har"
+// actions — it must work for a hop with no traceId at all (ambient traffic,
+// the trace-level endpoint can't address that), and reuse the exact same
+// trace.To*/reachableHop machinery the trace-level export already does, so
+// the two stay byte-for-byte consistent.
+func TestHopExport(t *testing.T) {
+	e := newTestEnv(t)
+
+	h := e.rec.Record(trace.Hop{
+		To: "svc", Method: "GET", Path: "/widgets",
+		Status: 200,
+		Req:    trace.Payload{Headers: map[string]string{"host": "svc.internal:9999"}},
+		Resp:   trace.Payload{Headers: map[string]string{"content-type": "application/json"}, Body: `{"ok":true}`},
+	})
+	if h.TraceID != "" {
+		t.Fatalf("test hop must have no traceId (ambient), got %q", h.TraceID)
+	}
+	wantHost := fmt.Sprintf("127.0.0.1:%d", e.proxyPort)
+	seq := fmt.Sprintf("%d", h.Seq)
+
+	_, curlBody := e.get(t, "/api/hops/"+seq+"/export?format=curl")
+	if !strings.Contains(string(curlBody), "http://"+wantHost+"/widgets") {
+		t.Fatalf("curl export did not rewrite host: %s", curlBody)
+	}
+
+	_, reqBody := e.get(t, "/api/hops/"+seq+"/export?format=request")
+	if !strings.HasPrefix(string(reqBody), "GET /widgets HTTP/1.1") {
+		t.Fatalf("request export = %s", reqBody)
+	}
+
+	_, respBody := e.get(t, "/api/hops/"+seq+"/export?format=response")
+	if !strings.Contains(string(respBody), `{"ok":true}`) {
+		t.Fatalf("response export = %s", respBody)
+	}
+
+	_, harBody := e.get(t, "/api/hops/"+seq+"/export?format=har")
+	var har trace.Har
+	if err := json.Unmarshal(harBody, &har); err != nil {
+		t.Fatalf("unmarshal HAR: %v (%s)", err, harBody)
+	}
+	if len(har.Log.Entries) != 1 {
+		t.Fatalf("expected exactly 1 HAR entry for a single hop, got %d", len(har.Log.Entries))
+	}
+
+	resp, _ := e.get(t, "/api/hops/999999/export?format=curl")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown seq status = %d, want 404", resp.StatusCode)
+	}
+
+	resp2, body2 := e.get(t, "/api/hops/"+seq+"/export?format=bogus")
+	if resp2.StatusCode < 400 || resp2.StatusCode >= 500 {
+		t.Fatalf("bogus format status = %d", resp2.StatusCode)
+	}
+	var errBody map[string]string
+	if err := json.Unmarshal(body2, &errBody); err != nil || errBody["error"] == "" {
+		t.Fatalf("expected {error:...} body, got %s", body2)
+	}
+}
+
 func TestTraceHopsAndLogicalView(t *testing.T) {
 	e := newTestEnv(t)
 

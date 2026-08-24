@@ -4,7 +4,7 @@
 // the SSE stream) — no extra fetch needed, only the export endpoint is a
 // live network call.
 import { useEffect, useRef, useState } from 'react';
-import { Badge } from '@ensemble/design-system';
+import { Badge, Tabs } from '@ensemble/design-system';
 import type { Hop, Timings } from '../api/types';
 import { isRedactedValue } from '../redaction';
 import { CALLER_ATTRIBUTION_TITLE, callerAttribution } from './attribution';
@@ -25,6 +25,22 @@ type ExportFormat = 'har' | 'curl' | 'raw';
 
 function exportUrl(traceId: string, format: ExportFormat): string {
   return `/api/traces/${encodeURIComponent(traceId)}/export?format=${format}`;
+}
+
+// Per-hop copy actions: unlike the trace-level export above, these work for
+// every hop (no traceId required — see /api/hops/{seq}/export) and are
+// always a plain-text clipboard copy, never a new tab.
+type CopyFormat = 'curl' | 'request' | 'response' | 'har';
+
+const COPY_LABELS: Record<CopyFormat, string> = {
+  curl: 'copy as curl',
+  request: 'copy request',
+  response: 'copy response',
+  har: 'copy as har',
+};
+
+function hopExportUrl(seq: number, format: CopyFormat): string {
+  return `/api/hops/${seq}/export?format=${format}`;
 }
 
 function HeadersTable({ headers }: { headers?: Record<string, string> }) {
@@ -68,7 +84,42 @@ function TimingStrip({ t, injectedDelayMs }: { t: Timings; injectedDelayMs?: num
 
 export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [tab, setTab] = useState<'request' | 'response'>('request');
   const isError = (hop.status ?? 0) >= 400 || Boolean(hop.err);
+
+  // Per-hop copy toolbar: separate from copyState/idleTimerRef above (that
+  // pair is the pre-existing trace-level curl export) since up to four of
+  // these buttons can show feedback independently — copyAction tracks WHICH
+  // one just ran so only that button's label flips to copied!/copy failed.
+  const [copyAction, setCopyAction] = useState<CopyFormat | null>(null);
+  const [copyResult, setCopyResult] = useState<'copied' | 'failed' | null>(null);
+  const copyIdleTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyIdleTimerRef.current !== null) window.clearTimeout(copyIdleTimerRef.current);
+    };
+  }, []);
+
+  async function handleCopy(format: CopyFormat) {
+    try {
+      const res = await fetch(hopExportUrl(hop.seq, format));
+      const text = await res.text();
+      await navigator.clipboard.writeText(text);
+      setCopyAction(format);
+      setCopyResult('copied');
+    } catch {
+      setCopyAction(format);
+      setCopyResult('failed');
+    } finally {
+      if (copyIdleTimerRef.current !== null) window.clearTimeout(copyIdleTimerRef.current);
+      copyIdleTimerRef.current = window.setTimeout(() => {
+        copyIdleTimerRef.current = null;
+        setCopyAction(null);
+        setCopyResult(null);
+      }, 1500);
+    }
+  }
 
   // A second "curl" export within the 1.5s window used to schedule a SECOND idle timer on
   // top of the first, so the earlier one reset copyState back to 'idle' mid-display of the
@@ -143,19 +194,39 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
 
       <TimingStrip t={hop.t} injectedDelayMs={hop.injectedDelayMs} />
 
-      <section className="hop-detail__section">
-        <h4>request headers</h4>
-        <HeadersTable headers={hop.req?.headers} />
-        <h4>request body</h4>
-        <JsonView body={hop.req?.body} truncated={hop.req?.truncated} />
-      </section>
+      <div className="hop-detail__copy-toolbar">
+        <span className="hop-detail__export-label">copy</span>
+        {(Object.keys(COPY_LABELS) as CopyFormat[]).map((format) => (
+          <button type="button" key={format} onClick={() => void handleCopy(format)}>
+            {copyAction === format ? (copyResult === 'copied' ? 'copied!' : 'copy failed') : COPY_LABELS[format]}
+          </button>
+        ))}
+      </div>
 
-      <section className="hop-detail__section">
-        <h4>response headers</h4>
-        <HeadersTable headers={hop.resp?.headers} />
-        <h4>response body</h4>
-        <JsonView body={hop.resp?.body} truncated={hop.resp?.truncated} />
-      </section>
+      <Tabs
+        items={[
+          { id: 'request', label: 'request' },
+          { id: 'response', label: 'response' },
+        ]}
+        active={tab}
+        onSelect={(id) => setTab(id as 'request' | 'response')}
+      />
+
+      {tab === 'request' ? (
+        <section className="hop-detail__section">
+          <h4>request headers</h4>
+          <HeadersTable headers={hop.req?.headers} />
+          <h4>request body</h4>
+          <JsonView body={hop.req?.body} truncated={hop.req?.truncated} />
+        </section>
+      ) : (
+        <section className="hop-detail__section">
+          <h4>response headers</h4>
+          <HeadersTable headers={hop.resp?.headers} />
+          <h4>response body</h4>
+          <JsonView body={hop.resp?.body} truncated={hop.resp?.truncated} />
+        </section>
+      )}
 
       {hop.traceId && (
         <div className="hop-detail__export">

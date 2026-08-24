@@ -151,13 +151,23 @@
   padding-right: 0.5rem !important;
 }
 
-.hop-detail__export {
+.hop-detail__export,
+.hop-detail__copy-toolbar {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.hop-detail__export {
   margin-top: auto;
   padding-top: 0.6rem;
   border-top: 1px solid var(--border-hairline);
+}
+
+.hop-detail__copy-toolbar {
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .hop-detail__export-label {
@@ -166,7 +176,8 @@
   margin-right: 0.2rem;
 }
 
-.hop-detail__export button {
+.hop-detail__export button,
+.hop-detail__copy-toolbar button {
   border: 1px solid var(--border-hairline-strong);
   background: var(--bg-raised);
   color: var(--text-primary);
@@ -176,6 +187,7 @@
   cursor: pointer;
 }
 
-.hop-detail__export button:hover {
+.hop-detail__export button:hover,
+.hop-detail__copy-toolbar button:hover {
   border-color: var(--accent-strong);
 }

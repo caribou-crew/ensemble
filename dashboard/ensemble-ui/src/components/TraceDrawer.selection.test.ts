@@ -59,6 +59,14 @@ describe('TraceDrawer: hop detail panel', () => {
     const detail = container.querySelector('.hop-detail');
     expect(detail, 'expected a hop detail panel to render once a hop is selected').toBeTruthy();
     expect(detail!.textContent).toContain('x-request-id');
+
+    const responseTab = Array.from(detail!.querySelectorAll('[role="tab"]')).find(
+      (b) => b.textContent === 'response',
+    ) as HTMLButtonElement;
+    expect(responseTab, 'expected a response tab in the hop detail panel').toBeTruthy();
+    await act(async () => {
+      responseTab.click();
+    });
     expect(detail!.textContent).toContain('content-type');
   });
 });

@@ -43,6 +43,7 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/traces/{traceId}", s.handleTrace)
 	mux.HandleFunc("GET /api/traces/{traceId}/export", s.handleTraceExport)
+	mux.HandleFunc("GET /api/hops/{seq}/export", s.handleHopExport)
 
 	mux.HandleFunc("GET /api/latency", s.handleLatencyList)
 	mux.HandleFunc("PUT /api/latency", s.withAnnotation(s.handleLatencyUpsert))
@@ -646,6 +647,55 @@ func (s *server) handleTraceExport(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, strings.Join(parts, "\n\n---\n\n"))
 	default:
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown format %q, want har|curl|raw", format))
+	}
+}
+
+// hopBySeq finds the single hop with the given seq — the dashboard's
+// per-hop export needs this (a hop with no traceId, ambient traffic, has no
+// other way to be addressed).
+func hopBySeq(all []trace.Hop, seq uint64) (trace.Hop, bool) {
+	for _, h := range all {
+		if h.Seq == seq {
+			return h, true
+		}
+	}
+	return trace.Hop{}, false
+}
+
+// handleHopExport is handleTraceExport's single-hop counterpart, for the
+// dashboard's HopDetail panel copy actions (curl/request/response/har on
+// exactly the selected hop, not its whole trace) — same reachableHop
+// rewrite and trace.To*/ToHar machinery, so the two exports never drift.
+func (s *server) handleHopExport(w http.ResponseWriter, r *http.Request) {
+	seq, err := strconv.ParseUint(r.PathValue("seq"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid seq")
+		return
+	}
+	hop, ok := hopBySeq(s.Rec.Snapshot(), seq)
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("hop %d not found", seq))
+		return
+	}
+	hop = s.reachableHop(hop)
+
+	switch r.URL.Query().Get("format") {
+	case "har":
+		writeJSON(w, http.StatusOK, trace.ToHar([]trace.Hop{hop}))
+	case "curl":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, trace.ToCurl(hop))
+	case "request":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, trace.ToRawRequest(hop))
+	case "response":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, trace.ToRawResponse(hop))
+	default:
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown format %q, want har|curl|request|response", r.URL.Query().Get("format")))
 	}
 }
 
