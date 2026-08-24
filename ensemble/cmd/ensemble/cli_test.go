@@ -1206,6 +1206,60 @@ func TestCLI_ProfilesList(t *testing.T) {
 	}
 }
 
+// TestCLI_RestartService drives `ensemble restart <service>` against a live
+// stack and confirms it actually restarts the named service (a new PID)
+// — the CLI counterpart to the dashboard's existing per-service restart
+// action, for a one-off fix without a full config-reconcile or down/up.
+func TestCLI_RestartService(t *testing.T) {
+	env := startEnsemble(t)
+	c := NewClient(env.apiURL)
+
+	before, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	pidBefore := pidOf(before, "svc")
+	if pidBefore == 0 {
+		t.Fatal("service svc has no PID before restart")
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"restart", "--api-url", env.apiURL, "--json", "svc"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("restart exit = %d, stderr = %s", code, stderr.String())
+	}
+
+	waitServiceHealthy(t, c, "svc")
+	after, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if pidAfter := pidOf(after, "svc"); pidAfter == pidBefore {
+		t.Errorf("service svc PID unchanged (%d) — expected a real restart", pidBefore)
+	}
+}
+
+func pidOf(st StatusResponse, name string) int {
+	for _, s := range st.Services {
+		if s.Name == name {
+			return s.PID
+		}
+	}
+	return 0
+}
+
+func TestCLI_RestartUnknownServiceFails(t *testing.T) {
+	env := startEnsemble(t)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"restart", "--api-url", env.apiURL, "does-not-exist"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for unknown service, got 0; stdout=%s", stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("expected an error message on stderr")
+	}
+}
+
 func TestParseUpOptionsPositionalProfiles(t *testing.T) {
 	opts, err := parseUpOptions([]string{"--profile", "ops", "lane1", "lane2"}, io.Discard)
 	if err != nil {

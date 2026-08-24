@@ -120,6 +120,14 @@ func (c *Client) SetVariant(ctx context.Context, name, variant string) (orchestr
 	return out, err
 }
 
+// Restart stops and restarts name in place (same placement/variant it was
+// already running), via POST /api/services/{name}/restart.
+func (c *Client) Restart(ctx context.Context, name string) (orchestrator.ServiceState, error) {
+	var out orchestrator.ServiceState
+	err := c.do(ctx, http.MethodPost, "/api/services/"+url.PathEscape(name)+"/restart", nil, &out)
+	return out, err
+}
+
 // --- profiles ---
 
 // Health reports whether a control plane answers at BaseURL — the

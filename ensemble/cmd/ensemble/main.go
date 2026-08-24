@@ -32,6 +32,7 @@ Usage:
   ensemble profiles [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
   ensemble variant <service> <variant> [--api-url URL] [--json]
+  ensemble restart <service> [--api-url URL] [--json]
   ensemble latency list [--api-url URL] [--json]
   ensemble latency set --target NAME --path / [--fixed MS] [--p50 MS] [--p95 MS] [--p99 MS] [--enabled] [--api-url URL] [--json]
   ensemble latency reset [--api-url URL] [--json]
@@ -79,6 +80,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdSeed(args[1:], stdout, stderr)
 	case "variant":
 		return cmdVariant(args[1:], stdout, stderr)
+	case "restart":
+		return cmdRestart(args[1:], stdout, stderr)
 	case "profiles":
 		return cmdProfiles(args[1:], stdout, stderr)
 	case "latency":
