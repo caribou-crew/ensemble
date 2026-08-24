@@ -503,6 +503,171 @@ func TestCallerHeaderTakesPrecedenceOverCalledBy(t *testing.T) {
 	}
 }
 
+// TestSourceHeadersOverridesDefault: Proxy.SourceHeaders replaces the
+// built-in CallerHeader check entirely — an org's own convention
+// (e.g. "X-Source-Client") is honored, not just the default.
+func TestSourceHeadersOverridesDefault(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.SourceHeaders = []string{"X-Source-Client"}
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Source-Client", "external-app")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "external-app" {
+		t.Errorf("From = %q, want %q", hops[0].From, "external-app")
+	}
+	if hops[0].Attribution != "declared" {
+		t.Errorf("Attribution = %q, want %q", hops[0].Attribution, "declared")
+	}
+}
+
+// TestSourceHeadersCheckedInOrder: with more than one header configured,
+// the first one PRESENT ON THE REQUEST wins, regardless of list position
+// relative to what's absent — but list order breaks a tie when more than
+// one is present.
+func TestSourceHeadersCheckedInOrder(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.SourceHeaders = []string{"X-Source-Client", "X-Ensemble-Caller"}
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both headers present — the earlier one in SourceHeaders wins.
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Source-Client", "first-in-list")
+	req.Header.Set("X-Ensemble-Caller", "second-in-list")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "first-in-list" {
+		t.Errorf("From = %q, want %q", hops[0].From, "first-in-list")
+	}
+}
+
+// TestSourceHeadersFallsThroughToLaterHeaderWhenEarlierAbsent: only the
+// second-listed header is actually on the request — it's still honored.
+func TestSourceHeadersFallsThroughToLaterHeaderWhenEarlierAbsent(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.SourceHeaders = []string{"X-Source-Client", "X-Ensemble-Caller"}
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Ensemble-Caller", "only-this-one-set")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "only-this-one-set" {
+		t.Errorf("From = %q, want %q", hops[0].From, "only-this-one-set")
+	}
+}
+
+// TestSourceHeadersDefaultsToCallerHeaderWhenUnset: leaving
+// Proxy.SourceHeaders unset preserves exactly the prior default behavior
+// — only CallerHeader is checked, nothing else.
+func TestSourceHeadersDefaultsToCallerHeaderWhenUnset(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-Source-Client", "should-be-ignored")
+	req.Header.Set(CallerHeader, "external-app")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "external-app" {
+		t.Errorf("From = %q, want %q — an unconfigured, non-default header must be ignored", hops[0].From, "external-app")
+	}
+}
+
+// TestSourceHeadersCaseInsensitiveMatch: configuring a lowercase header
+// name still matches a request that used different casing — HTTP header
+// names are case-insensitive.
+func TestSourceHeadersCaseInsensitiveMatch(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	p.SourceHeaders = []string{"x-source-client"}
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	addr, err := p.Serve(Target{Name: "backend", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("GET", "http://"+addr+"/x", nil)
+	req.Header.Set("X-SOURCE-CLIENT", "external-app")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	hops := rec.Snapshot()
+	if hops[0].From != "external-app" {
+		t.Errorf("From = %q, want %q", hops[0].From, "external-app")
+	}
+}
+
 // TestProxyTraceHeaderAdoptsCustomTraceID: Proxy.TraceHeader names a
 // stack's own correlation header (e.g. "x-local-trace-id"). With no
 // traceparent on the inbound request, its value is adopted as the hop's

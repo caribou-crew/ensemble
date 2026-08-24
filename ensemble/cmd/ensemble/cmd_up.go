@@ -164,6 +164,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 
 	px := proxy.New(rec)
 	px.TraceHeader = cfg.TraceHeader
+	px.SourceHeaders = cfg.SourceHeaders
 	lat := proxy.NewLatencyStore(nil)
 	px.Latency = lat
 	for _, d := range cfg.Latency.Defaults {

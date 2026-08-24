@@ -35,7 +35,16 @@ type Config struct {
 	// share, not a per-service setting. Empty (the default) disables the
 	// fallback entirely.
 	TraceHeader string `yaml:"trace_header"`
-	Dir         string `yaml:"-"` // dir containing the config file (set by Load)
+	// SourceHeaders names request headers (checked in order, case-insensitive
+	// per the HTTP header convention) that let a caller ensemble doesn't
+	// manage (a dev-only client, another team's tool) self-declare its name
+	// on the request itself — see core/proxy.Proxy.SourceHeaders,
+	// core/proxy.CallerHeader. The first header present on a request wins.
+	// Empty (the default) falls back to checking only the built-in
+	// X-Ensemble-Caller header — set this only if the org already has its
+	// own convention (e.g. "x-source-client") to prefer instead/first.
+	SourceHeaders []string `yaml:"source_header"`
+	Dir           string   `yaml:"-"` // dir containing the config file (set by Load)
 }
 
 // OnReady runs once `ensemble up` has brought every active service and

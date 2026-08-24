@@ -276,6 +276,9 @@ func TestLoadValidFullConfig(t *testing.T) {
 	if got := c.TraceHeader; got != "x-local-trace-id" {
 		t.Errorf("trace_header: got %q", got)
 	}
+	if got := c.SourceHeaders; len(got) != 2 || got[0] != "x-source-client" || got[1] != "x-ensemble-caller" {
+		t.Errorf("source_header: got %v", got)
+	}
 }
 
 // --- ServicesForProfiles: reconciling Service.Profile with top-level

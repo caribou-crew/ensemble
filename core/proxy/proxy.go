@@ -45,13 +45,15 @@ type Target struct {
 	CalledBy []string
 }
 
-// CallerHeader is a request header letting a caller ensemble doesn't manage
-// (a dev-only client, another team's tool, a bare curl) self-declare its
-// name when it has no real trace context and no config-declared CalledBy
-// hint to fall back on. Honored only when SpanOwner has no real
-// trace-derived answer; the resulting hop is marked Hop.Attribution =
-// "declared" — a caller-asserted name, not ground truth, but more specific
-// than a static config guess.
+// CallerHeader is the default request header letting a caller ensemble
+// doesn't manage (a dev-only client, another team's tool, a bare curl)
+// self-declare its name when it has no real trace context and no
+// config-declared CalledBy hint to fall back on. Honored only when
+// SpanOwner has no real trace-derived answer; the resulting hop is marked
+// Hop.Attribution = "declared" — a caller-asserted name, not ground truth,
+// but more specific than a static config guess. Used only when
+// Proxy.SourceHeaders is unset — an org with its own existing header
+// convention (e.g. "X-Source-Client") sets SourceHeaders instead.
 const CallerHeader = "X-Ensemble-Caller"
 
 // CaptureLimit caps how much request/response body is *captured* (never how
@@ -80,8 +82,33 @@ type Proxy struct {
 	// preserving the exact prior behavior of always minting a fresh trace.
 	TraceHeader string
 
+	// SourceHeaders names request headers (checked in order, case-insensitive
+	// per the HTTP header convention — see net/http.Header.Get) that let a
+	// caller ensemble doesn't manage self-declare its name, replacing the
+	// CallerHeader default entirely. The first header present on the request
+	// wins, regardless of how many later entries are also present. Empty
+	// (the default) falls back to checking only CallerHeader, preserving
+	// prior behavior for a stack with no such convention of its own.
+	SourceHeaders []string
+
 	mu      sync.Mutex
 	servers []*http.Server
+}
+
+// declaredCaller returns the value of the first configured SourceHeaders
+// entry present on r (or CallerHeader alone, if SourceHeaders is unset),
+// or "" if none of them are set.
+func (p *Proxy) declaredCaller(r *http.Request) string {
+	headers := p.SourceHeaders
+	if len(headers) == 0 {
+		headers = []string{CallerHeader}
+	}
+	for _, h := range headers {
+		if v := r.Header.Get(h); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func New(rec *Recorder) *Proxy {
@@ -223,8 +250,8 @@ func (p *Proxy) handler(t Target) http.Handler {
 		switch {
 		case from != "":
 			// real, trace-derived — leave attribution unset
-		case r.Header.Get(CallerHeader) != "":
-			from = r.Header.Get(CallerHeader)
+		case p.declaredCaller(r) != "":
+			from = p.declaredCaller(r)
 			attribution = "declared"
 		case len(t.CalledBy) > 0:
 			from = strings.Join(t.CalledBy, "|")
