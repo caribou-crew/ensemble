@@ -5,10 +5,12 @@ import ServicesView from './ServicesView';
 import { api } from '../api/client';
 import type { ServiceState, Topology } from '../api/types';
 
-// config.Service/Variant `type:` badges a Services-tab row (e.g. "stub", "mock"); unset
-// displays as "service". Stubs (cfg.Stubs) never had rows here at all — they only ever
-// showed up in Topology — so this also merges them in, auto-badged "stub" from topology's
-// existing category field, with dashes for the columns that don't apply to them.
+// config.Service/Variant `kind:` badges a Services-tab row (e.g. "stub", "mock"); unset
+// displays as "service". Named kind, not type, to avoid colliding with config.Database's
+// `type:` (a validated engine enum — postgres, redis, etc). Stubs (cfg.Stubs) never had rows
+// here at all — they only ever showed up in Topology — so this also merges them in,
+// auto-badged "stub" from topology's existing category field, with dashes for the columns
+// that don't apply to them.
 
 const TOPOLOGY: Topology = {
   nodes: [
@@ -19,15 +21,15 @@ const TOPOLOGY: Topology = {
 };
 
 const SERVICES: ServiceState[] = [
-  { name: 'web', status: 'healthy', placement: 'native', type: 'mock' },
-  { name: 'api', status: 'healthy', placement: 'docker' }, // no type: displays "service"
+  { name: 'web', status: 'healthy', placement: 'native', kind: 'mock' },
+  { name: 'api', status: 'healthy', placement: 'docker' }, // no kind: displays "service"
 ];
 
 function rowNames(container: HTMLDivElement): string[] {
   return Array.from(container.querySelectorAll('.services-table__name')).map((el) => el.textContent ?? '');
 }
 
-describe('ServicesView: entity type', () => {
+describe('ServicesView: entity kind', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -44,7 +46,7 @@ describe('ServicesView: entity type', () => {
     vi.restoreAllMocks();
   });
 
-  it('badges a configured type, defaulting to "service" when unset', async () => {
+  it('badges a configured kind, defaulting to "service" when unset', async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(createElement(ServicesView));

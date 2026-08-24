@@ -91,12 +91,14 @@ type Service struct {
 	Docker   *DockerPlacement `yaml:"docker"`
 	Entry    bool             `yaml:"entry"`   // clients call this directly
 	Profile  string           `yaml:"profile"` // "" = always on
-	// Type is a free-form label for the dashboard's Services tab (e.g.
+	// Kind is a free-form label for the dashboard's Services tab (e.g.
 	// "stub", "mock", "wip") — ensemble never interprets it, it just badges
-	// the row. Unset displays as "service". A variant's own Type overrides
-	// this one only when set (see ResolveService); left unset, the variant
-	// inherits the service-level Type.
-	Type string `yaml:"type"`
+	// the row. Unset displays as "service". Named Kind, not Type, to avoid
+	// colliding with Database.Type (a validated engine enum — postgres,
+	// redis, etc. — a different concept entirely). A variant's own Kind
+	// overrides this one only when set (see ResolveService); left unset,
+	// the variant inherits the service-level Kind.
+	Kind string `yaml:"kind"`
 	// StartupTimeoutS overrides Orchestrator.Opts.HealthTimeout (default 30s)
 	// for this service's health gate only. 0 = use the default. For a slow
 	// starter (a JVM service paying classloading/Spring-context cost on
@@ -126,9 +128,9 @@ type Variant struct {
 	Env             map[string]string `yaml:"env"`
 	Docker          *DockerPlacement  `yaml:"docker"`
 	StartupTimeoutS int               `yaml:"startup_timeout_s"`
-	// Type overrides the service-level Type for this variant only when set
-	// — see Service.Type.
-	Type string `yaml:"type"`
+	// Kind overrides the service-level Kind for this variant only when set
+	// — see Service.Kind.
+	Kind string `yaml:"kind"`
 }
 
 // hasBackingFields reports whether any per-backing field is set at the
@@ -190,8 +192,8 @@ func (c *Config) ResolveService(name, variant string) (Service, error) {
 	out := svc
 	out.Dir, out.Build, out.Watch, out.Run = v.Dir, v.Build, v.Watch, v.Run
 	out.Env, out.Docker, out.StartupTimeoutS = v.Env, v.Docker, v.StartupTimeoutS
-	if v.Type != "" {
-		out.Type = v.Type
+	if v.Kind != "" {
+		out.Kind = v.Kind
 	}
 	out.Variants, out.Default = nil, ""
 	return out, nil

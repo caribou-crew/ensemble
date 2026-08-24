@@ -59,14 +59,14 @@ func TestResolveService(t *testing.T) {
 	}
 }
 
-func TestResolveServiceType(t *testing.T) {
+func TestResolveServiceKind(t *testing.T) {
 	c := &Config{Services: map[string]Service{
 		"svc": {
-			Port: 8080, Type: "real",
+			Port: 8080, Kind: "real",
 			Default: "a",
 			Variants: map[string]Variant{
-				"a": {Run: "./a"},               // no own Type: inherits service-level "real"
-				"b": {Run: "./b", Type: "stub"}, // own Type: overrides to "stub"
+				"a": {Run: "./a"},               // no own Kind: inherits service-level "real"
+				"b": {Run: "./b", Kind: "stub"}, // own Kind: overrides to "stub"
 			},
 		},
 	}}
@@ -74,15 +74,15 @@ func TestResolveServiceType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Type != "real" {
-		t.Errorf("inherited Type = %q, want %q", a.Type, "real")
+	if a.Kind != "real" {
+		t.Errorf("inherited Kind = %q, want %q", a.Kind, "real")
 	}
 	b, err := c.ResolveService("svc", "b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Type != "stub" {
-		t.Errorf("overridden Type = %q, want %q", b.Type, "stub")
+	if b.Kind != "stub" {
+		t.Errorf("overridden Kind = %q, want %q", b.Kind, "stub")
 	}
 }
 

@@ -161,18 +161,18 @@ func TestSetVariantWhileStoppedOnlyRecords(t *testing.T) {
 	waitMarker(t, dir, "real")
 }
 
-func TestServiceStateType(t *testing.T) {
+func TestServiceStateKind(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{
 		Dir: dir,
 		Services: map[string]config.Service{
-			"plain": {Run: "sleep 30", Type: "real"},
+			"plain": {Run: "sleep 30", Kind: "real"},
 			"mono": {
-				Type:    "real",
+				Kind:    "real",
 				Default: "a",
 				Variants: map[string]config.Variant{
-					"a": {Run: "sleep 30"},               // no own Type: inherits "real"
-					"b": {Run: "sleep 30", Type: "stub"}, // own Type: overrides to "stub"
+					"a": {Run: "sleep 30"},               // no own Kind: inherits "real"
+					"b": {Run: "sleep 30", Kind: "stub"}, // own Kind: overrides to "stub"
 				},
 			},
 		},
@@ -183,29 +183,29 @@ func TestServiceStateType(t *testing.T) {
 	}
 	defer o.Down()
 
-	if st, _ := o.Service("plain"); st.Type != "real" {
-		t.Errorf("plain.Type = %q, want %q", st.Type, "real")
+	if st, _ := o.Service("plain"); st.Kind != "real" {
+		t.Errorf("plain.Kind = %q, want %q", st.Kind, "real")
 	}
-	if st, _ := o.Service("mono"); st.Type != "real" {
-		t.Errorf("mono (variant a).Type = %q, want inherited %q", st.Type, "real")
+	if st, _ := o.Service("mono"); st.Kind != "real" {
+		t.Errorf("mono (variant a).Kind = %q, want inherited %q", st.Kind, "real")
 	}
 
 	if err := o.SetVariant(context.Background(), "mono", "b"); err != nil {
 		t.Fatalf("SetVariant b: %v", err)
 	}
-	if st, _ := o.Service("mono"); st.Type != "stub" {
-		t.Errorf("mono (variant b).Type = %q, want overridden %q", st.Type, "stub")
+	if st, _ := o.Service("mono"); st.Kind != "stub" {
+		t.Errorf("mono (variant b).Kind = %q, want overridden %q", st.Kind, "stub")
 	}
 }
 
-func TestServiceStateTypeSetWhileStopped(t *testing.T) {
+func TestServiceStateKindSetWhileStopped(t *testing.T) {
 	cfg := &config.Config{
 		Services: map[string]config.Service{
 			"mono": {
 				Default: "a",
 				Variants: map[string]config.Variant{
 					"a": {Run: "sleep 30"},
-					"b": {Run: "sleep 30", Type: "stub"},
+					"b": {Run: "sleep 30", Kind: "stub"},
 				},
 			},
 		},
@@ -214,8 +214,8 @@ func TestServiceStateTypeSetWhileStopped(t *testing.T) {
 	if err := o.SetVariant(context.Background(), "mono", "b"); err != nil {
 		t.Fatalf("SetVariant before Up: %v", err)
 	}
-	if st, _ := o.Service("mono"); st.Type != "stub" {
-		t.Errorf("Type after SetVariant while stopped = %q, want %q", st.Type, "stub")
+	if st, _ := o.Service("mono"); st.Kind != "stub" {
+		t.Errorf("Kind after SetVariant while stopped = %q, want %q", st.Kind, "stub")
 	}
 }
 

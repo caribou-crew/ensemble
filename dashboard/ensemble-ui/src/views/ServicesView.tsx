@@ -30,9 +30,9 @@ function statusTone(status: string): 'green' | 'red' | 'amber' | 'neutral' {
 }
 
 /** "service" (the default, unlabeled) is deliberately unremarkable; anything the user
-    actually configured (`type: stub`, `type: mock`, ...) gets called out. */
-function typeTone(type: string | undefined): 'amber' | 'neutral' {
-  return type ? 'amber' : 'neutral';
+    actually configured (`kind: stub`, `kind: mock`, ...) gets called out. */
+function kindTone(kind: string | undefined): 'amber' | 'neutral' {
+  return kind ? 'amber' : 'neutral';
 }
 
 function formatRSS(kb: number | undefined): string {
@@ -57,7 +57,7 @@ function formatUptime(startedAt: string | undefined): string {
   return `${d}d ${h % 24}h`;
 }
 
-type SortKey = 'name' | 'status' | 'placement' | 'type' | 'variant' | 'port' | 'proxyPort' | 'rss' | 'uptime';
+type SortKey = 'name' | 'status' | 'placement' | 'kind' | 'variant' | 'port' | 'proxyPort' | 'rss' | 'uptime';
 type SortDir = 'asc' | 'desc';
 interface SortState {
   key: SortKey;
@@ -68,7 +68,7 @@ const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: 'name', label: 'name' },
   { key: 'status', label: 'status' },
   { key: 'placement', label: 'placement' },
-  { key: 'type', label: 'type' },
+  { key: 'kind', label: 'kind' },
   { key: 'variant', label: 'variant' },
   { key: 'port', label: 'port', numeric: true },
   { key: 'proxyPort', label: 'proxy', numeric: true },
@@ -87,8 +87,8 @@ function sortValue(s: ServiceState, key: SortKey): string | number {
       return s.status;
     case 'placement':
       return s.placement;
-    case 'type':
-      return s.type || 'service';
+    case 'kind':
+      return s.kind || 'service';
     case 'variant':
       return s.variant ?? '';
     case 'port':
@@ -211,7 +211,7 @@ function ServiceRow({
         <Badge tone="neutral">{state.placement}</Badge>
       </td>
       <td>
-        <Badge tone={typeTone(state.type)}>{state.type || 'service'}</Badge>
+        <Badge tone={kindTone(state.kind)}>{state.kind || 'service'}</Badge>
       </td>
       <td className="services-table__variant">
         {variants.length > 0 ? (

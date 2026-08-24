@@ -57,9 +57,10 @@ export interface ServiceState {
   variant?: string;
   /** Sampled RSS in KB. Only populated when status was fetched with `?mem=1`. */
   rssKB?: number;
-  /** Free-form label from config.Service/Variant `type:`, e.g. "stub", "mock". Empty means
-   * "service" (a real, unlabeled backing). */
-  type?: string;
+  /** Free-form label from config.Service/Variant `kind:`, e.g. "stub", "mock". Empty means
+   * "service" (a real, unlabeled backing). Named kind, not type, to avoid colliding with
+   * config.Database's `type:` (a validated engine enum — postgres, redis, etc). */
+  kind?: string;
 }
 
 export interface TopologyNode {
