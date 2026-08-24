@@ -15,7 +15,6 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/buildinfo"
 	"github.com/caribou-crew/ensemble/core/proxy"
-	"github.com/caribou-crew/ensemble/core/stub"
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/config"
 	"github.com/caribou-crew/ensemble/ensemble/inspector"
@@ -106,11 +105,14 @@ func cmdUp(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ensemble: no running stack at %s; starting with profiles %s\n", c.BaseURL, strings.Join(opts.Positional, ", "))
 		opts.Profiles = append(opts.Profiles, opts.Positional...)
 	case running:
-		// Plain `ensemble up` with no positional profiles: a stack is
-		// already up, so there's nothing to start — don't touch it.
-		// `ensemble up <profile>` attaches; `ensemble down` stops it.
-		fmt.Fprintf(stdout, "ensemble: already running at %s; nothing to do\n", c.BaseURL)
-		return 0
+		// Plain `ensemble up` with no positional profiles, against an
+		// already-running stack: reconcile the freshly loaded config
+		// against whatever was last applied, touching only what changed
+		// (a changed gateway port rebinds just that gateway, a changed
+		// service restarts just that service, and so on — see
+		// orchestrator.Reconcile) — instead of requiring a full
+		// `ensemble down` + `ensemble up` to pick up an edit.
+		return reconcileRunning(c, opts.ConfigPath, stdout, stderr)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -119,6 +121,28 @@ func cmdUp(args []string, stdout, stderr io.Writer) int {
 	if err := runUp(ctx, opts, stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "ensemble: up: %v\n", err)
 		return 1
+	}
+	return 0
+}
+
+// reconcileRunning loads configPath and posts it to a running stack's
+// POST /api/reconcile, printing what it did (or didn't — "unchanged" is a
+// reported outcome too) per unit. See cmdUp's `case running:` for when this
+// runs instead of a cold start.
+func reconcileRunning(c *Client, configPath string, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "ensemble: up: %v\n", err)
+		return 1
+	}
+	result, err := c.Reconcile(context.Background(), *cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "ensemble: reconcile: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "ensemble: already running at %s; reconciled config\n", c.BaseURL)
+	for _, a := range result.Actions {
+		fmt.Fprintf(stdout, "ensemble:   %s %q: %s\n", a.Kind, a.Name, a.Action)
 	}
 	return 0
 }
@@ -204,26 +228,17 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		Logf:     logf,
 	})
 	orch.SQLRunner = inspector.NewSQLRunner(cfg.Databases)
+	orch.Rec = rec
 	insp := buildInspector(cfg, logf)
 	orch.DBReady = dbReadyProbe(insp)
-
-	stubs, err := startStubs(cfg, rec)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		for _, s := range stubs {
-			s.Close()
-		}
-	}()
 
 	// Nobody else owns the Proxy's lifecycle (server.Deps documents that the
 	// server doesn't); without this, every intercept listener wireProxy
 	// binds outlives runUp's return — still bound, and still recording into
-	// a Recorder whose hopsFile is about to close. Declared after the stubs
-	// defer so it runs first on unwind (LIFO): orchestrator is stopped
-	// (explicit orch.Down() below) before we return, then proxy listeners,
-	// then stubs, then sessions, then the hops file.
+	// a Recorder whose hopsFile is about to close. Declared so it runs
+	// first on unwind (LIFO): orchestrator is stopped (explicit orch.Down()
+	// below, which also closes every stub it started) before we return,
+	// then proxy listeners, then sessions, then the hops file.
 	defer px.Close()
 
 	// shutdownCtx derives from ctx so either SIGINT/SIGTERM (which cancels
@@ -477,47 +492,6 @@ func exposedWarning(addr string) string {
 			"ensemble: every route except POST /api/shutdown is unauthenticated — anyone who can reach that address\n"+
 			"ensemble: can read captured request/response bodies, run seeds, restart services, and inject latency.\n"+
 			"ensemble: bind to 127.0.0.1 (the default) unless you mean it.", addr)
-}
-
-// startStubs starts every config-defined stub HTTP server, mapping
-// config.Stub/config.StubRoute onto core/stub's types (kept as separate
-// types deliberately — config is the on-disk YAML shape, stub is the
-// runtime shape).
-func startStubs(cfg *config.Config, rec *proxy.Recorder) ([]*stub.Stub, error) {
-	var stubs []*stub.Stub
-	for name, st := range cfg.Stubs {
-		routes := make([]stub.Route, len(st.Routes))
-		for i, r := range st.Routes {
-			// BodyFile is declared relative to Config.Dir, same as
-			// SeedSQL.File (orchestrator/seed.go) — not the process CWD,
-			// which is what core/stub's os.ReadFile would otherwise use.
-			bodyFile := r.Respond.BodyFile
-			if bodyFile != "" && !filepath.IsAbs(bodyFile) {
-				bodyFile = filepath.Join(cfg.Dir, bodyFile)
-			}
-			routes[i] = stub.Route{
-				Match: stub.Match{Method: r.Match.Method, Path: r.Match.Path},
-				Respond: stub.Respond{
-					Status: r.Respond.Status, Headers: r.Respond.Headers,
-					Body: r.Respond.Body, BodyFile: bodyFile, Template: r.Respond.Template,
-				},
-			}
-		}
-		s := stub.New(name, routes, rec)
-		s.TraceHeader = cfg.TraceHeader
-		listen := "127.0.0.1:0"
-		if st.Port != 0 {
-			listen = fmt.Sprintf("127.0.0.1:%d", st.Port)
-		}
-		if _, err := s.Serve(listen); err != nil {
-			for _, started := range stubs {
-				started.Close()
-			}
-			return nil, fmt.Errorf("stub %s: %w", name, err)
-		}
-		stubs = append(stubs, s)
-	}
-	return stubs, nil
 }
 
 // splitCSV parses a comma-separated flag value into a trimmed, non-empty

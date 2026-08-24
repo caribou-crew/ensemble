@@ -13,6 +13,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // routes registers every /api endpoint on mux. Mutating endpoints (POST/
@@ -34,6 +35,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/profiles", s.handleProfiles)
 	mux.HandleFunc("POST /api/profiles/{name}/up", s.withAnnotation(s.handleProfileUp))
 	mux.HandleFunc("POST /api/profiles/{name}/down", s.withAnnotation(s.handleProfileDown))
+
+	mux.HandleFunc("POST /api/reconcile", s.withAnnotation(s.handleReconcile))
 
 	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/traffic/stream", s.handleTrafficStream)
@@ -435,6 +438,32 @@ func (s *server) handleProfileDown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.Orch.Profiles())
+}
+
+// --- reconcile ---
+
+// handleReconcile diffs the posted config against whatever `ensemble up`
+// last applied and touches only what changed — see
+// orchestrator.Orchestrator.Reconcile. The body is a full config.Config as
+// JSON (the CLI's `ensemble up`, run a second time against an already-up
+// stack, sends its freshly loaded ensemble.yaml here instead of the old
+// plain "already running" no-op). A partial failure (e.g. one service's new
+// build fails) still returns 200 with whatever actions succeeded plus an
+// "error" field — same convention as handleSeed — since most of the
+// reconcile may have gone fine and the caller needs to see which unit
+// didn't.
+func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
+	var cfg config.Config
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	result, err := s.Orch.Reconcile(r.Context(), cfg)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"actions": result.Actions, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // --- seed ---

@@ -70,8 +70,11 @@ func NewRecorder(opts RecorderOpts) *Recorder {
 // only as a no-op safety net for callers that bypass Record.
 func (r *Recorder) Record(h trace.Hop) trace.Hop {
 	h.Schema = trace.SchemaVersion
-	if r.opts.Redactor != nil {
-		h = r.opts.Redactor.Hop(h)
+	r.mu.Lock()
+	redactor := r.opts.Redactor
+	r.mu.Unlock()
+	if redactor != nil {
+		h = redactor.Hop(h)
 	}
 	r.mu.Lock()
 	r.nextSeq++
@@ -100,6 +103,15 @@ func (r *Recorder) Record(h trace.Hop) trace.Hop {
 	}
 	r.mu.Unlock()
 	return h
+}
+
+// SetRedactor swaps the redaction rules applied to every hop from this call
+// onward — e.g. after `ensemble up` reconciles a config whose redact list
+// changed. Already-recorded hops are not retroactively scrubbed.
+func (r *Recorder) SetRedactor(redactor *trace.Redactor) {
+	r.mu.Lock()
+	r.opts.Redactor = redactor
+	r.mu.Unlock()
 }
 
 // Snapshot returns the retained hops, oldest first.

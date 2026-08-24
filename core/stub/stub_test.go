@@ -2,6 +2,7 @@ package stub
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -194,6 +195,34 @@ func TestStubUnmatchedIs404AndStillRecorded(t *testing.T) {
 	hops := rec.Snapshot()
 	if len(hops) != 1 || hops[0].Status != 404 || hops[0].To != "aws-kms" {
 		t.Fatalf("unmatched call not recorded: %+v", hops)
+	}
+}
+
+// TestStubCloseReleasesPortSynchronously guards a real flake seen in
+// orchestrator reconcile: Serve() hands the listener to http.Server via
+// `go s.srv.Serve(ln)`, which only registers (and therefore only guarantees
+// closing) the listener once that goroutine actually runs. Close() calling
+// only srv.Close() can return before that goroutine is even scheduled, so
+// the OS socket may still be bound when Close() returns — an immediate
+// re-listen on the same port then fails with "address already in use",
+// exactly what a config-reconcile restart-on-same-port does.
+func TestStubCloseReleasesPortSynchronously(t *testing.T) {
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	for i := 0; i < 50; i++ {
+		s := New("aws-kms", []Route{{
+			Match:   Match{Method: "GET", Path: "/x"},
+			Respond: Respond{Status: 200, Body: "ok"},
+		}}, rec)
+		addr, err := s.Serve("127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatalf("iteration %d: port %s not free immediately after Close: %v", i, addr, err)
+		}
+		ln.Close()
 	}
 }
 
