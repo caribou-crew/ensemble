@@ -59,6 +59,7 @@ type Stub struct {
 	routes []Route
 	rec    *proxy.Recorder
 	srv    *http.Server
+	ln     net.Listener
 
 	// TraceHeader mirrors core/proxy.Proxy.TraceHeader — a stack's own
 	// correlation header, read as a fallback trace id when a request
@@ -77,11 +78,22 @@ func (s *Stub) Serve(listen string) (string, error) {
 		return "", fmt.Errorf("stub %s: %w", s.name, err)
 	}
 	s.srv = &http.Server{Handler: s}
+	s.ln = ln
 	go s.srv.Serve(ln)
 	return ln.Addr().String(), nil
 }
 
+// Close stops the stub and releases its port before returning. Closing the
+// raw listener directly (rather than relying solely on http.Server.Close)
+// matters because Serve runs in its own goroutine — http.Server only
+// registers a listener for tracking once that goroutine actually starts
+// running, so Close alone can return before the OS socket is released,
+// which breaks an immediate re-listen on the same port (as config-reconcile
+// does when a stub's config changes without its port changing).
 func (s *Stub) Close() {
+	if s.ln != nil {
+		s.ln.Close()
+	}
 	if s.srv != nil {
 		s.srv.Close()
 	}

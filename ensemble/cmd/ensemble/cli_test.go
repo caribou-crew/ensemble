@@ -1133,6 +1133,12 @@ func fakeProfileServer(t *testing.T, healthy bool) (*httptest.Server, *[]string)
 	mux.HandleFunc("GET /api/profiles", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"active": []string{"lane1"}, "profiles": []map[string]any{{"name": "lane1", "services": []string{"a1"}, "active": true}}})
 	})
+	mux.HandleFunc("POST /api/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, "reconcile")
+		json.NewEncoder(w).Encode(map[string]any{
+			"actions": []map[string]string{{"kind": "service", "name": "svc", "action": "unchanged"}},
+		})
+	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts, &calls
@@ -1153,23 +1159,28 @@ func TestCLI_UpWithProfileAttachesToRunningStack(t *testing.T) {
 	}
 }
 
-// TestCLI_UpNoArgsNoopWhenAlreadyRunning: plain `ensemble up` (no
+// TestCLI_UpNoArgsReconcilesWhenAlreadyRunning: plain `ensemble up` (no
 // positional profiles) against an already-running stack must not error or
-// try to start anything — just report it's already up. Distinct from
-// TestCLI_UpWithProfileAttachesToRunningStack, which drives the
-// positional-profile attach path instead.
-func TestCLI_UpNoArgsNoopWhenAlreadyRunning(t *testing.T) {
+// touch profiles — instead it loads the config fresh and posts it to
+// POST /api/reconcile, printing the per-unit actions reconcile reports.
+// Distinct from TestCLI_UpWithProfileAttachesToRunningStack, which drives
+// the positional-profile attach path instead.
+func TestCLI_UpNoArgsReconcilesWhenAlreadyRunning(t *testing.T) {
 	ts, calls := fakeProfileServer(t, true)
 	t.Setenv("ENSEMBLE_API", ts.URL)
+	cfgPath := writeConfig(t, t.TempDir(), freePort(t), freePort(t))
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"up"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"up", "-c", cfgPath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "already running") {
 		t.Errorf("stdout = %q, want mention of already running", stdout.String())
 	}
-	if len(*calls) != 0 {
-		t.Errorf("no-op path must not call any profile endpoint, got %v", *calls)
+	if !strings.Contains(stdout.String(), `service "svc": unchanged`) {
+		t.Errorf("stdout = %q, want the reconcile result printed", stdout.String())
+	}
+	if got := strings.Join(*calls, ","); got != "reconcile" {
+		t.Errorf("calls = %q, want exactly one reconcile call and no profile calls", got)
 	}
 }
 

@@ -190,6 +190,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
               </td>
               <td className="hop-table__request">
                 {hop.method && <span className="hop-table__method">{hop.method}</span>} {hop.path}
+                {hop.preflight && <Badge tone="blue">preflight</Badge>}
               </td>
               <td className={`hop-table__status${isError ? ' hop-table__status--error' : ''}`}>
                 {hop.err ? 'err' : (hop.status ?? '—')}

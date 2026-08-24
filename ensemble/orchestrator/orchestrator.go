@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/stub"
 	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
@@ -97,6 +98,21 @@ type Orchestrator struct {
 	// wired records services whose intercept listener is bound, so
 	// UpProfiles re-adding a lane never tries to rebind it.
 	wired map[string]bool
+	// gatewayStop holds each bound gateway's listener-stop func (see
+	// proxy.Proxy.ServeStoppable), so Reconcile can close and rebind a
+	// gateway whose config changed — unlike wired, gateways have no
+	// ServiceState and no process to restart, just a listener.
+	gatewayStop map[string]func()
+	// stubs holds each running config-defined stub, owned the same way
+	// procs/dockerNodes are — started by Up, torn down by Down, and
+	// individually add/remove/restart-able by Reconcile.
+	stubs map[string]*stub.Stub
+	// lastConfig is the config Reconcile (or, for the very first call, Up)
+	// most recently applied — the baseline the next Reconcile diffs
+	// against. A value, not a pointer: cfg is diffed field-by-field, so a
+	// snapshot copy is exactly what's needed, and taking one is cheap next
+	// to the process/container churn a real diff can trigger.
+	lastConfig config.Config
 
 	// serviceLocks holds one mutex per service name, serializing Flip,
 	// Restart, and Down's per-service teardown against each other for a
@@ -148,6 +164,12 @@ type Orchestrator struct {
 	// package is deliberate: it's the caller's dependency to own (see
 	// cmd_up.go's buildInspector), not the orchestrator's.
 	DBReady DBReadyFunc
+
+	// Rec is the shared Recorder every stub's captured traffic is written
+	// through, same as the one behind px — set by the caller (cmd_up.go)
+	// right after New, mirroring SQLRunner/DBReady. Nil only in tests that
+	// never configure a stub.
+	Rec *proxy.Recorder
 }
 
 // DBReadyFunc reports whether name's database is ready to serve real
@@ -175,6 +197,8 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		variants:              variantsFrom(cfg, opts.Variants),
 		active:                profileSet(opts.Profiles),
 		wired:                 map[string]bool{},
+		gatewayStop:           map[string]func(){},
+		stubs:                 map[string]*stub.Stub{},
 		serviceLocks:          map[string]*sync.Mutex{},
 		killGroup:             killProcessGroup,
 		removeDockerContainer: dockerRemove,
@@ -512,6 +536,14 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 	failed := map[string]bool{}
 	var errs []error
 
+	// Stubs have no dependencies on anything else in the stack, so they
+	// start alongside gateways rather than interleaved into the topo
+	// order below — a stub failure is reported like any other node
+	// failure (see the doc comment above) rather than aborting Up.
+	if err := o.startStubs(); err != nil {
+		errs = append(errs, err)
+	}
+
 	for _, name := range order {
 		if o.testStartHook != nil {
 			o.testStartHook(name)
@@ -569,6 +601,14 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+
+	// The baseline the next Reconcile diffs against — taken regardless of
+	// per-node failures above, same as everything else in Up: a partial
+	// stack still reflects the config that produced it.
+	o.mu.Lock()
+	o.lastConfig = *o.cfg
+	o.mu.Unlock()
+
 	return errors.Join(errs...)
 }
 
@@ -662,6 +702,15 @@ func (o *Orchestrator) Down() error {
 			}
 		}()
 	}
+
+	o.mu.Lock()
+	stubs := o.stubs
+	o.stubs = map[string]*stub.Stub{}
+	o.mu.Unlock()
+	for _, s := range stubs {
+		s.Close()
+	}
+
 	return errors.Join(errs...)
 }
 
@@ -968,53 +1017,80 @@ func (o *Orchestrator) wireGateways() error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		gw := o.cfg.Gateways[name]
-		routes := make([]proxy.Route, 0, len(gw.Routes))
-		for _, r := range gw.Routes {
-			port, _, ok := o.cfg.RoutablePort(r.Service)
-			if !ok {
-				// Validate rejects this; guard anyway so a hand-built
-				// Config can't produce a route to port 0.
-				return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
-			}
-			route := proxy.Route{
-				Prefix:      r.Prefix,
-				Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
-				StripPrefix: r.StripPrefix,
-				Rewrite:     r.Rewrite,
-			}
-			if r.Regex != "" {
-				// Validate already confirmed this compiles; guard anyway
-				// so a hand-built Config can't panic the orchestrator.
-				re, err := regexp.Compile(r.Regex)
-				if err != nil {
-					return fmt.Errorf("orchestrator: gateway %s: route %q: invalid regex: %w", name, r.Regex, err)
-				}
-				route.Regex = re
-			}
-			routes = append(routes, route)
+		if err := o.wireOneGateway(name, o.cfg.Gateways[name]); err != nil {
+			return err
 		}
-		var cors *proxy.CORSPolicy
-		if gw.CORS != nil {
-			cors = &proxy.CORSPolicy{
-				AllowOrigins:     gw.CORS.AllowOrigins,
-				AllowCredentials: gw.CORS.AllowCredentials,
-				AllowMethods:     gw.CORS.AllowMethods,
-				AllowHeaders:     gw.CORS.AllowHeaders,
-				MaxAgeSeconds:    gw.CORS.MaxAgeSeconds,
-			}
-		}
-		if _, err := o.px.Serve(proxy.Target{
-			Name:   name,
-			Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
-			Routes: routes,
-			CORS:   cors,
-		}); err != nil {
-			return fmt.Errorf("orchestrator: gateway %s: wiring: %w", name, err)
-		}
-		o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (%d routes)", name, gw.Port, len(routes))
 	}
 	return nil
+}
+
+// wireOneGateway binds gw's routing listener under name, recording its stop
+// func in gatewayStop so Reconcile can later close and rebind it — the same
+// per-gateway unit wireGateways loops over and Reconcile calls directly for
+// a single added/changed gateway.
+func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway) error {
+	routes := make([]proxy.Route, 0, len(gw.Routes))
+	for _, r := range gw.Routes {
+		port, _, ok := o.cfg.RoutablePort(r.Service)
+		if !ok {
+			// Validate rejects this; guard anyway so a hand-built
+			// Config can't produce a route to port 0.
+			return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
+		}
+		route := proxy.Route{
+			Prefix:      r.Prefix,
+			Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
+			StripPrefix: r.StripPrefix,
+			Rewrite:     r.Rewrite,
+		}
+		if r.Regex != "" {
+			// Validate already confirmed this compiles; guard anyway
+			// so a hand-built Config can't panic the orchestrator.
+			re, err := regexp.Compile(r.Regex)
+			if err != nil {
+				return fmt.Errorf("orchestrator: gateway %s: route %q: invalid regex: %w", name, r.Regex, err)
+			}
+			route.Regex = re
+		}
+		routes = append(routes, route)
+	}
+	var cors *proxy.CORSPolicy
+	if gw.CORS != nil {
+		cors = &proxy.CORSPolicy{
+			AllowOrigins:     gw.CORS.AllowOrigins,
+			AllowCredentials: gw.CORS.AllowCredentials,
+			AllowMethods:     gw.CORS.AllowMethods,
+			AllowHeaders:     gw.CORS.AllowHeaders,
+			MaxAgeSeconds:    gw.CORS.MaxAgeSeconds,
+		}
+	}
+	_, stop, err := o.px.ServeStoppable(proxy.Target{
+		Name:   name,
+		Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
+		Routes: routes,
+		CORS:   cors,
+	})
+	if err != nil {
+		return fmt.Errorf("orchestrator: gateway %s: wiring: %w", name, err)
+	}
+	o.mu.Lock()
+	o.gatewayStop[name] = stop
+	o.mu.Unlock()
+	o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (%d routes)", name, gw.Port, len(routes))
+	return nil
+}
+
+// unwireGateway closes name's bound listener, if any, and forgets it — used
+// by Reconcile when a gateway is removed or about to be rebound with a
+// changed config. A no-op for a name that was never wired.
+func (o *Orchestrator) unwireGateway(name string) {
+	o.mu.Lock()
+	stop, ok := o.gatewayStop[name]
+	delete(o.gatewayStop, name)
+	o.mu.Unlock()
+	if ok {
+		stop()
+	}
 }
 
 func (o *Orchestrator) startDatabase(ctx context.Context, name string, db config.Database) error {
@@ -1288,12 +1364,24 @@ func touchStamp(path string) error {
 // dependency-first order (a dependency always precedes its dependents). A
 // depends_on cycle is reported as an error naming every service in the
 // cycle.
+// topoOrder computes dependency order for active against o.cfg.Databases.
+// See topoOrderOver — split out so Reconcile can order a not-yet-committed
+// config without mutating o.cfg (which every other reader in this package
+// accesses without a lock).
 func (o *Orchestrator) topoOrder(active map[string]config.Service) ([]string, error) {
+	return topoOrderOver(active, o.cfg.Databases)
+}
+
+// topoOrderOver dependency-orders active (services participating in this
+// walk) against databases (every database is a node too, since services can
+// depend on one), returning names in the order they should start — a
+// dependency before its dependents — or an error naming the cycle.
+func topoOrderOver(active map[string]config.Service, databases map[string]config.Database) ([]string, error) {
 	nodes := map[string]bool{}
 	for name := range active {
 		nodes[name] = true
 	}
-	for name := range o.cfg.Databases {
+	for name := range databases {
 		nodes[name] = true
 	}
 

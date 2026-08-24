@@ -108,6 +108,28 @@ func TestGatewayCORSPreflightAndHeaders(t *testing.T) {
 		t.Errorf("preflight must not call upstream, got %d calls", upstreamCalls)
 	}
 
+	// The preflight itself must be recorded, tagged, and carry both what
+	// the browser asked for and what ensemble actually allowed — so a
+	// mismatch (e.g. a method the browser wants but AllowMethods omits)
+	// is visible without ever reaching an upstream.
+	hops := rec.Snapshot()
+	if len(hops) != 1 {
+		t.Fatalf("expected 1 recorded hop after preflight, got %d", len(hops))
+	}
+	ph := hops[0]
+	if !ph.Preflight {
+		t.Error("preflight hop must have Preflight = true")
+	}
+	if ph.Method != http.MethodOptions || ph.To != "public" || ph.Status != http.StatusNoContent {
+		t.Errorf("preflight hop = %+v", ph)
+	}
+	if got := ph.Req.Headers["access-control-request-method"]; got != "PUT" {
+		t.Errorf("preflight hop Req.Headers[access-control-request-method] = %q", got)
+	}
+	if got := ph.Resp.Headers["access-control-allow-methods"]; got != "GET, PUT" {
+		t.Errorf("preflight hop Resp.Headers[access-control-allow-methods] = %q", got)
+	}
+
 	// Normal cross-origin request: forwarded, CORS headers still present.
 	req, _ = http.NewRequest(http.MethodGet, "http://"+gw+"/widgets/1", nil)
 	req.Header.Set("Origin", "http://localhost:3000")

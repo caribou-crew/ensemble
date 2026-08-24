@@ -132,4 +132,30 @@ describe('HopTable time and size columns', () => {
     expect(markup.match(/hop-table__caller--declared/g)?.length).toBe(1);
     expect(markup.match(/hop-table__caller--inferred/g)?.length).toBe(1);
   });
+
+  it('badges a CORS preflight hop distinctly from real proxied traffic', () => {
+    const preflight: Hop = {
+      schema: 'ensemble/1',
+      seq: 1,
+      to: 'public',
+      method: 'OPTIONS',
+      path: '/widgets/1',
+      status: 204,
+      preflight: true,
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    };
+    const real: Hop = {
+      schema: 'ensemble/1',
+      seq: 2,
+      to: 'public',
+      method: 'GET',
+      path: '/widgets/1',
+      status: 200,
+      t: { start: '2026-01-01T00:00:01.000Z' },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, { hops: [preflight, real], selectedSeq: null, onSelectHop: () => {} }),
+    );
+    expect(markup.match(/ds-badge--blue/g)?.length).toBe(1);
+  });
 });

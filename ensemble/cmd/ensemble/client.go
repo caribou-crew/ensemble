@@ -14,6 +14,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/ensemble/config"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 )
 
@@ -142,6 +143,17 @@ func (c *Client) ProfileUp(ctx context.Context, name string) (orchestrator.Profi
 func (c *Client) ProfileDown(ctx context.Context, name string) (orchestrator.ProfilesState, error) {
 	var out orchestrator.ProfilesState
 	err := c.do(ctx, http.MethodPost, "/api/profiles/"+url.PathEscape(name)+"/down", nil, &out)
+	return out, err
+}
+
+// --- reconcile ---
+
+// Reconcile posts cfg to POST /api/reconcile: `ensemble up`, run a second
+// time against an already-running stack, uses this instead of the old
+// "already running; nothing to do" no-op — see orchestrator.Reconcile.
+func (c *Client) Reconcile(ctx context.Context, cfg config.Config) (orchestrator.ReconcileResult, error) {
+	var out orchestrator.ReconcileResult
+	err := c.do(ctx, http.MethodPost, "/api/reconcile", cfg, &out)
 	return out, err
 }
 
