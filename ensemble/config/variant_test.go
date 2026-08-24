@@ -59,6 +59,33 @@ func TestResolveService(t *testing.T) {
 	}
 }
 
+func TestResolveServiceType(t *testing.T) {
+	c := &Config{Services: map[string]Service{
+		"svc": {
+			Port: 8080, Type: "real",
+			Default: "a",
+			Variants: map[string]Variant{
+				"a": {Run: "./a"},               // no own Type: inherits service-level "real"
+				"b": {Run: "./b", Type: "stub"}, // own Type: overrides to "stub"
+			},
+		},
+	}}
+	a, err := c.ResolveService("svc", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Type != "real" {
+		t.Errorf("inherited Type = %q, want %q", a.Type, "real")
+	}
+	b, err := c.ResolveService("svc", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Type != "stub" {
+		t.Errorf("overridden Type = %q, want %q", b.Type, "stub")
+	}
+}
+
 func TestDefaultVariantSingleNeedsNoDefault(t *testing.T) {
 	c := variantBase()
 	svc := c.Services["monolith"]

@@ -48,6 +48,10 @@ type ServiceState struct {
 	ProxyPort int       `json:"proxyPort,omitempty"`
 	Port      int       `json:"port,omitempty"`
 	Variant   string    `json:"variant,omitempty"` // current config.Service variant, if it declares any
+	// Type mirrors config.Service.Type (resolved through the current
+	// variant, if any) — a free-form dashboard badge, empty meaning
+	// "service".
+	Type      string    `json:"type,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	LastErr   string    `json:"lastErr,omitempty"`
 	// RSSKB is resident memory in KB, sampled best-effort at read time (see
@@ -447,7 +451,7 @@ func (o *Orchestrator) SetVariant(ctx context.Context, name, variant string) err
 		o.mu.Lock()
 		o.variants[name] = variant
 		o.mu.Unlock()
-		o.setState(name, func(s *ServiceState) { s.Variant = variant })
+		o.setState(name, func(s *ServiceState) { s.Variant = variant; s.Type = resolved.Type })
 		return nil
 	}
 	if _, _, err := o.stopCurrent(name); err != nil {
@@ -881,6 +885,7 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		s.Placement = placement
 		s.ProxyPort = svc.Proxy
 		s.Variant = variant
+		s.Type = svc.Type
 		s.PID = 0 // stale from a previous placement until the native branch below sets it
 	})
 

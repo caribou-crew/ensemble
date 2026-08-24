@@ -57,6 +57,9 @@ export interface ServiceState {
   variant?: string;
   /** Sampled RSS in KB. Only populated when status was fetched with `?mem=1`. */
   rssKB?: number;
+  /** Free-form label from config.Service/Variant `type:`, e.g. "stub", "mock". Empty means
+   * "service" (a real, unlabeled backing). */
+  type?: string;
 }
 
 export interface TopologyNode {

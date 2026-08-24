@@ -161,6 +161,64 @@ func TestSetVariantWhileStoppedOnlyRecords(t *testing.T) {
 	waitMarker(t, dir, "real")
 }
 
+func TestServiceStateType(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Dir: dir,
+		Services: map[string]config.Service{
+			"plain": {Run: "sleep 30", Type: "real"},
+			"mono": {
+				Type:    "real",
+				Default: "a",
+				Variants: map[string]config.Variant{
+					"a": {Run: "sleep 30"},               // no own Type: inherits "real"
+					"b": {Run: "sleep 30", Type: "stub"}, // own Type: overrides to "stub"
+				},
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	if st, _ := o.Service("plain"); st.Type != "real" {
+		t.Errorf("plain.Type = %q, want %q", st.Type, "real")
+	}
+	if st, _ := o.Service("mono"); st.Type != "real" {
+		t.Errorf("mono (variant a).Type = %q, want inherited %q", st.Type, "real")
+	}
+
+	if err := o.SetVariant(context.Background(), "mono", "b"); err != nil {
+		t.Fatalf("SetVariant b: %v", err)
+	}
+	if st, _ := o.Service("mono"); st.Type != "stub" {
+		t.Errorf("mono (variant b).Type = %q, want overridden %q", st.Type, "stub")
+	}
+}
+
+func TestServiceStateTypeSetWhileStopped(t *testing.T) {
+	cfg := &config.Config{
+		Services: map[string]config.Service{
+			"mono": {
+				Default: "a",
+				Variants: map[string]config.Variant{
+					"a": {Run: "sleep 30"},
+					"b": {Run: "sleep 30", Type: "stub"},
+				},
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	if err := o.SetVariant(context.Background(), "mono", "b"); err != nil {
+		t.Fatalf("SetVariant before Up: %v", err)
+	}
+	if st, _ := o.Service("mono"); st.Type != "stub" {
+		t.Errorf("Type after SetVariant while stopped = %q, want %q", st.Type, "stub")
+	}
+}
+
 func TestOptsVariantsOverrideDefault(t *testing.T) {
 	cfg, dir := variantConfig(t)
 	o := newTestOrchestrator(t, cfg, Opts{Variants: map[string]string{"mono": "real"}})

@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import type { ServiceState, Topology } from '../api/types';
+import type { ServiceState, Topology, TopologyNode } from '../api/types';
 import InlineError from '../components/InlineError';
 import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
@@ -27,6 +27,12 @@ function statusTone(status: string): 'green' | 'red' | 'amber' | 'neutral' {
     default:
       return 'amber';
   }
+}
+
+/** "service" (the default, unlabeled) is deliberately unremarkable; anything the user
+    actually configured (`type: stub`, `type: mock`, ...) gets called out. */
+function typeTone(type: string | undefined): 'amber' | 'neutral' {
+  return type ? 'amber' : 'neutral';
 }
 
 function formatRSS(kb: number | undefined): string {
@@ -51,7 +57,7 @@ function formatUptime(startedAt: string | undefined): string {
   return `${d}d ${h % 24}h`;
 }
 
-type SortKey = 'name' | 'status' | 'placement' | 'variant' | 'port' | 'proxyPort' | 'rss' | 'uptime';
+type SortKey = 'name' | 'status' | 'placement' | 'type' | 'variant' | 'port' | 'proxyPort' | 'rss' | 'uptime';
 type SortDir = 'asc' | 'desc';
 interface SortState {
   key: SortKey;
@@ -62,6 +68,7 @@ const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: 'name', label: 'name' },
   { key: 'status', label: 'status' },
   { key: 'placement', label: 'placement' },
+  { key: 'type', label: 'type' },
   { key: 'variant', label: 'variant' },
   { key: 'port', label: 'port', numeric: true },
   { key: 'proxyPort', label: 'proxy', numeric: true },
@@ -80,6 +87,8 @@ function sortValue(s: ServiceState, key: SortKey): string | number {
       return s.status;
     case 'placement':
       return s.placement;
+    case 'type':
+      return s.type || 'service';
     case 'variant':
       return s.variant ?? '';
     case 'port':
@@ -201,6 +210,9 @@ function ServiceRow({
       <td>
         <Badge tone="neutral">{state.placement}</Badge>
       </td>
+      <td>
+        <Badge tone={typeTone(state.type)}>{state.type || 'service'}</Badge>
+      </td>
       <td className="services-table__variant">
         {variants.length > 0 ? (
           <select
@@ -242,6 +254,34 @@ function ServiceRow({
         </button>
         {rowError && <InlineError message={rowError} className="services-table__row-error" />}
       </td>
+    </tr>
+  );
+}
+
+/** A cfg.Stubs entry, rendered from Topology's existing "stub" category — stubs never get a
+    ServiceState (they aren't orchestrator-supervised lifecycle nodes the way services are),
+    so this row has no placement/variant/port/rss/uptime/actions, just a name and status. */
+function StubRow({ node }: { node: TopologyNode }) {
+  return (
+    <tr className="services-table__row">
+      <td className="services-table__name">{node.name}</td>
+      <td>
+        <Badge tone={statusTone(node.status)}>{node.status}</Badge>
+      </td>
+      <td>
+        <span className="services-table__dash">—</span>
+      </td>
+      <td>
+        <Badge tone="amber">stub</Badge>
+      </td>
+      <td className="services-table__variant">
+        <span className="services-table__dash">—</span>
+      </td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__actions" />
     </tr>
   );
 }
@@ -297,6 +337,9 @@ export default function ServicesView() {
     (topology?.nodes ?? []).map((n) => [n.name, n.variants ?? []]),
   );
   const sorted = sortServices(services, sort);
+  const stubNodes = (topology?.nodes ?? [])
+    .filter((n) => n.category === 'stub')
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="services-view">
@@ -321,9 +364,9 @@ export default function ServicesView() {
           </tr>
         </thead>
         <tbody>
-          {sorted.length === 0 && (
+          {sorted.length === 0 && stubNodes.length === 0 && (
             <tr>
-              <td colSpan={9} className="services-table__empty">
+              <td colSpan={10} className="services-table__empty">
                 no services configured
               </td>
             </tr>
@@ -335,6 +378,9 @@ export default function ServicesView() {
               variants={variantsByName.get(s.name) ?? []}
               onAction={(action, extra) => handleAction(s.name, action, extra)}
             />
+          ))}
+          {stubNodes.map((n) => (
+            <StubRow key={n.name} node={n} />
           ))}
         </tbody>
       </table>
