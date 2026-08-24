@@ -307,6 +307,14 @@ type GatewayRoute struct {
 	Service     string `yaml:"service"`
 	StripPrefix bool   `yaml:"strip_prefix"`
 	Rewrite     string `yaml:"rewrite"`
+	// CORSPassthrough, when true, exempts requests matching this route from
+	// the gateway's own cors: block entirely — no header injection, no
+	// preflight short-circuit, OPTIONS forwarded upstream like any other
+	// method. For a route whose backend already emits its own CORS headers
+	// (e.g. a framework with CORS middleware built in), sitting behind the
+	// same gateway as a route whose backend has none and still needs the
+	// gateway's cors:. Inert (no error) on a gateway with no cors: block.
+	CORSPassthrough bool `yaml:"cors_passthrough"`
 }
 
 // CORSConfig is a gateway's cross-origin resource sharing configuration —

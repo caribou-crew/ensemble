@@ -162,3 +162,110 @@ func TestGatewayCORSPreflightAndHeaders(t *testing.T) {
 		t.Errorf("disallowed origin must still forward to upstream, got %d calls", upstreamCalls)
 	}
 }
+
+// A mixed-backend gateway: one route's backend (e.g. acme-svc) already
+// emits its own CORS headers and must be left alone; another route's
+// backend (e.g. widget) has none and still needs the gateway's cors:
+// block. CORSPassthrough on the first route's Route is how that's told
+// apart — see docs/superpowers/specs (gateway-cors-passthrough proposal).
+func TestGatewayCORSPassthroughRoute(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 64})
+	p := New(rec)
+	defer p.Close()
+
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		if r.URL.Path == "/passthrough/widgets" {
+			w.Header().Set("Access-Control-Allow-Origin", "http://custom.example")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	gw, err := p.Serve(Target{
+		Name:   "public",
+		Listen: "127.0.0.1:0",
+		Routes: []Route{
+			{Prefix: "/passthrough", Upstream: upstream.URL, CORSPassthrough: true},
+			{Prefix: "/", Upstream: upstream.URL},
+		},
+		CORS: &CORSPolicy{
+			AllowOrigins: []string{"http://localhost:3000"},
+			AllowMethods: []string{"GET", "PUT"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Passthrough route: preflight is forwarded upstream, not short-circuited
+	// by the gateway, and the gateway adds no headers of its own.
+	req, _ := http.NewRequest(http.MethodOptions, "http://"+gw+"/passthrough/widgets", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if upstreamCalls != 1 {
+		t.Errorf("passthrough preflight must reach upstream, got %d calls", upstreamCalls)
+	}
+	if got := resp.Header.Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "http://custom.example" {
+		t.Errorf("passthrough preflight Access-Control-Allow-Origin = %v, want exactly [http://custom.example]", got)
+	}
+
+	// Passthrough route: a normal request also carries only the upstream's
+	// own header — never doubled with the gateway's.
+	req, _ = http.NewRequest(http.MethodGet, "http://"+gw+"/passthrough/widgets", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if got := resp.Header.Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "http://custom.example" {
+		t.Errorf("passthrough GET Access-Control-Allow-Origin = %v, want exactly [http://custom.example]", got)
+	}
+
+	// A different route on the same gateway, without CORSPassthrough, is
+	// unaffected: the gateway still short-circuits its preflight and adds
+	// its own headers.
+	callsBefore := upstreamCalls
+	req, _ = http.NewRequest(http.MethodOptions, "http://"+gw+"/other", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("non-passthrough preflight status = %d, want 204", resp.StatusCode)
+	}
+	if upstreamCalls != callsBefore {
+		t.Errorf("non-passthrough preflight must not reach upstream, got %d extra calls", upstreamCalls-callsBefore)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Errorf("non-passthrough Access-Control-Allow-Origin = %q, want gateway's own", got)
+	}
+
+	hops := rec.Snapshot()
+	if len(hops) != 3 {
+		t.Fatalf("expected 3 recorded hops, got %d", len(hops))
+	}
+	if hops[0].Preflight {
+		t.Error("passthrough route's OPTIONS must record as a normal hop, not a synthetic preflight")
+	}
+	if !hops[2].Preflight {
+		t.Error("non-passthrough route's OPTIONS must still record as a synthetic preflight hop")
+	}
+}

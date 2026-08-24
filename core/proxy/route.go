@@ -32,6 +32,16 @@ type Route struct {
 	Upstream    string
 	StripPrefix bool
 	Rewrite     string
+	// CORSPassthrough, when true, makes handler skip the gateway's own CORS
+	// header injection and preflight short-circuit for a request matching
+	// this route: OPTIONS forwards upstream like any other method, and
+	// whatever the backend returns (its own CORS headers, or none) passes
+	// through unmodified. For a backend that already owns its CORS (e.g. a
+	// framework with CORS middleware built in) sitting behind the same
+	// gateway as one that doesn't — the common "mixed backends" case a
+	// single Target.CORS policy can't express. Inert (no-op, no error) on a
+	// route whose gateway has no CORS policy at all.
+	CORSPassthrough bool
 }
 
 // normalizePrefix drops a trailing slash from every prefix but "/".
@@ -56,13 +66,14 @@ func matchPrefix(prefix, path string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
-// resolve picks the upstream for a request path. Prefix routes are tried
-// first, by longest matching prefix (today's behavior, unchanged). Only
-// when no prefix route matches are Regex routes tried, in declaration
-// order, first match wins. ok is false when no route matches. Only
-// meaningful for a Target with Routes; see handler for the single-upstream
-// case.
-func (t Target) resolve(path string) (upstream, forward string, ok bool) {
+// matchRoute finds the Route that would handle path, using the same
+// prefix-then-regex precedence resolve applies: prefix routes first, by
+// longest matching prefix; only when none match are regex routes tried, in
+// declaration order, first match wins. Factored out of resolve so a caller
+// that needs the route itself — not just its resolved upstream/forward,
+// like handler's CORSPassthrough check — doesn't duplicate the matching
+// logic.
+func (t Target) matchRoute(path string) (Route, bool) {
 	best := -1
 	bestLen := -1
 	for i, r := range t.Routes {
@@ -75,16 +86,35 @@ func (t Target) resolve(path string) (upstream, forward string, ok bool) {
 		}
 	}
 	if best >= 0 {
-		r := t.Routes[best]
+		return t.Routes[best], true
+	}
+	for _, r := range t.Routes {
+		if r.Regex != nil && r.Regex.MatchString(path) {
+			return r, true
+		}
+	}
+	return Route{}, false
+}
+
+// resolve picks the upstream for a request path. ok is false when no route
+// matches. Only meaningful for a Target with Routes; see handler for the
+// single-upstream case.
+func (t Target) resolve(path string) (upstream, forward string, ok bool) {
+	r, ok := t.matchRoute(path)
+	if !ok {
+		return "", "", false
+	}
+	if r.Prefix != "" {
+		p := normalizePrefix(r.Prefix)
 		switch {
 		case r.Rewrite != "":
-			remainder := strings.TrimPrefix(path, normalizePrefix(r.Prefix))
+			remainder := strings.TrimPrefix(path, p)
 			if remainder != "" && !strings.HasPrefix(remainder, "/") {
 				remainder = "/" + remainder
 			}
 			forward = r.Rewrite + remainder
 		case r.StripPrefix:
-			forward = strings.TrimPrefix(path, normalizePrefix(r.Prefix))
+			forward = strings.TrimPrefix(path, p)
 			if !strings.HasPrefix(forward, "/") {
 				forward = "/" + forward
 			}
@@ -93,14 +123,10 @@ func (t Target) resolve(path string) (upstream, forward string, ok bool) {
 		}
 		return r.Upstream, forward, true
 	}
-	for _, r := range t.Routes {
-		if r.Regex != nil && r.Regex.MatchString(path) {
-			forward := path
-			if r.Rewrite != "" {
-				forward = r.Regex.ReplaceAllString(path, r.Rewrite)
-			}
-			return r.Upstream, forward, true
-		}
+	// Regex route.
+	forward = path
+	if r.Rewrite != "" {
+		forward = r.Regex.ReplaceAllString(path, r.Rewrite)
 	}
-	return "", "", false
+	return r.Upstream, forward, true
 }

@@ -1044,10 +1044,11 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway) error {
 			return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
 		}
 		route := proxy.Route{
-			Prefix:      r.Prefix,
-			Upstream:    fmt.Sprintf("http://127.0.0.1:%d", port),
-			StripPrefix: r.StripPrefix,
-			Rewrite:     r.Rewrite,
+			Prefix:          r.Prefix,
+			Upstream:        fmt.Sprintf("http://127.0.0.1:%d", port),
+			StripPrefix:     r.StripPrefix,
+			Rewrite:         r.Rewrite,
+			CORSPassthrough: r.CORSPassthrough,
 		}
 		if r.Regex != "" {
 			// Validate already confirmed this compiles; guard anyway

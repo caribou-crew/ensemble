@@ -270,6 +270,72 @@ func TestUpWiresGatewayCORS(t *testing.T) {
 	}
 }
 
+// TestUpWiresGatewayCORSPassthrough: a mixed-backend gateway — one route's
+// backend already emits its own CORS headers and must be left alone
+// (cors_passthrough: true), another route's backend has none and still
+// needs the gateway's cors: block. Driven end to end through Up.
+func TestUpWiresGatewayCORSPassthrough(t *testing.T) {
+	ownCORS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://custom.example")
+		fmt.Fprint(w, "own-cors")
+	}))
+	defer ownCORS.Close()
+	noCORS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "no-cors")
+	}))
+	defer noCORS.Close()
+
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"panel":  {Run: "sleep 30", Port: portOf(t, ownCORS)},
+			"widget": {Run: "sleep 30", Port: portOf(t, noCORS)},
+		},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Routes: []config.GatewayRoute{
+				{Prefix: "/panel", Service: "panel", CORSPassthrough: true},
+				{Prefix: "/", Service: "widget"},
+			}, CORS: &config.CORSConfig{
+				AllowOrigins: []string{"http://localhost:3000"},
+				AllowMethods: []string{"GET", "PUT"},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/panel/x", gwPort), nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if got := resp.Header.Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "http://custom.example" {
+		t.Errorf("passthrough route Access-Control-Allow-Origin = %v, want exactly the backend's own", got)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/widget", gwPort), nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Errorf("non-passthrough route Access-Control-Allow-Origin = %q, want the gateway's own", got)
+	}
+}
+
 func TestUpGatewayBindFailureNamesGateway(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

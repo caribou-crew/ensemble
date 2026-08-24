@@ -261,6 +261,32 @@ matching no route gets a `404` and is still recorded as a hop so the
 mis-route is visible in `ensemble traffic`. `strip_prefix: true` drops the
 matched prefix before forwarding (`/cart/items?limit=5` → `/items?limit=5`).
 
+A `cors:` block makes the gateway add cross-origin response headers and
+answer preflight `OPTIONS` requests directly, instead of every backend
+needing its own CORS support:
+
+```yaml
+gateways:
+  public:
+    port: 9000
+    cors:
+      allow_origins: ["http://localhost:3000"]
+      allow_methods: ["GET", "POST", "PUT", "DELETE"]
+      allow_credentials: false     # a wildcard allow_origins forbids true
+    routes:
+      - { prefix: /products, service: catalog }
+      - { prefix: /cui,      service: cui,     cors_passthrough: true }
+```
+
+`cors:` applies to every route on the gateway except one with
+`cors_passthrough: true` — for a backend that already emits its own CORS
+headers (a framework with CORS middleware built in, say), so the gateway's
+own headers don't get added on top and double up (which browsers reject
+outright). A passthrough route forwards `OPTIONS` upstream like any other
+method rather than answering it directly; `cors_passthrough` on a gateway
+with no `cors:` block is accepted but has nothing to pass through, so it's
+a no-op.
+
 A gateway is a node like any other: it shows in the topology (as an entry),
 `latency set --target public --path /products` delays at the edge, and it
 can be the `entry` of a retrace recording session. Gateway names share the

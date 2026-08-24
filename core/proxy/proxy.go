@@ -214,7 +214,13 @@ func flatHeaders(h http.Header) map[string]string {
 
 func (p *Proxy) handler(t Target) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if t.CORS != nil {
+		corsPassthrough := false
+		if len(t.Routes) > 0 {
+			if route, ok := t.matchRoute(r.URL.Path); ok {
+				corsPassthrough = route.CORSPassthrough
+			}
+		}
+		if t.CORS != nil && !corsPassthrough {
 			if h, ok := t.CORS.headers(r.Header.Get("Origin")); ok {
 				copyHeaders(w.Header(), h)
 				if isPreflight(r) {
