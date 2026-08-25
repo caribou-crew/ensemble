@@ -301,6 +301,41 @@ above (`RETRACE_UPSTREAM_URL`); `proxy.host` and that pattern solve
 different halves of the same class of bug and are not alternatives to
 each other.
 
+**Addendum: `proxy.port` for validators with a fixed origin allowlist.**
+`RETRACE_UPSTREAM_URL` requires the adapter's SDK to support split
+signing/transport addresses, and `proxy.host` only fixes the hostname
+half of an `htu`/`Host` comparison — neither helps a validator that does
+strict `origin + path == htu` matching against a small, fixed allowlist
+of origins it will not extend to cover an arbitrary ephemeral port
+(§5's whole reason for existing). `proxy.port` / `--proxy-port`
+configures the fixed TCP port the client-edge listener binds on AND is
+advertised as, in both standalone and ensemble-attached capture. Zero
+(the default) is unchanged: an OS-chosen ephemeral port, same as
+before this existed.
+
+This is the rejected "proxy takes over the upstream's own port" idea
+from above only in appearance — that idea forwarded a shared, fixed
+port to a shared, varying upstream, breaking §5's per-run isolation.
+Here the fixed port is itself per-run configuration (typically the one
+port a Java/Spring-style validator's allowlist actually contains), set
+per invocation, and nothing about §5's ephemeral-by-default posture
+changes for a caller that leaves it unset.
+
+A configured port already held by another process is a fail-fast bind
+error, naming the port — retrace never silently substitutes a
+different one. Silent substitution is strictly worse here than for
+`proxy.host`: an unexpected hostname 401s loudly and immediately at the
+validator, but an unexpected port a caller didn't ask for could bind
+successfully and record a flow that looks complete while quietly
+failing the very auth check `proxy.port` exists to satisfy.
+Ensemble-attached mode threads the request the same way `proxy.host`
+does: the control-plane session-start API takes an optional `port`,
+`core/proxy.SessionManager.Start` forwards it into the edge listener's
+bind address, and an ensemble predating this field silently ignores it
+— caught client-side (`retrace/cmd/retrace/client.go`'s `StartSession`)
+by comparing the requested port against the port the returned edge
+address actually carries, the same skew guard `proxy.host` uses.
+
 ### 6.2 Replay (CI)
 
 `retrace replay --ref <flow>` serves the blessed recording as mocks from the

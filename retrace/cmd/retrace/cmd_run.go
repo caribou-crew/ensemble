@@ -59,6 +59,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		app       = fs.String("app", "", "app name (default: config app, else the directory name)")
 		upstream  = fs.String("upstream", "", "standalone: base URL clients would call")
 		proxyHost = fs.String("proxy-host", "", "hostname the client-edge listener binds on and is advertised as (default 127.0.0.1; must resolve loopback-only)")
+		proxyPort = fs.Int("proxy-port", 0, "TCP port the client-edge listener binds on and is advertised as (default: an ephemeral port; a port already in use fails fast rather than falling back)")
 		asJSON    = fs.Bool("json", false, "emit the manifest as JSON on stdout")
 		noConfig  = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
 		// Declared here rather than in Task 4 because every line that reads
@@ -124,6 +125,10 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if host == "" {
 		host = cfg.ProxyHost
 	}
+	port := *proxyPort
+	if port == 0 {
+		port = cfg.ProxyPort
+	}
 
 	opts := capture.Options{
 		Cwd:      cwd,
@@ -131,6 +136,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		Flow:     *flow,
 		Upstream: up,
 		Host:     host,
+		Port:     port,
 		Redact:   cfg.Redact,
 		Now:      time.Now,
 	}

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,10 +37,30 @@ type Options struct {
 	// "127.0.0.1" — see defaultHost. Exists for a URL-bound auth validator
 	// that compares hostnames rather than full URLs (design.md §6.1.2); a
 	// non-default value must resolve loopback-only, or core/proxy refuses.
-	Host    string
+	Host string
+	// Port is the fixed TCP port the client-edge listener binds on AND is
+	// advertised as. Zero means the default — an ephemeral port chosen by
+	// the OS, see listenPort. Exists for a URL-bound auth validator that
+	// does strict origin+path matching against a fixed allowlist of
+	// origins (design.md §6.1.2's proxy.port addendum): proxy.host alone
+	// only fixes the hostname half of that match. A configured port
+	// already held by another process fails the run immediately — the OS
+	// bind error already names it, and retrace never silently picks a
+	// different port than the one asked for.
+	Port    int
 	Redact  []string
 	MaxBody int
 	Now     func() time.Time
+}
+
+// listenPort normalizes Options.Port: zero means "the caller did not
+// choose", which resolves to "0" — net.Listen's own ephemeral-port
+// request, the long-standing default. A non-zero value is used literally.
+func listenPort(p int) string {
+	if p == 0 {
+		return "0"
+	}
+	return strconv.Itoa(p)
 }
 
 // defaultHost normalizes Options.Host: empty means "the caller did not
@@ -133,7 +154,7 @@ func StartStandalone(o Options) (*Session, error) {
 	prox := proxy.New(rec)
 	addr, stop, err := prox.ServeStoppable(proxy.Target{
 		Name:          "client-edge",
-		Listen:        defaultHost(o.Host) + ":0",
+		Listen:        defaultHost(o.Host) + ":" + listenPort(o.Port),
 		Upstream:      strings.TrimRight(o.Upstream, "/"),
 		InjectBaggage: map[string]string{trace.BaggageSession: runID},
 	})

@@ -69,7 +69,19 @@ type Config struct {
 	// validator expecting "localhost" 401s against the default. A hostname
 	// here MUST resolve loopback-only; core/proxy.ServeStoppable refuses
 	// otherwise.
-	ProxyHost  string            `yaml:"proxy_host"`
+	ProxyHost string `yaml:"proxy_host"`
+	// ProxyPort is the fixed TCP port the client-edge listener binds on
+	// AND is advertised as, in both standalone and ensemble-attached
+	// capture. Zero means the built-in default: an ephemeral port chosen
+	// by the OS — unchanged behavior. Exists for a URL-bound auth
+	// validator that does strict origin+path matching against a fixed
+	// allowlist of origins (design.md §6.1.2's proxy.port addendum):
+	// proxy_host alone only fixes the hostname half of that match, and
+	// retrace's proxy otherwise always binds an ephemeral port. A
+	// configured port already held by another process fails the run
+	// immediately, naming the port — retrace never silently falls back
+	// to a different one.
+	ProxyPort  int               `yaml:"proxy_port"`
 	WireIgnore []WireIgnoreEntry `yaml:"wire_ignore"`
 	WireRules  []rules.Raw       `yaml:"wire_rules"`
 	// QueryIgnore names query parameters that do not identify a call — a

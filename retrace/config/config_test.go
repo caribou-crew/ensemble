@@ -80,6 +80,30 @@ func TestProxyHostDefaultsEmptyAndParsesWhenSet(t *testing.T) {
 	}
 }
 
+// proxy_port is zero by default (the built-in ephemeral-port default lives
+// in retrace/capture, not here — see design.md §6.1.2's proxy.port
+// addendum), and round-trips when set.
+func TestProxyPortDefaultsZeroAndParsesWhenSet(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	cfg, err := Load(filepath.Join(dir, "retrace.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ProxyPort != 0 {
+		t.Fatalf("ProxyPort = %d, want 0 when unset in retrace.yaml", cfg.ProxyPort)
+	}
+
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\nproxy_port: 4000\n"), 0o644)
+	cfg, err = Load(filepath.Join(dir, "retrace.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ProxyPort != 4000 {
+		t.Fatalf("ProxyPort = %d, want %d", cfg.ProxyPort, 4000)
+	}
+}
+
 func TestAppendWireRuleWritesTheOverlayAndDiscoverMergesItAfterYaml(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)

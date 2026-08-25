@@ -3,8 +3,10 @@ package capture
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -77,6 +79,62 @@ func TestStandaloneCaptureHonorsConfiguredHost(t *testing.T) {
 		t.Fatalf("through proxy at the configured host: %v", err)
 	}
 	resp.Body.Close()
+}
+
+// Options.Port lets a standalone capture's client-edge listener bind on a
+// fixed port instead of an OS-chosen ephemeral one — see design.md
+// §6.1.2's "proxy.port" addendum.
+func TestStandaloneCaptureHonorsConfiguredPort(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	// Reserve a free port, then release it immediately so StartStandalone
+	// can bind that exact number — there is no API to ask the OS for "an
+	// unused port" other than opening and closing a listener on :0.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL, Port: port})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+	want := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if s.ProxyURL != want {
+		t.Fatalf("ProxyURL = %q, want %q (the configured port)", s.ProxyURL, want)
+	}
+	resp, err := http.Get(s.ProxyURL + "/cart")
+	if err != nil {
+		t.Fatalf("through proxy at the configured port: %v", err)
+	}
+	resp.Body.Close()
+}
+
+// A port already held by another process must fail StartStandalone
+// immediately, naming the conflict — retrace must never silently fall back
+// to a different port than the one the caller asked for.
+func TestStandaloneCaptureFailsFastWhenTheConfiguredPortIsTaken(t *testing.T) {
+	holder, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer holder.Close()
+	port := holder.Addr().(*net.TCPAddr).Port
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	_, err = StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL, Port: port})
+	if err == nil {
+		t.Fatal("StartStandalone with an already-bound port succeeded; want a fail-fast bind error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", port)) {
+		t.Fatalf("error = %q, want it to name the conflicting port %d", err, port)
+	}
 }
 
 func TestSessionEnvCarriesTheFullHandshake(t *testing.T) {
