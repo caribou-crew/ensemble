@@ -17,9 +17,21 @@ import (
 // imports package ensemble.
 type EnsembleClient interface {
 	Health(ctx context.Context) error
-	StartSession(ctx context.Context, id, entry string) (edgeAddr string, err error)
+	StartSession(ctx context.Context, req SessionRequest) (edgeAddr string, err error)
 	SessionHops(ctx context.Context, id string) ([]trace.Hop, error)
 	EndSession(ctx context.Context, id string) (EndReport, error)
+}
+
+// SessionRequest is what StartSession registers with ensemble's control
+// plane (POST /api/sessions). A struct rather than positional parameters so
+// the next field (this is already the second addition) doesn't require a
+// signature sweep across every implementation and call site again. Host is
+// optional — empty keeps ensemble's own default (127.0.0.1); see
+// design.md §6.1.2's proxy.host addendum.
+type SessionRequest struct {
+	ID    string
+	Entry string
+	Host  string
 }
 
 // EndReport is DECODED from ensemble's DELETE /api/sessions/{id} response.
@@ -49,7 +61,7 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		return nil, err
 	}
 	startCtx, cancel := context.WithTimeout(context.Background(), controlTimeout)
-	edge, err := c.StartSession(startCtx, runID, entry)
+	edge, err := c.StartSession(startCtx, SessionRequest{ID: runID, Entry: entry, Host: o.Host})
 	cancel()
 	if err != nil {
 		_ = os.RemoveAll(p.RunDir)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -753,6 +754,12 @@ func (s *server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID    string `json:"id"`
 		Entry string `json:"entry"`
+		// Host is optional (design.md §6.1.2's proxy.host addendum): the
+		// hostname the session's client-edge listener binds on AND is
+		// advertised as. Empty keeps the built-in default, "127.0.0.1" — an
+		// older retrace that has never heard of this field simply omits it
+		// from the JSON body and gets the unchanged default.
+		Host string `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -780,9 +787,19 @@ func (s *server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		entryPort = svc.Proxy
 	}
 	upstream := fmt.Sprintf("http://127.0.0.1:%d", entryPort)
-	ses, err := s.Sessions.Start(req.ID, req.Entry, upstream)
+	ses, err := s.Sessions.Start(req.ID, req.Entry, upstream, req.Host)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err.Error())
+		// ErrSessionActive is the one Start failure that is the CALLER
+		// retrying/colliding, not a bad request — 409 Conflict, as before
+		// this field existed. Everything else Start can fail on now
+		// includes req.Host resolving off-loopback (core/proxy.ServeStoppable
+		// refuses that; see design.md §6.1.2), which is a bad request, not a
+		// conflict — 400, same as the entry/proxy-port checks above.
+		status := http.StatusBadRequest
+		if errors.Is(err, proxy.ErrSessionActive) {
+			status = http.StatusConflict
+		}
+		writeErr(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": ses.ID, "edgeAddr": ses.EdgeAddr})

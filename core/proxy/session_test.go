@@ -86,11 +86,11 @@ func TestTwoConcurrentSessionsPlusAmbientDoNotCrossContaminate(t *testing.T) {
 	mgr := NewSessionManager(p, rec, []string{"svc-front"})
 	defer mgr.Close()
 
-	sesA, err := mgr.Start("run-A", "svc-front", "http://"+frontProxy)
+	sesA, err := mgr.Start("run-A", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sesB, err := mgr.Start("run-B", "svc-front", "http://"+frontProxy)
+	sesB, err := mgr.Start("run-B", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestPropagationGapDegradesSessionAndNamesService(t *testing.T) {
 
 	mgr := NewSessionManager(p, rec, []string{"svc-front"})
 	defer mgr.Close()
-	ses, err := mgr.Start("run-X", "svc-front", "http://"+frontProxy)
+	ses, err := mgr.Start("run-X", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestUnattributedMidChainTrafficMarksSuspect(t *testing.T) {
 
 	mgr := NewSessionManager(p, rec, []string{"svc-front"}) // leaf is NOT an entry
 	defer mgr.Close()
-	ses, err := mgr.Start("run-Y", "svc-front", "http://"+frontProxy)
+	ses, err := mgr.Start("run-Y", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestControlPlaneAnnotationDoesNotDegradeSession(t *testing.T) {
 
 	mgr := NewSessionManager(p, rec, []string{"svc-front"})
 	defer mgr.Close()
-	ses, err := mgr.Start("run-ctl", "svc-front", "http://"+frontProxy)
+	ses, err := mgr.Start("run-ctl", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestEndStopsEdgeAndFinalizesSession(t *testing.T) {
 
 	mgr := NewSessionManager(p, rec, []string{"svc-front"})
 	defer mgr.Close()
-	ses, err := mgr.Start("run-Z", "svc-front", "http://"+frontProxy)
+	ses, err := mgr.Start("run-Z", "svc-front", "http://"+frontProxy, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestSlowSubscriberDropDegradesSessionVerdict(t *testing.T) {
 
 	mgr := NewSessionManager(p, rec, nil)
 	defer mgr.Close()
-	ses, err := mgr.Start("run-drop", "svc", "http://127.0.0.1:1") // never dialed
+	ses, err := mgr.Start("run-drop", "svc", "http://127.0.0.1:1", "") // never dialed
 	if err != nil {
 		t.Fatal(err)
 	}

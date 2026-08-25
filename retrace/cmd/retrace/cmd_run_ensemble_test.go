@@ -255,7 +255,7 @@ func TestClientTranslatesTheServersErrorConvention(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).StartSession(context.Background(), "run-1", "bff")
+	_, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff"})
 	if err == nil {
 		t.Fatal("StartSession against a 404 returned no error")
 	}
@@ -276,9 +276,49 @@ func TestStartSessionRejectsAResponseWithNoEdgeAddr(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).StartSession(context.Background(), "run-1", "bff")
+	_, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff"})
 	if err == nil {
 		t.Fatal("StartSession accepted a response with no edgeAddr")
+	}
+}
+
+// An ensemble predating proxy.host support silently ignores an unknown
+// "host" field in the request body and answers on its own default
+// (127.0.0.1) — a version-skew shape, not a wire error, so it needs its own
+// check rather than falling out of the no-edgeAddr case above. Left
+// unchecked, this surfaces downstream only as an unexplained 401 from
+// whatever URL-bound auth validator proxy.host was set for (design.md
+// §6.1.2); StartSession is the one place that has both the request and the
+// answer, so it is the one place that can name the real cause.
+func TestStartSessionDiagnosesAnEnsembleThatIgnoresProxyHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:54321"})
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff", Host: "localhost"})
+	if err == nil {
+		t.Fatal("StartSession with a mismatched edge host returned no error")
+	}
+	if !strings.Contains(err.Error(), "does not support proxy.host") {
+		t.Errorf("error = %q, want it to diagnose the version skew", err)
+	}
+}
+
+// The matching positive case: when ensemble's edge answers with the same
+// host that was requested, StartSession must not treat that as a mismatch.
+func TestStartSessionAcceptsAMatchingProxyHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "localhost:54321"})
+	}))
+	defer srv.Close()
+
+	addr, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff", Host: "localhost"})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if addr != "localhost:54321" {
+		t.Errorf("edgeAddr = %q, want %q", addr, "localhost:54321")
 	}
 }
 

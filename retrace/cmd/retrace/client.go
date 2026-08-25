@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -143,19 +144,36 @@ func (c *Client) Health(ctx context.Context) error {
 // StartSession registers a retrace run with ensemble and returns the
 // host:port of the session's client edge. The server answers 409 when the
 // id is already active, 404 for an unknown entry service, and 400 when the
-// entry has no proxy port; all three arrive here as an error carrying the
-// server's own message.
-func (c *Client) StartSession(ctx context.Context, id, entry string) (string, error) {
+// entry has no proxy port (or, with Host set, when it resolves off
+// loopback); all three arrive here as an error carrying the server's own
+// message.
+//
+// When req.Host is set, the returned edge's host is checked against it: an
+// ensemble predating proxy.host support silently ignores an unknown "host"
+// field and answers on its own default (127.0.0.1) instead, which would
+// otherwise surface downstream as an unexplained 401 from whatever
+// URL-bound auth validator req.Host exists for (design.md §6.1.2) rather
+// than as a clear "upgrade ensemble" diagnosis here, at the one place that
+// actually knows both the request and the answer.
+func (c *Client) StartSession(ctx context.Context, req capture.SessionRequest) (string, error) {
 	var out struct {
 		ID       string `json:"id"`
 		EdgeAddr string `json:"edgeAddr"`
 	}
-	body := map[string]string{"id": id, "entry": entry}
+	body := map[string]string{"id": req.ID, "entry": req.Entry}
+	if req.Host != "" {
+		body["host"] = req.Host
+	}
 	if err := c.do(ctx, http.MethodPost, "/api/sessions", body, &out); err != nil {
 		return "", err
 	}
 	if out.EdgeAddr == "" {
-		return "", fmt.Errorf("POST /api/sessions: ensemble returned no edgeAddr for session %q", id)
+		return "", fmt.Errorf("POST /api/sessions: ensemble returned no edgeAddr for session %q", req.ID)
+	}
+	if req.Host != "" {
+		if gotHost, _, err := net.SplitHostPort(out.EdgeAddr); err != nil || gotHost != req.Host {
+			return "", fmt.Errorf("POST /api/sessions: requested proxy.host %q but ensemble's edge answered as %q — ensemble at %s does not support proxy.host (upgrade it, or unset proxy.host to use its default)", req.Host, out.EdgeAddr, c.BaseURL)
+		}
 	}
 	return out.EdgeAddr, nil
 }

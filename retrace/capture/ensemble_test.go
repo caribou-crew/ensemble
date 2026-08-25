@@ -79,7 +79,7 @@ func (f *fakeEnsemble) push(h trace.Hop) {
 
 func (f *fakeEnsemble) Health(context.Context) error { return nil }
 
-func (f *fakeEnsemble) StartSession(_ context.Context, id, entry string) (string, error) {
+func (f *fakeEnsemble) StartSession(_ context.Context, req SessionRequest) (string, error) {
 	return "127.0.0.1:0", nil
 }
 
@@ -393,7 +393,7 @@ func TestAttachedWritesArePushedThroughRetracesOwnRedactor(t *testing.T) {
 // shape the fix-round-1 review measured "still blocked after 5s" against.
 type wedgedEnsemble struct{ fakeEnsemble }
 
-func (w *wedgedEnsemble) StartSession(ctx context.Context, id, entry string) (string, error) {
+func (w *wedgedEnsemble) StartSession(ctx context.Context, req SessionRequest) (string, error) {
 	<-ctx.Done()
 	return "", ctx.Err()
 }

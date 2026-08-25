@@ -1,11 +1,20 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 )
+
+// ErrSessionActive marks an id that is already registered. Wrapped, not
+// returned bare, so a caller identifies it with errors.Is rather than
+// string-matching — ensemble/server's handleSessionStart maps this
+// specifically to 409 Conflict, and every OTHER Start failure (a bad
+// proxy.host, a bind failure) is a different kind of caller mistake and
+// maps to 400 instead.
+var ErrSessionActive = errors.New("session already active")
 
 // Session is one recording run: an ephemeral client-edge listener that
 // stamps every entering request with retrace-run baggage, plus the hops
@@ -200,15 +209,22 @@ func (m *SessionManager) route(h trace.Hop) {
 
 // Start registers a session and opens its client-edge listener: an extra
 // intercept port fronting entryUpstream that stamps retrace-run baggage on
-// everything entering it.
-func (m *SessionManager) Start(id, entryName, entryUpstream string) (*Session, error) {
+// everything entering it. host is the hostname the listener binds on AND
+// is advertised as; empty means the default, "127.0.0.1" — unchanged
+// behavior. A non-default host must resolve loopback-only, enforced by
+// ServeStoppable (see design.md §6.1.2's proxy.host addendum), not
+// re-validated here.
+func (m *SessionManager) Start(id, entryName, entryUpstream, host string) (*Session, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	ses := &Session{
 		ID:      id,
 		verdict: trace.VerdictOK,
 	}
 	addr, stop, err := m.proxy.ServeStoppable(Target{
 		Name:          entryName,
-		Listen:        "127.0.0.1:0",
+		Listen:        host + ":0",
 		Upstream:      entryUpstream,
 		InjectBaggage: map[string]string{trace.BaggageSession: id},
 	})
@@ -222,7 +238,7 @@ func (m *SessionManager) Start(id, entryName, entryUpstream string) (*Session, e
 	defer m.mu.Unlock()
 	if _, exists := m.sessions[id]; exists {
 		stop()
-		return nil, fmt.Errorf("session %q already active", id)
+		return nil, fmt.Errorf("session %q already active: %w", id, ErrSessionActive)
 	}
 	m.sessions[id] = ses
 	return ses, nil
