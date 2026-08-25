@@ -129,18 +129,103 @@ func (p *Proxy) Serve(t Target) (string, error) {
 	return addr, err
 }
 
+// lookupIP resolves a hostname to its addresses. A package-level seam
+// (rather than a Proxy field) so tests can substitute it without threading
+// a resolver through every Target — see hostAddrs' doc comment for why the
+// real resolver alone can't be exercised in a hermetic test.
+var lookupIP = net.LookupIP
+
+// hostAddrs resolves host (already known not to be an IP literal — see
+// ServeStoppable) and returns the loopback listeners a request to that
+// hostname must be able to land on. It refuses a host that resolves to
+// anything else: this proxy injects trace baggage into every request that
+// reaches it, and a capture listener reachable from a LAN interface would
+// let an off-machine caller forge that baggage (the same threat model
+// core/httpguard and design.md §6.1.2 already apply to the client-edge
+// listener; see also ensemble/config/validate.go's "one 127.0.0.1 address
+// space" invariant for intercept ports generally).
+//
+// Both families are bound on the SAME port explicitly (tcp4 127.0.0.1,
+// then best-effort tcp6 ::1) rather than relying on net.Listen("tcp", host)
+// to pick one: Go's resolver and a test's own HTTP client (Node, a browser)
+// do not reliably agree on which address "localhost" means on a given
+// machine, and binding only the address Go happened to pick would leave
+// the listener unreachable at exactly the hostname it was configured to
+// answer on. Deliberately does NOT reuse the caller's Listen string for
+// either bind — both binds use their literal loopback address so there is
+// no resolution step left to disagree on the way there.
+func hostAddrs(host, port string) (ln4, ln6 net.Listener, err error) {
+	ips, err := lookupIP(host)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if !ip.IsLoopback() {
+			return nil, nil, fmt.Errorf("%q resolves to non-loopback address %s — a capture proxy must stay on loopback", host, ip)
+		}
+	}
+	ln4, err = net.Listen("tcp4", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		return nil, nil, err
+	}
+	_, boundPort, _ := net.SplitHostPort(ln4.Addr().String())
+	// Best-effort: a host with no IPv6 loopback (or a same-port v6 clash,
+	// vanishingly unlikely for a freshly bound ephemeral port) still gets a
+	// working listener via ln4 alone.
+	ln6, _ = net.Listen("tcp6", net.JoinHostPort("::1", boundPort))
+	return ln4, ln6, nil
+}
+
 // ServeStoppable is Serve with a per-listener stop, used for ephemeral
 // listeners like session client-edge ports.
+//
+// t.Listen's host may be a literal IP (unchanged behavior: one listener,
+// bound and advertised exactly as given — net.ParseIP recognizes it, so no
+// resolution happens at all) or a hostname such as "localhost". A hostname
+// is resolved and MUST be loopback-only (see hostAddrs); it binds on both
+// loopback families where available, and the returned address is built
+// from the CONFIGURED hostname string, never the listener's resolved
+// address — so it reads back exactly as configured (e.g. "localhost:53221")
+// regardless of which family a given client happens to dial. This exists
+// for URL-bound auth schemes (DPoP/RFC 9449 and similar) whose validation
+// compares hostnames; see design.md §6.1.2. It does not touch port
+// selection — ":0" still picks an ephemeral port — so it does not
+// reintroduce the shared-fixed-port design that was rejected there.
 func (p *Proxy) ServeStoppable(t Target) (string, func(), error) {
-	ln, err := net.Listen("tcp", t.Listen)
+	host, port, err := net.SplitHostPort(t.Listen)
 	if err != nil {
 		return "", nil, fmt.Errorf("proxy %s: %w", t.Name, err)
 	}
+
+	var lns []net.Listener
+	advertise := t.Listen
+	if host != "" && net.ParseIP(host) == nil {
+		ln4, ln6, herr := hostAddrs(host, port)
+		if herr != nil {
+			return "", nil, fmt.Errorf("proxy %s: %w", t.Name, herr)
+		}
+		lns = append(lns, ln4)
+		if ln6 != nil {
+			lns = append(lns, ln6)
+		}
+		_, boundPort, _ := net.SplitHostPort(ln4.Addr().String())
+		advertise = net.JoinHostPort(host, boundPort)
+	} else {
+		ln, lerr := net.Listen("tcp", t.Listen)
+		if lerr != nil {
+			return "", nil, fmt.Errorf("proxy %s: %w", t.Name, lerr)
+		}
+		lns = append(lns, ln)
+		advertise = ln.Addr().String()
+	}
+
 	srv := &http.Server{Handler: p.handler(t)}
 	p.mu.Lock()
 	p.servers = append(p.servers, srv)
 	p.mu.Unlock()
-	go srv.Serve(ln)
+	for _, ln := range lns {
+		go srv.Serve(ln)
+	}
 	stop := func() {
 		srv.Close()
 		p.mu.Lock()
@@ -152,7 +237,7 @@ func (p *Proxy) ServeStoppable(t Target) (string, func(), error) {
 		}
 		p.mu.Unlock()
 	}
-	return ln.Addr().String(), stop, nil
+	return advertise, stop, nil
 }
 
 // Close shuts every listener down.

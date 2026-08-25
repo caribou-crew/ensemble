@@ -269,6 +269,38 @@ proof it doesn't hold the key for. An adapter/app with URL-bound auth
 configures its SDK's request transport at the proxy URL and its
 auth/signing layer at the upstream URL; everything else is unaffected.
 
+**Addendum: `proxy.host` for validators that compare hostnames.** A
+validator that checks `htu`'s (or `Host`'s) *hostname* against its own
+configured name — `localhost`, say — still 401s against a proxy bound
+to `127.0.0.1`: same address, different string. `proxy.host` /
+`--proxy-host` configures the hostname the client-edge is bound on AND
+advertised as, in both standalone and ensemble-attached capture.
+Default `127.0.0.1`, unchanged. Port selection is untouched — `:0`
+still picks an ephemeral port per §5; only the host string is
+configurable, so this is not the rejected port-takeover idea above.
+
+A hostname is resolved once, at bind time, and MUST resolve
+loopback-only — refused otherwise (`core/proxy.ServeStoppable`), the
+same threat model `core/httpguard` already applies to inbound
+requests: a capture proxy that injects trace baggage into every
+request it sees must never be reachable off-machine. It binds
+`127.0.0.1` explicitly, then best-effort `::1` on the same port (skipped
+if unavailable) — not `net.Listen("tcp", host)` — because Go's resolver
+and the app-under-test's own runtime (Node, a browser) do not reliably
+agree on which loopback address a hostname means on a given machine;
+binding only whichever one Go picked would leave the listener
+unreachable at exactly the address it was configured to answer at. The
+advertised URL is built from the configured hostname string, never the
+listener's resolved address, so `RETRACE_PROXY_URL` reads back exactly
+as configured.
+
+This only helps a validator that ignores the port — the client-edge
+port stays ephemeral by design (§5), so a validator checking full
+authority (host **and** port) still needs the split-signing pattern
+above (`RETRACE_UPSTREAM_URL`); `proxy.host` and that pattern solve
+different halves of the same class of bug and are not alternatives to
+each other.
+
 ### 6.2 Replay (CI)
 
 `retrace replay --ref <flow>` serves the blessed recording as mocks from the

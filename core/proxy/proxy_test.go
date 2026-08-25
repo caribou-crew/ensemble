@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 )
@@ -143,6 +145,124 @@ func TestThreeHopChainThroughOneProcess(t *testing.T) {
 	}
 	if a.T.Start.IsZero() {
 		t.Fatal("start time missing")
+	}
+}
+
+// v6LoopbackAvailable probes for a working ::1, so the assertion below can
+// tell "the platform genuinely has no IPv6 loopback" (skip, best-effort)
+// apart from "the dual-bind is broken" (fail).
+func v6LoopbackAvailable(t *testing.T) bool {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
+// A hostname Listen (design.md §6.1.2): the advertised address must read
+// back literally as configured, and both loopback families that the
+// platform actually supports must answer on it — this is the DPoP fix's
+// whole point, so both properties are pinned directly rather than trusting
+// one to imply the other.
+func TestServeStoppableBindsHostnameOnBothLoopbackFamilies(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	addr, stop, err := p.ServeStoppable(Target{Name: "svc", Listen: "localhost:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("ServeStoppable: %v", err)
+	}
+	defer stop()
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != "localhost" {
+		t.Fatalf("advertised addr = %q, want host %q literally, got host %q (err=%v)", addr, "localhost", host, err)
+	}
+
+	get := func(dialAddr string) (string, error) {
+		conn, err := net.DialTimeout("tcp", dialAddr, 2*time.Second)
+		if err != nil {
+			return "", err
+		}
+		conn.Close()
+		resp, err := http.Get("http://" + dialAddr + "/x")
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b), nil
+	}
+
+	if body, err := get(net.JoinHostPort("127.0.0.1", port)); err != nil || body != "ok" {
+		t.Fatalf("dial 127.0.0.1:%s = %q, %v; want the listener reachable there", port, body, err)
+	}
+	if v6LoopbackAvailable(t) {
+		if body, err := get(net.JoinHostPort("::1", port)); err != nil || body != "ok" {
+			t.Fatalf("dial [::1]:%s = %q, %v; want the same port answering there too", port, body, err)
+		}
+	}
+}
+
+// Without this rejection, a hostname a misconfigured resolver (or DNS
+// rebinding) points off-loopback would silently make the capture proxy —
+// which injects trace baggage into every request that reaches it —
+// reachable from a LAN interface. lookupIP is swapped rather than using a
+// real hostname, so this stays hermetic and independent of the test
+// machine's actual DNS/hosts configuration.
+func TestServeStoppableRejectsAHostnameThatResolvesOffLoopback(t *testing.T) {
+	saved := lookupIP
+	lookupIP = func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { lookupIP = saved }()
+
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	_, _, err := p.ServeStoppable(Target{Name: "svc", Listen: "not-actually-local:0", Upstream: "http://127.0.0.1:1"})
+	if err == nil {
+		t.Fatal("ServeStoppable with a non-loopback-resolving host returned nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "non-loopback") {
+		t.Errorf("error = %v, want it to name the non-loopback reason", err)
+	}
+}
+
+// A literal IP must behave exactly as before hostname support existed: no
+// resolution, one listener, the advertised address IS the listener's own
+// bound address (not reconstructed from a configured host string).
+func TestServeStoppableLiteralIPStillBindsDirectlyNoResolution(t *testing.T) {
+	saved := lookupIP
+	lookupIP = func(host string) ([]net.IP, error) {
+		t.Fatalf("lookupIP called for literal IP %q; a literal must skip resolution entirely", host)
+		return nil, nil
+	}
+	defer func() { lookupIP = saved }()
+
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	addr, stop, err := p.ServeStoppable(Target{Name: "svc", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("ServeStoppable: %v", err)
+	}
+	defer stop()
+	if host, _, _ := net.SplitHostPort(addr); host != "127.0.0.1" {
+		t.Errorf("advertised addr = %q, want host 127.0.0.1", addr)
 	}
 }
 
