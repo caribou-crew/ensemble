@@ -460,7 +460,7 @@ export default function TopologyGraph({
       {showLegend && (
         <div className="topo-legend">
           <div className="topo-legend-group">
-            {CATEGORIES.filter((c) => layout.clusters.some((cl) => cl.id === c.id)).map((c) => (
+            {CATEGORIES.filter((c) => layout.nodes.some((n) => n.category === c.id)).map((c) => (
               <span key={c.id} className="topo-legend-item">
                 <span className="topo-legend-bar" style={{ background: `var(${c.colorVar})` }} />
                 {c.label}

@@ -18,12 +18,20 @@
   min-height: 0;
   overflow: auto;
   padding: 0.75rem;
+  /* Centers the SVG (both axes) when its own content is smaller than the available canvas —
+     a small topology used to pin to the top-left corner with dead space filling the rest,
+     reading as "the topology page only fills half the screen" even though this container was
+     already at full height. Flex's default overflow behavior still lets a graph LARGER than
+     the canvas scroll/pan normally; centering only wins when there's slack to center into. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .topo-svg {
   /* Sized inline from the layout's own extent — see TopologyGraph.tsx for the scale clamp. */
   display: block;
-  margin: 0 auto;
+  flex: none;
 }
 
 .topo-cluster {

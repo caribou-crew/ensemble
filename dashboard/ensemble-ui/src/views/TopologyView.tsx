@@ -11,6 +11,7 @@ import type {
 } from "../api/types";
 import { categoryOf } from "../topology/categories";
 import { layoutClustered } from "../topology/layout";
+import { layoutDepth } from "../topology/depthLayout";
 import { layoutTrace } from "../topology/traceLayout";
 import { usePendingRefresh } from "../usePendingRefresh";
 import { heatTier, type HeatTier } from "../topology/hopTimeline";
@@ -157,6 +158,37 @@ function ProfileStrip({
       {error && (
         <InlineError message={error} className="topo-view__trace-error" />
       )}
+    </div>
+  );
+}
+
+/** 'grouped' is the default — unlisted/blank ?topoLayout is grouped, so existing links and
+    bookmarks keep their current behavior. 'flow' switches to layoutDepth: nodes stack
+    top-down by their own longest call-depth rather than clustering by category. */
+type LayoutMode = "grouped" | "flow";
+
+function LayoutModeToggle({ mode, onChange }: { mode: LayoutMode; onChange: (m: LayoutMode) => void }) {
+  return (
+    <div className="topo-view__layout-toggle" role="group" aria-label="topology layout">
+      <button
+        type="button"
+        className={
+          mode === "grouped" ? "topo-view__layout-btn topo-view__layout-btn--active" : "topo-view__layout-btn"
+        }
+        aria-pressed={mode === "grouped"}
+        onClick={() => onChange("grouped")}
+      >
+        Grouped
+      </button>
+      <button
+        type="button"
+        className={mode === "flow" ? "topo-view__layout-btn topo-view__layout-btn--active" : "topo-view__layout-btn"}
+        aria-pressed={mode === "flow"}
+        onClick={() => onChange("flow")}
+        title="Stack nodes top-down by call depth: entry points at top, leaf/database-only nodes at the bottom."
+      >
+        Call flow
+      </button>
     </div>
   );
 }
@@ -358,6 +390,8 @@ export default function TopologyView() {
   const lanes = useProfiles(refresh);
   const [traceId, setTraceId] = useUrlParam("trace");
   const { hops: traceHops, error: traceError } = useTracePoll(traceId);
+  const [topoLayoutParam, setTopoLayoutParam] = useUrlParam("topoLayout");
+  const layoutMode: LayoutMode = topoLayoutParam === "flow" ? "flow" : "grouped";
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedHop, setSelectedHop] = useState<number | null>(null);
@@ -401,9 +435,10 @@ export default function TopologyView() {
         }),
       };
     }
-    return topology
-      ? layoutClustered(topology, statusMap, expandedBundles)
-      : null;
+    if (!topology) return null;
+    return layoutMode === "flow"
+      ? layoutDepth(topology, statusMap)
+      : layoutClustered(topology, statusMap, expandedBundles);
   }, [
     traceId,
     traceHops,
@@ -411,6 +446,7 @@ export default function TopologyView() {
     statusMap,
     expandedBundles,
     categoryByName,
+    layoutMode,
   ]);
 
   const toggleBundle = useCallback((key: string) => {
@@ -477,6 +513,14 @@ export default function TopologyView() {
           )}
         </div>
       )}
+      {!traceId && (
+        <div className="topo-view__layout-bar">
+          <LayoutModeToggle
+            mode={layoutMode}
+            onChange={(m) => setTopoLayoutParam(m === "grouped" ? null : m)}
+          />
+        </div>
+      )}
       {!traceId && lanes.profiles && (
         <ProfileStrip
           profiles={lanes.profiles}
@@ -489,7 +533,7 @@ export default function TopologyView() {
         <TopologyGraph
           layout={layout}
           showLegend={!traceId}
-          onToggleBundle={traceId ? undefined : toggleBundle}
+          onToggleBundle={traceId || layoutMode === "flow" ? undefined : toggleBundle}
           onSelectNode={traceId ? undefined : setSelectedNodeId}
           nodeHeat={traceId ? undefined : nodeHeat}
           selectedHop={selectedHop}

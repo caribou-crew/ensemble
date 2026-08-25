@@ -65,7 +65,7 @@ function routeUnder(a: Rect, b: Rect) {
     unhealthy — see ensemble/orchestrator/orchestrator.go's Status const), not the old
     stack's binary health field, so this maps that lifecycle onto the render-facing Health
     tiers instead of reading a pre-computed `.health`/`.mode` pair. */
-function healthOf(s: ServiceState | undefined): Health {
+export function healthOf(s: ServiceState | undefined): Health {
   if (!s) return 'unknown';
   if (s.status === 'healthy') return s.placement === 'docker' ? 'up-container' : 'up-native';
   if (s.status === 'starting') return 'starting';
