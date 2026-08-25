@@ -58,6 +58,27 @@ func TestStandaloneCaptureRecordsClientEdgeHopsAndWritesWireJsonl(t *testing.T) 
 	}
 }
 
+// Options.Host lets a standalone capture's client-edge listener bind on
+// (and advertise as) a configured hostname, not just the 127.0.0.1
+// default — see design.md §6.1.2's "proxy.host" addendum.
+func TestStandaloneCaptureHonorsConfiguredHost(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL, Host: "localhost"})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+	if !strings.HasPrefix(s.ProxyURL, "http://localhost:") {
+		t.Fatalf("ProxyURL = %q, want it to advertise the configured host %q", s.ProxyURL, "localhost")
+	}
+	resp, err := http.Get(s.ProxyURL + "/cart")
+	if err != nil {
+		t.Fatalf("through proxy at the configured host: %v", err)
+	}
+	resp.Body.Close()
+}
+
 func TestSessionEnvCarriesTheFullHandshake(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer upstream.Close()

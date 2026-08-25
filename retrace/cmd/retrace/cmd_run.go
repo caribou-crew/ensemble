@@ -55,11 +55,12 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		flow     = fs.String("flow", "", "flow name to record (required)")
-		app      = fs.String("app", "", "app name (default: config app, else the directory name)")
-		upstream = fs.String("upstream", "", "standalone: base URL clients would call")
-		asJSON   = fs.Bool("json", false, "emit the manifest as JSON on stdout")
-		noConfig = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
+		flow      = fs.String("flow", "", "flow name to record (required)")
+		app       = fs.String("app", "", "app name (default: config app, else the directory name)")
+		upstream  = fs.String("upstream", "", "standalone: base URL clients would call")
+		proxyHost = fs.String("proxy-host", "", "hostname the client-edge listener binds on and is advertised as (default 127.0.0.1; must resolve loopback-only)")
+		asJSON    = fs.Bool("json", false, "emit the manifest as JSON on stdout")
+		noConfig  = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
 		// Declared here rather than in Task 4 because every line that reads
 		// them is below: a flag result bound to a local and never read is
 		// `declared and not used`, a compile error.
@@ -119,12 +120,17 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if up == "" {
 		up = cfg.Upstream
 	}
+	host := *proxyHost
+	if host == "" {
+		host = cfg.ProxyHost
+	}
 
 	opts := capture.Options{
 		Cwd:      cwd,
 		App:      appName,
 		Flow:     *flow,
 		Upstream: up,
+		Host:     host,
 		Redact:   cfg.Redact,
 		Now:      time.Now,
 	}

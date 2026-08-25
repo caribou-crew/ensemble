@@ -31,9 +31,28 @@ type Options struct {
 	App      string
 	Flow     string
 	Upstream string
-	Redact   []string
-	MaxBody  int
-	Now      func() time.Time
+	// Host is the hostname the client-edge listener binds on AND is
+	// advertised as (RETRACE_PROXY_URL). Empty means the default,
+	// "127.0.0.1" — see defaultHost. Exists for a URL-bound auth validator
+	// that compares hostnames rather than full URLs (design.md §6.1.2); a
+	// non-default value must resolve loopback-only, or core/proxy refuses.
+	Host    string
+	Redact  []string
+	MaxBody int
+	Now     func() time.Time
+}
+
+// defaultHost normalizes Options.Host: empty means "the caller did not
+// choose", which resolves to the long-standing default rather than to
+// net.Listen's own interpretation of an empty host (all interfaces) — a
+// capture proxy defaulting to every interface would be a silent widening
+// of what "just works" for a tool whose whole threat model assumes
+// loopback-only (core/httpguard; design.md §6.1.2).
+func defaultHost(h string) string {
+	if h == "" {
+		return "127.0.0.1"
+	}
+	return h
 }
 
 type Session struct {
@@ -114,7 +133,7 @@ func StartStandalone(o Options) (*Session, error) {
 	prox := proxy.New(rec)
 	addr, stop, err := prox.ServeStoppable(proxy.Target{
 		Name:          "client-edge",
-		Listen:        "127.0.0.1:0",
+		Listen:        defaultHost(o.Host) + ":0",
 		Upstream:      strings.TrimRight(o.Upstream, "/"),
 		InjectBaggage: map[string]string{trace.BaggageSession: runID},
 	})

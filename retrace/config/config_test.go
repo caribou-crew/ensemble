@@ -57,6 +57,29 @@ masks:
 	}
 }
 
+// proxy_host is empty by default (the built-in "127.0.0.1" default lives in
+// retrace/capture, not here — see design.md §6.1.2), and round-trips when set.
+func TestProxyHostDefaultsEmptyAndParsesWhenSet(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)
+	cfg, err := Load(filepath.Join(dir, "retrace.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ProxyHost != "" {
+		t.Fatalf("ProxyHost = %q, want empty when unset in retrace.yaml", cfg.ProxyHost)
+	}
+
+	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\nproxy_host: localhost\n"), 0o644)
+	cfg, err = Load(filepath.Join(dir, "retrace.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ProxyHost != "localhost" {
+		t.Fatalf("ProxyHost = %q, want %q", cfg.ProxyHost, "localhost")
+	}
+}
+
 func TestAppendWireRuleWritesTheOverlayAndDiscoverMergesItAfterYaml(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "retrace.yaml"), []byte("app: web\n"), 0o644)

@@ -56,10 +56,20 @@ const (
 // Config is the parsed contents of retrace.yaml plus the machine-owned
 // overlay merged in by Discover.
 type Config struct {
-	App        string            `yaml:"app"`
-	Flows      map[string]Flow   `yaml:"flows"`
-	Entry      string            `yaml:"entry"`
-	Upstream   string            `yaml:"upstream"`
+	App      string          `yaml:"app"`
+	Flows    map[string]Flow `yaml:"flows"`
+	Entry    string          `yaml:"entry"`
+	Upstream string          `yaml:"upstream"`
+	// ProxyHost is the hostname the client-edge listener binds on AND is
+	// advertised as (RETRACE_PROXY_URL), in both standalone and
+	// ensemble-attached capture. Empty means the built-in default,
+	// "127.0.0.1" — unchanged behavior. Exists for a URL-bound auth
+	// validator that compares hostnames (design.md §6.1.2): "localhost" and
+	// "127.0.0.1" are different strings for the same address, so a
+	// validator expecting "localhost" 401s against the default. A hostname
+	// here MUST resolve loopback-only; core/proxy.ServeStoppable refuses
+	// otherwise.
+	ProxyHost  string            `yaml:"proxy_host"`
 	WireIgnore []WireIgnoreEntry `yaml:"wire_ignore"`
 	WireRules  []rules.Raw       `yaml:"wire_rules"`
 	// QueryIgnore names query parameters that do not identify a call — a
