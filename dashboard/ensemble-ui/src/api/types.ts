@@ -129,6 +129,15 @@ export interface DatabaseInfo {
   type: string;
 }
 
+// One configured "open in host app" button for an entity's rows — mirrors
+// ensemble/server's entityLink. Template is a plain string with
+// {{column}} placeholders resolved client-side against each row's own
+// fields — see format.ts's resolveLinkTemplate.
+export interface EntityLink {
+  label: string;
+  template: string;
+}
+
 // One entry in GET /api/entities' discovery list. `id` is the CONFIGURED
 // ROW-ID FIELD NAME for this entity (ensemble.yaml's entities.<name>.id,
 // e.g. "id" or "uuid") — not any particular row's id value. A row's own
@@ -136,6 +145,7 @@ export interface DatabaseInfo {
 export interface EntityInfo {
   name: string;
   id: string;
+  links?: EntityLink[];
 }
 
 // Not in the plan's contract block, but required to type POST

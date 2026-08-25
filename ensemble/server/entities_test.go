@@ -77,6 +77,60 @@ func TestEntitiesDiscoveryList(t *testing.T) {
 	}
 }
 
+// TestEntitiesDiscoveryListIncludesLinks: an entity's configured links (label +
+// raw template) ride along in the discovery list so the dashboard can render
+// per-row "open in host app" buttons without a second round-trip — the
+// template itself is resolved client-side against each row's own fields.
+func TestEntitiesDiscoveryListIncludesLinks(t *testing.T) {
+	ts := newEntitiesTestEnv(t, map[string]config.Entity{
+		"gadgets": {
+			Base: "http://127.0.0.1:1", ID: "gadget_id",
+			Links: []config.EntityLink{
+				{Label: "Open in admin-console", Template: "http://localhost:3000/modules?gadgetId={{gadget_id}}"},
+				{Label: "Open in Acme Wallet (mobile)", Template: "acmewallet://card?token={{gadget_id}}"},
+			},
+		},
+		"users": {Base: "http://127.0.0.1:2", ID: "id"}, // no links configured
+	})
+
+	resp, err := http.Get(ts.URL + "/api/entities")
+	if err != nil {
+		t.Fatalf("GET /api/entities: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Entities []struct {
+			Name  string `json:"name"`
+			Links []struct {
+				Label    string `json:"label"`
+				Template string `json:"template"`
+			} `json:"links"`
+		} `json:"entities"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, body)
+	}
+	if len(got.Entities) != 2 {
+		t.Fatalf("entities = %+v, want 2", got.Entities)
+	}
+	// sortedKeys orders alphabetically: gadgets, users.
+	entity0 := got.Entities[0]
+	if entity0.Name != "gadgets" || len(entity0.Links) != 2 {
+		t.Fatalf("gadgets = %+v", entity0)
+	}
+	if entity0.Links[0].Label != "Open in admin-console" || entity0.Links[0].Template != "http://localhost:3000/modules?gadgetId={{gadget_id}}" {
+		t.Errorf("links[0] = %+v", entity0.Links[0])
+	}
+	if entity0.Links[1].Label != "Open in Acme Wallet (mobile)" || entity0.Links[1].Template != "acmewallet://card?token={{gadget_id}}" {
+		t.Errorf("links[1] = %+v", entity0.Links[1])
+	}
+	users := got.Entities[1]
+	if users.Name != "users" || len(users.Links) != 0 {
+		t.Errorf("users (no links configured) = %+v", users)
+	}
+}
+
 // TestEntitiesDiscoveryDefaultsEmptyIDToId guards final-review-phase-3.md's I4:
 // config.Validate requires entity.base but says nothing about entity.id, so
 // `entities: { users: { base: "..." } }` is a valid config — forwarding its

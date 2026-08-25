@@ -8,10 +8,11 @@ import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { Badge, Spinner, Tabs } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import { renderCellValue, unionKeys } from '../format';
+import { renderCellValue, resolveLinkTemplate, unionKeys } from '../format';
 import { useUrlParam } from '../urlState';
 import JsonView from '../components/JsonView';
 import InlineError from '../components/InlineError';
+import type { EntityLink } from '../api/types';
 import './EntityView.css';
 
 const MUTATION_NOTE =
@@ -30,6 +31,18 @@ function asRowArray(data: unknown): Record<string, unknown>[] | null {
   if (!Array.isArray(data)) return null;
   if (!data.every((el) => el !== null && typeof el === 'object' && !Array.isArray(el))) return null;
   return data as Record<string, unknown>[];
+}
+
+/** Opens a resolved link's URL: http(s) targets open in a new tab (`noopener` so the
+ * opened host app can't reach back into `window.opener`); anything else — a custom scheme
+ * like `acmewallet://` — navigates the current page instead, since `window.open` silently
+ * no-ops on non-http(s) schemes in most browsers. */
+function openResolvedLink(url: string) {
+  if (/^https?:\/\//i.test(url)) {
+    window.open(url, '_blank', 'noopener');
+  } else {
+    window.location.assign(url);
+  }
 }
 
 function extractId(data: unknown, idField: string): string | null {
@@ -96,11 +109,13 @@ function CopyButton({ value, label }: { value: string; label: string }) {
 function EntityList({
   name,
   idField,
+  links,
   onSelectRow,
   onCreate,
 }: {
   name: string;
   idField: string;
+  links: EntityLink[];
   onSelectRow: (id: string) => void;
   onCreate: () => void;
 }) {
@@ -159,6 +174,7 @@ function EntityList({
                 {keys.map((k) => (
                   <th key={k}>{k}</th>
                 ))}
+                {links.length > 0 && <th>links</th>}
               </tr>
             </thead>
             <tbody>
@@ -183,6 +199,20 @@ function EntityList({
                         </td>
                       );
                     })}
+                    {links.length > 0 && (
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {links.map((link) => (
+                          <button
+                            key={link.label}
+                            type="button"
+                            className="entity-table__link-btn"
+                            onClick={() => openResolvedLink(resolveLinkTemplate(link.template, row))}
+                          >
+                            {link.label}
+                          </button>
+                        ))}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -530,6 +560,7 @@ export default function EntityView() {
             <EntityList
               name={activeEntity}
               idField={idField}
+              links={activeInfo?.links ?? []}
               onSelectRow={(id) => setId(id)}
               onCreate={() => setNew('1')}
             />

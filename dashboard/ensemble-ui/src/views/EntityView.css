@@ -208,6 +208,26 @@
   z-index: 5;
 }
 
+.entity-table__link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  margin: 0 0.25rem 0.25rem 0;
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.entity-table__link-btn:hover,
+.entity-table__link-btn:focus-visible {
+  background: var(--bg-hover, var(--bg-raised));
+  border-color: var(--border-focus, var(--border-hairline-strong));
+}
+
 .entity-table__row {
   cursor: pointer;
 }

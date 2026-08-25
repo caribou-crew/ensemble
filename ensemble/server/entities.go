@@ -34,22 +34,36 @@ func stripHopByHopHeaders(h http.Header) {
 // entityInfo is one entry in GET /api/entities' response: the dashboard's
 // entity-page discovery list.
 type entityInfo struct {
-	Name string `json:"name"`
-	ID   string `json:"id"`
+	Name  string       `json:"name"`
+	ID    string       `json:"id"`
+	Links []entityLink `json:"links,omitempty"`
+}
+
+// entityLink mirrors config.EntityLink — see its doc comment for the
+// {{column}} template contract. Resolved client-side, not here: this
+// endpoint only relays the raw label/template pair.
+type entityLink struct {
+	Label    string `json:"label"`
+	Template string `json:"template"`
 }
 
 func (s *server) handleEntities(w http.ResponseWriter, r *http.Request) {
 	out := make([]entityInfo, 0, len(s.Cfg.Entities))
 	for _, name := range sortedKeys(s.Cfg.Entities) {
+		e := s.Cfg.Entities[name]
 		// config.Validate requires entity.base but says nothing about entity.id, so an
 		// entity configured without one is a valid config — defaulting here (rather than
 		// forwarding "" verbatim) keeps every consumer of this endpoint, CLI/agents
 		// included, from having to know "id" is the fallback (final review I4).
-		id := s.Cfg.Entities[name].ID
+		id := e.ID
 		if id == "" {
 			id = "id"
 		}
-		out = append(out, entityInfo{Name: name, ID: id})
+		links := make([]entityLink, len(e.Links))
+		for i, l := range e.Links {
+			links[i] = entityLink{Label: l.Label, Template: l.Template}
+		}
+		out = append(out, entityInfo{Name: name, ID: id, Links: links})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entities": out})
 }

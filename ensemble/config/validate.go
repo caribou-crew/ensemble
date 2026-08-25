@@ -186,6 +186,11 @@ func (c *Config) Validate() error {
 		if ent.Base == "" {
 			errs = append(errs, fmt.Errorf("entity %q: base is empty", name))
 		}
+		for i, link := range ent.Links {
+			if link.Label == "" || link.Template == "" {
+				errs = append(errs, fmt.Errorf("entity %q: link %d: label and template must both be non-empty", name, i))
+			}
+		}
 	}
 
 	for _, name := range c.OnReady.Seeds {

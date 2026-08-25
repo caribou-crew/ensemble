@@ -233,6 +233,49 @@ guarded by the same Basic auth its other routes already require, and serves
 `users`/`accounts`/`cards`/`cardProducts`/`digitalWalletTokens`/
 `transactions` as JSON round-trips of the structs its own REST API returns.
 
+### Entities
+
+`entities:` gives the dashboard's Entities tab a generic CRUD view over
+whatever REST resource a backend already exposes — no per-entity code, just
+a base URL and the field that names a row's id:
+
+```yaml
+entities:
+  users:
+    base: http://127.0.0.1:4281/users   # can point through an ensemble intercept port
+    id: id                              # defaults to "id" if omitted
+```
+
+The Entities tab lists rows as a table (the union of keys actually seen),
+and supports viewing/editing/deleting one row and creating new ones —
+mutations go straight to `base`, and only show up in Traffic when `base`
+itself points at an ensemble intercept port.
+
+`links` (optional) adds one or more "open in host app" buttons to every
+row, for jumping from a row straight into whatever tool or app actually
+owns that record:
+
+```yaml
+entities:
+  gadgets:
+    base: http://127.0.0.1:4281/gadgets
+    id: gadget_id
+    links:
+      - label: Open in admin-console
+        template: "http://localhost:3000/modules?gadgetId={{gadget_id}}"
+      - label: Open in Acme Wallet (mobile)
+        template: "acmewallet://card?token={{gadget_id}}"
+```
+
+`template` is a plain string with `{{column}}` placeholders, resolved
+client-side against that row's own fields — a placeholder naming a column
+the row doesn't have just resolves to an empty string rather than erroring.
+There's no templating engine and no automatic encoding, so a template that
+embeds one URL inside another query param needs its inner value hand
+percent-encoded. An `http(s)` template opens in a new tab; anything else
+(a custom scheme like `acmewallet://`) navigates the current page instead,
+since most browsers silently no-op `window.open` on non-http(s) schemes.
+
 ### Gateways
 
 `proxy:` is one-in, one-out — a single intercept port in front of a single

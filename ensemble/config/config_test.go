@@ -224,6 +224,21 @@ func TestValidateEntityEmptyBase(t *testing.T) {
 	}
 }
 
+func TestValidateEntityLinkEmptyLabelOrTemplate(t *testing.T) {
+	c := &Config{Entities: map[string]Entity{
+		"users": {Base: "http://x", ID: "id", Links: []EntityLink{
+			{Label: "", Template: "http://x/{{id}}"},
+		}},
+	}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "users") || !strings.Contains(err.Error(), "link") {
+		t.Errorf("error does not name the entity/link: %v", err)
+	}
+}
+
 // --- Load() + ServicesForProfiles(): rule 9, the valid full config. ---
 
 func TestLoadValidFullConfig(t *testing.T) {

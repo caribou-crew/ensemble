@@ -385,6 +385,21 @@ func (c *Config) RoutablePort(name string) (port int, kind string, ok bool) {
 type Entity struct {
 	Base string `yaml:"base"`
 	ID   string `yaml:"id"`
+	// Links are optional per-row "open in host app" buttons the Entities
+	// tab renders for this entity — see EntityLink.
+	Links []EntityLink `yaml:"links,omitempty"`
+}
+
+// EntityLink is one "open in host app" button an entity's rows render.
+// Template is a plain string with {{column}} placeholders, resolved
+// client-side against a row's own fields from the entity's existing rows
+// response — no templating engine, no automatic encoding (a template
+// embedding one URL inside another query param must be hand
+// percent-encoded by whoever writes the config). A placeholder naming a
+// column the row doesn't have resolves empty rather than erroring.
+type EntityLink struct {
+	Label    string `yaml:"label"`
+	Template string `yaml:"template"`
 }
 
 // Latency holds the config-defined latency injection rules.
