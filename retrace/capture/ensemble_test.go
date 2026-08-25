@@ -283,6 +283,39 @@ func TestAnEmptyVerdictFromEnsembleDoesNotRankAsOK(t *testing.T) {
 	}
 }
 
+// RETRACE_UPSTREAM_URL exists so an app with URL-bound auth (DPoP/RFC 9449
+// and similar) can sign against the real service address while routing
+// bytes through RETRACE_PROXY_URL — see design.md §6.1.2. Attached mode
+// doesn't require an upstream (ensemble owns the forwarding), so it must
+// stay conditional: present only when the caller actually configured one.
+func TestAttachedSessionExposesUpstreamURLOnlyWhenConfigured(t *testing.T) {
+	f := &fakeEnsemble{}
+
+	withUpstream, err := StartAttached(Options{
+		Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: "http://localhost:4000/",
+	}, f, "bff")
+	if err != nil {
+		t.Fatalf("StartAttached: %v", err)
+	}
+	t.Cleanup(func() { _ = withUpstream.Close() })
+	env := map[string]string{}
+	for _, kv := range withUpstream.Env() {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	if env["RETRACE_UPSTREAM_URL"] != "http://localhost:4000" {
+		t.Errorf("RETRACE_UPSTREAM_URL = %q, want the configured upstream with its trailing slash trimmed", env["RETRACE_UPSTREAM_URL"])
+	}
+
+	noUpstream := attachedSessionFor(t, &fakeEnsemble{})
+	for _, kv := range noUpstream.Env() {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "RETRACE_UPSTREAM_URL" {
+			t.Fatalf("RETRACE_UPSTREAM_URL must be absent when no upstream was configured, got %q", kv)
+		}
+	}
+}
+
 // Drain is attached-only. A standalone session has no control plane to poll
 // and must neither error nor block runFlow.
 func TestDrainIsANoOpForAStandaloneSession(t *testing.T) {

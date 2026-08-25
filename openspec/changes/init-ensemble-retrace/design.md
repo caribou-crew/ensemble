@@ -234,6 +234,41 @@ reveal and an "add redaction rule" action on any hop (edits config, like
 the review queue's `rule` verb). Level changes affect future captures
 only — nothing retroactively unredacts a destroyed value.
 
+### 6.1.2 URL-bound auth through the capture proxy (DPoP et al.)
+
+Any auth scheme that signs a proof over the request URL (DPoP's `htu`
+per RFC 9449; SigV4-style host binding) breaks through a capture proxy:
+the client mints the proof against the proxy's address, the real
+upstream validates it against its own address, and the two diverge —
+every authenticated call 401s. This is separate from §6.1.1's
+redaction (which only handles auth headers *already captured*); this
+is about the request succeeding at capture time at all.
+
+Two tempting fixes don't survive contact with the rest of the design:
+
+- **Server trusts a forwarded-host header for validation** — pushes a
+  security-relevant change into auth code the team may not own
+  (upstream services generally aren't ensemble/retrace's to modify),
+  and doesn't generalize past whichever service agrees to add it.
+  Not adopted as a retrace behavior; a team can wire this up
+  server-side on their own if they want it, but retrace doesn't ask
+  for it.
+- **Proxy takes over the upstream's own port, upstream moves aside** —
+  incompatible with §5: every concurrent `retrace run` gets its own
+  *ephemeral* client-edge port specifically so parallel suites don't
+  collide. A fixed shared port is the opposite of that. Not adopted.
+
+**Adopted: the client signs against upstream, transport goes through
+the proxy.** Retrace already resolves the real `upstream:` URL to
+forward requests, so exposing it costs nothing extra. Alongside
+`RETRACE_PROXY_URL` (route traffic here) the env handshake also sets
+`RETRACE_UPSTREAM_URL` (the address any URL-bound proof should be
+minted against). This is a documented adapter-contract convention, not
+something retrace's proxy does automatically — retrace can't re-sign a
+proof it doesn't hold the key for. An adapter/app with URL-bound auth
+configures its SDK's request transport at the proxy URL and its
+auth/signing layer at the upstream URL; everything else is unaffected.
+
 ### 6.2 Replay (CI)
 
 `retrace replay --ref <flow>` serves the blessed recording as mocks from the

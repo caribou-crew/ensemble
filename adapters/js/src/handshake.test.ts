@@ -3,20 +3,30 @@ import { handshake, requireHandshake, MISSING_HANDSHAKE_MESSAGE } from './handsh
 import { group } from './index.js';
 
 describe('handshake', () => {
-  it('reads all three variables', () => {
+  it('reads all four variables', () => {
     const h = handshake({
       RETRACE_RUN_DIR: '/tmp/a-run',
       RETRACE_PROXY_URL: 'http://127.0.0.1:1',
       RETRACE_MARKER_URL: 'http://127.0.0.1:2',
+      RETRACE_UPSTREAM_URL: 'http://127.0.0.1:3',
     });
     expect(h.runDir).toBe('/tmp/a-run');
     expect(h.proxyUrl).toBe('http://127.0.0.1:1');
     expect(h.markerUrl).toBe('http://127.0.0.1:2');
+    expect(h.upstreamUrl).toBe('http://127.0.0.1:3');
   });
 
   it('treats an absent env as fully empty, not a run', () => {
     const h = handshake({});
-    expect(h).toEqual({ runDir: null, proxyUrl: null, markerUrl: null, strict: false });
+    expect(h).toEqual({ runDir: null, proxyUrl: null, markerUrl: null, upstreamUrl: null, strict: false });
+  });
+
+  // upstreamUrl is conditional (design.md §6.1.2): a capture session with no
+  // configured upstream (e.g. attached mode against a flow with no
+  // URL-bound auth) omits it, and that must read as null, not "".
+  it('treats upstreamUrl as absent when the session had nothing to point at', () => {
+    const h = handshake({ RETRACE_RUN_DIR: '/tmp/a-run', RETRACE_PROXY_URL: 'http://127.0.0.1:1' });
+    expect(h.upstreamUrl).toBeNull();
   });
 
   it('reports strict from RETRACE_STRICT=1', () => {

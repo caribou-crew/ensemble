@@ -41,6 +41,9 @@ Env:
   RETRACE_RUN_DIR     set by ` + "`retrace run`" + ` for adapters (checkpoints, markers)
   RETRACE_PROXY_URL   set by ` + "`retrace run`" + `; point the app under test at it
   RETRACE_MARKER_URL  set by ` + "`retrace run`" + `; HTTP-only runners post markers here
+  RETRACE_UPSTREAM_URL set by ` + "`retrace run`" + ` when --upstream/config names one; sign
+                      URL-bound auth (DPoP/RFC 9449 etc.) against this, transport via
+                      RETRACE_PROXY_URL — absent when the run has no upstream configured
   RETRACE_STRICT      1/true/yes/on = adapters fail loudly when the handshake env is
                       absent (0/false/no/off/unset = quiet no-op; any other value is
                       a startup error, naming the value and the accepted set)

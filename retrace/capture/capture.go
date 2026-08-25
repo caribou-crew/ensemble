@@ -37,12 +37,13 @@ type Options struct {
 }
 
 type Session struct {
-	Paths     runs.Paths
-	RunID     string
-	ProxyURL  string
-	MarkerURL string
-	Mode      string
-	StartedAt time.Time
+	Paths       runs.Paths
+	RunID       string
+	ProxyURL    string
+	MarkerURL   string
+	UpstreamURL string
+	Mode        string
+	StartedAt   time.Time
 
 	rec       *proxy.Recorder
 	prox      *proxy.Proxy
@@ -125,8 +126,9 @@ func StartStandalone(o Options) (*Session, error) {
 	s := &Session{
 		Paths: p, RunID: runID, Mode: runs.ModeStandalone,
 		StartedAt: now(), rec: rec, prox: prox, stopProxy: stop, wireFile: wire,
-		ProxyURL: "http://" + addr,
-		redact:   o.Redact, maxBody: maxBody,
+		ProxyURL:    "http://" + addr,
+		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
+		redact:      o.Redact, maxBody: maxBody,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
 		stop()
@@ -151,12 +153,26 @@ func (s *Session) startMarkerDoor(now func() time.Time) error {
 	return nil
 }
 
+// Env is the test-command handshake. RETRACE_UPSTREAM_URL is conditional,
+// not all-or-nothing like the other three: it exists so an app using a
+// URL-bound auth scheme (DPoP/RFC 9449 and similar) can sign requests
+// against the real service address while routing the bytes through
+// RETRACE_PROXY_URL — a proof minted against the proxy's own address
+// fails validation upstream, and retrace holds no private key to
+// re-sign one that was (see design.md §6.1.2). It is empty, and
+// therefore omitted, whenever the caller never configured an upstream —
+// attached-mode captures don't require one, and a flow with no
+// URL-bound auth has no use for it either.
 func (s *Session) Env() []string {
-	return []string{
+	env := []string{
 		"RETRACE_RUN_DIR=" + s.Paths.RunDir,
 		"RETRACE_PROXY_URL=" + s.ProxyURL,
 		"RETRACE_MARKER_URL=" + s.MarkerURL,
 	}
+	if s.UpstreamURL != "" {
+		env = append(env, "RETRACE_UPSTREAM_URL="+s.UpstreamURL)
+	}
+	return env
 }
 
 // Hops returns the full provider chain. Standalone reads it from the local

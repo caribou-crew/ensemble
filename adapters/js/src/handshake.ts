@@ -1,13 +1,21 @@
-// handshake.ts reads the four env vars retrace/cmd/retrace/main.go documents
-// (RETRACE_RUN_DIR, RETRACE_PROXY_URL, RETRACE_MARKER_URL, RETRACE_STRICT)
-// and turns them into a typed Handshake. This is the ONLY place
-// RETRACE_STRICT is parsed, in any of the three adapter packages — see
+// handshake.ts reads the env vars retrace/cmd/retrace/main.go documents
+// (RETRACE_RUN_DIR, RETRACE_PROXY_URL, RETRACE_MARKER_URL, RETRACE_UPSTREAM_URL,
+// RETRACE_STRICT) and turns them into a typed Handshake. This is the ONLY
+// place RETRACE_STRICT is parsed, in any of the three adapter packages — see
 // task-17-rulings.md R-AD.
 
 export interface Handshake {
   runDir: string | null;
   proxyUrl: string | null;
   markerUrl: string | null;
+  // upstreamUrl is conditional, unlike runDir/proxyUrl/markerUrl: it is only
+  // set when the capture session has a real upstream to point at (see
+  // design.md §6.1.2). A test fixture for an app with URL-bound auth (DPoP/
+  // RFC 9449 and similar) points the app's HTTP transport at proxyUrl but
+  // its auth/signing layer at upstreamUrl — a proof minted against the
+  // proxy's own address fails validation upstream, and retrace has no
+  // private key to re-sign one that was.
+  upstreamUrl: string | null;
   strict: boolean;
 }
 
@@ -56,6 +64,7 @@ export function handshake(env: NodeJS.ProcessEnv = process.env): Handshake {
     runDir: nonEmpty(env.RETRACE_RUN_DIR),
     proxyUrl: nonEmpty(env.RETRACE_PROXY_URL),
     markerUrl: nonEmpty(env.RETRACE_MARKER_URL),
+    upstreamUrl: nonEmpty(env.RETRACE_UPSTREAM_URL),
     strict: parseStrict(env.RETRACE_STRICT),
   };
 }

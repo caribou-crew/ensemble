@@ -108,8 +108,11 @@ review UI exist.
 
 - [ ] 4.1 `retrace/run`: `retrace run --flow -- <cmd>` — session registration
       w/ ensemble (or standalone capture proxy), env handshake
-      (RETRACE_RUN_DIR/RETRACE_PROXY_URL), run-dir writer (manifest, wire.jsonl,
-      hops.jsonl, groups.jsonl), capture-trust computation.
+      (RETRACE_RUN_DIR/RETRACE_PROXY_URL/RETRACE_UPSTREAM_URL), run-dir writer
+      (manifest, wire.jsonl, hops.jsonl, groups.jsonl), capture-trust
+      computation. RETRACE_UPSTREAM_URL exists so URL-bound auth schemes
+      (DPoP et al.) can sign against upstream while transport goes through
+      the proxy — see design.md §6.1.2.
 - [ ] 4.2 `retrace/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
       integer/semver/custom/ignore/exact). Golden tests from the JS prototype
       `wire-rules`/`matchers` fixtures.
@@ -128,7 +131,9 @@ review UI exist.
       `retrace export` static report.
 - [ ] 4.7 `adapters/`: retrace-js (groups/markers), retrace-playwright
       (fixture: checkpoint shots + groups), retrace-maestro (HTTP markers);
-      strict-mode env handshake failure message.
+      strict-mode env handshake failure message; document the
+      RETRACE_UPSTREAM_URL convention (design.md §6.1.2) for apps/adapters
+      wiring URL-bound auth (DPoP et al.).
 - [ ] 4.8 Redaction modes + recording encryption: extend `core/trace`
       Redactor with display/encrypt/destroy per-key modes (AES-256-GCM
       `$enc:v1` markers, deterministic `red-<hash>` placeholders); envelope

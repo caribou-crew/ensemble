@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
@@ -56,8 +57,10 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 	}
 	s := &Session{
 		Paths: p, RunID: runID, Mode: runs.ModeEnsemble, StartedAt: now(),
-		ProxyURL: "http://" + edge, ens: c,
-		redact: o.Redact, maxBody: bodyLimit(o.MaxBody),
+		ProxyURL:    "http://" + edge,
+		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
+		ens:         c,
+		redact:      o.Redact, maxBody: bodyLimit(o.MaxBody),
 	}
 	if err := s.startMarkerDoor(now); err != nil {
 		endCtx, endCancel := context.WithTimeout(context.Background(), controlTimeout)

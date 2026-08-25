@@ -80,6 +80,12 @@ func TestSessionEnvCarriesTheFullHandshake(t *testing.T) {
 	if env["RETRACE_RUN_DIR"] != s.Paths.RunDir {
 		t.Errorf("RETRACE_RUN_DIR = %q, want %q", env["RETRACE_RUN_DIR"], s.Paths.RunDir)
 	}
+	// Standalone always has an upstream (StartStandalone errors without one),
+	// so RETRACE_UPSTREAM_URL is present here even though it is conditional
+	// in general — see design.md §6.1.2 and the attached-mode tests below.
+	if env["RETRACE_UPSTREAM_URL"] != s.UpstreamURL {
+		t.Errorf("RETRACE_UPSTREAM_URL = %q, want %q", env["RETRACE_UPSTREAM_URL"], s.UpstreamURL)
+	}
 }
 
 // Geometry comes from the PNG header, and it is the shot's REAL geometry —
