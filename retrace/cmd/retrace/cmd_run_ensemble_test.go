@@ -322,6 +322,41 @@ func TestStartSessionAcceptsAMatchingProxyHost(t *testing.T) {
 	}
 }
 
+// The port-conflict mirror of TestStartSessionDiagnosesAnEnsembleThatIgnoresProxyHost:
+// an ensemble predating proxy.port support silently ignores an unknown
+// "port" field and answers on its own default port instead.
+func TestStartSessionDiagnosesAnEnsembleThatIgnoresProxyPort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:54321"})
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff", Port: 4000})
+	if err == nil {
+		t.Fatal("StartSession with a mismatched edge port returned no error")
+	}
+	if !strings.Contains(err.Error(), "does not support proxy_port") {
+		t.Errorf("error = %q, want it to diagnose the version skew", err)
+	}
+}
+
+// The matching positive case: when ensemble's edge answers on the same
+// port that was requested, StartSession must not treat that as a mismatch.
+func TestStartSessionAcceptsAMatchingProxyPort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResponse(w, map[string]any{"id": "run-1", "edgeAddr": "127.0.0.1:4000"})
+	}))
+	defer srv.Close()
+
+	addr, err := NewClient(srv.URL).StartSession(context.Background(), capture.SessionRequest{ID: "run-1", Entry: "bff", Port: 4000})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if addr != "127.0.0.1:4000" {
+		t.Errorf("edgeAddr = %q, want %q", addr, "127.0.0.1:4000")
+	}
+}
+
 // --- Major 1, full stack: bounded calls through the real net/http client ---
 //
 // These reproduce the review's probes A and B: a handler that accepts the

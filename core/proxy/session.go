@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/caribou-crew/ensemble/core/trace"
@@ -213,10 +214,18 @@ func (m *SessionManager) route(h trace.Hop) {
 // is advertised as; empty means the default, "127.0.0.1" — unchanged
 // behavior. A non-default host must resolve loopback-only, enforced by
 // ServeStoppable (see design.md §6.1.2's proxy.host addendum), not
-// re-validated here.
-func (m *SessionManager) Start(id, entryName, entryUpstream, host string) (*Session, error) {
+// re-validated here. port is the fixed TCP port to bind; zero means the
+// default, an OS-chosen ephemeral port — unchanged behavior. A non-zero
+// port already in use surfaces ServeStoppable's own bind error unchanged;
+// this never silently falls back to a different port (design.md §6.1.2's
+// proxy.port addendum).
+func (m *SessionManager) Start(id, entryName, entryUpstream, host string, port int) (*Session, error) {
 	if host == "" {
 		host = "127.0.0.1"
+	}
+	portStr := "0"
+	if port != 0 {
+		portStr = strconv.Itoa(port)
 	}
 	ses := &Session{
 		ID:      id,
@@ -224,7 +233,7 @@ func (m *SessionManager) Start(id, entryName, entryUpstream, host string) (*Sess
 	}
 	addr, stop, err := m.proxy.ServeStoppable(Target{
 		Name:          entryName,
-		Listen:        host + ":0",
+		Listen:        host + ":" + portStr,
 		Upstream:      entryUpstream,
 		InjectBaggage: map[string]string{trace.BaggageSession: id},
 	})

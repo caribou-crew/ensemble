@@ -32,6 +32,10 @@ type SessionRequest struct {
 	ID    string
 	Entry string
 	Host  string
+	// Port is the fixed TCP port ensemble's session should bind its
+	// client-edge listener on. Zero keeps ensemble's own default (an
+	// ephemeral port); see design.md §6.1.2's proxy.port addendum.
+	Port int
 }
 
 // EndReport is DECODED from ensemble's DELETE /api/sessions/{id} response.
@@ -61,7 +65,7 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		return nil, err
 	}
 	startCtx, cancel := context.WithTimeout(context.Background(), controlTimeout)
-	edge, err := c.StartSession(startCtx, SessionRequest{ID: runID, Entry: entry, Host: o.Host})
+	edge, err := c.StartSession(startCtx, SessionRequest{ID: runID, Entry: entry, Host: o.Host, Port: o.Port})
 	cancel()
 	if err != nil {
 		_ = os.RemoveAll(p.RunDir)

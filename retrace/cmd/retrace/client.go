@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,21 +149,24 @@ func (c *Client) Health(ctx context.Context) error {
 // loopback); all three arrive here as an error carrying the server's own
 // message.
 //
-// When req.Host is set, the returned edge's host is checked against it: an
-// ensemble predating proxy.host support silently ignores an unknown "host"
-// field and answers on its own default (127.0.0.1) instead, which would
-// otherwise surface downstream as an unexplained 401 from whatever
-// URL-bound auth validator req.Host exists for (design.md §6.1.2) rather
-// than as a clear "upgrade ensemble" diagnosis here, at the one place that
-// actually knows both the request and the answer.
+// When req.Host and/or req.Port are set, the returned edge is checked
+// against them: an ensemble predating proxy.host/proxy.port support
+// silently ignores an unknown field and answers on its own defaults
+// instead, which would otherwise surface downstream as an unexplained 401
+// from whatever URL-bound auth validator they exist for (design.md
+// §6.1.2) rather than as a clear "upgrade ensemble" diagnosis here, at the
+// one place that actually knows both the request and the answer.
 func (c *Client) StartSession(ctx context.Context, req capture.SessionRequest) (string, error) {
 	var out struct {
 		ID       string `json:"id"`
 		EdgeAddr string `json:"edgeAddr"`
 	}
-	body := map[string]string{"id": req.ID, "entry": req.Entry}
+	body := map[string]any{"id": req.ID, "entry": req.Entry}
 	if req.Host != "" {
 		body["host"] = req.Host
+	}
+	if req.Port != 0 {
+		body["port"] = req.Port
 	}
 	if err := c.do(ctx, http.MethodPost, "/api/sessions", body, &out); err != nil {
 		return "", err
@@ -170,9 +174,15 @@ func (c *Client) StartSession(ctx context.Context, req capture.SessionRequest) (
 	if out.EdgeAddr == "" {
 		return "", fmt.Errorf("POST /api/sessions: ensemble returned no edgeAddr for session %q", req.ID)
 	}
+	gotHost, gotPort, splitErr := net.SplitHostPort(out.EdgeAddr)
 	if req.Host != "" {
-		if gotHost, _, err := net.SplitHostPort(out.EdgeAddr); err != nil || gotHost != req.Host {
+		if splitErr != nil || gotHost != req.Host {
 			return "", fmt.Errorf("POST /api/sessions: requested proxy.host %q but ensemble's edge answered as %q — ensemble at %s does not support proxy.host (upgrade it, or unset proxy.host to use its default)", req.Host, out.EdgeAddr, c.BaseURL)
+		}
+	}
+	if req.Port != 0 {
+		if splitErr != nil || gotPort != strconv.Itoa(req.Port) {
+			return "", fmt.Errorf("POST /api/sessions: requested proxy_port %d but ensemble's edge answered as %q — ensemble at %s does not support proxy_port (upgrade it, or unset proxy_port to use its default)", req.Port, out.EdgeAddr, c.BaseURL)
 		}
 	}
 	return out.EdgeAddr, nil

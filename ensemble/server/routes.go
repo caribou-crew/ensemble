@@ -760,6 +760,12 @@ func (s *server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		// older retrace that has never heard of this field simply omits it
 		// from the JSON body and gets the unchanged default.
 		Host string `json:"host"`
+		// Port is optional (design.md §6.1.2's proxy.port addendum): the
+		// fixed TCP port the session's client-edge listener binds on AND is
+		// advertised as. Zero keeps the built-in default, an ephemeral port
+		// — an older retrace that has never heard of this field simply
+		// omits it from the JSON body and gets the unchanged default.
+		Port int `json:"port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -787,13 +793,14 @@ func (s *server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		entryPort = svc.Proxy
 	}
 	upstream := fmt.Sprintf("http://127.0.0.1:%d", entryPort)
-	ses, err := s.Sessions.Start(req.ID, req.Entry, upstream, req.Host)
+	ses, err := s.Sessions.Start(req.ID, req.Entry, upstream, req.Host, req.Port)
 	if err != nil {
 		// ErrSessionActive is the one Start failure that is the CALLER
 		// retrying/colliding, not a bad request — 409 Conflict, as before
 		// this field existed. Everything else Start can fail on now
 		// includes req.Host resolving off-loopback (core/proxy.ServeStoppable
-		// refuses that; see design.md §6.1.2), which is a bad request, not a
+		// refuses that; see design.md §6.1.2) and req.Port already being in
+		// use (a plain OS bind-conflict error) — both bad requests, not a
 		// conflict — 400, same as the entry/proxy-port checks above.
 		status := http.StatusBadRequest
 		if errors.Is(err, proxy.ErrSessionActive) {
