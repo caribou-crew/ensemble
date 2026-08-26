@@ -384,6 +384,15 @@ id, correlation id, and timings.
 Injected delay is reported separately from real upstream time, so a hop's
 measured duration stays honest — the true wall-clock is the sum of the two.
 
+Rules persist across `ensemble up` restarts — every `set`/`remove`/`reset`/
+`arm-all` (including Datadog pulls, below) is written to
+`.ensemble/latency.json` as it happens, and the next `ensemble up` in that
+directory restores that exact state instead of reseeding `latency:
+defaults:` from `ensemble.yaml`. Defaults only ever seed a store that's
+never been persisted before (a first run, or after deleting
+`.ensemble/latency.json`); once a state file exists — even an empty one
+left by `latency reset` — it's the whole story on every subsequent restart.
+
 ### Latency profiles from Datadog
 
 Hand-picking a "realistic" delay means eyeballing a Datadog percentile graph

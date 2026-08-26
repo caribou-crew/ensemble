@@ -186,18 +186,42 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		Writer:   trace.NewWriter(hopsFile),
 	})
 
+	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
+
 	px := proxy.New(rec)
 	px.TraceHeader = cfg.TraceHeader
 	px.SourceHeaders = cfg.SourceHeaders
 	lat := proxy.NewLatencyStore(nil)
 	px.Latency = lat
-	for _, d := range cfg.Latency.Defaults {
-		lat.Set(proxy.LatencyRule{
-			Target: d.Target, Path: d.Path,
-			FixedMs: d.FixedMs, P50: d.P50, P95: d.P95, P99: d.P99,
-			Enabled: d.Enabled,
-		})
+
+	// A prior run's persisted rules (arms set, Datadog pulls applied, etc.)
+	// supersede ensemble.yaml's latency.defaults entirely — the persisted
+	// file, once it exists, is the full state, not a delta layered on top
+	// of defaults (defaults only ever seed a never-before-persisted store;
+	// see latency_persist.go).
+	latencyPath := latencyRulesPath(cfg.Dir)
+	persisted, err := loadLatencyRules(latencyPath)
+	if err != nil {
+		return fmt.Errorf("load persisted latency rules: %w", err)
 	}
+	if persisted != nil {
+		for _, r := range persisted {
+			lat.Set(r)
+		}
+	} else {
+		for _, d := range cfg.Latency.Defaults {
+			lat.Set(proxy.LatencyRule{
+				Target: d.Target, Path: d.Path,
+				FixedMs: d.FixedMs, P50: d.P50, P95: d.P95, P99: d.P99,
+				Enabled: d.Enabled,
+			})
+		}
+	}
+	lat.OnChange(func(rules []proxy.LatencyRule) {
+		if err := persistLatencyRules(latencyPath, rules); err != nil {
+			logf("ensemble: persist latency rules: %v", err)
+		}
+	})
 
 	var entries []string
 	for name, svc := range cfg.Services {
@@ -212,8 +236,6 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	}
 	sessions := proxy.NewSessionManager(px, rec, entries)
 	defer sessions.Close()
-
-	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
 
 	// Check --variant against the config up front so a typo fails here,
 	// not as a confusing start failure deep in Up.

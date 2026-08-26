@@ -29,9 +29,10 @@ type LatencyRule struct {
 // LatencyStore holds live-editable delay rules. All methods are safe for
 // concurrent use from the proxy hot path and the control API.
 type LatencyStore struct {
-	mu      sync.Mutex
-	rules   []LatencyRule
-	uniform func() float64 // injectable for tests; nil -> math/rand/v2
+	mu       sync.Mutex
+	rules    []LatencyRule
+	uniform  func() float64            // injectable for tests; nil -> math/rand/v2
+	onChange func(rules []LatencyRule) // optional; see OnChange
 }
 
 func NewLatencyStore(uniform func() float64) *LatencyStore {
@@ -41,22 +42,50 @@ func NewLatencyStore(uniform func() float64) *LatencyStore {
 	return &LatencyStore{uniform: uniform}
 }
 
+// OnChange registers fn to be called, with a snapshot equivalent to
+// Rules(), after every mutation (Set/Remove/Reset/ArmAll) — the hook a
+// caller uses to persist rules to disk without core/proxy itself knowing
+// anything about files. fn runs outside the store's lock, after the
+// mutation is already visible to DelayFor/Rules; pass nil to disable. Not
+// called for read-only methods.
+func (s *LatencyStore) OnChange(fn func(rules []LatencyRule)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+// notify snapshots the current rules and invokes onChange, if any, outside
+// the lock — called by every mutator after it unlocks.
+func (s *LatencyStore) notify() {
+	s.mu.Lock()
+	fn := s.onChange
+	rules := append([]LatencyRule(nil), s.rules...)
+	s.mu.Unlock()
+	if fn != nil {
+		fn(rules)
+	}
+}
+
 // Set upserts a rule keyed by (target, path).
 func (s *LatencyStore) Set(rule LatencyRule) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	found := false
 	for i := range s.rules {
 		if s.rules[i].Target == rule.Target && s.rules[i].Path == rule.Path {
 			s.rules[i] = rule
-			return
+			found = true
+			break
 		}
 	}
-	s.rules = append(s.rules, rule)
+	if !found {
+		s.rules = append(s.rules, rule)
+	}
+	s.mu.Unlock()
+	s.notify()
 }
 
 func (s *LatencyStore) Remove(target, path string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	kept := s.rules[:0]
 	for _, r := range s.rules {
 		if !(r.Target == target && r.Path == path) {
@@ -64,6 +93,8 @@ func (s *LatencyStore) Remove(target, path string) {
 		}
 	}
 	s.rules = kept
+	s.mu.Unlock()
+	s.notify()
 }
 
 // Rules returns a copy, sorted for stable display.
@@ -84,17 +115,19 @@ func (s *LatencyStore) Rules() []LatencyRule {
 // Reset removes every rule.
 func (s *LatencyStore) Reset() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.rules = nil
+	s.mu.Unlock()
+	s.notify()
 }
 
 // ArmAll toggles every rule's Enabled flag.
 func (s *LatencyStore) ArmAll(enabled bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for i := range s.rules {
 		s.rules[i].Enabled = enabled
 	}
+	s.mu.Unlock()
+	s.notify()
 }
 
 // DelayFor picks the winning rule for a request: an exact-target rule beats

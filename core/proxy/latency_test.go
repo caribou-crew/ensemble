@@ -99,6 +99,66 @@ func TestSetUpsertsByTargetAndPath(t *testing.T) {
 	}
 }
 
+func TestOnChangeFiresAfterEveryMutation(t *testing.T) {
+	s := NewLatencyStore(nil)
+	var snapshots [][]LatencyRule
+	s.OnChange(func(rules []LatencyRule) {
+		snapshots = append(snapshots, rules)
+	})
+
+	s.Set(LatencyRule{Target: "svc", Path: "/", FixedMs: 10, Enabled: true})
+	s.Set(LatencyRule{Target: "svc", Path: "/x", FixedMs: 20, Enabled: false})
+	s.ArmAll(true)
+	s.Remove("svc", "/x")
+	s.Reset()
+
+	if len(snapshots) != 5 {
+		t.Fatalf("OnChange fired %d times, want 5 (one per mutation): %+v", len(snapshots), snapshots)
+	}
+	if len(snapshots[0]) != 1 || snapshots[0][0].FixedMs != 10 {
+		t.Fatalf("snapshot after first Set = %+v", snapshots[0])
+	}
+	if len(snapshots[1]) != 2 {
+		t.Fatalf("snapshot after second Set = %+v", snapshots[1])
+	}
+	for _, r := range snapshots[2] {
+		if !r.Enabled {
+			t.Fatalf("snapshot after ArmAll(true) still has a disarmed rule: %+v", snapshots[2])
+		}
+	}
+	if len(snapshots[3]) != 1 {
+		t.Fatalf("snapshot after Remove = %+v", snapshots[3])
+	}
+	if len(snapshots[4]) != 0 {
+		t.Fatalf("snapshot after Reset = %+v, want empty", snapshots[4])
+	}
+}
+
+func TestOnChangeNotFiredByReadOnlyMethods(t *testing.T) {
+	s := NewLatencyStore(nil)
+	s.Set(LatencyRule{Target: "svc", Path: "/", FixedMs: 10, Enabled: true})
+
+	fired := 0
+	s.OnChange(func(rules []LatencyRule) { fired++ })
+
+	s.Rules()
+	s.DelayFor("svc", "/")
+	if fired != 0 {
+		t.Fatalf("OnChange fired %d times for read-only calls, want 0", fired)
+	}
+}
+
+func TestOnChangeNilDisablesCallback(t *testing.T) {
+	s := NewLatencyStore(nil)
+	fired := false
+	s.OnChange(func(rules []LatencyRule) { fired = true })
+	s.OnChange(nil)
+	s.Set(LatencyRule{Target: "svc", Path: "/", FixedMs: 10, Enabled: true})
+	if fired {
+		t.Fatal("OnChange fired after being disabled with nil")
+	}
+}
+
 func TestProxyInjectsDelayAndRecordsItDistinctly(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 8})
 	lat := NewLatencyStore(nil)
