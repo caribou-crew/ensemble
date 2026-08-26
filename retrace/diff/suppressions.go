@@ -42,6 +42,16 @@ type Suppression struct {
 	Source  string `json:"source"`  // "wire_rule" | "wire_ignore" | "builtin"
 	Matcher string `json:"matcher"` // "ignore", "http-date", "/v\\d+/", …
 	Count   int    `json:"count"`
+	// Why is the `why:` the config gave this tolerance, verbatim, or "" when
+	// it gave none. It is what turns the row from a fact into something a
+	// reader can judge: "date builtin http-date ×29" says a rule fired,
+	// while the reason beside it says whether the excuse still holds.
+	//
+	// omitempty, and NOT defaulted to a placeholder: an absent why must read
+	// as absent. Inventing "no reason given" text here would put words in
+	// the config's mouth and make an un-explained tolerance look documented
+	// in every consumer that prints the field.
+	Why string `json:"why,omitempty"`
 }
 
 // suppressionSource answers where a fired tolerance came from. It is built
@@ -50,17 +60,17 @@ type Suppression struct {
 // and pushing it down into FieldDiff/HeaderDiff would widen two wire types
 // every consumer reads to carry something only this report wants.
 type suppressionSource struct {
-	userHeaders map[string]bool
-	userGlobs   map[string]bool
-	ignoreGlobs map[string]bool
+	userHeaders map[string]string // lower-cased header name → its rule's why
+	userGlobs   map[string]string // body glob → its rule's why
+	ignoreGlobs map[string]string // wire_ignore glob → its why
 	builtins    map[string]bool
 }
 
 func newSuppressionSource(cfg *config.Config) suppressionSource {
 	s := suppressionSource{
-		userHeaders: map[string]bool{},
-		userGlobs:   map[string]bool{},
-		ignoreGlobs: map[string]bool{},
+		userHeaders: map[string]string{},
+		userGlobs:   map[string]string{},
+		ignoreGlobs: map[string]string{},
 		builtins:    map[string]bool{},
 	}
 	// Built-ins are populated even for a nil cfg: config.Discover with no
@@ -74,52 +84,68 @@ func newSuppressionSource(cfg *config.Config) suppressionSource {
 	if cfg == nil {
 		return s
 	}
+	// FORWARD, overwriting: rules.Resolve is last-write-wins per key for
+	// headers, and resolveField walks the resolved body list in REVERSE, so
+	// in both cases the LAST rule naming a key is the one that fires. Two
+	// rules covering the same header with different reasons would otherwise
+	// have the report quote the reason that lost.
 	for _, raw := range cfg.WireRules {
 		for name := range raw.Headers {
-			s.userHeaders[strings.ToLower(name)] = true
+			s.userHeaders[strings.ToLower(name)] = raw.Why
 		}
 		for glob := range raw.Body {
-			s.userGlobs[glob] = true
+			s.userGlobs[glob] = raw.Why
 		}
 	}
-	for _, path := range cfg.WireIgnorePaths() {
-		s.ignoreGlobs[path] = true
+	// FIRST wins here, in contrast: resolveField scans the ignore list front
+	// to back and returns on the first match. Two entries for the same glob
+	// are exact duplicates, and the later one never fires.
+	for _, e := range cfg.WireIgnore {
+		// Skipped for the same reason WireIgnorePaths drops it: an empty
+		// path reaching the diff as an ignore rule would match everything,
+		// so it is not a rule that can have fired.
+		if e.Path == "" {
+			continue
+		}
+		if _, seen := s.ignoreGlobs[e.Path]; !seen {
+			s.ignoreGlobs[e.Path] = e.Why
+		}
 	}
 	return s
 }
 
-// forHeader resolves a header's provenance. The user's own rules are
-// checked FIRST so that overriding a built-in reattributes the row to them
-// — after `wire_rules: [{headers: {date: iso8601}}]` the tolerance that
-// fired is theirs, and calling it a built-in would send them looking in the
-// wrong place to change it.
-func (s suppressionSource) forHeader(name string) string {
+// forHeader resolves a header's provenance and stated reason. The user's own
+// rules are checked FIRST so that overriding a built-in reattributes the row
+// to them — after `wire_rules: [{headers: {date: iso8601}}]` the tolerance
+// that fired is theirs, and calling it a built-in would send them looking in
+// the wrong place to change it, and quote a reason they did not write.
+func (s suppressionSource) forHeader(name string) (source, why string) {
 	lower := strings.ToLower(name)
-	switch {
-	case s.userHeaders[lower]:
-		return SourceWireRule
-	case s.builtins[lower]:
-		return SourceBuiltin
-	default:
-		// Nothing else can tolerate a header, so a rule is the only
-		// remaining explanation — reachable when cfg is nil (the config was
-		// never passed down) rather than when the header is unruled.
-		return SourceWireRule
+	if why, ok := s.userHeaders[lower]; ok {
+		return SourceWireRule, why
 	}
+	if s.builtins[lower] {
+		return SourceBuiltin, config.BuiltinHeaderWhy(lower)
+	}
+	// Nothing else can tolerate a header, so a rule is the only remaining
+	// explanation — reachable when cfg is nil (the config was never passed
+	// down) rather than when the header is unruled. No why is available
+	// there, and inventing one would be this report making something up.
+	return SourceWireRule, ""
 }
 
-// forGlob resolves a body glob's provenance, in resolveField's own order:
-// rules are consulted before the wire_ignore list there, so a glob present
-// in both is credited to the rule that actually won.
-func (s suppressionSource) forGlob(glob string) string {
-	switch {
-	case s.userGlobs[glob]:
-		return SourceWireRule
-	case s.ignoreGlobs[glob]:
-		return SourceWireIgnore
-	default:
-		return SourceWireRule
+// forGlob resolves a body glob's provenance and stated reason, in
+// resolveField's own order: rules are consulted before the wire_ignore list
+// there, so a glob present in both is credited to the rule that actually
+// won — and quoted with that rule's reason, not the ignore entry's.
+func (s suppressionSource) forGlob(glob string) (source, why string) {
+	if why, ok := s.userGlobs[glob]; ok {
+		return SourceWireRule, why
 	}
+	if why, ok := s.ignoreGlobs[glob]; ok {
+		return SourceWireIgnore, why
+	}
+	return SourceWireRule, ""
 }
 
 // suppressionsOf tallies every tolerance that fired across the paired
@@ -128,10 +154,15 @@ func (s suppressionSource) forGlob(glob string) string {
 // engine does not report suppressions" rather than "none fired".
 func suppressionsOf(s Summary, cfg *config.Config) []Suppression {
 	src := newSuppressionSource(cfg)
-	type key struct{ plane, target, source, matcher string }
+	// Why is part of the KEY, not carried alongside the count. It is a pure
+	// function of (source, target) as this source resolves it, so it cannot
+	// actually vary within a key — including it is what makes that a fact the
+	// type enforces rather than an invariant a later edit can quietly break
+	// by picking one arbitrary why for a key that had two.
+	type key struct{ plane, target, source, matcher, why string }
 	counts := map[key]int{}
 
-	add := func(plane, target, matcher, source string) {
+	add := func(plane, target, matcher, source, why string) {
 		// An empty target would collapse unrelated tolerances into one
 		// anonymous row — the most permissive reading of a value that
 		// should never be empty. Today it cannot be: a FieldDiff only
@@ -141,7 +172,7 @@ func suppressionsOf(s Summary, cfg *config.Config) []Suppression {
 		if target == "" {
 			return
 		}
-		counts[key{plane, target, source, matcher}]++
+		counts[key{plane, target, source, matcher, why}]++
 	}
 
 	for _, e := range s.Wire.Paired {
@@ -149,14 +180,17 @@ func suppressionsOf(s Summary, cfg *config.Config) []Suppression {
 			if hd.Type != "tolerated" {
 				continue
 			}
-			add("header", hd.Name, hd.Matcher, src.forHeader(hd.Name))
+			source, why := src.forHeader(hd.Name)
+			add("header", hd.Name, hd.Matcher, source, why)
 		}
 		for _, hd := range e.HeaderIgnored {
-			add("header", hd.Name, hd.Matcher, src.forHeader(hd.Name))
+			source, why := src.forHeader(hd.Name)
+			add("header", hd.Name, hd.Matcher, source, why)
 		}
 		for _, group := range [][]FieldDiff{e.BodyTolerated, e.BodyIgnored} {
 			for _, fd := range group {
-				add("body", fd.Glob, fd.Matcher, src.forGlob(fd.Glob))
+				source, why := src.forGlob(fd.Glob)
+				add("body", fd.Glob, fd.Matcher, source, why)
 			}
 		}
 	}
@@ -164,7 +198,7 @@ func suppressionsOf(s Summary, cfg *config.Config) []Suppression {
 	out := make([]Suppression, 0, len(counts))
 	for k, n := range counts {
 		out = append(out, Suppression{
-			Plane: k.plane, Target: k.target, Source: k.source, Matcher: k.matcher, Count: n,
+			Plane: k.plane, Target: k.target, Source: k.source, Matcher: k.matcher, Count: n, Why: k.why,
 		})
 	}
 	// Loudest first — the row worth reading is the rule hiding the most —

@@ -54,7 +54,8 @@ flows:
 # on 100% of paired calls — measured, on two consecutive runs of this exact
 # suite, before the built-ins existed. Set `default_wire_rules: false` to
 # turn them off; `retrace diff` reports every rule that actually fired under
-# SUPPRESSED, built-ins included, so nothing here is silent.
+# SUPPRESSED — built-ins included, each with its `why` — so nothing here is
+# silent and no row leaves a reader guessing.
 wire_rules:
   - headers:
       # edge-gw stamps a fresh traceparent on every request that arrives

@@ -433,6 +433,15 @@ export interface Suppression {
   source: 'wire_rule' | 'wire_ignore' | 'builtin';
   matcher: string;
   count: number;
+  /**
+   * The `why:` the config gave this tolerance, verbatim. Optional because
+   * `require_why` is opt-in, so an un-explained tolerance is legal — and the
+   * field is omitted rather than sent as a placeholder, so absent must render
+   * as absent. Do NOT substitute "no reason given" here either: that would
+   * make an unexplained rule look documented, which is the exact confusion
+   * the field exists to remove.
+   */
+  why?: string;
 }
 
 /**

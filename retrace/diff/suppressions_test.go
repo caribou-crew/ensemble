@@ -258,3 +258,203 @@ func TestRenderTextSaysNothingWhenNoRuleFired(t *testing.T) {
 		t.Errorf("an empty heading trains the reader to skip it, got:\n%s", b.String())
 	}
 }
+
+func TestTheReportQuotesTheWhyTheConfigGaveTheRule(t *testing.T) {
+	cfg := &config.Config{
+		WireRules:  []rules.Raw{{Body: map[string]any{"**.version": "semver"}, Why: "bumped by the release job"}},
+		WireIgnore: []config.WireIgnoreEntry{{Path: "**.requestId", Why: "regenerated on every request"}},
+	}
+	s := summaryWithEntries(Entry{
+		BodyTolerated: []FieldDiff{{Scope: "resp", Path: "a.version", Glob: "**.version", Matcher: "semver"}},
+		BodyIgnored:   []FieldDiff{{Scope: "resp", Path: "a.requestId", Glob: "**.requestId", Matcher: "ignore"}},
+	})
+	got := suppressionsOf(s, cfg)
+
+	rule, _ := findSuppression(got, "body", "**.version")
+	if rule.Why != "bumped by the release job" {
+		t.Errorf("wire_rule row Why = %q, want the rule's own reason", rule.Why)
+	}
+	ign, _ := findSuppression(got, "body", "**.requestId")
+	if ign.Why != "regenerated on every request" {
+		t.Errorf("wire_ignore row Why = %q, want the entry's own reason", ign.Why)
+	}
+}
+
+func TestABuiltinRowExplainsItselfWithoutAnyProjectConfig(t *testing.T) {
+	// The row a reader is least equipped to judge: nobody in this project
+	// asked for it, so "date builtin http-date ×29" with no reason is a
+	// question with no answer in the repo.
+	s := summaryWithEntries(Entry{
+		HeaderDiff: []HeaderDiff{{Scope: "resp", Name: "date", Type: "tolerated", Matcher: "http-date"}},
+	})
+	row, _ := findSuppression(suppressionsOf(s, &config.Config{}), "header", "date")
+	if row.Why == "" {
+		t.Error("the built-in date row carries no why")
+	}
+	if row.Why != config.BuiltinHeaderWhy("date") {
+		t.Errorf("Why = %q, want the built-in's own text %q", row.Why, config.BuiltinHeaderWhy("date"))
+	}
+}
+
+func TestOverridingABuiltinQuotesTheUsersReasonNotRetraces(t *testing.T) {
+	// The provenance and the reason must move together. A row attributed to
+	// the user's rule but quoting retrace's built-in text would describe a
+	// rule that does not exist.
+	cfg := &config.Config{WireRules: []rules.Raw{{
+		Headers: map[string]any{"Date": "iso8601"}, Why: "our edge rewrites Date to ISO-8601",
+	}}}
+	s := summaryWithEntries(Entry{
+		HeaderDiff: []HeaderDiff{{Scope: "resp", Name: "date", Type: "tolerated", Matcher: "iso8601"}},
+	})
+	row, _ := findSuppression(suppressionsOf(s, cfg), "header", "date")
+	if row.Why != "our edge rewrites Date to ISO-8601" {
+		t.Errorf("Why = %q, want the user's reason", row.Why)
+	}
+}
+
+func TestAGlobInBothARuleAndTheIgnoreListQuotesTheRuleThatWon(t *testing.T) {
+	// resolveField consults rules before the ignore list. Quoting the ignore
+	// entry's reason would explain a tolerance that never fired, and send a
+	// reader to edit the entry that is doing nothing.
+	cfg := &config.Config{
+		WireRules:  []rules.Raw{{Body: map[string]any{"**.id": "uuid"}, Why: "the rule that actually fires"}},
+		WireIgnore: []config.WireIgnoreEntry{{Path: "**.id", Why: "the entry that never fires"}},
+	}
+	s := summaryWithEntries(Entry{
+		BodyTolerated: []FieldDiff{{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "uuid"}},
+	})
+	row, _ := findSuppression(suppressionsOf(s, cfg), "body", "**.id")
+	if row.Why != "the rule that actually fires" {
+		t.Errorf("Why = %q, want the rule's reason", row.Why)
+	}
+}
+
+func TestTwoRulesForOneHeaderQuoteTheOneThatWins(t *testing.T) {
+	// rules.Resolve is last-write-wins PER KEY, so the second rule is the one
+	// that fires. Building the why map first-wins would quote the reason that
+	// lost — a correct-looking row describing a rule with no effect.
+	cfg := &config.Config{WireRules: []rules.Raw{
+		{Headers: map[string]any{"x-trace": "ignore"}, Why: "overridden below"},
+		{Headers: map[string]any{"x-trace": "ignore"}, Why: "the rule that wins"},
+	}}
+	s := summaryWithEntries(Entry{
+		HeaderIgnored: []HeaderDiff{{Scope: "resp", Name: "x-trace", Type: "ignored", Matcher: "ignore"}},
+	})
+	row, _ := findSuppression(suppressionsOf(s, cfg), "header", "x-trace")
+	if row.Why != "the rule that wins" {
+		t.Errorf("Why = %q, want the LAST rule's reason", row.Why)
+	}
+}
+
+func TestTwoIgnoreEntriesForOneGlobQuoteTheFirst(t *testing.T) {
+	// The opposite order to wire_rules, and deliberately so: resolveField
+	// scans the ignore list front to back and returns on the first match, so
+	// the later duplicate never fires.
+	cfg := &config.Config{WireIgnore: []config.WireIgnoreEntry{
+		{Path: "**.id", Why: "the entry that wins"},
+		{Path: "**.id", Why: "never reached"},
+	}}
+	s := summaryWithEntries(Entry{
+		BodyIgnored: []FieldDiff{{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "ignore"}},
+	})
+	row, _ := findSuppression(suppressionsOf(s, cfg), "body", "**.id")
+	if row.Why != "the entry that wins" {
+		t.Errorf("Why = %q, want the FIRST entry's reason", row.Why)
+	}
+}
+
+func TestAnUnexplainedToleranceReportsAnEmptyWhyNotAPlaceholder(t *testing.T) {
+	// require_why is opt-in, so un-explained tolerances are legal and common.
+	// Inventing "no reason given" here would put words in the config's mouth
+	// and make every consumer print an un-explained rule as documented.
+	cfg := &config.Config{WireIgnore: []config.WireIgnoreEntry{{Path: "**.id"}}}
+	s := summaryWithEntries(Entry{
+		BodyIgnored: []FieldDiff{{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "ignore"}},
+	})
+	row, ok := findSuppression(suppressionsOf(s, cfg), "body", "**.id")
+	if !ok {
+		t.Fatal("the row itself must still exist — the rule fired")
+	}
+	if row.Why != "" {
+		t.Errorf("Why = %q, want \"\"", row.Why)
+	}
+}
+
+func TestRenderTextPrintsTheWhyUnderTheRuleThatFired(t *testing.T) {
+	var s Summary
+	s.Wire.Paired = []Entry{{BodyIgnored: []FieldDiff{
+		{Scope: "resp", Path: "a.requestId", Glob: "**.requestId", Matcher: "ignore"},
+	}}}
+	s.Verdict = "pass"
+	s.finish(&config.Config{WireIgnore: []config.WireIgnoreEntry{
+		{Path: "**.requestId", Why: "regenerated on every request"},
+	}})
+	var b strings.Builder
+	RenderText(&b, s)
+	out := b.String()
+
+	if !strings.Contains(out, "regenerated on every request") {
+		t.Fatalf("the render must print the why:\n%s", out)
+	}
+	// Under its own row, not above it: a reason printed before the rule it
+	// explains attaches to the wrong line when several rules fired.
+	if strings.Index(out, "**.requestId") > strings.Index(out, "regenerated on every request") {
+		t.Errorf("the why printed above its rule:\n%s", out)
+	}
+}
+
+func TestRenderTextPrintsNoPlaceholderForAnUnexplainedRule(t *testing.T) {
+	var s Summary
+	s.Wire.Paired = []Entry{{BodyIgnored: []FieldDiff{
+		{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "ignore"},
+	}}}
+	s.Verdict = "pass"
+	s.finish(&config.Config{WireIgnore: []config.WireIgnoreEntry{{Path: "**.id"}}})
+	var b strings.Builder
+	RenderText(&b, s)
+	out := b.String()
+	if !strings.Contains(out, "**.id") {
+		t.Fatalf("the row itself must still print:\n%s", out)
+	}
+	if strings.Contains(out, "↳") {
+		t.Errorf("an empty why printed a continuation line:\n%s", out)
+	}
+}
+
+func TestAWhitespaceOnlyWhyPrintsNothing(t *testing.T) {
+	// Consistent with config.ValidateWhy, which does not accept one either.
+	// A line reading "↳    " is a blank row the reader has to interpret.
+	var s Summary
+	s.Wire.Paired = []Entry{{BodyIgnored: []FieldDiff{
+		{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "ignore"},
+	}}}
+	s.Verdict = "pass"
+	s.finish(&config.Config{WireIgnore: []config.WireIgnoreEntry{{Path: "**.id", Why: "  \t "}}})
+	var b strings.Builder
+	RenderText(&b, s)
+	if strings.Contains(b.String(), "↳") {
+		t.Errorf("a whitespace-only why printed a continuation line:\n%s", b.String())
+	}
+}
+
+func TestANilConfigInventsNoReason(t *testing.T) {
+	// The fallback branch of both resolvers, reachable when the config was
+	// never passed down. There is no reason available there at all, so the
+	// row must say so by being empty rather than by making something up —
+	// the same rule as an un-explained tolerance, on the path where nobody
+	// could have written one.
+	s := summaryWithEntries(Entry{
+		HeaderIgnored: []HeaderDiff{{Scope: "resp", Name: "x-trace", Type: "ignored", Matcher: "ignore"}},
+		BodyIgnored:   []FieldDiff{{Scope: "resp", Path: "a.id", Glob: "**.id", Matcher: "ignore"}},
+	})
+	got := suppressionsOf(s, nil)
+	for _, want := range []struct{ plane, target string }{{"header", "x-trace"}, {"body", "**.id"}} {
+		row, ok := findSuppression(got, want.plane, want.target)
+		if !ok {
+			t.Fatalf("no row for %s %s", want.plane, want.target)
+		}
+		if row.Why != "" {
+			t.Errorf("%s %s: Why = %q, want \"\" — nothing could have supplied one", want.plane, want.target, row.Why)
+		}
+	}
+}

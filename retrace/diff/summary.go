@@ -1038,6 +1038,16 @@ func renderSuppressions(w io.Writer, ss []Suppression) {
 	fmt.Fprintf(w, "SUPPRESSED: %d difference(s) across %d rule(s)\n", total, len(ss))
 	for _, s := range ss {
 		fmt.Fprintf(w, "  %-6s %-24s %-11s %-12s ×%d\n", s.Plane, s.Target, s.Source, s.Matcher, s.Count)
+		// The why on its own line, indented under the row it explains,
+		// rather than appended to it. Reasons are sentences and the row is a
+		// fixed-width table: inlining one would blow the column alignment
+		// for every row below it, and the alignment is what makes the table
+		// scannable. A tolerance with no why prints nothing extra — never a
+		// "(no reason given)" placeholder, which would read as config the
+		// project wrote.
+		if strings.TrimSpace(s.Why) != "" {
+			fmt.Fprintf(w, "         ↳ %s\n", s.Why)
+		}
 	}
 }
 

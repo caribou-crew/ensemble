@@ -105,8 +105,10 @@ Read these fields off `retrace diff --json`:
 - `counts` — per-plane tallies
 - `suppressions` — every tolerance that actually silenced a difference in this
   run, loudest first: `plane`, `target`, `source` (`wire_rule` | `wire_ignore`
-  | `builtin`), `matcher`, `count`. **A clean verdict bought by a rule looks
-  identical to a clean verdict earned. This is where you tell them apart.**
+  | `builtin`), `matcher`, `count`, and `why` (the config's own reason, absent
+  when it gave none). **A clean verdict bought by a rule looks identical to a
+  clean verdict earned. This is where you tell them apart** — and `why` is what
+  lets you judge whether the excuse still holds.
 - `checkpoints`, `wire`, `hops`, `unexpectedStatuses`, `perf`, `conformance` —
   the four planes in detail
 <!-- /retrace:fields -->

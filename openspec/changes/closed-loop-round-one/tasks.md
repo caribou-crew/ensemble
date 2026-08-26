@@ -39,9 +39,41 @@ via plan amendment.
   flight). Quarantining on a lying verdict would quarantine good runs.
 
 ## 3. `why` on every tolerance (shape first — Task 3)
-- [ ] Optional `why` on mask rects, wireIgnore entries (object form), wireRules,
+- [x] Optional `why` on mask rects, wireIgnore entries (object form), wireRules,
       expectedStatuses, deviations. Text summary prints `why` beside each
       tolerance that fired.
+
+      Mask rects, wire_ignore and deviations already had it — deviations
+      MANDATORY, for every project, with no opt-in. Added on `rules.Raw`
+      (per-Raw: one Raw is one authored decision, however many headers or
+      globs it names) and on `expected_statuses`.
+
+      "Beside each tolerance that fired" is built on section 8's
+      `suppressions[]`, which already knows exactly which tolerances fired:
+      the rows gained `why`, and the text report prints it indented under its
+      own row rather than inline, so a sentence cannot break the fixed-width
+      table's alignment. The reason resolves in the SAME precedence as the
+      matcher it explains — last-write-wins for `wire_rules`, first-match for
+      the `wire_ignore` list, rules before the ignore list, the user's rule
+      before a built-in — because a row attributed to one rule while quoting
+      another's reason describes a rule that does not exist. Each of those
+      four orderings has its own mutation.
+
+      An absent why is reported absent: no "no reason given" placeholder, in
+      the JSON or the text. `require_why` is opt-in, so unexplained tolerances
+      are legal, and a placeholder would make one look documented in every
+      consumer that prints the field.
+
+      Built-ins carry their own why, so a `date builtin http-date ×29` row
+      explains itself to a reader who never wrote it and cannot edit it.
+
+      NOT covered, and deliberately: masks and expected_statuses accept a
+      `why` but do not yet appear in `suppressions[]`, because neither plane
+      records whether its tolerance actually silenced anything. An expected
+      status is cheap to add (`isExcused` knows which rule excused each hop);
+      a fired mask needs a per-rect pre-mask comparison in pixel.Compare.
+      Listing either without that evidence would break the report's one
+      invariant — that a row means the rule ACTUALLY fired.
 - [x] `--require-why` / `gates.require_why` turns a missing `why` into a
       config error.
 
