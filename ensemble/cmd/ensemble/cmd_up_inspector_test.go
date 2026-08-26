@@ -52,10 +52,10 @@ func TestBuildInspectorRegistersKnownTypesOnly(t *testing.T) {
 
 	cfg := &config.Config{
 		Databases: map[string]config.Database{
-			"pg":      {Type: "postgres", Port: 15432},
-			"mysqldb": {Type: "mysql", Port: 13306},
-			"ddb":     {Type: "dynamodb", Port: dynamoPort},
-			"cache":   {Type: "redis", Port: 16379},
+			"pg":       {Type: "postgres", Port: 15432},
+			"mysqldb":  {Type: "mysql", Port: 13306},
+			"ddb":      {Type: "dynamodb", Port: dynamoPort},
+			"cache":    {Type: "redis", Port: 16379},
 			"cardcogo": {Type: "http", URL: httpFake.URL},
 		},
 	}

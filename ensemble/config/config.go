@@ -22,10 +22,15 @@ type Config struct {
 	Gateways  map[string]Gateway  `yaml:"gateways"`
 	Entities  map[string]Entity   `yaml:"entities"`
 	Latency   Latency             `yaml:"latency"`
-	Seeds     map[string]Seed     `yaml:"seeds"`
-	Profiles  map[string][]string `yaml:"profiles"`
-	Redact    []string            `yaml:"redact"` // extra redaction keys
-	OnReady   OnReady             `yaml:"on_ready"`
+	// Datadog configures the optional `ensemble latency from-datadog`/
+	// `apply` integration — see DatadogConfig. Nil (no `datadog:` key) is
+	// the zero-config path: DD_API_KEY/DD_APP_KEY/DD_SITE are read
+	// directly and datadoghq.com/60min defaults apply.
+	Datadog  *DatadogConfig      `yaml:"datadog"`
+	Seeds    map[string]Seed     `yaml:"seeds"`
+	Profiles map[string][]string `yaml:"profiles"`
+	Redact   []string            `yaml:"redact"` // extra redaction keys
+	OnReady  OnReady             `yaml:"on_ready"`
 	// Readiness configures post-on_ready readiness checks — see the
 	// Readiness type and ReadinessChecks() for the parsed checks file it
 	// points at. Nil (the default) means no readiness checks are
@@ -36,6 +41,17 @@ type Config struct {
 	// populated by Validate so a config error in the checks file itself
 	// (bad YAML, unknown service) is caught at load time, not first use.
 	readinessChecks *ReadinessChecksFile `yaml:"-"`
+	// latencyProfiles caches every latency.profiles entry's parsed rules
+	// file, keyed by profile name — populated by Validate for the same
+	// reason readinessChecks is: a bad profile file fails at config-load
+	// time, not at first `latency apply`. See Config.LatencyProfile.
+	latencyProfiles map[string]*LatencyProfileFile `yaml:"-"`
+	// dotenv is the parsed .env file (if any) found next to ensemble.yaml
+	// at Load time — kept after ${VAR} expansion (see expandEnvVars) so
+	// LookupEnv can resolve names like a datadog: block's api_key_env
+	// through the same env-then-.env precedence, without re-reading the
+	// file. Nil is a valid state (no .env present) — LookupEnv handles it.
+	dotenv map[string]string `yaml:"-"`
 	// TraceHeader names a stack's own correlation header (e.g.
 	// "x-local-trace-id") — read as a fallback trace id whenever a request
 	// carries no real W3C traceparent, so hops still land in one trace
@@ -412,9 +428,23 @@ type EntityLink struct {
 	Template string `yaml:"template"`
 }
 
-// Latency holds the config-defined latency injection rules.
+// Latency holds the config-defined latency injection rules. Defaults are
+// applied automatically at `ensemble up` (and reapplied on config
+// hot-reload, see orchestrator/reconcile.go) — Profiles are not: each is a
+// named, opt-in rule set pulled/applied only via `ensemble latency apply
+// <name>`, never on a plain `ensemble up`.
 type Latency struct {
-	Defaults []LatencyDefault `yaml:"defaults"`
+	Defaults []LatencyDefault          `yaml:"defaults"`
+	Profiles map[string]LatencyProfile `yaml:"profiles"`
+}
+
+// LatencyProfile points at a latency profile file — see
+// LatencyProfileFile/LoadLatencyProfile. Mirrors Readiness's single-File
+// shape.
+type LatencyProfile struct {
+	// File is the path to the profile's rules file, relative to the
+	// directory containing ensemble.yaml (Config.Dir) unless absolute.
+	File string `yaml:"file"`
 }
 
 // LatencyDefault is one latency rule: fixed delay or a p50/p95/p99 distribution.
@@ -485,11 +515,22 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 	c.Dir = dir
+	c.dotenv = dotenv
 
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// LookupEnv resolves name through the same precedence expandEnvVars uses
+// for "${VAR}" references: the real process environment first, then the
+// .env file (if any) found next to ensemble.yaml at Load time. Used for
+// values that name an environment variable rather than embedding it
+// directly — e.g. datadog.api_key_env — so a secret never has to appear in
+// ensemble.yaml itself.
+func (c *Config) LookupEnv(name string) (string, bool) {
+	return envLookup(c.dotenv)(name)
 }
 
 // ProfileNames returns every profile the config mentions — each distinct

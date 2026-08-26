@@ -19,6 +19,11 @@ type LatencyRule struct {
 	P95     float64 `json:"p95,omitempty"`
 	P99     float64 `json:"p99,omitempty"`
 	Enabled bool    `json:"enabled"`
+	// Source describes where this rule's values came from: empty for a
+	// manually `set` rule, otherwise a human-readable Datadog query +
+	// window (e.g. "datadog:p{P}:trace...{...} (last 60m)"). Purely
+	// informational — DelayFor ignores it.
+	Source string `json:"source,omitempty"`
 }
 
 // LatencyStore holds live-editable delay rules. All methods are safe for

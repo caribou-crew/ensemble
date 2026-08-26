@@ -58,9 +58,13 @@ func printLatencyRules(w io.Writer, jsonOut bool, res LatencyListResponse) int {
 		return printJSON(w, res)
 	}
 	tw := newTabwriter(w)
-	fmt.Fprintln(tw, "TARGET\tPATH\tFIXED(ms)\tP50\tP95\tP99\tENABLED")
+	fmt.Fprintln(tw, "TARGET\tPATH\tFIXED(ms)\tP50\tP95\tP99\tENABLED\tSOURCE")
 	for _, r := range res.Rules {
-		fmt.Fprintf(tw, "%s\t%s\t%g\t%g\t%g\t%g\t%t\n", r.Target, r.Path, r.FixedMs, r.P50, r.P95, r.P99, r.Enabled)
+		source := r.Source
+		if source == "" {
+			source = "manual"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%g\t%g\t%g\t%g\t%t\t%s\n", r.Target, r.Path, r.FixedMs, r.P50, r.P95, r.P99, r.Enabled, source)
 	}
 	tw.Flush()
 	return 0

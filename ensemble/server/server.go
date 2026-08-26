@@ -14,6 +14,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/ensemble/config"
+	dd "github.com/caribou-crew/ensemble/ensemble/datadog"
 	"github.com/caribou-crew/ensemble/ensemble/inspector"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 	"github.com/caribou-crew/ensemble/ensemble/server/ui"
@@ -29,6 +30,11 @@ type Deps struct {
 	Lat      *proxy.LatencyStore
 	Sessions *proxy.SessionManager
 	Version  string
+	// Datadog overrides the Client used by POST /api/latency/from-datadog
+	// and POST /api/latency/apply. Nil (the production default) builds a
+	// real dd.HTTPClient from Cfg's site/credentials at request time; tests
+	// inject a fake here instead.
+	Datadog dd.Client
 	// Insp, when set, backs the GET /api/databases*, GET
 	// /api/databases/{name}/schema|rows, and GET /api/inspector/stream
 	// endpoints. Nil disables them (501) — entity passthrough (GET

@@ -51,6 +51,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/latency", s.withAnnotation(s.handleLatencyDelete))
 	mux.HandleFunc("POST /api/latency/arm-all", s.withAnnotation(s.handleLatencyArmAll))
 	mux.HandleFunc("POST /api/latency/reset", s.withAnnotation(s.handleLatencyReset))
+	mux.HandleFunc("POST /api/latency/from-datadog", s.withAnnotation(s.handleLatencyFromDatadog))
+	mux.HandleFunc("POST /api/latency/apply", s.withAnnotation(s.handleLatencyApply))
 
 	mux.HandleFunc("POST /api/sessions", s.withAnnotation(s.handleSessionStart))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.withAnnotation(s.handleSessionEnd))

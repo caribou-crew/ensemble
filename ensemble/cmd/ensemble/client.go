@@ -236,6 +236,47 @@ func (c *Client) LatencyReset(ctx context.Context) (LatencyListResponse, error) 
 	return out, err
 }
 
+// LatencyFromDatadogRequest is POST /api/latency/from-datadog's body.
+type LatencyFromDatadogRequest struct {
+	Target        string `json:"target"`
+	Query         string `json:"query"`
+	WindowMinutes int    `json:"window_minutes,omitempty"`
+	Path          string `json:"path,omitempty"`
+	Enabled       *bool  `json:"enabled,omitempty"`
+}
+
+func (c *Client) LatencyFromDatadog(ctx context.Context, req LatencyFromDatadogRequest) (LatencyListResponse, error) {
+	var out LatencyListResponse
+	err := c.do(ctx, http.MethodPost, "/api/latency/from-datadog", req, &out)
+	return out, err
+}
+
+// LatencyApplyResult is one rule's outcome from POST /api/latency/apply —
+// always present, success or failure, per that endpoint's best-effort
+// design.
+type LatencyApplyResult struct {
+	Target  string  `json:"target"`
+	Path    string  `json:"path"`
+	OK      bool    `json:"ok"`
+	Error   string  `json:"error,omitempty"`
+	P50     float64 `json:"p50,omitempty"`
+	P95     float64 `json:"p95,omitempty"`
+	P99     float64 `json:"p99,omitempty"`
+	FixedMs float64 `json:"fixedMs,omitempty"`
+	Source  string  `json:"source,omitempty"`
+}
+
+// LatencyApplyResponse mirrors POST /api/latency/apply's {"results": [...]} body.
+type LatencyApplyResponse struct {
+	Results []LatencyApplyResult `json:"results"`
+}
+
+func (c *Client) LatencyApply(ctx context.Context, profile string) (LatencyApplyResponse, error) {
+	var out LatencyApplyResponse
+	err := c.do(ctx, http.MethodPost, "/api/latency/apply", map[string]string{"profile": profile}, &out)
+	return out, err
+}
+
 // --- traffic ---
 
 // TrafficResponse mirrors GET /api/traffic's body.

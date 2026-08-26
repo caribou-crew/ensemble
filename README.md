@@ -384,6 +384,91 @@ id, correlation id, and timings.
 Injected delay is reported separately from real upstream time, so a hop's
 measured duration stays honest — the true wall-clock is the sum of the two.
 
+### Latency profiles from Datadog
+
+Hand-picking a "realistic" delay means eyeballing a Datadog percentile graph
+and typing in roughly what it's been. `ensemble latency from-datadog` and
+`ensemble latency apply` do that lookup for you, pulling real p50/p95/p99
+numbers straight from Datadog into `LatencyStore`:
+
+```sh
+# one ad hoc rule — {P} is substituted with 50/95/99 and queried separately
+./ensemble latency from-datadog \
+  --target billing --path / \
+  --query 'p{P}:trace.http.server.request.duration{service:billing,env:prod}'
+# billing /: p50=45ms p95=120ms p99=340ms (source: datadog, last 60m)
+```
+
+Credentials come from the environment or `.env` next to `ensemble.yaml` —
+never from `ensemble.yaml` itself. The zero-config path needs nothing but
+`DD_API_KEY`/`DD_APP_KEY` (and optionally `DD_SITE`) set:
+
+```sh
+# .env — gitignored, same as any other secret file
+DD_API_KEY=...
+DD_APP_KEY=...
+```
+
+An optional top-level `datadog:` block customizes the site and *which* env
+vars carry the keys (never the key values themselves), plus a default query
+window and a service-name mapping for when ensemble's name and Datadog's
+service tag differ:
+
+```yaml
+datadog:
+  site: datadoghq.com              # default
+  api_key_env: DD_API_KEY          # default
+  app_key_env: DD_APP_KEY          # default
+  default_window_minutes: 60       # default
+  service_map:
+    statements: accounts-statements
+```
+
+A **latency profile** is a named, file-backed set of rules — mix Datadog
+pulls and plain fixed delays — applied together with one command:
+
+```yaml
+latency:
+  profiles:
+    production:
+      file: tools/latency-production.yaml   # relative to ensemble.yaml
+```
+
+```yaml
+# tools/latency-production.yaml
+rules:
+  - target: billing
+    path: /
+    from_datadog:
+      query: "p{P}:trace.http.server.request.duration{service:billing,env:prod}"
+      window_minutes: 60           # optional, falls back to datadog.default_window_minutes
+  - target: statements
+    path: /v3/statements
+    fixed_ms: 25
+```
+
+```sh
+./ensemble latency apply production
+# billing /: p50=45ms p95=120ms p99=340ms (source: datadog)
+# statements /v3/statements: fixed=25ms
+# 2 applied, 0 failed
+```
+
+Latency profiles are strictly **opt-in** — a plain `ensemble up` never reads
+or applies one; `apply` is a separate, explicit step. Applying is
+best-effort per rule: one rule's Datadog error (no data in the window, a bad
+query, an auth failure) is reported against that rule and never blocks the
+rest of the profile. `latency list` shows a pulled rule's `source` (`manual`
+for anything hand-set with `latency set`) so a suspicious number is always
+traceable back to the query and window it came from. Pulled rules are
+stored **disarmed** — arm them explicitly with `--enabled` or `latency
+arm-all --enabled`.
+
+Note the naming proximity to, but non-collision with, the top-level
+`profiles:` key (service activation lanes — see "Profiles as lanes" above):
+`latency.profiles` is a different concept at a different YAML path. Docs and
+`--help` say "latency profile" in full for exactly this reason.
+
 ### Readiness checks
 
 `health:` proves a process is listening; `on_ready` proves seeds/migrations ran.
@@ -431,7 +516,7 @@ ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700] [--tui]
 ensemble dashboard [--no-open]
 ensemble tui
 ensemble status | ready [--timeout DURATION] | down | seed <name>
-ensemble latency list | set | reset | arm-all
+ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
 ensemble traffic [--since N] [--errors-only] [--follow]
 ensemble trace <traceId> [--export har|curl|raw]
 ```

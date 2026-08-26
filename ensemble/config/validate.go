@@ -200,8 +200,55 @@ func (c *Config) Validate() error {
 	}
 
 	errs = append(errs, c.validateReadiness()...)
+	errs = append(errs, c.validateLatencyProfiles()...)
 
 	return errors.Join(errs...)
+}
+
+// validateLatencyProfiles checks that every latency.profiles entry's file
+// exists and parses, and that every rule in it declares exactly one source
+// (from_datadog or fixed_ms) and a target that resolves the same way a
+// gateway route's service would ("*" also allowed, matching
+// proxy.LatencyRule's own wildcard target). The parsed profile files are
+// cached on c (see Config.LatencyProfile) so `ensemble latency apply`
+// doesn't re-read/re-parse them at runtime.
+func (c *Config) validateLatencyProfiles() []error {
+	if len(c.Latency.Profiles) == 0 {
+		return nil
+	}
+	var errs []error
+	profiles := make(map[string]*LatencyProfileFile, len(c.Latency.Profiles))
+
+	for name, p := range c.Latency.Profiles {
+		if p.File == "" {
+			errs = append(errs, fmt.Errorf("latency profile %q: file is required", name))
+			continue
+		}
+		f, err := LoadLatencyProfile(c.Dir, p)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for i, rule := range f.Rules {
+			if !rule.HasExactlyOneSource() {
+				errs = append(errs, fmt.Errorf("latency profile %q: rule %d (%s %s): exactly one of from_datadog or fixed_ms is required", name, i, rule.Target, rule.Path))
+			}
+			if rule.FromDatadog != nil && rule.FromDatadog.Query == "" {
+				errs = append(errs, fmt.Errorf("latency profile %q: rule %d (%s %s): from_datadog.query is required", name, i, rule.Target, rule.Path))
+			}
+			if rule.Target != "*" {
+				if _, _, ok := c.RoutablePort(rule.Target); !ok {
+					errs = append(errs, fmt.Errorf("latency profile %q: rule %d: references unknown service/stub %q", name, i, rule.Target))
+				}
+			}
+		}
+		profiles[name] = f
+	}
+
+	if len(errs) == 0 {
+		c.latencyProfiles = profiles
+	}
+	return errs
 }
 
 // validateReadiness checks readiness.file exists and parses, that its

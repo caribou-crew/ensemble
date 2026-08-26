@@ -72,6 +72,20 @@ func TestDistributionSamplesQuantileAnchors(t *testing.T) {
 	}
 }
 
+func TestSourceRoundTripsAndIsIgnoredByDelayFor(t *testing.T) {
+	s := NewLatencyStore(nil)
+	src := "datadog:p{P}:trace.http.server.request.duration{service:billing,env:prod} (last 60m)"
+	s.Set(LatencyRule{Target: "billing", Path: "/", P50: 45, P95: 120, P99: 340, Enabled: true, Source: src})
+
+	rules := s.Rules()
+	if len(rules) != 1 || rules[0].Source != src {
+		t.Fatalf("source did not round-trip: %+v", rules)
+	}
+	if got := s.DelayFor("billing", "/x"); got == 0 {
+		t.Fatalf("rule with Source set did not delay: %v", got)
+	}
+}
+
 func TestSetUpsertsByTargetAndPath(t *testing.T) {
 	s := NewLatencyStore(nil)
 	s.Set(LatencyRule{Target: "bff", Path: "/x", FixedMs: 10, Enabled: true})
