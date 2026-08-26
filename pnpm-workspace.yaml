@@ -1,6 +1,10 @@
 packages:
   - dashboard/*
   - adapters/*
+  # The retrace npm distribution: the @caribou-crew/retrace wrapper plus one
+  # package per platform, each carrying a prebuilt binary (populated by
+  # scripts/prepare-npm-retrace.mjs at release time — see npm/retrace/README.md).
+  - npm/*
   # The sample stack's browser client is a workspace member so it can depend
   # on adapters/playwright through `workspace:*` — a real consumer link
   # against the same @playwright/test instance the suite runs on. npm's

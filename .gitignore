@@ -33,6 +33,14 @@ coverage/
 # package's tracked bin directory (Task 17) — not a build-output dir at all.
 /bin/
 
+# The compiled retrace binaries scripts/prepare-npm-retrace.mjs stages into
+# npm/retrace-*/bin/ at release time. The shim script (npm/retrace/bin/) and
+# the platform packages' package.json are tracked; the binary itself never
+# is — it only ever exists in a release runner or a local test of the pack
+# script, and would blow up repo size if committed.
+npm/retrace-*/bin/retrace
+.npm-stage/
+
 # `ensemble up`'s own run-time state (hop log, build staleness stamps, pid
 # files) — generated fresh by every run, wherever ensemble.yaml lives.
 .ensemble/

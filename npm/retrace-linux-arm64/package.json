@@ -1,0 +1,12 @@
+{
+  "name": "@caribou-crew/retrace-linux-arm64",
+  "version": "0.0.1",
+  "description": "Prebuilt retrace binary for linux/arm64. Installed automatically as an optionalDependency of @caribou-crew/retrace — not for direct use.",
+  "private": true,
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/retrace"],
+  "scripts": {
+    "build": "true"
+  }
+}
