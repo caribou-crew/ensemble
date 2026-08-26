@@ -114,9 +114,16 @@ never delete it.
       `stack: { changed: [svc…] }` and triage can emit `stack`.
 
 ## 13. Run supervision (Task 4)
-- [ ] `finalized` file written last; `retrace runs` flags dirs without it
-      older than N minutes as `abandoned`; `retrace check --proxy <url>` asks
-      the marker door `/identify` and reports owner pid + live run id.
+- [x] `finalized` file written last; `retrace runs` flags dirs without it
+      as `abandoned`; `retrace check --url <url>` asks the marker door
+      `/identify` and reports owner pid + live run id.
+      Amended in implementation: a `running.json` owner record (pid, proxy
+      URL, marker URL) is written at run start and cleared by finalize, so
+      abandonment is decided by whether the OWNER is still alive; the
+      "older than N minutes" bound survives only as the fallback for runs
+      that recorded no owner (`--abandoned-after`, default 15m). Flag is
+      `--url`, not `--proxy`: `/identify` is on the marker door, and it
+      cannot live on the proxy, whose handler forwards every path.
 
 ## 14. Agent recipe in-repo (docs)
 - [ ] `AGENTS.md` at root + `.claude/skills/retrace-iterate/SKILL.md`:

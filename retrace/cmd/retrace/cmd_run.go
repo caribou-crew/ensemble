@@ -516,7 +516,24 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	if s.Mode == runs.ModeEnsemble {
 		m.Hops = &runs.Counts{Calls: len(hops), Recorded: true}
 	}
-	return m, runs.WriteManifest(s.Paths, &m)
+	if err := runs.WriteManifest(s.Paths, &m); err != nil {
+		return m, err
+	}
+	// The finalized sentinel is the LAST write into this directory, and
+	// nothing may be written after it — that ordering is the entire
+	// guarantee. `retrace runs` reads its absence as "still running or
+	// abandoned", so finalizing before the manifest landed would advertise
+	// a complete run whose manifest might be truncated.
+	//
+	// A failed WriteManifest above returns WITHOUT finalizing, on purpose:
+	// a run that could not record its own results is not complete, and
+	// leaving the directory un-finalized is what makes `retrace runs`
+	// surface it instead of listing it as clean.
+	return m, runs.Finalize(s.Paths, runs.Finalized{
+		RunID:      s.RunID,
+		FinishedAt: time.Now(),
+		ExitCode:   exitCode,
+	})
 }
 
 // assessTrust is the seam Task 4 left and Task 6 fills: it turns everything

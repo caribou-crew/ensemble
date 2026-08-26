@@ -28,7 +28,30 @@ Usage:
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
   retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
+  retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
+  retrace check [--url URL] [--app NAME] [--flow NAME] [--json] [--abandoned-after DUR]
   retrace --version
+
+Run supervision:
+  A run directory is complete only when it holds a ` + "`finalized`" + ` file, written
+  last, after the manifest. ` + "`runs`" + ` lists every recording and says whether it is
+  complete, still running, or abandoned — a capture that died without finalizing
+  and may have left a partial wire plane and a bound port behind.
+
+  A run judged "running" recorded an owner process that is still alive; the
+  --abandoned-after bound only applies to runs that recorded no owner at all, so
+  a suite that legitimately runs for an hour is never called abandoned.
+
+  ` + "`check`" + ` is the gating half. With --url it asks one marker door who owns it
+  and reports the pid and run id — the answer to "port already in use" that lsof
+  cannot give. With no flags it sweeps every un-finalized run and probes the
+  doors they recorded, which is what distinguishes a reused pid from a run that
+  is genuinely still there.
+
+  In both forms ` + "`check`" + ` exits 0 when nothing of retrace's needs attention and
+  1 when something does: for --url, 1 means a retrace run holds that address
+  (so ` + "`retrace check --url X && <bind X>`" + ` proceeds only when it is clear);
+  for the sweep, 1 means abandoned runs were found.
 
 Recording more than one flow:
   With neither --flow nor --flows, run records EVERY flow in retrace.yaml, in
@@ -91,6 +114,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdServe(args[1:], stdout, stderr)
 	case "export":
 		return cmdExport(args[1:], stdout, stderr)
+	case "runs":
+		return cmdRuns(args[1:], stdout, stderr)
+	case "check":
+		return cmdCheck(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}

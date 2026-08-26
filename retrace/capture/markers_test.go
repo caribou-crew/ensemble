@@ -1,8 +1,10 @@
 package capture
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -154,5 +156,169 @@ func TestOnAdmittedCountsWhatTheGuardAdmittedNotWhatTheRouterAccepted(t *testing
 				t.Fatalf("onAdmitted fired %d time(s), want %d — the hook counts what the GUARD admitted, not what the ROUTER accepted", fired, tc.wantFired)
 			}
 		})
+	}
+}
+
+// TestIdentifyNamesTheOwningRun covers the endpoint's whole reason to
+// exist: turning a bare port into "which retrace run holds this".
+func TestIdentifyNamesTheOwningRun(t *testing.T) {
+	dir := t.TempDir()
+	p := runs.Paths{RunDir: dir}
+	started := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	if err := runs.MarkRunning(p, runs.Running{
+		App: "shop", Flow: "checkout", RunID: "20260826T090000Z-abc1234",
+		ProxyURL: "http://127.0.0.1:53221", StartedAt: started,
+	}); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	srv := httptest.NewServer(NewMarkerDoor(p, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/identify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["tool"] != "retrace" {
+		t.Errorf("tool = %v, want retrace", got["tool"])
+	}
+	if got["ownerRecorded"] != true {
+		t.Errorf("ownerRecorded = %v, want true", got["ownerRecorded"])
+	}
+	// The pid must be THIS process — MarkRunning stamps it, and a door that
+	// echoed a caller-supplied pid would name a process that never existed.
+	if pid, _ := got["pid"].(float64); int(pid) != os.Getpid() {
+		t.Errorf("pid = %v, want %d", got["pid"], os.Getpid())
+	}
+	for k, want := range map[string]string{
+		"app": "shop", "flow": "checkout",
+		"runId": "20260826T090000Z-abc1234", "proxyUrl": "http://127.0.0.1:53221",
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %v, want %q", k, got[k], want)
+		}
+	}
+}
+
+// TestIdentifyWithNoOwnerRecordStillProvesItIsRetrace: the replay server
+// opens a marker door and writes no owner record. Answering at all is the
+// first half of the question ("is this retrace?") and must not depend on
+// the second half being answerable.
+func TestIdentifyWithNoOwnerRecordStillProvesItIsRetrace(t *testing.T) {
+	srv := httptest.NewServer(NewMarkerDoor(runs.Paths{RunDir: t.TempDir()}, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/identify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a door with no owner record is still a retrace door", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["tool"] != "retrace" {
+		t.Errorf("tool = %v, want retrace", got["tool"])
+	}
+	if got["ownerRecorded"] != false {
+		t.Errorf("ownerRecorded = %v, want false", got["ownerRecorded"])
+	}
+	if _, present := got["pid"]; present {
+		t.Error("a door with no owner record reported a pid")
+	}
+}
+
+// TestIdentifyIsNotCountedAsTraffic pins the structural split in
+// NewMarkerDoorCounted. RequestsSeen()==0 is how a broken capture is
+// detected; /identify is the tool asking about itself, so running
+// `retrace check` against a live capture must not be able to disarm that
+// verdict for the run it is inspecting.
+func TestIdentifyIsNotCountedAsTraffic(t *testing.T) {
+	fired := 0
+	srv := httptest.NewServer(NewMarkerDoorCounted(runs.Paths{RunDir: t.TempDir()}, nil, func() { fired++ }))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/identify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if fired != 0 {
+		t.Fatalf("onAdmitted fired %d time(s) for /identify, want 0 — a supervision probe is not app traffic", fired)
+	}
+
+	// The counter must still work for a real marker on the same door, or
+	// this test would pass just as well against a hook that never fires.
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/group", strings.NewReader(`{"name":"checkout"}`))
+	req.Header.Set("Content-Type", "application/json")
+	mresp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mresp.Body.Close()
+	if fired != 1 {
+		t.Fatalf("onAdmitted fired %d time(s) for a real marker, want 1", fired)
+	}
+}
+
+// TestIdentifyIsGuarded: the endpoint discloses a pid and a run id, so it
+// sits behind the same guard the state-changing markers do — loopback is
+// not a defence against a browser tab.
+func TestIdentifyIsGuarded(t *testing.T) {
+	srv := httptest.NewServer(NewMarkerDoor(runs.Paths{RunDir: t.TempDir()}, nil))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/identify", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-site /identify status = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestIdentifyReportsAnUnreadableOwnerRecord: "not a retrace run dir" and
+// "a run dir this build cannot parse" must not look alike — only the
+// second is a reason to go read the file.
+func TestIdentifyReportsAnUnreadableOwnerRecord(t *testing.T) {
+	dir := t.TempDir()
+	p := runs.Paths{RunDir: dir}
+	if err := os.WriteFile(p.RunningPath(), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMarkerDoor(p, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/identify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["tool"] != "retrace" {
+		t.Errorf("tool = %v, want retrace", got["tool"])
+	}
+	if got["error"] == nil || got["error"] == "" {
+		t.Error("an unreadable owner record was reported as no owner at all")
 	}
 }

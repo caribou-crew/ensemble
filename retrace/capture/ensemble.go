@@ -72,7 +72,7 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		return nil, fmt.Errorf("register session with ensemble: %w", err)
 	}
 	s := &Session{
-		Paths: p, RunID: runID, Mode: runs.ModeEnsemble, StartedAt: now(),
+		Paths: p, RunID: runID, App: o.App, Flow: o.Flow, Mode: runs.ModeEnsemble, StartedAt: now(),
 		ProxyURL:    "http://" + edge,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		ens:         c,

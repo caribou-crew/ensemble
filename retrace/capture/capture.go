@@ -77,8 +77,14 @@ func defaultHost(h string) string {
 }
 
 type Session struct {
-	Paths       runs.Paths
-	RunID       string
+	Paths runs.Paths
+	RunID string
+	// App and Flow are carried on the Session (not only in the Paths they
+	// were joined into) because the owner record names them as data, and
+	// parsing them back out of a filesystem path would be a second, weaker
+	// source of truth for values PathsFor already validated.
+	App         string
+	Flow        string
 	ProxyURL    string
 	MarkerURL   string
 	UpstreamURL string
@@ -164,7 +170,7 @@ func StartStandalone(o Options) (*Session, error) {
 	}
 
 	s := &Session{
-		Paths: p, RunID: runID, Mode: runs.ModeStandalone,
+		Paths: p, RunID: runID, App: o.App, Flow: o.Flow, Mode: runs.ModeStandalone,
 		StartedAt: now(), rec: rec, prox: prox, stopProxy: stop, wireFile: wire,
 		ProxyURL:    "http://" + addr,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
@@ -178,6 +184,19 @@ func StartStandalone(o Options) (*Session, error) {
 	return s, nil
 }
 
+// startMarkerDoor opens the marker/supervision door and, once its address
+// is known, claims the run directory by writing the owner record.
+//
+// The two are one step on purpose. This is the last thing both constructors
+// do, and it is the moment the run becomes addressable: MarkerURL does not
+// exist until the listener is bound, and the owner record's whole job is to
+// let someone map a bound port back to this run. Splitting them into two
+// calls in two constructors is how one of them eventually forgets, leaving
+// a directory that holds listeners nothing can trace back.
+//
+// The record is written BEFORE the test command runs (both constructors
+// return into that), so a command that crashes the process on its first
+// line still leaves a directory that names its owner.
 func (s *Session) startMarkerDoor(now func() time.Time) error {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -190,7 +209,19 @@ func (s *Session) startMarkerDoor(now func() time.Time) error {
 	s.markerSrv = &http.Server{Handler: door}
 	go s.markerSrv.Serve(ln)
 	s.MarkerURL = "http://" + ln.Addr().String()
-	return nil
+
+	// A run that cannot record its owner is a run nothing can supervise, so
+	// this is a hard failure rather than a warning: both constructors treat
+	// a startMarkerDoor error as fatal and clean up the directory, which is
+	// the right outcome — better no run than an untraceable one.
+	return runs.MarkRunning(s.Paths, runs.Running{
+		App:       s.App,
+		Flow:      s.Flow,
+		RunID:     s.RunID,
+		ProxyURL:  s.ProxyURL,
+		MarkerURL: s.MarkerURL,
+		StartedAt: s.StartedAt,
+	})
 }
 
 // Env is the test-command handshake. RETRACE_UPSTREAM_URL is conditional,
