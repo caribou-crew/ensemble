@@ -119,7 +119,11 @@
   color: var(--status-blue);
 }
 
-.hop-table__status--4xx,
+.hop-table__status--4xx {
+  color: var(--status-amber);
+  font-weight: 600;
+}
+
 .hop-table__status--5xx,
 .hop-table__status--error {
   color: var(--status-red);
