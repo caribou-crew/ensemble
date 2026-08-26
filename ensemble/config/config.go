@@ -26,6 +26,16 @@ type Config struct {
 	Profiles  map[string][]string `yaml:"profiles"`
 	Redact    []string            `yaml:"redact"` // extra redaction keys
 	OnReady   OnReady             `yaml:"on_ready"`
+	// Readiness configures post-on_ready readiness checks — see the
+	// Readiness type and ReadinessChecks() for the parsed checks file it
+	// points at. Nil (the default) means no readiness checks are
+	// configured; the stack is considered ready as soon as on_ready
+	// completes.
+	Readiness *Readiness `yaml:"readiness"`
+	// readinessChecks caches the parsed contents of Readiness.File —
+	// populated by Validate so a config error in the checks file itself
+	// (bad YAML, unknown service) is caught at load time, not first use.
+	readinessChecks *ReadinessChecksFile `yaml:"-"`
 	// TraceHeader names a stack's own correlation header (e.g.
 	// "x-local-trace-id") — read as a fallback trace id whenever a request
 	// carries no real W3C traceparent, so hops still land in one trace

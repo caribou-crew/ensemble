@@ -28,6 +28,7 @@ Usage:
   ensemble dashboard [--api-url URL] [--no-open]
   ensemble tui [--api-url URL]
   ensemble status [--api-url URL] [--json]
+  ensemble ready [--api-url URL] [--json] [--timeout DURATION]
   ensemble down [--api-url URL] [--json] [profile...]   (with profile names: deactivates just those)
   ensemble profiles [--api-url URL] [--json]
   ensemble seed <name> [--api-url URL] [--json]
@@ -74,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTUI(args[1:], stdout, stderr)
 	case "status":
 		return cmdStatus(args[1:], stdout, stderr)
+	case "ready":
+		return cmdReady(args[1:], stdout, stderr)
 	case "down":
 		return cmdDown(args[1:], stdout, stderr)
 	case "seed":

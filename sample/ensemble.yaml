@@ -216,6 +216,15 @@ gateways:
     routes:
       - { prefix: /bff, service: storefront, strip_prefix: true }
 
+# See tools/readiness.yaml: checks that run once, after on_ready, asserting
+# the seeded stack is actually queryable end-to-end — not just that every
+# service reports healthy. `ensemble ready` blocks on this; `ensemble up`
+# itself does not (see the readiness-checks proposal's async design).
+readiness:
+  file: tools/readiness.yaml
+  timeout_s: 30
+  retry_interval_s: 2
+
 seeds:
   baseline:
     sql:

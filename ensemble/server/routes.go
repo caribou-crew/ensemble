@@ -169,7 +169,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mem") == "1" {
 		states = s.Orch.WithMemory(r.Context(), states)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"services": states})
+	writeJSON(w, http.StatusOK, map[string]any{"services": states, "readiness": s.Orch.Readiness()})
 }
 
 // TopologyNode is one node in the topology graph: a service, database,

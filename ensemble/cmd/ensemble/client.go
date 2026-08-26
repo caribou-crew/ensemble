@@ -101,7 +101,8 @@ func apiError(method, path string, status int, body []byte) error {
 
 // StatusResponse mirrors GET /api/status's body.
 type StatusResponse struct {
-	Services []orchestrator.ServiceState `json:"services"`
+	Services  []orchestrator.ServiceState    `json:"services"`
+	Readiness orchestrator.ReadinessSnapshot `json:"readiness"`
 }
 
 func (c *Client) Status(ctx context.Context) (StatusResponse, error) {

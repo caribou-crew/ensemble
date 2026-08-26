@@ -199,7 +199,56 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	errs = append(errs, c.validateReadiness()...)
+
 	return errors.Join(errs...)
+}
+
+// validateReadiness checks readiness.file exists and parses, that its
+// timeout/retry fields aren't negative, and that every check's service
+// resolves the same way a gateway route's service would — a bad reference
+// here should fail at config-load time, not at first check execution.
+// The parsed checks file is cached on c (see Config.ReadinessChecks) so
+// the orchestrator doesn't re-read/re-parse it at runtime.
+func (c *Config) validateReadiness() []error {
+	if c.Readiness == nil {
+		return nil
+	}
+	var errs []error
+	if c.Readiness.TimeoutS < 0 {
+		errs = append(errs, fmt.Errorf("readiness: timeout_s must be >= 0"))
+	}
+	if c.Readiness.RetryIntervalS < 0 {
+		errs = append(errs, fmt.Errorf("readiness: retry_interval_s must be >= 0"))
+	}
+	if c.Readiness.File == "" {
+		errs = append(errs, fmt.Errorf("readiness: file is required"))
+		return errs
+	}
+
+	checks, err := LoadReadinessChecks(c.Dir, *c.Readiness)
+	if err != nil {
+		errs = append(errs, err)
+		return errs
+	}
+
+	seen := make(map[string]bool, len(checks.Checks))
+	for i, chk := range checks.Checks {
+		switch {
+		case chk.Name == "":
+			errs = append(errs, fmt.Errorf("readiness: check %d: name is required", i))
+		case seen[chk.Name]:
+			errs = append(errs, fmt.Errorf("readiness: duplicate check name %q", chk.Name))
+		}
+		seen[chk.Name] = true
+		if _, _, ok := c.RoutablePort(chk.Service); !ok {
+			errs = append(errs, fmt.Errorf("readiness: check %q: references unknown service/stub %q", chk.Name, chk.Service))
+		}
+	}
+	if len(errs) == 0 {
+		c.readinessChecks = checks
+	}
+	return errs
 }
 
 // hasServiceOrDatabase reports whether name identifies a declared service or

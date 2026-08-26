@@ -32,5 +32,15 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.Name, s.Status, s.Placement, s.Variant, s.PID, s.Port, s.ProxyPort, s.LastErr)
 	}
 	tw.Flush()
+
+	if len(res.Readiness.Checks) > 0 {
+		passed := 0
+		for _, c := range res.Readiness.Checks {
+			if c.Passed {
+				passed++
+			}
+		}
+		fmt.Fprintf(stdout, "\nREADINESS: %d/%d passed (%s)\n", passed, len(res.Readiness.Checks), res.Readiness.State)
+	}
 	return 0
 }

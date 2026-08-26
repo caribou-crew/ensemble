@@ -384,17 +384,61 @@ id, correlation id, and timings.
 Injected delay is reported separately from real upstream time, so a hop's
 measured duration stays honest — the true wall-clock is the sum of the two.
 
+### Readiness checks
+
+`health:` proves a process is listening; `on_ready` proves seeds/migrations ran.
+Neither proves the seeded data is actually queryable end-to-end — a stack can
+report every service `healthy` while being unusable (wrong schema, a silently
+failed seed, misconfigured auth). A top-level `readiness:` key closes that gap:
+
+```yaml
+readiness:
+  file: tools/readiness.yaml   # relative to ensemble.yaml
+  timeout_s: 30                # total retry budget (default 60)
+  retry_interval_s: 2           # delay between retries of a still-failing check (default 5)
+```
+
+```yaml
+# tools/readiness.yaml
+checks:
+  - name: catalog-healthy
+    service: catalog             # resolved the same way a gateway route resolves a service
+    path: /healthz
+    assert:
+      status: 200
+
+  - name: statements-seeded
+    service: statements
+    path: /v3/statements/fa5e4374-0000-4000-8000-000000004374
+    headers_from: ./readiness-auth.sh   # a script; its stdout lines become request headers
+    assert:
+      status: 200
+      body_jq: ".data | length > 0"     # evaluated against the JSON response body
+```
+
+Checks run once, after `on_ready` completes, retried until every check has
+passed or `timeout_s` elapses — a check that already passed is never
+re-executed. This runs in the background, so it never delays `ensemble up`
+returning; `ensemble ready` (below) is the thing that blocks on it, and
+`ensemble status` reports a summary (`READINESS: 2/2 passed`) alongside the
+per-service table. See `sample/tools/readiness.yaml` for a complete example,
+including the `headers_from` auth pattern.
+
 ### CLI
 
 ```
 ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700] [--tui]
 ensemble dashboard [--no-open]
 ensemble tui
-ensemble status | down | seed <name>
+ensemble status | ready [--timeout DURATION] | down | seed <name>
 ensemble latency list | set | reset | arm-all
 ensemble traffic [--since N] [--errors-only] [--follow]
 ensemble trace <traceId> [--export har|curl|raw]
 ```
+
+`ensemble ready` blocks until the stack's readiness checks resolve (or
+`--timeout` elapses), exiting 0/1 — the deterministic gate for CI:
+`ensemble up && ensemble ready && pnpm test:e2e`.
 
 Every command takes `--json`, and every one is a thin client over the REST API,
 so anything the CLI does an agent or script can do over HTTP. `ENSEMBLE_API`

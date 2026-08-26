@@ -71,6 +71,19 @@ time curl -H "Authorization: Bearer demo-token" http://127.0.0.1:9080/products
 ensemble latency reset   # clear it
 ```
 
+### Readiness
+
+`tools/readiness.yaml` (wired via ensemble.yaml's `readiness:` key) checks
+catalog-svc's `/healthz` and ops-bff's `/healthz` (with a demo
+`headers_from` auth script) once `ensemble up` has brought the stack
+healthy. `ensemble ready` blocks on it:
+
+```sh
+ensemble up -c ensemble.yaml
+ensemble ready       # blocks until both checks pass (or 30s), exits 0/1
+ensemble status      # also shows "READINESS: 2/2 passed"
+```
+
 ## How the trace stays connected
 
 - ensemble's proxy stamps `traceparent`/`baggage` automatically on every hop

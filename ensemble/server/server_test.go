@@ -213,6 +213,28 @@ func TestStatusShape(t *testing.T) {
 	}
 }
 
+// TestStatusReadinessDefaultsToReady confirms /api/status's new readiness
+// field is additive: a stack with no readiness: key configured reports
+// ready with no checks, once on_ready (here, trivially empty) completes —
+// existing consumers decoding only "services" are unaffected.
+func TestStatusReadinessDefaultsToReady(t *testing.T) {
+	e := newTestEnv(t)
+	_, body := e.get(t, "/api/status")
+
+	var got struct {
+		Readiness orchestrator.ReadinessSnapshot `json:"readiness"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Readiness.State != orchestrator.ReadinessReady {
+		t.Errorf("readiness.state = %q, want %q", got.Readiness.State, orchestrator.ReadinessReady)
+	}
+	if len(got.Readiness.Checks) != 0 {
+		t.Errorf("readiness.checks = %+v, want none", got.Readiness.Checks)
+	}
+}
+
 func TestTopologyShape(t *testing.T) {
 	e := newTestEnv(t)
 	resp, body := e.get(t, "/api/topology")

@@ -41,13 +41,13 @@ const (
 
 // ServiceState is a snapshot of one supervised node (service or database).
 type ServiceState struct {
-	Name      string    `json:"name"`
-	Status    Status    `json:"status"`
-	Placement string    `json:"placement"`     // "native" | "docker"
-	PID       int       `json:"pid,omitempty"` // native only; 0 for docker
-	ProxyPort int       `json:"proxyPort,omitempty"`
-	Port      int       `json:"port,omitempty"`
-	Variant   string    `json:"variant,omitempty"` // current config.Service variant, if it declares any
+	Name      string `json:"name"`
+	Status    Status `json:"status"`
+	Placement string `json:"placement"`     // "native" | "docker"
+	PID       int    `json:"pid,omitempty"` // native only; 0 for docker
+	ProxyPort int    `json:"proxyPort,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	Variant   string `json:"variant,omitempty"` // current config.Service variant, if it declares any
 	// Kind mirrors config.Service.Kind (resolved through the current
 	// variant, if any) — a free-form dashboard badge, empty meaning
 	// "service". Named Kind, not Type, to avoid colliding with the
@@ -175,6 +175,16 @@ type Orchestrator struct {
 	// right after New, mirroring SQLRunner/DBReady. Nil only in tests that
 	// never configure a stub.
 	Rec *proxy.Recorder
+
+	// readinessMu guards readinessState/readinessCheckStates, separately
+	// from mu: the readiness retry loop (see readiness.go) makes HTTP
+	// calls and must never do so while holding mu, the lock every other
+	// state transition in this file is guarded by.
+	readinessMu sync.Mutex
+	// readinessState is "" (reported as ReadinessPending) until Up decides
+	// one way or the other — see beginReadiness.
+	readinessState       ReadinessOverallState
+	readinessCheckStates []ReadinessCheckState
 }
 
 // DBReadyFunc reports whether name's database is ready to serve real
@@ -600,11 +610,19 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 
 	// on_ready only runs once every active node came up clean — a partial
 	// stack (see the per-node failure handling above) isn't "ready" in the
-	// sense a seed script or postinstall step cares about.
+	// sense a seed script or postinstall step cares about. Readiness
+	// checks (see readiness.go) are gated the same way: they only begin
+	// once on_ready itself has succeeded, never against a stack that
+	// on_ready hasn't finished preparing.
 	if len(errs) == 0 {
 		if err := o.runOnReady(ctx); err != nil {
 			errs = append(errs, err)
+			o.failReadinessIfConfigured()
+		} else {
+			o.beginReadiness(ctx)
 		}
+	} else {
+		o.failReadinessIfConfigured()
 	}
 
 	// The baseline the next Reconcile diffs against — taken regardless of
