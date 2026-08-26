@@ -6,8 +6,8 @@ their config/JSON shape is fixed *before* the task that owns that surface lands.
 
 ## What
 
-Fourteen additions to retrace/ensemble, drawn from an audit of the the JS prototype /
-local-stack "closed loop" against this repo (code, specs, Phase 4 plan).
+Fourteen additions to retrace/ensemble, drawn from an audit of the JS prototype and a
+consumer stack that used it — the "closed loop" against this repo (code, specs, Phase 4 plan).
 Every item is a **generic hook or a gate**, never a topology assumption: the
 tool must not know what Metro, simctl, a seed user, or a card stack is. Consumer
 repos encode their own traps through the hooks.

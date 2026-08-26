@@ -25,7 +25,7 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 - Every dashboard/TUI capability reachable via REST/SSE JSON first (API-first parity).
 - Redaction at capture, never post-hoc.
 - All CLIs emit `--json` for every read command; exit codes gate CI.
-- Golden-test fixtures ported from `/Users/steven/dev/oss/the prototype's test/` and
+- Golden-test fixtures ported from the JS prototype's `test/` fixtures and
   `local-stack/web/src/**/*.test.*` wherever a behavior is retained.
 - `go test -race ./...` and `pnpm test` green at every commit.
 
@@ -39,7 +39,7 @@ React 19 + Vite + TS for dashboard, node:test→vitest for TS, GoReleaser.
 
 - [x] 1.1 `core/trace`: Hop struct + NDJSON codec + schema version; W3C
       traceparent/baggage parse+stamp helpers (`correlationId`, `retrace-run`
-      keys). Golden tests from the JS prototype `hops` fixtures.
+      keys). Golden tests from the prototype's `hops` fixtures.
       Produces: `trace.Hop`, `trace.ParseCtx(header) Ctx`, `trace.Ctx.Child()`.
 - [x] 1.2 `core/trace`: redaction (default header set + user list, applied at
       construction); body size-capping with truncation markers.
@@ -114,13 +114,13 @@ review UI exist.
       (DPoP et al.) can sign against upstream while transport goes through
       the proxy — see design.md §6.1.2.
 - [ ] 4.2 `retrace/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
-      integer/semver/custom/ignore/exact). Golden tests from the JS prototype
+      integer/semver/custom/ignore/exact). Golden tests from the prototype
       `wire-rules`/`matchers` fixtures.
 - [ ] 4.3 `retrace/replay`: strict mock server from a reference bundle
       (match via rules; unmatched → fail + miss report); `retrace revalidate`
       against a live stack.
 - [ ] 4.4 `retrace/diff`: pixel (pixelmatch port: thresholds, masks, border
-      trim, A/B/overlay/diff PNGs — golden images from the JS prototype), wire
+      trim, A/B/overlay/diff PNGs — golden images from the prototype), wire
       (pairing, field-level, LIS reorder), hop (added/removed calls,
       hopRequire), unexpected-status, perf budgets, OpenAPI conformance;
       unified summary + `--json` + exit codes.

@@ -21,7 +21,7 @@ signal that means "this stack is ready for real traffic," only "these processes 
 - Add a `READY` signal to the orchestrator surfaced by `ensemble status` (which checks
   passed/failed, not just per-service health) and a new `ensemble ready` CLI command
   that blocks until ready-or-timeout and exits 0/1 (with a `--json` form), so CI and
-  tools like retrace/the JS prototype have a single deterministic gate to wait on.
+  tools like retrace have a single deterministic gate to wait on.
 
 ## Capabilities
 

@@ -11,8 +11,8 @@ import (
 const Redacted = "[redacted]"
 
 // defaultRedactHeaders are always redacted regardless of user config —
-// redaction happens at capture, never post-hoc. Beyond the four the JS prototype
-// shipped with, these are the headers that carry a bearer credential by
+// redaction happens at capture, never post-hoc. Beyond the original four,
+// these are the headers that carry a bearer credential by
 // definition, so a capture that leaked them would leak an account: the
 // proxy-auth twin of Authorization, and the API-key/session-token headers
 // AWS, GCP, and most gateways use.
@@ -45,7 +45,7 @@ var defaultRedactQuery = func() map[string]bool {
 
 // Redactor scrubs sensitive headers and JSON body fields and caps body
 // size. The user key list applies to both headers and body field names
-// (the JS prototype semantics). maxBody <= 0 means no cap.
+// (prototype semantics). maxBody <= 0 means no cap.
 type Redactor struct {
 	keys    map[string]bool // lowercased; headers AND body fields
 	maxBody int

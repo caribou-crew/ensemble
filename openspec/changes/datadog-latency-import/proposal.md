@@ -5,7 +5,7 @@ today means manually opening Datadog, eyeballing a percentile graph, and typing
 numbers in by hand. Without production-shaped latency, local dev and e2e tests
 run at localhost speed, which hides timeout bugs, race conditions, and UX
 problems that only surface under real network delay. The predecessor tool
-(local-stack) had `lcs latency from-datadog` for exactly this; ensemble has
+(a consumer stack) had a `latency from-datadog` command for exactly this; ensemble has
 no equivalent.
 
 ## What Changes

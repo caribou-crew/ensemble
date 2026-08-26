@@ -130,7 +130,7 @@ func TestSortedKeysGivesDeterministicPrecedenceWithinOneRawRule(t *testing.T) {
 
 // TestDoubleStarSpansZeroSegments pins m4: '**' must be able to span zero
 // segments, matching the doc comment's own promise ("including none"), and
-// covers two the JS prototype cases (test/wire-rules.test.mjs:56,60) the brief's
+// covers two prototype cases (test/wire-rules.test.mjs:56,60) the brief's
 // table omitted.
 func TestDoubleStarSpansZeroSegments(t *testing.T) {
 	if !MatchPathGlob("/api/**", "/api") {

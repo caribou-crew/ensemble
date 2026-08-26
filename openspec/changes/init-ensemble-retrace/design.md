@@ -9,7 +9,7 @@ Monorepo `ensemble` publishes **two products with a shared core**:
 
 - **ensemble** — the local-stack runner/observer (successor to the
   `local-stack` prototype). CLI: `ensemble`.
-- **retrace** — record/replay/diff test integration (successor to `the JS prototype`).
+- **retrace** — record/replay/diff test integration (successor to the JS prototype).
   CLI: `retrace`. Named for what it does to a test run: walk the same path
   again — same hops, same screens — and report where it diverged.
 

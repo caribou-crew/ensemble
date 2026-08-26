@@ -95,7 +95,7 @@ func Assess(in AssessInput) runs.CaptureTrust {
 		reasons = append(reasons, runs.TrustReason{Code: code, Status: st, Detail: detail, Hint: hint})
 	}
 
-	// The P0 the JS prototype shipped with: a failed test used to leave the status
+	// The P0 bug the prototype shipped with: a failed test used to leave the status
 	// at its 'ok' default, so a run that verified nothing read as clean.
 	// `failed` outranks broken/degraded deliberately — those mean the
 	// capture machinery misbehaved though the test may have passed; a failed

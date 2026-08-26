@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Semantics ported from the JS prototype redactHops: one user list covers both
+// Semantics ported from the prototype's redactHops: one user list covers both
 // headers and body fields; defaults always redact auth-bearing headers.
 func TestRedactDefaultHeadersCaseInsensitive(t *testing.T) {
 	r := NewRedactor(nil, 0)

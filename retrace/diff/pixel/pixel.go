@@ -1,6 +1,6 @@
 // Package pixel is a Go port of the pixelmatch algorithm (YIQ perceptual
 // colour delta with antialiasing rejection), plus the screenshot-diff
-// policy the JS prototype layered on top: mask rectangles, a coarse gate threshold
+// policy the prototype layered on top: mask rectangles, a coarse gate threshold
 // and a fine reporting threshold, union-canvas padding when two shots have
 // different geometry, and a magenta density overlay.
 //

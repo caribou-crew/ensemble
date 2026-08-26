@@ -3,7 +3,7 @@
 ## What
 
 Create the `ensemble` monorepo: a greenfield rebuild of two existing prototypes
-(`local-stack` and `the JS prototype`, surveyed 2026-08-19) into two published products
+(the local-stack runner and the JS prototype, surveyed 2026-08-19) into two published products
 sharing one core:
 
 - **ensemble** — run an entire backend topology locally (native processes +
@@ -28,7 +28,7 @@ contract and dog-foods both products in CI.
 
 - The existing prototypes prove the ideas but can't ship: `local-stack` is a
   sanitized export missing its entire orchestration/proxy layer (`tools/`
-  tree) and is hardwired to one fintech domain; `the JS prototype` is a week old,
+  tree) and is hardwired to one fintech domain; the JS prototype is a week old,
   Node-based (slow/heavy in CI), with a bless/review flow the author finds
   clunky.
 - A shared recording/trace schema between the runner and the test tool is the

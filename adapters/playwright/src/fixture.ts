@@ -36,7 +36,7 @@ export interface RetraceFixture {
 // directly against a fake page with no browser involved.
 //
 // trim (uniform-border cropping) is deliberately NOT implemented here,
-// unlike the ported the JS prototype file it descends from: the Go binary owns
+// unlike the ported JS file it descends from: the Go binary owns
 // pixel work (retrace/pixel.TrimUniformBorder, at compare time), and
 // duplicating it in TS would be a second implementation to keep in sync.
 // `trim: true` writes an empty `<name>.trim` marker file beside the shot —

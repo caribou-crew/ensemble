@@ -203,7 +203,7 @@ func TestPatternMatchersAreNotAutoAnchored(t *testing.T) {
 }
 
 // TestEmptyPatternIsRejected pins m3: this is deliberate hardening over
-// the JS prototype, which accepts {pattern: ""} and compiles new RegExp(”) — a
+// the prototype, which accepts {pattern: ""} and compiles new RegExp(”) — a
 // regex that matches everything, i.e. total silent tolerance for that
 // field. Rejecting it at parse time is a genuine improvement; pin it so a
 // future "port fidelity" pass doesn't undo it.
