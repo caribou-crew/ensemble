@@ -36,67 +36,54 @@ function render(node: React.ReactNode) {
   act(() => root.render(node));
 }
 
-const click = (el: Element) => {
-  act(() => {
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  });
-};
+function cellLabels(): string[] {
+  return Array.from(container.querySelectorAll('.shot-compare__label')).map((el) => el.textContent ?? '');
+}
 
 describe('ShotCompare', () => {
-  it('clamps the slider position to 0–100', () => {
-    // A drag past the edge of the pane and an arrow-key scrub at the end of
-    // its travel both produce out-of-range numbers. Unclamped, the wipe pane
-    // is rendered wider than its container — the reference shot spilling over
-    // the run's shot, which reads as a rendering bug in the app under review
-    // rather than in the reviewer's tool.
+  it('lays out original, current, diff and overlay as clearly labeled panes', () => {
+    render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} />);
+
+    expect(cellLabels()).toEqual(['original', 'current', 'diff', 'overlay']);
+    expect((container.querySelector('.shot-compare__cell:nth-child(1) img') as HTMLImageElement).getAttribute(
+      'src',
+    )).toBe('/api/shots/web/search/a/results');
+    expect((container.querySelector('.shot-compare__cell:nth-child(2) img') as HTMLImageElement).getAttribute(
+      'src',
+    )).toBe('/api/shots/web/search/b/results');
+    expect((container.querySelector('.shot-compare__cell:nth-child(3) img') as HTMLImageElement).getAttribute(
+      'src',
+    )).toBe('/api/shots/web/search/diff/results');
+    expect((container.querySelector('.shot-compare__cell:nth-child(4) img') as HTMLImageElement).getAttribute(
+      'src',
+    )).toBe('/api/shots/web/search/overlay/results');
+  });
+
+  it('omits the overlay pane when the checkpoint did not differ, even if an overlay image exists', () => {
     render(
       <ShotCompare
         app="web"
         flow="search"
-        checkpoint={checkpoint()}
-        overlay={false}
-        onOverlayChange={() => {}}
-        position={140}
-        onPositionChange={() => {}}
+        checkpoint={checkpoint({ diffPct: 0, verdict: 'ok' })}
       />,
     );
-    expect((container.querySelector('.shot-compare__wipe') as HTMLElement).style.width).toBe('100%');
 
+    expect(cellLabels()).toEqual(['original', 'current', 'diff']);
+  });
+
+  it('omits the overlay pane when no overlay image was written, even if diffPct is nonzero', () => {
     render(
       <ShotCompare
         app="web"
         flow="search"
-        checkpoint={checkpoint()}
-        overlay={false}
-        onOverlayChange={() => {}}
-        position={-20}
-        onPositionChange={() => {}}
+        checkpoint={checkpoint({ images: { a: 'a.png', b: 'b.png', diff: 'diff.png' } })}
       />,
     );
-    expect((container.querySelector('.shot-compare__wipe') as HTMLElement).style.width).toBe('0%');
+
+    expect(cellLabels()).toEqual(['original', 'current', 'diff']);
   });
 
-  it('swaps the rendered image source when the overlay toggles', () => {
-    const props = {
-      app: 'web',
-      flow: 'search',
-      checkpoint: checkpoint(),
-      onOverlayChange: () => {},
-      position: 50,
-      onPositionChange: () => {},
-    };
-    render(<ShotCompare {...props} overlay={false} />);
-    expect((container.querySelector('.shot-compare__base') as HTMLImageElement).getAttribute('src')).toBe(
-      '/api/shots/web/search/b/results',
-    );
-
-    render(<ShotCompare {...props} overlay />);
-    expect((container.querySelector('.shot-compare__base') as HTMLImageElement).getAttribute('src')).toBe(
-      '/api/shots/web/search/overlay/results',
-    );
-  });
-
-  it('renders the no-diff-image case as an explanation, not a blank pane', () => {
+  it('renders the no-diff-image case as an explanation in the diff cell, not a blank pane', () => {
     // GET /api/shots/.../diff answers 404 with this same fact rather than an
     // empty 200, and for the same reason: a blank pane in a diff viewer reads
     // as "identical", which is the one thing this surface must never say by
@@ -106,22 +93,13 @@ describe('ShotCompare', () => {
         app="web"
         flow="login"
         checkpoint={checkpoint({ verdict: 'ok', diffPct: 0, images: { a: 'shots/login.png', b: 'shots/login.png' } })}
-        overlay={false}
-        onOverlayChange={() => {}}
-        position={50}
-        onPositionChange={() => {}}
       />,
     );
-    const diffTab = Array.from(container.querySelectorAll('.shot-compare__tab')).find(
-      (b) => b.textContent === 'diff',
-    );
-    expect(diffTab).toBeDefined();
-    click(diffTab as Element);
 
-    const explanation = container.querySelector('.shot-compare__explanation');
-    expect(explanation).not.toBeNull();
-    expect(explanation?.textContent ?? '').toMatch(/did not differ/);
-    expect(container.querySelector('.shot-compare__pane')).toBeNull();
+    expect(cellLabels()).toEqual(['original', 'current', 'diff']);
+    const diffCell = container.querySelectorAll('.shot-compare__cell')[2];
+    expect(diffCell.querySelector('.shot-compare__explanation')?.textContent ?? '').toMatch(/did not differ/);
+    expect(diffCell.querySelector('img')).toBeNull();
   });
 
   // The bytes summary.go actually emits for a checkpoint that went missing:
@@ -130,28 +108,16 @@ describe('ShotCompare', () => {
   // `"images":{}` and EVERY side is absent.
   //
   // The fixture is parsed from that JSON rather than spread over the
-  // checkpoint() helper on purpose: the helper hardcodes all four images, and
-  // the one existing test that varies them drops `diff` and `overlay` while
-  // KEEPING `a` and `b` — it varies the two sides that were guarded and
-  // leaves the unguarded one intact.
+  // checkpoint() helper on purpose: the helper hardcodes all four images.
   const MISSING_CHECKPOINT_JSON =
     '{"name":"receipt","verdict":"missing","diffPct":0,"diffPctFine":0,"numDiff":0,"images":{}}';
 
   it('explains a checkpoint whose candidate shot was never captured, instead of throwing out of render', () => {
     const missing = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
-    expect(missing.images.b).toBeUndefined(); // the wire really does omit it
+    expect(missing.images.a).toBeUndefined();
+    expect(missing.images.b).toBeUndefined();
 
-    render(
-      <ShotCompare
-        app="web"
-        flow="checkout"
-        checkpoint={missing}
-        overlay={false}
-        onOverlayChange={() => {}}
-        position={50}
-        onPositionChange={() => {}}
-      />,
-    );
+    render(<ShotCompare app="web" flow="checkout" checkpoint={missing} />);
 
     const explanation = container.querySelector('.shot-compare__explanation');
     expect(explanation).not.toBeNull();
@@ -159,26 +125,16 @@ describe('ShotCompare', () => {
     // and carrying the verdict, so "missing" is not mistaken for "identical".
     expect(explanation?.textContent ?? '').toContain('receipt');
     expect(explanation?.textContent ?? '').toContain('missing');
-    expect(container.querySelector('.shot-compare__base')).toBeNull();
+    expect(container.querySelector('.shot-compare__grid')).toBeNull();
   });
 
   it('does the same for "added" and "unreadable", the other two zero-image verdicts', () => {
     for (const verdict of ['added', 'unreadable'] as const) {
       const cp = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
       cp.verdict = verdict;
-      render(
-        <ShotCompare
-          app="web"
-          flow="checkout"
-          checkpoint={cp}
-          overlay={false}
-          onOverlayChange={() => {}}
-          position={50}
-          onPositionChange={() => {}}
-        />,
-      );
+      render(<ShotCompare app="web" flow="checkout" checkpoint={cp} />);
       expect(container.querySelector('.shot-compare__explanation')).not.toBeNull();
-      expect(container.querySelector('.shot-compare__base')).toBeNull();
+      expect(container.querySelector('.shot-compare__grid')).toBeNull();
     }
   });
 });

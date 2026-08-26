@@ -10,9 +10,6 @@ export type Action =
   | 'accept'
   | 'reject'
   | 'rule'
-  | 'toggleOverlay'
-  | 'scrubLeft'
-  | 'scrubRight'
   | 'help'
   | 'back';
 
@@ -38,9 +35,6 @@ const MAP: Record<string, Action> = {
   a: 'accept',
   r: 'reject',
   u: 'rule',
-  o: 'toggleOverlay',
-  ArrowLeft: 'scrubLeft',
-  ArrowRight: 'scrubRight',
   '?': 'help',
 };
 
@@ -53,8 +47,6 @@ export const KEY_HELP: { keys: string; what: string }[] = [
   { keys: 'a', what: 'accept this run as the new reference' },
   { keys: 'r', what: 'reject it and write a repro bundle' },
   { keys: 'u', what: 'write a wire rule for the selected field' },
-  { keys: 'o', what: 'toggle the overlay' },
-  { keys: '← / →', what: 'scrub the A/B slider' },
   { keys: '?', what: 'this help' },
 ];
 

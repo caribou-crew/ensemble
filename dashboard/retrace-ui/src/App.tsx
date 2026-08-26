@@ -160,20 +160,12 @@ function ItemScreen({
   app,
   flow,
   summary,
-  overlay,
-  onOverlayChange,
-  position,
-  onPositionChange,
   selectedField,
   onSelectField,
 }: {
   app: string;
   flow: string;
   summary: Summary;
-  overlay: boolean;
-  onOverlayChange: (next: boolean) => void;
-  position: number;
-  onPositionChange: (next: number) => void;
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
 }) {
@@ -255,16 +247,7 @@ function ItemScreen({
               <p className="item__none">This flow captured no checkpoints.</p>
             ) : (
               summary.checkpoints.map((cp) => (
-                <ShotCompare
-                  key={cp.name}
-                  app={app}
-                  flow={flow}
-                  checkpoint={cp}
-                  overlay={overlay}
-                  onOverlayChange={onOverlayChange}
-                  position={position}
-                  onPositionChange={onPositionChange}
-                />
+                <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} />
               ))
             )}
           </section>
@@ -328,8 +311,6 @@ export default function App() {
   // landing it on the queue instead would waste it.
   const [open, setOpen] = useState(() => Boolean(app && flow));
   const [version, setVersion] = useState(0);
-  const [overlay, setOverlay] = useState(false);
-  const [position, setPosition] = useState(50);
   const [showHelp, setShowHelp] = useState(false);
   // Owned here, not inside QueueList: j/k must walk the rows that are ON
   // SCREEN, and "is the passing group expanded" is half of that answer.
@@ -418,15 +399,6 @@ export default function App() {
       case 'back':
         setOpen(false);
         return;
-      case 'toggleOverlay':
-        setOverlay((v) => !v);
-        return;
-      case 'scrubLeft':
-        setPosition((p) => Math.max(0, p - 5));
-        return;
-      case 'scrubRight':
-        setPosition((p) => Math.min(100, p + 5));
-        return;
       case 'accept':
         // Gated on `open`, and that gate is the point. Accepting a reference
         // is a filesystem mutation, and ungated it fired from the QUEUE
@@ -508,10 +480,6 @@ export default function App() {
               app={app}
               flow={flow}
               summary={item.data}
-              overlay={overlay}
-              onOverlayChange={setOverlay}
-              position={position}
-              onPositionChange={setPosition}
               selectedField={selectedField}
               onSelectField={(entry, field) =>
                 setSelectedField(`${entryKey(entry)}|${field.scope}:${field.path}`)
