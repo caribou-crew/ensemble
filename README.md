@@ -17,15 +17,15 @@ actual recorded dataflow instead of hand-maintained fixtures.
 
 ## Status
 
-**Greenfield, in active build. `ensemble` runs; `retrace` is not written yet.**
+**Greenfield, in active build. Both `ensemble` and `retrace` run end-to-end.**
 
 | Area | State |
 | --- | --- |
 | trace model + capturing proxy + stub engine (`core/`) | working |
 | orchestrator, REST/SSE API, CLI (`ensemble/`) | working |
 | dashboard — topology, traffic, latency, inspector, entities | working |
-| `retrace` record/replay/diff/review | **not started** — CLI is a stub |
-| sample stack, test-runner adapters | **not started** |
+| `retrace` record/replay/diff/review | working |
+| sample stack, test-runner adapters | working |
 | published npm / brew packages | not yet released |
 
 Specs live in [`openspec/`](openspec/) — start with
