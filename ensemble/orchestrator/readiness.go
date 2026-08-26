@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,6 +86,7 @@ func (o *Orchestrator) failReadinessIfConfigured() {
 		o.setReadinessState(ReadinessReady)
 		return
 	}
+	o.logf("orchestrator: readiness: skipped — stack did not reach on_ready")
 	o.setReadinessState(ReadinessNotReady)
 }
 
@@ -114,6 +116,7 @@ func (o *Orchestrator) beginReadiness(ctx context.Context) {
 	o.readinessCheckStates = states
 	o.readinessMu.Unlock()
 
+	o.logf("orchestrator: readiness: %d check(s) configured, starting", len(checksFile.Checks))
 	checks := append([]config.ReadinessCheck(nil), checksFile.Checks...)
 	go o.runReadinessLoop(ctx, *readiness, checks)
 }
@@ -137,23 +140,30 @@ func (o *Orchestrator) runReadinessLoop(ctx context.Context, r config.Readiness,
 	for {
 		for name, chk := range pending {
 			passed, checkErr := o.runOneReadinessCheck(ctx, chk)
-			o.updateReadinessCheck(name, passed, checkErr)
-			if passed {
+			changed := o.updateReadinessCheck(name, passed, checkErr)
+			switch {
+			case passed:
+				o.logf("orchestrator: readiness: check %s passed", name)
 				delete(pending, name)
+			case changed:
+				o.logf("orchestrator: readiness: check %s failed: %s", name, checkErr)
 			}
 		}
 
 		if len(pending) == 0 {
+			o.logf("orchestrator: readiness: all checks passed")
 			o.setReadinessState(ReadinessReady)
 			return
 		}
 		if !time.Now().Before(deadline) {
+			o.logf("orchestrator: readiness: not ready after %s — still failing: %s", timeout, pendingNames(pending))
 			o.setReadinessState(ReadinessNotReady)
 			return
 		}
 
 		select {
 		case <-ctx.Done():
+			o.logf("orchestrator: readiness: stopped before all checks passed — still pending: %s", pendingNames(pending))
 			o.setReadinessState(ReadinessNotReady)
 			return
 		case <-time.After(interval):
@@ -161,23 +171,40 @@ func (o *Orchestrator) runReadinessLoop(ctx context.Context, r config.Readiness,
 	}
 }
 
-// updateReadinessCheck records one check's latest attempt result.
-func (o *Orchestrator) updateReadinessCheck(name string, passed bool, err error) {
+// pendingNames renders the still-failing check names for a log line, in a
+// stable order — map iteration order is random and would make consecutive
+// runs of the same failure read as if the checks themselves changed.
+func pendingNames(pending map[string]config.ReadinessCheck) string {
+	names := make([]string, 0, len(pending))
+	for name := range pending {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// updateReadinessCheck records one check's latest attempt result and
+// reports whether its pass/fail outcome or error text changed since the
+// last attempt — the retry loop uses this to log a failure once instead of
+// on every retry tick.
+func (o *Orchestrator) updateReadinessCheck(name string, passed bool, err error) bool {
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
 	o.readinessMu.Lock()
 	defer o.readinessMu.Unlock()
 	for i := range o.readinessCheckStates {
 		if o.readinessCheckStates[i].Name != name {
 			continue
 		}
+		changed := o.readinessCheckStates[i].Passed != passed || o.readinessCheckStates[i].LastError != errText
 		o.readinessCheckStates[i].Passed = passed
 		o.readinessCheckStates[i].LastCheckedAt = time.Now()
-		if err != nil {
-			o.readinessCheckStates[i].LastError = err.Error()
-		} else {
-			o.readinessCheckStates[i].LastError = ""
-		}
-		return
+		o.readinessCheckStates[i].LastError = errText
+		return changed
 	}
+	return false
 }
 
 // runOneReadinessCheck resolves chk.Service the same way the gateway
