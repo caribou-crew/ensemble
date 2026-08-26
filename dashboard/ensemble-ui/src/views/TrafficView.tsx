@@ -4,7 +4,7 @@
 // lifetime, so switching follow off just freezes the viewport, it never
 // drops data out of the ring.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Spinner, Tabs } from '@ensemble/design-system';
+import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import { subscribeHops } from '../api/sse';
@@ -28,13 +28,16 @@ const RING_MAX = 2000;
  * "the user scrolled up". */
 const BOTTOM_SLOP_PX = 24;
 
-type SessionFilter = 'all' | 'session' | 'ambient';
+/** 'all' and 'ambient' are fixed buckets; anything else is a real
+ * hop.session id, letting you isolate exactly one session once several are
+ * live at once. */
+type SessionFilter = 'all' | 'ambient' | string;
 
-const SESSION_FILTER_ITEMS = [
-  { id: 'all', label: 'all' },
-  { id: 'session', label: 'session' },
-  { id: 'ambient', label: 'ambient' },
-];
+/** Matches HopTable's own truncation so a session reads the same wherever
+ * it's shown (the per-row badge, this dropdown). */
+function sessionLabel(session: string): string {
+  return session.slice(0, 8);
+}
 
 function useHopRing() {
   const [hops, setHops] = useState<Hop[]>([]);
@@ -117,14 +120,44 @@ export default function TrafficView() {
 
   const collapsed = useMemo(() => collapseGatewayHops(hops, collapse), [hops, collapse]);
 
+  // First-seen order, not sorted — reads chronologically alongside the
+  // table itself. Distinct from `sessionFilter`'s own value so selecting
+  // a session doesn't shrink this list out from under the dropdown.
+  const distinctSessions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const h of collapsed) {
+      if (h.session && !seen.has(h.session)) {
+        seen.add(h.session);
+        out.push(h.session);
+      }
+    }
+    return out;
+  }, [collapsed]);
+
+  // The dropdown only ever renders once there's more than one session to
+  // choose between (see below) — so a stale selection, whether because
+  // its session aged out of the ring or because the ring dropped back to
+  // <=1 session, must fall back to 'all' rather than silently keep
+  // filtering with no control left to change it back.
+  useEffect(() => {
+    if (sessionFilter === 'all' || sessionFilter === 'ambient') return;
+    if (distinctSessions.length <= 1 || !distinctSessions.includes(sessionFilter)) {
+      setSessionFilter('all');
+    }
+  }, [distinctSessions, sessionFilter]);
+
   const filtered = useMemo(() => {
     const needle = textFilter.trim().toLowerCase();
     return collapsed.filter((h) => {
       if (needle && !`${h.to} ${h.path ?? ''}`.toLowerCase().includes(needle)) return false;
       if (errorsOnly && !((h.status ?? 0) >= 400 || h.err)) return false;
       if (!showPreflight && h.preflight) return false;
-      if (sessionFilter === 'session' && !h.session) return false;
-      if (sessionFilter === 'ambient' && h.session) return false;
+      if (sessionFilter === 'ambient') {
+        if (h.session) return false;
+      } else if (sessionFilter !== 'all' && h.session !== sessionFilter) {
+        return false;
+      }
       return true;
     });
   }, [collapsed, textFilter, errorsOnly, showPreflight, sessionFilter]);
@@ -211,11 +244,22 @@ export default function TrafficView() {
         >
           show CORS preflight
         </button>
-        <Tabs
-          items={SESSION_FILTER_ITEMS}
-          active={sessionFilter}
-          onSelect={(id) => setSessionFilter(id as SessionFilter)}
-        />
+        {distinctSessions.length > 1 && (
+          <select
+            className="traffic-view__session-select"
+            value={sessionFilter}
+            onChange={(e) => setSessionFilter(e.target.value)}
+            title="Filter by session"
+          >
+            <option value="all">all sessions</option>
+            <option value="ambient">ambient</option>
+            {distinctSessions.map((s) => (
+              <option key={s} value={s}>
+                {sessionLabel(s)}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="traffic-view__count">
           {filtered.length} / {collapsed.length}
         </span>

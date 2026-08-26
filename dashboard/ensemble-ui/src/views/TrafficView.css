@@ -26,8 +26,14 @@
   background: var(--bg-panel);
 }
 
-.traffic-view__toolbar .ds-tabs {
-  border-bottom: none;
+.traffic-view__session-select {
+  border: 1px solid var(--border-hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
 }
 
 .traffic-view__search {
