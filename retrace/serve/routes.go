@@ -332,6 +332,12 @@ type ruleRequest struct {
 	Matcher string `json:"matcher"`
 	Method  string `json:"method"`
 	Path    string `json:"path"`
+	// Why rides onto the rule so the overlay a reviewer reads in a pull
+	// request explains itself. Not required here even under
+	// `require_why: true` — the ratchet catches the omission at the next
+	// Discover, naming the entry, and two checks in two places with two
+	// messages is how a check comes to disagree with itself.
+	Why string `json:"why"`
 }
 
 func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +367,7 @@ func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	raw := rules.Raw{Method: req.Method, Path: req.Path, Body: map[string]any{req.Field: req.Matcher}}
+	raw := rules.Raw{Method: req.Method, Path: req.Path, Body: map[string]any{req.Field: req.Matcher}, Why: req.Why}
 	// config.AppendWireRule is the SAME writer `retrace ref rule` uses: it
 	// validates the matcher, is idempotent, and holds the cross-process
 	// lock. Nothing here re-implements any of that.

@@ -55,14 +55,15 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		flow      = fs.String("flow", "", "single flow name to record")
-		flows     = fs.String("flows", "", "comma-separated flow names to record in one process (default with neither flag: every flow in retrace.yaml)")
-		app       = fs.String("app", "", "app name (default: config app, else the directory name)")
-		upstream  = fs.String("upstream", "", "standalone: base URL clients would call")
-		proxyHost = fs.String("proxy-host", "", "hostname the client-edge listener binds on and is advertised as (default 127.0.0.1; must resolve loopback-only)")
-		proxyPort = fs.Int("proxy-port", 0, "TCP port the client-edge listener binds on and is advertised as (default: an ephemeral port; a port already in use fails fast rather than falling back)")
-		asJSON    = fs.Bool("json", false, "emit the manifest as JSON on stdout")
-		noConfig  = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
+		flow       = fs.String("flow", "", "single flow name to record")
+		flows      = fs.String("flows", "", "comma-separated flow names to record in one process (default with neither flag: every flow in retrace.yaml)")
+		app        = fs.String("app", "", "app name (default: config app, else the directory name)")
+		upstream   = fs.String("upstream", "", "standalone: base URL clients would call")
+		proxyHost  = fs.String("proxy-host", "", "hostname the client-edge listener binds on and is advertised as (default 127.0.0.1; must resolve loopback-only)")
+		proxyPort  = fs.Int("proxy-port", 0, "TCP port the client-edge listener binds on and is advertised as (default: an ephemeral port; a port already in use fails fast rather than falling back)")
+		asJSON     = fs.Bool("json", false, "emit the manifest as JSON on stdout")
+		noConfig   = fs.Bool("no-config", false, "capture without a retrace.yaml — user redaction keys will be absent")
+		requireWhy = fs.Bool("require-why", false, "refuse to record when any tolerance in the config carries no `why:`")
 		// Declared here rather than in Task 4 because every line that reads
 		// them is below: a flag result bound to a local and never read is
 		// `declared and not used`, a compile error.
@@ -81,6 +82,15 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Discover(cwd)
 	if err != nil {
 		return fail(stderr, "%v", err)
+	}
+	// Checked here rather than only in `diff` so the ratchet catches an
+	// unexplained tolerance at the point someone can still fix it cheaply,
+	// instead of after a suite has run. The flag only ever turns the check
+	// ON — it cannot switch off a `require_why: true` already in the config.
+	if *requireWhy {
+		if err := cfg.ValidateWhy(); err != nil {
+			return fail(stderr, "%v", err)
+		}
 	}
 	// config.Discover deliberately does not walk up the directory tree —
 	// its inability to reach a parent directory or the user's home is a

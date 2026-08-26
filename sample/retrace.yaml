@@ -9,6 +9,14 @@
 #
 # The first run has nothing to compare against; `retrace ref accept <id>`
 # promotes it to the reference, and every run after that is a diff.
+# Every tolerance in this file carries a `why:`, and `require_why: true`
+# below makes that a rule rather than a habit. A tolerance nobody explained
+# is indistinguishable from one added to make a failing build go away — and
+# six months later nobody dares delete it, so the list only ever grows and
+# the suite goes quietly blind. `retrace diff` prints each `why` beside the
+# rule that actually fired, under SUPPRESSED.
+require_why: true
+
 app: brew
 
 # entry names the ensemble SERVICE whose proxy is the recording edge. With
@@ -54,6 +62,7 @@ wire_rules:
       # rather than pattern-matched: its whole purpose is to be unique per
       # request, so there is no value here worth comparing.
       traceparent: ignore
+    why: "edge-gw mints a fresh trace id per request; uniqueness is the point"
 
 # Values that change on every run for reasons that are not regressions.
 # Everything here is a BODY field-path glob (retrace/rules' dialect), never
@@ -81,6 +90,7 @@ path_normalize:
 expected_statuses:
   - path: /cart/999/checkout
     status: 404
+    why: "the unknown-user test drives this on purpose; the 404 IS the assertion"
 
 # The money path must actually be the money path. If a refactor makes the
 # browser talk to storefront-bff directly, or checkout stops reaching

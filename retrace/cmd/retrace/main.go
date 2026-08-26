@@ -21,11 +21,12 @@ var version = "dev"
 const usage = `retrace — record / replay / diff / review flows
 
 Usage:
-  retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--proxy-host HOST] [--proxy-port PORT] [--json] [--no-config] [-- <test command>]
-  retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail]
+  retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--proxy-host HOST] [--proxy-port PORT] [--json] [--no-config] [--require-why] [-- <test command>]
+  retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail] [--require-why]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
+  retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]
   retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]

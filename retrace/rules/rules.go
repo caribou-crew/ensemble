@@ -11,6 +11,25 @@ type Raw struct {
 	Path    string         `json:"path,omitempty"    yaml:"path"`
 	Headers map[string]any `json:"headers,omitempty" yaml:"headers"`
 	Body    map[string]any `json:"body,omitempty"    yaml:"body"`
+	// Why explains what this rule is tolerating and why it is allowed to
+	// change. A wire rule silences a difference; an un-explained one is
+	// indistinguishable from a rule added to make a failing build go away,
+	// and rules outlive the person who added them. Optional by default and
+	// omitempty on the JSON side so every existing config and overlay keeps
+	// loading; `require_why: true` makes it mandatory (config.ValidateWhy).
+	//
+	// It is per-RAW rather than per-header/per-glob because that is the
+	// granularity the config has: one Raw is one authored decision, however
+	// many headers or globs it names. A Raw covering two unrelated fields
+	// under one reason is a signal to split it, not a reason to widen this.
+	//
+	// Normalize does not read it — Why is documentation, never matching —
+	// so it deliberately does not appear on Rule. The report reads it back
+	// off the config (diff.suppressionSource), which is also why a rule
+	// whose Why changes is a different rule to AppendWireRule's idempotency
+	// check: same match, different stated reason, and the newer reason is
+	// worth keeping.
+	Why string `json:"why,omitempty" yaml:"why"`
 }
 
 // BodyRule and Rule are not wire types — like Matcher, they never cross a

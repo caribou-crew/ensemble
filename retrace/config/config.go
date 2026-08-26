@@ -127,6 +127,14 @@ type Config struct {
 	// gate failures should fail the run. Shape only: which planes actually
 	// gate a build is the consuming task's decision, not this package's.
 	FailOn []string `yaml:"fail_on"`
+	// RequireWhy turns a tolerance with no `why:` into a config error (see
+	// ValidateWhy). Off by default, and deliberately a plain bool rather
+	// than a *bool: absent means "not enforced", which is what every
+	// existing config means today, and there is no third state to
+	// distinguish. `retrace diff --require-why` and `retrace run
+	// --require-why` set it for one invocation without editing the file,
+	// which is how a project tries the ratchet on before committing to it.
+	RequireWhy bool `yaml:"require_why"`
 	// Preflight commands run once, before any flow. Per-flow Preflight (see
 	// Flow.Preflight) then runs before that specific flow. Executed by
 	// `retrace run` (cmd/retrace/hooks.go), never by this package: a
@@ -197,6 +205,12 @@ func (n Normalize) Apply(path string) string {
 type StatusRule struct {
 	Path   string `yaml:"path"`
 	Status int    `yaml:"status"`
+	// Why explains why this path is allowed to answer with this 4xx/5xx.
+	// An expected status is a tolerance like any other: it stops a real
+	// error status from being reported, so an un-explained one is
+	// indistinguishable from an entry added to quiet a genuine break.
+	// Optional by default; `require_why: true` makes it mandatory.
+	Why string `yaml:"why"`
 }
 
 type RequiredRoute struct {
@@ -484,6 +498,15 @@ func Discover(cwd string) (*Config, error) {
 	c.WireRules = append(c.WireRules, overlay...)
 	if _, err := c.Rules(); err != nil {
 		return nil, fmt.Errorf("%s: %w", OverlayPath, err)
+	}
+	// AFTER the overlay merge, never inside Load: a machine-written rule is
+	// a tolerance like any other, and a ratchet that exempted the writer
+	// nobody reviews would be aimed at the wrong half of the list. This is
+	// also why `retrace ref rule` and POST /api/rule both take a why.
+	if c.RequireWhy {
+		if err := c.ValidateWhy(); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }

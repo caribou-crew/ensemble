@@ -42,8 +42,20 @@ via plan amendment.
 - [ ] Optional `why` on mask rects, wireIgnore entries (object form), wireRules,
       expectedStatuses, deviations. Text summary prints `why` beside each
       tolerance that fired.
-- [ ] `--require-why` / `gates.requireWhy` turns a missing `why` into a
+- [x] `--require-why` / `gates.require_why` turns a missing `why` into a
       config error.
+
+      Shipped as top-level `require_why: true`, NOT nested under `gates:`.
+      `Config.Gates` is `map[string]Gate` keyed by plane, so a `require_why`
+      key there decodes into a zero `Gate` and does nothing — parsed-but-unread,
+      the defect the lead ruled on for `flows.<name>.command`. `--require-why`
+      on both `run` and `diff` turns the check on for one invocation; neither
+      flag can turn OFF a `require_why` the config sets, because a flag that
+      could would hand a bypass to the person the setting exists to
+      inconvenience. Enforced after the overlay merge, so machine-written
+      rules from `ref rule` / the review queue are covered too — they are the
+      least reviewable tolerances in the product. Every offender is reported,
+      not the first. `sample/retrace.yaml` sets it and is guarded by a test.
 
 ## 4. Preflight + setup/teardown hooks (Task 4)
 - [ ] `preflight: [cmd…]` (global + per flow). Run in order before the proxy

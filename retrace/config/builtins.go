@@ -2,6 +2,7 @@ package config
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
@@ -35,10 +36,22 @@ import (
 //     Kept anyway, because tolerating a derived value is
 //     the lesser cost against failing every run that
 //     tolerated a body field.
-var builtinHeaderMatchers = map[string]any{
-	"date":           "http-date",
-	"etag":           "etag",
-	"content-length": "integer",
+//
+// Each carries its own Why, for the same reason a project's rules should:
+// these fire on runs nobody configured them for, and a SUPPRESSED row
+// reading `date builtin http-date ×29` with no reason is a reader's problem
+// even though it is not their rule. The text is written to answer the
+// question the row provokes — "why is retrace ignoring this?" — not to
+// restate the matcher.
+var builtinHeaderMatchers = map[string]builtinHeader{
+	"date":           {"http-date", "every response carries a fresh clock reading; retrace built-in"},
+	"etag":           {"etag", "an opaque validator, expected to differ between two servers that agree on the body; retrace built-in"},
+	"content-length": {"integer", "derived from a body this diff already compares field by field; retrace built-in"},
+}
+
+type builtinHeader struct {
+	matcher string
+	why     string
 }
 
 // BuiltinWireRules returns the built-in rules as ordinary config rules —
@@ -68,9 +81,17 @@ func BuiltinWireRules() []rules.Raw {
 
 	out := make([]rules.Raw, 0, len(names))
 	for _, name := range names {
-		out = append(out, rules.Raw{Headers: map[string]any{name: builtinHeaderMatchers[name]}})
+		b := builtinHeaderMatchers[name]
+		out = append(out, rules.Raw{Headers: map[string]any{name: b.matcher}, Why: b.why})
 	}
 	return out
+}
+
+// BuiltinHeaderWhy returns the reason retrace tolerates a header by default,
+// or "" for a header it does not. The fired-suppression report prints it, so
+// a built-in row explains itself to a reader who never wrote it.
+func BuiltinHeaderWhy(name string) string {
+	return builtinHeaderMatchers[strings.ToLower(name)].why
 }
 
 // BuiltinHeaderNames lists the headers BuiltinWireRules covers, sorted. The

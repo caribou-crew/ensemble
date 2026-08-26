@@ -1430,3 +1430,29 @@ func TestPostAcceptWillNotPromoteAFatalCaptureUnlessTheRequestSaysForce(t *testi
 		t.Fatalf("the forced promotion did not report the capture verdict it accepted: %v", bundle)
 	}
 }
+
+// TestPostRuleCarriesTheWhyIntoTheOverlay pins the UI half of the `why`
+// ratchet. The overlay is the file a reviewer reads in a pull request, and a
+// rule written from a dashboard button is the least reviewable tolerance in
+// the product — nobody was present when it was authored. Dropping the field
+// here would still answer {"ok":true} and still write a committed file,
+// which is the failure shape this endpoint's own scope tests exist for.
+func TestPostRuleCarriesTheWhyIntoTheOverlay(t *testing.T) {
+	cwd := ruleProject(t)
+	ts := newServer(t, cwd)
+
+	mustOK(t, post(t, ts, "/api/queue/web/checkout/rule",
+		`{"field":"cart.updatedAt","matcher":"iso8601","why":"stamped by the cart service on every read"}`), "POST rule")
+
+	b, err := os.ReadFile(filepath.Join(cwd, config.OverlayPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []rules.Raw
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("the overlay is not a rules.Raw list: %v\n%s", err, b)
+	}
+	if len(raw) != 1 || raw[0].Why != "stamped by the cart service on every read" {
+		t.Fatalf("the overlay dropped the why: %+v", raw)
+	}
+}

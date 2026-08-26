@@ -387,6 +387,7 @@ func cmdRefRule(args []string, stdout, stderr io.Writer) int {
 	matcher := fs.String("matcher", "", "matcher name: exact, ignore, uuid, etag, semver, iso8601, http-date, integer (required)")
 	method := fs.String("method", "", "limit the rule to one HTTP method (default: any)")
 	pathGlob := fs.String("path", "", "limit the rule to a URL path glob (default: any)")
+	why := fs.String("why", "", "why this field is allowed to change (required under require_why)")
 	asJSON := fs.Bool("json", false, "emit the appended rule as JSON on stdout")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -401,7 +402,14 @@ func cmdRefRule(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "ref rule: %v", err)
 	}
 
-	r := rules.Raw{Method: *method, Path: *pathGlob, Body: map[string]any{*field: *matcher}}
+	// The why rides on the rule itself, so the overlay a reviewer reads in a
+	// pull request explains itself. It is NOT required here even under
+	// `require_why: true`: this verb cannot see the config it is writing
+	// into (resolveProject below is what finds it), and the ratchet already
+	// catches the omission at the next Discover — with a message naming the
+	// entry. Rejecting it twice, in two places, with two different messages
+	// is how a check comes to disagree with itself.
+	r := rules.Raw{Method: *method, Path: *pathGlob, Body: map[string]any{*field: *matcher}, Why: *why}
 	// AppendWireRule validates the rule (an unknown matcher fails the
 	// append rather than bricking every later Discover), is idempotent, and
 	// holds the cross-process lock. Nothing here re-implements any of that.

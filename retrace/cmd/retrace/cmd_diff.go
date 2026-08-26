@@ -32,6 +32,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		out           = fs.String("out", "", "where diff/overlay images are written (default: side B's run directory)")
 		allowDegraded = fs.Bool("allow-degraded", false, "compare even when a side's capture-trust verdict is not ok, instead of quarantining")
 		noFail        = fs.Bool("no-fail", false, "compute and report every gate/budget as usual, but always exit 0")
+		requireWhy    = fs.Bool("require-why", false, "refuse to run when any tolerance in the config carries no `why:`")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -47,6 +48,15 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Discover(cwd)
 	if err != nil {
 		return fail(stderr, "%v", err)
+	}
+	// The flag only ever turns the ratchet ON. It cannot turn off a
+	// `require_why: true` already in the config — a CLI flag that could
+	// switch off a project's own rule is a bypass, and the whole point of
+	// the setting is that it cannot be bypassed by the person it inconveniences.
+	if *requireWhy {
+		if err := cfg.ValidateWhy(); err != nil {
+			return fail(stderr, "%v", err)
+		}
 	}
 
 	appName := *app

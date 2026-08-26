@@ -280,6 +280,32 @@ masks:
     - { x: 0, y: 0, width: 320, height: 48, why: "clock in the status bar" }
 ```
 
+### Every tolerance takes a `why:`
+
+`wire_rules`, `wire_ignore`, `expected_statuses` and mask rects all accept an
+optional `why:` explaining what is allowed to change and on what grounds. It is
+not decoration — `retrace diff` prints it beside the rule that actually fired,
+so a reader can judge whether the excuse still holds instead of guessing.
+
+```yaml
+require_why: true         # a tolerance with no `why:` is now a config error
+wire_ignore:
+  - path: "**.requestId"
+    why: "regenerated on every request"
+expected_statuses:
+  - { path: /cart/999/checkout, status: 404, why: "the unknown-user test drives this" }
+```
+
+**Turn `require_why: true` on and leave it on.** Without it a tolerance list
+only grows: nobody can tell a rule protecting the build from one added to make
+a red run go away, so nobody dares delete either, and the suite goes quietly
+blind. `retrace run --require-why` and `retrace diff --require-why` try the
+check without editing the file; neither flag can switch off a `require_why`
+the config already sets. When you mint a rule from a finding, pass the reason
+with it: `retrace ref rule --field "**.requestId" --matcher ignore --why "…"`.
+
+Deviations already require a `reason` on every entry, always, with no opt-in.
+
 `date: http-date`, `etag: etag` and `content-length: integer` are **built in** —
 do not write them. Every response carries a `date`, so without a tolerance two
 identical runs differ on 100% of paired calls. Name one of those headers in
