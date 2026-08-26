@@ -111,23 +111,32 @@
   max-width: 320px;
 }
 
-.hop-table__status--2xx {
+/* `td.` (not bare `.hop-table__status--2xx`) matches the type+class
+   specificity of ".hop-table__row td" above — a class-only selector here
+   loses to that rule and every status renders --text-primary regardless
+   of class. */
+td.hop-table__status--2xx {
   color: var(--status-green);
 }
 
-.hop-table__status--3xx {
+td.hop-table__status--3xx {
   color: var(--status-blue);
 }
 
-.hop-table__status--4xx {
+td.hop-table__status--4xx {
   color: var(--status-amber);
   font-weight: 600;
 }
 
-.hop-table__status--5xx,
-.hop-table__status--error {
+td.hop-table__status--5xx,
+td.hop-table__status--error {
   color: var(--status-red);
   font-weight: 600;
+}
+
+.hop-table__status-icon {
+  display: inline-block;
+  margin-right: 0.3rem;
 }
 
 .hop-table__done {

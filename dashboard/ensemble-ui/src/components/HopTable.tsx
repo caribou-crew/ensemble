@@ -125,6 +125,19 @@ function statusClass(hop: Hop): string {
   return '';
 }
 
+/** A small glyph ahead of the status code so 3xx/4xx/5xx/transport errors
+ * are scannable without relying on color alone (colorblind users, a
+ * washed-out external display). 2xx is left unmarked — it's the expected
+ * case, not one that needs flagging. */
+function statusIcon(hop: Hop): string {
+  const status = hop.status ?? 0;
+  if (status >= 500) return '✕';
+  if (status >= 400) return '⚠';
+  if (status >= 300) return '↪';
+  if (status < 200 && hop.err) return '✕';
+  return '';
+}
+
 export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }: HopTableProps) {
   const rows = useMemo(() => buildRows(hops), [hops]);
 
@@ -153,6 +166,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
           ]
             .filter(Boolean)
             .join(' ');
+          const icon = statusIcon(hop);
           return (
             <tr
               key={hop.seq}
@@ -205,6 +219,11 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
                 {hop.preflight && <Badge tone="blue">preflight</Badge>}
               </td>
               <td className={`hop-table__status ${statusClass(hop)}`}>
+                {icon && (
+                  <span className="hop-table__status-icon" aria-hidden="true">
+                    {icon}
+                  </span>
+                )}
                 {hop.err ? 'err' : (hop.status ?? '—')}
               </td>
               <td className="hop-table__size">{payloadSize(hop)}</td>

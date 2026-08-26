@@ -180,4 +180,34 @@ describe('HopTable time and size columns', () => {
     expect(markup).toContain('hop-table__status--4xx');
     expect(markup).toContain('hop-table__status--5xx');
   });
+
+  it('marks 3xx/4xx/5xx/transport-error status cells with a glyph, leaves 2xx bare', () => {
+    const hopWith = (status: number, err?: string): Hop => ({
+      schema: 'ensemble/1',
+      seq: status,
+      to: 'catalog',
+      status,
+      err,
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    });
+    const errHop: Hop = {
+      schema: 'ensemble/1',
+      seq: 0,
+      to: 'catalog',
+      status: 0,
+      err: 'connection refused',
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, {
+        hops: [hopWith(200), hopWith(302), hopWith(404), hopWith(500), errHop],
+        selectedSeq: null,
+        onSelectHop: () => {},
+      }),
+    );
+    expect(markup.match(/hop-table__status-icon/g)?.length).toBe(4);
+    expect(markup).toContain('↪');
+    expect(markup).toContain('⚠');
+    expect(markup.match(/✕/g)?.length).toBe(2);
+  });
 });
