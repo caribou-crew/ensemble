@@ -126,8 +126,30 @@ never delete it.
       cannot live on the proxy, whose handler forwards every path.
 
 ## 14. Agent recipe in-repo (docs)
-- [ ] `AGENTS.md` at root + `.claude/skills/retrace-iterate/SKILL.md`:
-      capture → `diff --json` → read `gates[]`/`triage` (never the exit code
-      alone) → fix → recapture; lists the NEVERs that are the tool's (no
+- [x] `AGENTS.md` at root + `.claude/skills/retrace-iterate/SKILL.md`:
+      capture → `diff --json` → read the verdict (never the exit code alone)
+      → fix → recapture; lists the NEVERs that are the tool's (no
       `--allow-degraded` to get green, every tolerance needs a `why`).
-- [ ] CI check: the skill's documented flag names appear in `retrace --help`.
+      Amended: the recipe reads `verdict`/`gates`/`budgets`/`unmeasuredGates`/
+      `quarantined`/`capture`. It does NOT name `triage` — that field is
+      item 7 and is not implemented, so documenting it would have shipped a
+      recipe describing an unshipped proposal. The "whose problem is it"
+      step reads the planes directly (pixel-only → client UI; wire moved →
+      client behaviour; hop-only → stack; conformance-only → contract
+      drift; capture not ok → harness), which is exactly what item 7 will
+      later collapse into one field. **When item 7 lands, add `triage` to
+      the skill's `<!-- retrace:fields -->` block and fold the plane table
+      into it.**
+- [x] CI check: the skill's documented flag names appear in `retrace --help`.
+      Implemented as `retrace/cmd/retrace/docs_contract_test.go`, so it runs
+      in the existing CI job rather than as a separate step. Extended beyond
+      the flag check to also assert every `--json` field the recipe names
+      exists on `diff.Summary` (by reflection, not a second hand-kept list)
+      and that every verdict value is explained. The field half is what
+      would have caught the `triage` drift above without reading the source
+      by hand.
+
+  NOT done, and not one of this item's checkboxes: the end-to-end walkthrough
+  against `sample/`. There is no `retrace.yaml` anywhere in the repo yet, and
+  `sample/clients/web-app`'s Playwright suite does not use the retrace
+  adapter. That is its own piece of work — see the note in the ledger.
