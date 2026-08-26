@@ -145,8 +145,12 @@ services:
 
   web:
     dir: ./clients/web-app
-    build: npm install
-    run: npm run dev
+    # pnpm, not npm, unlike the node services above: web-app is a member of
+    # the repo's pnpm workspace so it can link adapters/playwright by
+    # `workspace:*` for `retrace run` — see pnpm-workspace.yaml and
+    # ../retrace.yaml.
+    build: pnpm install
+    run: pnpm run dev
     port: 5173
     proxy: 9087
     env:
@@ -271,7 +275,7 @@ seeds:
     # Deliberately doesn't touch mysql: orders/order_items only exist once
     # order-svc has connected at least once (Hibernate ddl-auto=update
     # creates them lazily), so a blind TRUNCATE there would fail on a
-    # stack that never activated the `full` profile.
+    # stack that never opted into the `real` order variant.
 
   bulk:
     sql:

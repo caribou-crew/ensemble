@@ -186,7 +186,8 @@ function buildApp(docClient) {
         return;
       }
 
-      // order-svc runs behind the "full" profile and is often not running.
+      // `order` is a variants: service whose `real` (Java/MySQL) backing is
+      // opt-in, so it can be mid-swap or not running at all.
       // A dead upstream doesn't necessarily fail the fetch() itself —
       // ensemble's proxy keeps listening even when the real process behind
       // it is down, and answers with a 502 plain-text body ("dial tcp

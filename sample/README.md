@@ -153,32 +153,92 @@ they own auth, so it belongs there rather than in the client.
 ### Test runners (Playwright + Maestro)
 
 The same checkout flow, driven by two different test runners against the
-one app — the point is proving retrace can eventually tap into either, not
-testing the app twice (see `adapters/` in design.md §7, task 4.7 — the
-`retrace-playwright`/`retrace-maestro` packages that would actually wire
-these to retrace don't exist yet, so today these are two plain, independent
-test suites).
+one app — the point is proving retrace can tap into either, not testing the
+app twice (see `adapters/` in design.md §7).
 
 Both need the full stack running and seeded first
 (`ensemble up -c ensemble.yaml && ensemble seed baseline`) — they exercise
 the real backend, not a mock.
 
 ```sh
-cd clients/web-app
-npm test                        # Playwright — tests/checkout.spec.js
-maestro test maestro/checkout.yaml   # Maestro — web support is beta, Chromium-only
+pnpm -C clients/web-app run e2e       # Playwright — tests/checkout.spec.js
+maestro test clients/web-app/maestro/checkout.yaml   # Maestro — web support is beta, Chromium-only
 ```
+
+The Playwright suite is **not** named `test`, and `web-app` is a member of
+the repo's pnpm workspace rather than an npm project of its own. Both are
+deliberate: the workspace is what lets it link
+`@caribou-crew/retrace-playwright` by `workspace:*` and share ONE
+`@playwright/test` instance with the fixture (npm's `file:` alternative
+gives the fixture a second copy and a `test()` the runner does not
+recognize), and the name keeps `pnpm -r --if-present test` — what CI runs —
+from launching a browser suite against a stack that is not up.
 
 Maestro's `assertVisible` text is a **full regex match against an
 element's entire text**, not a substring search — `"total: .*"`, not
 `"total:"` (the flow's own comments call this out; it's easy to get wrong
 once and burn the beta's ~15s-per-assertion timeout finding out).
 
+## Recording it with retrace
+
+`retrace.yaml` in this directory records the Playwright suite above as a
+flow called `checkout`. Run it from `sample/` — retrace does not search
+parent directories, on purpose.
+
+```sh
+ensemble up -c ensemble.yaml    # one terminal, leave it running
+retrace run                     # another, from sample/
+```
+
+That prints something like:
+
+```
+retrace: recorded brew/checkout as 20260826T185853Z-<sha>
+  wire 32 calls · 4 checkpoints · 3 flow parts · capture ok
+```
+
+The first run has nothing to compare against. Promote it, change
+something, and record again:
+
+```sh
+retrace ref accept --flow checkout <run-id>
+retrace run
+retrace diff --flow checkout
+```
+
+`retrace serve` opens the same thing as a browsable report.
+
+**How the app ends up talking to the recording edge.** `retrace run` hands
+its test command a `RETRACE_PROXY_URL`. `clients/web-app/playwright.config.js`
+reads it and starts a *second* Vite dev server — on 5174, not the 5173 one
+`ensemble up` already started — with `VITE_EDGE_URL` pointed at it. A
+second server is required rather than tidy: Vite substitutes
+`VITE_EDGE_URL` into the bundle at transform time, so the running 5173
+bundle still calls edge-gw directly and reusing it would record nothing at
+all. `retrace run` would then report `capture: empty` rather than a diff —
+which is the check catching exactly this mistake.
+
+`tests/checkout.spec.js` imports `test` from
+`@caribou-crew/retrace-playwright` instead of `@playwright/test`. That is
+the same test function plus one fixture, `retrace`, carrying
+`group`/`endGroup` (flow parts) and `checkpoint` (screenshots). All three
+are no-ops when nothing is recording, so `pnpm -C clients/web-app run e2e`
+behaves exactly as it did before and there is no second copy of the suite
+to keep in sync.
+
+**A clean run reports `changed`, not `pass`.** The browser loads the
+catalog and the cart concurrently, each behind its own CORS preflight, so
+two runs of identical code interleave those calls differently. retrace
+reports the interleaving as `[moved]`. Moves are excluded from the wire
+budget — every gate still passes — but they do reach the verdict. When the
+per-call list is all `[identical]` and `[moved]`, nothing regressed.
+
 ## Layout
 
 ```
 sample/
 ├── ensemble.yaml              # the reference config for the full stack
+├── retrace.yaml               # records the Playwright suite as the `checkout` flow
 ├── seeds/                     # baseline.sql, users.sql, empty.sql, bulk.sql
 ├── clients/
 │   └── web-app/                # React/Vite — browse/cart/checkout, no tracing code

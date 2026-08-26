@@ -1,3 +1,14 @@
 packages:
   - dashboard/*
   - adapters/*
+  # The sample stack's browser client is a workspace member so it can depend
+  # on adapters/playwright through `workspace:*` — a real consumer link
+  # against the same @playwright/test instance the suite runs on. npm's
+  # `file:` alternative symlinks the adapter with its own node_modules
+  # attached, which gives the fixture a SECOND copy of @playwright/test and
+  # a `test()` the runner does not recognize.
+  #
+  # Its browser suite is deliberately not named `test`: it needs the sample
+  # stack running, so `pnpm -r --if-present test` — what CI runs — must not
+  # pick it up. See sample/clients/web-app/package.json.
+  - sample/clients/*

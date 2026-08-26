@@ -48,8 +48,9 @@ app.get('/admin/orders', async (req, res) => {
   try {
     upstream = await fetch(`${ORDER_URL}/orders`, { headers });
   } catch (err) {
-    // order-svc runs behind the "full" profile and is often not running —
-    // a connection failure here is expected, not a crash.
+    // `order` is a variants: service and its `real` (Java/MySQL) backing
+    // is opt-in, so it can be mid-swap or not running at all — a
+    // connection failure here is expected, not a crash.
     res.status(503).json({ error: 'orders unavailable' });
     return;
   }

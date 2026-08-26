@@ -1,0 +1,131 @@
+# retrace config for the "brew" sample stack.
+#
+# Run it from THIS directory — retrace does not search parent directories,
+# on purpose (see cmd_run.go: a config found by walking upward is a config
+# whose redaction rules you did not choose):
+#
+#   ensemble up -c ensemble.yaml      # in one terminal, leave it running
+#   retrace run                       # in another, from sample/
+#
+# The first run has nothing to compare against; `retrace ref accept <id>`
+# promotes it to the reference, and every run after that is a diff.
+app: brew
+
+# entry names the ensemble SERVICE whose proxy is the recording edge. With
+# it set (and `ensemble up` running) retrace attaches to the control plane
+# and records the whole chain — client -> edge -> storefront -> order ->
+# catalog/user/payments -> redis -> notify. Without it, retrace records the
+# client edge only and says so on stderr.
+entry: edge
+
+# upstream is the standalone fallback: where the recording proxy forwards
+# when ensemble is NOT up (`retrace run --no-ensemble`, or a control plane
+# that is not answering). edge-gw's proxy port, the same address the app
+# uses when nothing is recording.
+upstream: http://127.0.0.1:9080
+
+flows:
+  checkout:
+    # Runs from sample/ — `retrace run` executes a flow's command in the
+    # directory holding this file, not in the client's.
+    #
+    # This is the same suite `pnpm -C clients/web-app run e2e` runs by hand.
+    # It does not need a retrace-specific mode: the adapter's fixture is a
+    # no-op with no recording session, and playwright.config.js starts the
+    # app's dev server on its own port pointed at $RETRACE_PROXY_URL when
+    # there is one.
+    command: pnpm -C clients/web-app run e2e
+    # Generous, because this budget covers two browser tests including a
+    # cold vite start — it is here to catch a stack that has become
+    # pathologically slow, not to police normal variance.
+    perf_budget_ms: 60000
+
+# Header tolerances. `date` is not optional decoration: every response
+# carries one, so without this rule two identical runs differ on 100% of
+# paired calls and the wire gate below fails every time — measured, on two
+# consecutive runs of this exact suite. `http-date` is a NAMED matcher: it
+# tolerates any two values that are both valid HTTP dates, rather than
+# ignoring the header outright, so a service that stops sending one still
+# reports as a change.
+wire_rules:
+  - headers:
+      date: http-date
+      # edge-gw stamps a fresh traceparent on every request that arrives
+      # without one, which is every request the browser makes. Ignored
+      # rather than pattern-matched: its whole purpose is to be unique per
+      # request, so there is no value here worth comparing.
+      traceparent: ignore
+
+# Values that change on every run for reasons that are not regressions.
+# Everything here is a BODY field-path glob (retrace/rules' dialect), never
+# a URL path — see path_normalize below for those.
+wire_ignore:
+  - path: "**.id"
+    why: "order and cart ids are assigned per run; identity is not the contract"
+  - path: "**.order_id"
+    why: "same as id, under the name storefront-bff gives it"
+  - path: "**.created_at"
+    why: "wall-clock stamp written by order at insert time"
+  - path: "**.updated_at"
+    why: "wall-clock stamp written by order on every write"
+
+# URL paths, in contrast to wire_ignore above: two runs place the same call
+# against different order ids, and without this they read as one call that
+# vanished plus one that appeared rather than the same call twice.
+path_normalize:
+  - pattern: '/orders/[0-9]+'
+    replacement: '/orders/{id}'
+
+# The error test drives a deliberate 404 — storefront-bff surfaces order's
+# rejection of user 999. Without an entry here it reads as a regression on
+# every single run, which is how a real gate gets switched off.
+expected_statuses:
+  - path: /cart/999/checkout
+    status: 404
+
+# The money path must actually be the money path. If a refactor makes the
+# browser talk to storefront-bff directly, or checkout stops reaching
+# order, the hop plane says so by name rather than by a vague count.
+hop_require:
+  - { method: GET, path: /products, status: 200 }
+  - { method: POST, path: /cart/1/checkout, status: 200 }
+
+# Beyond core/trace's built-in header and query redaction: these are BODY
+# field names, and the sample app sends none of them today. They are here
+# because a sample is where someone copies the shape from, and the shape
+# for a real app includes its own keys.
+redact:
+  - password
+  - card_number
+
+gates:
+  # Any wire change at all fails the run. The sample stack is deterministic
+  # once the ids above are ignored, so there is no honest variance for a
+  # budget to absorb — and a contract change is exactly what this is for.
+  wire:
+    budget_pct: 0
+  hop:
+    budget_pct: 0
+
+# Which of those gates actually fail the build. Pixel is deliberately
+# absent: font rendering differs between machines, so a pixel budget that
+# fails CI would fail on somebody else's laptop for no reason. Pixel
+# differences still appear in the report and still gate `ref accept`.
+fail_on:
+  - wire
+  - hop
+
+# Expect `VERDICT: changed`, not `pass`, on a clean run.
+#
+# The browser issues its fetches concurrently — the catalog and the cart
+# load together, each behind its own CORS preflight — so two runs of
+# identical code interleave those calls differently. retrace reports the
+# interleaving as `[moved]`, and a move is deliberately NOT counted in the
+# wire budget (see observedFor in retrace/diff/summary.go), so every gate
+# above still passes. It IS counted by the verdict, which is why a run with
+# no differing call still reads `changed`.
+#
+# Triage currently labels that run `client-behavior` — "the client sent
+# something different" — which is not what happened here: the client sent
+# byte-identical requests in a different order. Read the per-call list, not
+# the label, when the only entries are `[moved]`.
