@@ -262,7 +262,11 @@ func TestRunBannersANonOkVerdict(t *testing.T) {
 	}
 }
 
-func TestRunRequiresFlow(t *testing.T) {
+// Bare `run` records every configured flow, so omitting --flow is no longer
+// an error by itself. It IS still an error when there is nothing to record:
+// a config with no flows: section and no flow named on the command line
+// leaves retrace with no work, and guessing is not an option.
+func TestRunWithNoFlowAndNoConfiguredFlowsExplainsBothWaysOut(t *testing.T) {
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "app: web\n")
@@ -273,9 +277,14 @@ func TestRunRequiresFlow(t *testing.T) {
 	}
 	// Deliberately stricter than "mentions --flow": the usage banner names
 	// every flag, so a substring match on "--flow" alone passes even when
-	// `run` is not implemented at all.
-	if !strings.Contains(res.stderr, "--flow is required") {
-		t.Errorf("stderr does not say --flow is required: %s", res.stderr)
+	// `run` is not implemented at all. Both remedies must be named, because
+	// which one applies depends on whether the user has a retrace.yaml they
+	// intend to grow.
+	if !strings.Contains(res.stderr, "configures none") {
+		t.Errorf("stderr does not explain that no flows are configured: %s", res.stderr)
+	}
+	if !strings.Contains(res.stderr, "flows:") {
+		t.Errorf("stderr does not name the config remedy: %s", res.stderr)
 	}
 }
 

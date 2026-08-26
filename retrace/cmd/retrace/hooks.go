@@ -97,19 +97,29 @@ func hookEnv(app, flow string) []string {
 	)
 }
 
-// runPreconditions runs the global preflight, then the flow's preflight, then
-// the flow's setup — the whole before-the-session sequence, in the one order
-// that lets a global check gate the per-flow ones.
+// runGlobalPreflight runs Config.Preflight — ONCE per invocation, before any
+// flow, which is what the config has always promised. It is the coarse check
+// ("is the stack even up"), so it gates every flow's own hooks: running a
+// flow's seed assertion before knowing the stack answered at all produces a
+// failure that blames the flow when nothing is running.
 //
-// Global preflight comes first because it is the coarse check: "is the stack
-// even up". Running a flow's specific seed assertion before knowing the stack
-// answered at all produces a confusing failure that names the flow when the
-// real problem is that nothing is running.
-func runPreconditions(ctx context.Context, cfg *config.Config, fl config.Flow, app, flow, cwd string, stderr io.Writer) error {
+// Once matters more since a single `retrace run` can record many flows. A
+// global preflight re-run per flow would charge a multi-flow run N times for
+// a check whose entire scope is the stack, and a flaky one would fail a later
+// flow for a condition that was true when the run started.
+//
+// The flow name is not in the env here: the global preflight is not being run
+// on behalf of any one flow, and stamping it with the first flow's name would
+// be a lie a shared seed script could easily act on.
+func runGlobalPreflight(ctx context.Context, cfg *config.Config, app, cwd string, stderr io.Writer) error {
+	return runHooks(ctx, "preflight", cfg.Preflight, cwd, hookEnv(app, ""), stderr)
+}
+
+// runFlowPreconditions runs one flow's own preflight, then its setup — the
+// per-flow half of the before-the-session sequence. runGlobalPreflight has
+// already passed by the time this is called.
+func runFlowPreconditions(ctx context.Context, fl config.Flow, app, flow, cwd string, stderr io.Writer) error {
 	env := hookEnv(app, flow)
-	if err := runHooks(ctx, "preflight", cfg.Preflight, cwd, env, stderr); err != nil {
-		return err
-	}
 	if err := runHooks(ctx, "flow preflight", fl.Preflight, cwd, env, stderr); err != nil {
 		return err
 	}

@@ -55,7 +55,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		flow      = fs.String("flow", "", "flow name to record (required)")
+		flow      = fs.String("flow", "", "single flow name to record")
+		flows     = fs.String("flows", "", "comma-separated flow names to record in one process (default with neither flag: every flow in retrace.yaml)")
 		app       = fs.String("app", "", "app name (default: config app, else the directory name)")
 		upstream  = fs.String("upstream", "", "standalone: base URL clients would call")
 		proxyHost = fs.String("proxy-host", "", "hostname the client-edge listener binds on and is advertised as (default 127.0.0.1; must resolve loopback-only)")
@@ -71,12 +72,6 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return exitUsage
-	}
-	if strings.TrimSpace(*flow) == "" {
-		return fail(stderr, "run: --flow is required — name the flow to record")
-	}
-	if len(testCmd) == 0 {
-		return fail(stderr, "run: a test command is required after `--`")
 	}
 
 	cwd, err := os.Getwd()
@@ -130,47 +125,147 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		port = cfg.ProxyPort
 	}
 
-	// Preconditions gate the capture, so they run before any session exists:
-	// a stack that isn't seeded produces a recording that diffs as though the
-	// app misbehaved, and refusing costs nothing but the hook's own runtime.
-	// A flow with no entry in retrace.yaml has no hooks — the zero Flow — and
-	// is captured exactly as before.
-	fl := cfg.Flows[*flow]
+	names, multi, err := selectFlows(*flow, *flows, cfg)
+	if err != nil {
+		return fail(stderr, "run: %v", err)
+	}
+	if err := checkExplicitCommandUsage(names, testCmd); err != nil {
+		return fail(stderr, "run: %v", err)
+	}
+	// A name in --flows that matches nothing is a typo. Caught here rather
+	// than at the flow's turn to run, so a five-flow invocation does not
+	// record four of them before reporting the fifth was never configured.
+	// --flow is exempt: naming an unconfigured flow has always been legal
+	// (it simply has no hooks and needs its command after `--`).
+	if multi {
+		if unknown := unknownFlows(names, cfg); len(unknown) > 0 {
+			return fail(stderr, "run: retrace.yaml configures no flow named %s", strings.Join(unknown, ", "))
+		}
+	}
+	// Resolve every command before recording anything. A flow with no command
+	// is a config error, and discovering it three flows in means three runs
+	// already written against a stack the fourth was going to fail on.
+	cmds := make([][]string, len(names))
+	for i, n := range names {
+		c, cerr := resolveFlowCommand(cfg.Flows[n], n, testCmd)
+		if cerr != nil {
+			return fail(stderr, "run: %v", cerr)
+		}
+		cmds[i] = c
+	}
+
 	hookCtx, cancelHooks := context.WithCancel(context.Background())
 	defer cancelHooks()
-	if err := runPreconditions(hookCtx, cfg, fl, appName, *flow, cwd, stderr); err != nil {
+	// Global preflight runs once for the whole invocation, before any flow —
+	// its scope is the stack, not any one recording.
+	if err := runGlobalPreflight(hookCtx, cfg, appName, cwd, stderr); err != nil {
 		fmt.Fprintf(stderr, "retrace: refusing to capture — %v\n", err)
-		fmt.Fprintf(stderr, "  the stack is not in a state this flow can be recorded against, so no run\n")
+		fmt.Fprintf(stderr, "  the stack is not in a state these flows can be recorded against, so no run\n")
 		fmt.Fprintf(stderr, "  directory was written. Fix the command above, or remove it from retrace.yaml.\n")
 		return exitGate
 	}
+
+	p := flowRunParams{
+		cfg: cfg, cwd: cwd, app: appName,
+		upstream: up, host: host, port: port,
+		asJSON: *asJSON, noEnsemble: *noEnsemble, ensembleURL: *ensembleURL,
+		stdout: stdout, stderr: stderr,
+	}
+
+	// Every selected flow runs, even after one fails. A driving agent gets the
+	// whole picture from one invocation — which is the entire reason this
+	// command takes more than one flow — and stopping at the first failure
+	// would hide whether the others share the cause.
+	manifests := make([]runs.Manifest, 0, len(names))
+	exit := exitOK
+	for i, n := range names {
+		m, code, ok := captureOneFlow(hookCtx, p, n, cmds[i])
+		if ok {
+			manifests = append(manifests, m)
+		}
+		// First non-zero wins: a later success must never mask an earlier
+		// failure, and the first failure is the one worth acting on.
+		if code != exitOK && exit == exitOK {
+			exit = code
+		}
+	}
+
+	if *asJSON {
+		// The document's shape follows the INVOCATION, not the result count:
+		// --flow always yields one object, --flows and bare run always yield
+		// an array. A shape that depended on how many flows happened to be
+		// configured would break a consumer's parser the day someone adds a
+		// second flow to retrace.yaml.
+		var doc any = manifests
+		if !multi {
+			if len(manifests) == 0 {
+				return exit
+			}
+			doc = manifests[0]
+		}
+		if err := writeJSON(stdout, doc); err != nil {
+			return fail(stderr, "run: %v", err)
+		}
+	}
+	return exit
+}
+
+// flowRunParams is everything captureOneFlow needs that does not vary from one
+// flow to the next.
+type flowRunParams struct {
+	cfg                *config.Config
+	cwd, app           string
+	upstream, host     string
+	port               int
+	asJSON, noEnsemble bool
+	ensembleURL        string
+	stdout, stderr     io.Writer
+}
+
+// captureOneFlow records a single flow end to end: its own preconditions, a
+// session, the command, teardown. It reports (manifest, exit code, whether the
+// manifest is real) and prints its own diagnostics, so the caller's loop stays
+// a loop.
+//
+// Its defers are why this is a function rather than an inlined loop body: the
+// session close and the teardown hook must fire at the end of THIS flow, not
+// at the end of the whole invocation. Inlined, a five-flow run would hold five
+// sessions open and run every teardown at the very end, against a stack four
+// flows further along than the one each was written for.
+func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd []string) (runs.Manifest, int, bool) {
+	stderr := p.stderr
+	fl := p.cfg.Flows[name]
+
+	if err := runFlowPreconditions(ctx, fl, p.app, name, p.cwd, stderr); err != nil {
+		fmt.Fprintf(stderr, "retrace: refusing to capture %s — %v\n", name, err)
+		fmt.Fprintf(stderr, "  no run directory was written for this flow.\n")
+		return runs.Manifest{}, exitGate, false
+	}
 	// Teardown is deferred the moment setup succeeded, so it runs on every
-	// path out of this function — a failing flow, a refused session, a bad
-	// manifest. A teardown that only ran on success would leak exactly the
-	// state that made the next run fail, and the failing run is when cleanup
-	// matters most.
+	// path out of this flow — a failing command, a refused session, a bad
+	// manifest. Cleanup that only ran on success would leak exactly the state
+	// that makes the next flow fail, and that flow has no way to know.
 	if len(fl.Teardown) > 0 {
 		defer func() {
-			// Not hookCtx: that one is cancelled on the way out of cmdRun,
-			// which would kill teardown at the instant it is meant to start.
-			if err := runHooks(context.Background(), "teardown", fl.Teardown, cwd, hookEnv(appName, *flow), stderr); err != nil {
-				// A failed teardown does not retract a good capture — the
-				// recording already happened and is trustworthy. It is still
-				// loud, because leftover state is what makes the *next* run
-				// lie, and that run has no way to know this one left a mess.
-				fmt.Fprintf(stderr, "retrace: ⚠ teardown failed: %v\n", err)
+			// context.Background(), not ctx: ctx is cancelled on the way out
+			// of cmdRun, which would kill teardown as it starts.
+			if err := runHooks(context.Background(), "teardown", fl.Teardown, p.cwd, hookEnv(p.app, name), stderr); err != nil {
+				// A failed teardown does not retract a capture that already
+				// succeeded. It is still loud: leftover state is what makes
+				// the NEXT run lie, and that run cannot know about this one.
+				fmt.Fprintf(stderr, "retrace: ⚠ teardown failed for %s: %v\n", name, err)
 			}
 		}()
 	}
 
 	opts := capture.Options{
-		Cwd:      cwd,
-		App:      appName,
-		Flow:     *flow,
-		Upstream: up,
-		Host:     host,
-		Port:     port,
-		Redact:   cfg.Redact,
+		Cwd:      p.cwd,
+		App:      p.app,
+		Flow:     name,
+		Upstream: p.upstream,
+		Host:     p.host,
+		Port:     p.port,
+		Redact:   p.cfg.Redact,
 		Now:      time.Now,
 	}
 
@@ -187,9 +282,9 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	// trap the zero-value constraint is about.
 	var sess *capture.Session
 	switch {
-	case *noEnsemble:
+	case p.noEnsemble:
 		// Explicit escape hatch — the user asked for standalone, so no note.
-	case cfg.Entry == "":
+	case p.cfg.Entry == "":
 		// retrace.yaml needing `entry:` is exactly the thing a new user
 		// forgets, and this is otherwise the one attach-vs-standalone
 		// decision that produced no signal at all (the manifest itself is
@@ -197,20 +292,20 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		// to skip the attempt costs nothing and needs no network call.
 		fmt.Fprintf(stderr, "retrace: no `entry:` configured in retrace.yaml — recording the client edge only\n")
 	default:
-		c := NewClient(*ensembleURL)
+		c := NewClient(p.ensembleURL)
 		hctx, cancel := context.WithTimeout(context.Background(), ensembleHealthTimeout)
 		healthErr := c.Health(hctx)
 		cancel()
 		switch {
 		case healthErr != nil:
-			fmt.Fprintf(stderr, "retrace: ensemble at %s is not answering (%v) — recording the client edge only\n", *ensembleURL, healthErr)
+			fmt.Fprintf(stderr, "retrace: ensemble at %s is not answering (%v) — recording the client edge only\n", p.ensembleURL, healthErr)
 		default:
-			attached, attachErr := capture.StartAttached(opts, c, cfg.Entry)
+			attached, attachErr := capture.StartAttached(opts, c, p.cfg.Entry)
 			if attachErr != nil {
 				// Health passed but the session did not start (404 unknown
 				// entry, 409 active id, 400 no proxy port). A live control
 				// plane is not proof of an attached capture.
-				fmt.Fprintf(stderr, "retrace: ensemble at %s refused the session (%v) — recording the client edge only\n", *ensembleURL, attachErr)
+				fmt.Fprintf(stderr, "retrace: ensemble at %s refused the session (%v) — recording the client edge only\n", p.ensembleURL, attachErr)
 			} else {
 				sess = attached
 			}
@@ -219,7 +314,8 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	if sess == nil {
 		standalone, serr := capture.StartStandalone(opts)
 		if serr != nil {
-			return fail(stderr, "run: %v", serr)
+			fmt.Fprintf(stderr, "retrace: run: %v\n", serr)
+			return runs.Manifest{}, exitUsage, false
 		}
 		sess = standalone
 	}
@@ -231,21 +327,22 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	// the documented CI contract (`retrace run --json | jq`). The test
 	// command's own stdout goes to stderr instead, so a test runner's own
 	// log lines never land ahead of (or inside) the JSON document.
-	testStdout := stdout
-	if *asJSON {
+	testStdout := p.stdout
+	if p.asJSON {
 		testStdout = stderr
 	}
 	m, err := runFlow(sess, runOptions{
-		Cwd:     cwd,
-		App:     appName,
-		Flow:    *flow,
+		Cwd:     p.cwd,
+		App:     p.app,
+		Flow:    name,
 		TestCmd: testCmd,
 		Stdout:  testStdout,
 		Stderr:  stderr,
 		Now:     time.Now,
 	})
 	if err != nil {
-		return fail(stderr, "run: %v", err)
+		fmt.Fprintf(stderr, "retrace: run: %v\n", err)
+		return runs.Manifest{}, exitUsage, false
 	}
 
 	// Always, regardless of --json: stdout carries only the manifest under
@@ -260,20 +357,16 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if *asJSON {
-		if err := writeJSON(stdout, m); err != nil {
-			return fail(stderr, "run: %v", err)
-		}
-	} else {
-		fmt.Fprintf(stdout, "retrace: recorded %s/%s as %s\n", m.App, m.Flow, m.RunID)
-		fmt.Fprintf(stdout, "  %s\n", sess.Paths.RunDir)
-		fmt.Fprintf(stdout, "  wire %d calls · %d checkpoints · %d flow parts · capture %s\n",
+	if !p.asJSON {
+		fmt.Fprintf(p.stdout, "retrace: recorded %s/%s as %s\n", m.App, m.Flow, m.RunID)
+		fmt.Fprintf(p.stdout, "  %s\n", sess.Paths.RunDir)
+		fmt.Fprintf(p.stdout, "  wire %d calls · %d checkpoints · %d flow parts · capture %s\n",
 			m.Wire.Calls, len(m.Checkpoints), len(m.Groups), m.Capture.Status)
 	}
 	// The test command's own exit code wins: a failing test must fail the
 	// pipeline. retrace's 0/1/2/3 contract only applies when the command
 	// itself succeeded.
-	return m.Test.ExitCode
+	return m, m.Test.ExitCode, true
 }
 
 // runOptions is what cmdRun has already resolved from flags and config by
