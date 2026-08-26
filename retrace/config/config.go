@@ -116,8 +116,10 @@ type Config struct {
 	// gate a build is the consuming task's decision, not this package's.
 	FailOn []string `yaml:"fail_on"`
 	// Preflight commands run once, before any flow. Per-flow Preflight (see
-	// Flow.Preflight) then runs before that specific flow. Shape only: not
-	// executed by this package.
+	// Flow.Preflight) then runs before that specific flow. Executed by
+	// `retrace run` (cmd/retrace/hooks.go), never by this package: a
+	// non-zero exit refuses the capture rather than recording against a
+	// stack that failed its own preconditions.
 	Preflight []string `yaml:"preflight"`
 	// Dir is set by Load from the file's own location and is NOT a YAML
 	// key. It must be tagged `yaml:"-"`, or KnownFields(true) will happily
@@ -138,13 +140,16 @@ type Flow struct {
 	PerfBudgetMs float64           `yaml:"perf_budget_ms"`
 	Masks        map[string][]Rect `yaml:"masks"`
 	// Preflight commands run before THIS flow specifically, after the
-	// global Config.Preflight has already run. Shape only: not executed by
-	// this package.
+	// global Config.Preflight has already run.
 	Preflight []string `yaml:"preflight"`
-	// Setup commands run before the flow's own Command; Teardown commands
-	// run after it, whether or not Command succeeded is the executing
-	// task's call to make — this package only carries the shape. Not
-	// executed here.
+	// Setup runs before the flow's command and Teardown after it — both
+	// OUTSIDE the recording window, so a seed step's own traffic is never
+	// captured and diffed as though the app had made those calls. Teardown
+	// runs on every exit path, including a failed flow: that is when
+	// leftover state matters most, because the next run inherits it.
+	//
+	// Executed by `retrace run` (cmd/retrace/hooks.go), never by this
+	// package.
 	Setup    []string `yaml:"setup"`
 	Teardown []string `yaml:"teardown"`
 }

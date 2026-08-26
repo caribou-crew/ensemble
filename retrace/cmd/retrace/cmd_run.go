@@ -130,6 +130,39 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		port = cfg.ProxyPort
 	}
 
+	// Preconditions gate the capture, so they run before any session exists:
+	// a stack that isn't seeded produces a recording that diffs as though the
+	// app misbehaved, and refusing costs nothing but the hook's own runtime.
+	// A flow with no entry in retrace.yaml has no hooks — the zero Flow — and
+	// is captured exactly as before.
+	fl := cfg.Flows[*flow]
+	hookCtx, cancelHooks := context.WithCancel(context.Background())
+	defer cancelHooks()
+	if err := runPreconditions(hookCtx, cfg, fl, appName, *flow, cwd, stderr); err != nil {
+		fmt.Fprintf(stderr, "retrace: refusing to capture — %v\n", err)
+		fmt.Fprintf(stderr, "  the stack is not in a state this flow can be recorded against, so no run\n")
+		fmt.Fprintf(stderr, "  directory was written. Fix the command above, or remove it from retrace.yaml.\n")
+		return exitGate
+	}
+	// Teardown is deferred the moment setup succeeded, so it runs on every
+	// path out of this function — a failing flow, a refused session, a bad
+	// manifest. A teardown that only ran on success would leak exactly the
+	// state that made the next run fail, and the failing run is when cleanup
+	// matters most.
+	if len(fl.Teardown) > 0 {
+		defer func() {
+			// Not hookCtx: that one is cancelled on the way out of cmdRun,
+			// which would kill teardown at the instant it is meant to start.
+			if err := runHooks(context.Background(), "teardown", fl.Teardown, cwd, hookEnv(appName, *flow), stderr); err != nil {
+				// A failed teardown does not retract a good capture — the
+				// recording already happened and is trustworthy. It is still
+				// loud, because leftover state is what makes the *next* run
+				// lie, and that run has no way to know this one left a mess.
+				fmt.Fprintf(stderr, "retrace: ⚠ teardown failed: %v\n", err)
+			}
+		}()
+	}
+
 	opts := capture.Options{
 		Cwd:      cwd,
 		App:      appName,
