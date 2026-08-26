@@ -51,7 +51,15 @@ func runPreflightChecks(cfg *config.Config) error {
 			label = check.Run
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(check.EffectiveTimeoutS())*time.Second)
-		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", check.Run).CombinedOutput()
+		path, args := preflightShell(check.Run)
+		cmd := exec.CommandContext(ctx, path, args...)
+		preflightConfigureKill(cmd)
+		// A second-line defense behind preflightConfigureKill's whole-group
+		// kill: caps how long CombinedOutput waits for the pipe-copying
+		// goroutines to see EOF after Cancel runs, so a kill that somehow
+		// doesn't fully land still can't hang the check past its timeout.
+		cmd.WaitDelay = 2 * time.Second
+		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
 			msg := check.Message
