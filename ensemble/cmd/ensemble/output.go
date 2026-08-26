@@ -52,19 +52,34 @@ func printHopLine(w io.Writer, h trace.Hop) {
 	fmt.Fprintf(w, "%d  %s -> %s  %s %s  %d  %.1fms\n", h.Seq, from, h.To, h.Method, h.Path, h.Status, h.T.DoneMs)
 }
 
+// formatLatencyMs renders a millisecond value in whichever unit reads more
+// naturally: whole milliseconds under 1s (Datadog-pulled values, and the
+// float64 average QueryPercentile computes, otherwise print with far more
+// decimal digits than a delay value needs), seconds with two decimals at or
+// above 1s. Every caller that renders a LatencyRule's FixedMs/P50/P95/P99
+// should go through this rather than a raw %g/%v.
+func formatLatencyMs(ms float64) string {
+	if ms >= 1000 {
+		return fmt.Sprintf("%.2fs", ms/1000)
+	}
+	return fmt.Sprintf("%.0fms", ms)
+}
+
 // printLatencyRules renders a LatencyListResponse as JSON or a table.
 func printLatencyRules(w io.Writer, jsonOut bool, res LatencyListResponse) int {
 	if jsonOut {
 		return printJSON(w, res)
 	}
 	tw := newTabwriter(w)
-	fmt.Fprintln(tw, "TARGET\tPATH\tFIXED(ms)\tP50\tP95\tP99\tENABLED\tSOURCE")
+	fmt.Fprintln(tw, "TARGET\tPATH\tFIXED\tP50\tP95\tP99\tENABLED\tSOURCE")
 	for _, r := range res.Rules {
 		source := r.Source
 		if source == "" {
 			source = "manual"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%g\t%g\t%g\t%g\t%t\t%s\n", r.Target, r.Path, r.FixedMs, r.P50, r.P95, r.P99, r.Enabled, source)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\n", r.Target, r.Path,
+			formatLatencyMs(r.FixedMs), formatLatencyMs(r.P50), formatLatencyMs(r.P95), formatLatencyMs(r.P99),
+			r.Enabled, source)
 	}
 	tw.Flush()
 	return 0

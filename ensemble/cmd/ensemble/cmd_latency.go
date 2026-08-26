@@ -168,8 +168,8 @@ func cmdLatencyFromDatadog(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ensemble: latency from-datadog: applied rule not found in response")
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s %s: p50=%gms p95=%gms p99=%gms (source: datadog, last %sm)\n",
-		rule.Target, rule.Path, rule.P50, rule.P95, rule.P99, datadogWindowFromSource(rule.Source))
+	fmt.Fprintf(stdout, "%s %s: p50=%s p95=%s p99=%s (source: datadog, last %sm)\n",
+		rule.Target, rule.Path, formatLatencyMs(rule.P50), formatLatencyMs(rule.P95), formatLatencyMs(rule.P99), datadogWindowFromSource(rule.Source))
 	return 0
 }
 
@@ -217,9 +217,9 @@ func cmdLatencyApply(args []string, stdout, stderr io.Writer) int {
 	for _, r := range res.Results {
 		if r.OK {
 			if r.Source != "" {
-				fmt.Fprintf(stdout, "%s %s: p50=%gms p95=%gms p99=%gms (source: datadog)\n", r.Target, r.Path, r.P50, r.P95, r.P99)
+				fmt.Fprintf(stdout, "%s %s: p50=%s p95=%s p99=%s (source: datadog)\n", r.Target, r.Path, formatLatencyMs(r.P50), formatLatencyMs(r.P95), formatLatencyMs(r.P99))
 			} else {
-				fmt.Fprintf(stdout, "%s %s: fixed=%gms\n", r.Target, r.Path, r.FixedMs)
+				fmt.Fprintf(stdout, "%s %s: fixed=%s\n", r.Target, r.Path, formatLatencyMs(r.FixedMs))
 			}
 		} else {
 			failed++

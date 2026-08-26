@@ -79,9 +79,11 @@ func TestLatencyFromDatadogHappyPath(t *testing.T) {
 		},
 	}
 	client := &fakeDatadogClient{results: map[string]float64{
-		"p50:trace.dur{service:billing}": 45,
-		"p95:trace.dur{service:billing}": 120,
-		"p99:trace.dur{service:billing}": 340,
+		// Datadog's trace-duration metrics report in seconds; QueryPercentileTriple
+		// converts to ms, so these become p50=45 p95=120 p99=340 below.
+		"p50:trace.dur{service:billing}": 0.045,
+		"p95:trace.dur{service:billing}": 0.120,
+		"p99:trace.dur{service:billing}": 0.340,
 	}}
 	e := newDatadogTestEnv(t, cfg, server.Deps{Datadog: client})
 
@@ -164,9 +166,9 @@ rules:
 	}
 
 	client := &fakeDatadogClient{results: map[string]float64{
-		"p50:trace.dur{service:billing}": 10,
-		"p95:trace.dur{service:billing}": 20,
-		"p99:trace.dur{service:billing}": 30,
+		"p50:trace.dur{service:billing}": 0.010,
+		"p95:trace.dur{service:billing}": 0.020,
+		"p99:trace.dur{service:billing}": 0.030,
 	}}
 	e := newDatadogTestEnv(t, cfg, server.Deps{Datadog: client})
 
@@ -192,6 +194,11 @@ rules:
 	for _, r := range got.Results {
 		if !r.OK {
 			t.Errorf("result %+v not ok", r)
+		}
+	}
+	for _, r := range got.Results {
+		if r.Path == "/" && r.P50 != 10 {
+			t.Errorf("Datadog result P50 = %v, want 10 (0.010s converted to ms)", r.P50)
 		}
 	}
 	if rules := e.lat.Rules(); len(rules) != 2 {
@@ -227,9 +234,9 @@ rules:
 
 	client := &fakeDatadogClient{
 		results: map[string]float64{
-			"p50:good{service:billing}": 10,
-			"p95:good{service:billing}": 20,
-			"p99:good{service:billing}": 30,
+			"p50:good{service:billing}": 0.010,
+			"p95:good{service:billing}": 0.020,
+			"p99:good{service:billing}": 0.030,
 		},
 		errs: map[string]error{
 			"p50:bad{service:billing}": errNoData,

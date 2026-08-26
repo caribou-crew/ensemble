@@ -135,16 +135,16 @@ func (f *fakeClient) QueryPercentile(ctx context.Context, query string, windowMi
 
 func TestQueryPercentileTripleSubstitutesAllThree(t *testing.T) {
 	f := &fakeClient{results: map[string]float64{
-		"p50:foo{bar}": 10,
-		"p95:foo{bar}": 20,
-		"p99:foo{bar}": 30,
+		"p50:foo{bar}": 0.010,
+		"p95:foo{bar}": 0.020,
+		"p99:foo{bar}": 0.030,
 	}}
 	p50, p95, p99, err := QueryPercentileTriple(context.Background(), f, "p{P}:foo{bar}", 60)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if p50 != 10 || p95 != 20 || p99 != 30 {
-		t.Errorf("got p50=%v p95=%v p99=%v, want 10/20/30", p50, p95, p99)
+		t.Errorf("got p50=%v p95=%v p99=%v, want 10/20/30 (Datadog seconds converted to ms)", p50, p95, p99)
 	}
 	want := []string{"p50:foo{bar}", "p95:foo{bar}", "p99:foo{bar}"}
 	if len(f.queries) != len(want) {

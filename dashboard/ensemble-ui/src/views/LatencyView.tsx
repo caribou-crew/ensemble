@@ -55,9 +55,21 @@ function ruleFromDraft(d: Draft): LatencyRule {
   };
 }
 
+// formatMs renders a millisecond value in whichever unit reads more
+// naturally: whole milliseconds under 1s, seconds with two decimals at or
+// above 1s. Values pulled from Datadog (converted from that API's seconds)
+// carry many decimal digits of float noise, so this rounds rather than
+// printing the raw number.
+function formatMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
 function delaySummary(r: LatencyRule): string {
-  if (r.fixedMs) return `${r.fixedMs}ms fixed`;
-  if (r.p50 || r.p95 || r.p99) return `p50 ${r.p50 ?? 0} / p95 ${r.p95 ?? 0} / p99 ${r.p99 ?? 0}ms`;
+  if (r.fixedMs) return `${formatMs(r.fixedMs)} fixed`;
+  if (r.p50 || r.p95 || r.p99) {
+    return `p50 ${formatMs(r.p50 ?? 0)} / p95 ${formatMs(r.p95 ?? 0)} / p99 ${formatMs(r.p99 ?? 0)}`;
+  }
   return '—';
 }
 
