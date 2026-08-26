@@ -164,6 +164,10 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	if err := runPreflightChecks(cfg); err != nil {
+		return err
+	}
+
 	if err := checkPortsFree(cfg, opts.Profiles); err != nil {
 		return err
 	}

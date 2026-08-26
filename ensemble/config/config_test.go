@@ -20,6 +20,35 @@ func TestValidateServiceMissingRunAndDocker(t *testing.T) {
 	}
 }
 
+func TestValidatePreflightMissingRun(t *testing.T) {
+	c := &Config{Preflight: []PreflightCheck{{Name: "docker"}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "preflight[0]") {
+		t.Errorf("error does not name the failing check: %v", err)
+	}
+}
+
+func TestValidatePreflightNegativeTimeout(t *testing.T) {
+	c := &Config{Preflight: []PreflightCheck{{Run: "docker info", TimeoutS: -1}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout_s") {
+		t.Errorf("error does not mention timeout_s: %v", err)
+	}
+}
+
+func TestValidatePreflightClean(t *testing.T) {
+	c := &Config{Preflight: []PreflightCheck{{Name: "docker", Run: "docker info", Message: "start docker"}}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateServiceRunWithoutPort(t *testing.T) {
 	c := &Config{Services: map[string]Service{
 		"bff": {Run: "node dist/main.js", Port: 0},

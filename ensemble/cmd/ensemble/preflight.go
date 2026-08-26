@@ -37,6 +37,36 @@ func adoptableDatabasePort(name string) bool {
 	return err == nil && running
 }
 
+// runPreflightChecks runs every cfg.Preflight check in declared order,
+// stopping at the first failure — see config.PreflightCheck. It runs
+// before checkPortsFree (and everything else runUp does), so a missing
+// dependency (docker/podman not running, a VPN down, an internal service
+// unreachable) fails fast with a clear, config-authored message instead of
+// surfacing confusingly deep inside the orchestrator's first docker/build
+// call.
+func runPreflightChecks(cfg *config.Config) error {
+	for _, check := range cfg.Preflight {
+		label := check.Name
+		if label == "" {
+			label = check.Run
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(check.EffectiveTimeoutS())*time.Second)
+		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", check.Run).CombinedOutput()
+		cancel()
+		if err != nil {
+			msg := check.Message
+			if msg == "" {
+				msg = strings.TrimSpace(string(out))
+				if msg == "" {
+					msg = err.Error()
+				}
+			}
+			return fmt.Errorf("preflight %q failed: %s", label, msg)
+		}
+	}
+	return nil
+}
+
 // checkPortsFree verifies every port the active stack (cfg filtered
 // through activeProfiles, see Config.ActivePorts) would bind is actually
 // free on this host, before ensemble starts anything. A conflict here is

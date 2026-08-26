@@ -37,6 +37,15 @@ func (c *Config) Validate() error {
 	// intercept port at the other's process.
 	usedPorts := make(map[int][]string)
 
+	for i, check := range c.Preflight {
+		if check.Run == "" {
+			errs = append(errs, fmt.Errorf("preflight[%d]: run is required", i))
+		}
+		if check.TimeoutS < 0 {
+			errs = append(errs, fmt.Errorf("preflight[%d]: timeout_s must be >= 0", i))
+		}
+	}
+
 	for name, db := range c.Databases {
 		if db.Type == "" {
 			db.Type = inferDatabaseType(db.Image)

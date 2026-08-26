@@ -31,6 +31,15 @@ type Config struct {
 	Profiles map[string][]string `yaml:"profiles"`
 	Redact   []string            `yaml:"redact"` // extra redaction keys
 	OnReady  OnReady             `yaml:"on_ready"`
+	// Preflight lists checks that must succeed before `ensemble up` starts
+	// anything else — see PreflightCheck. Run in declared order; the first
+	// failure aborts the whole command before any process, container, or
+	// port bind happens. Empty (the default) runs no checks. Meant for
+	// dependencies ensemble itself can't start for you — a container
+	// runtime (docker/podman) that isn't running, a VPN, an internal
+	// service reachable only over one — that otherwise fail confusingly
+	// deep inside orchestrator's first docker/build call.
+	Preflight []PreflightCheck `yaml:"preflight"`
 	// Readiness configures post-on_ready readiness checks — see the
 	// Readiness type and ReadinessChecks() for the parsed checks file it
 	// points at. Nil (the default) means no readiness checks are
@@ -85,6 +94,37 @@ type Config struct {
 type OnReady struct {
 	Seeds []string `yaml:"seeds"`
 	Run   string   `yaml:"run"`
+}
+
+// DefaultPreflightTimeoutS applies when a PreflightCheck.TimeoutS is left
+// unset (zero) in ensemble.yaml.
+const DefaultPreflightTimeoutS = 10
+
+// PreflightCheck is one command that must exit 0 before `ensemble up`
+// proceeds — see Config.Preflight. Run executes under `/bin/sh -c`, the
+// same convention as OnReady.Run and a service's build/hook commands, so
+// it can be a plain binary invocation ("podman info") or a small pipeline.
+type PreflightCheck struct {
+	// Name identifies the check in progress/error output. Defaults to Run
+	// when left unset.
+	Name string `yaml:"name"`
+	Run  string `yaml:"run"`
+	// Message, if set, replaces the command's own output in the failure
+	// error — for a check whose stderr/exit status isn't self-explanatory
+	// to someone who didn't write it (e.g. "podman info" failing with a
+	// generic connection-refused error).
+	Message string `yaml:"message"`
+	// TimeoutS bounds how long Run may take. 0 (unset) uses
+	// DefaultPreflightTimeoutS.
+	TimeoutS int `yaml:"timeout_s"`
+}
+
+// EffectiveTimeoutS returns TimeoutS, or DefaultPreflightTimeoutS when unset.
+func (p PreflightCheck) EffectiveTimeoutS() int {
+	if p.TimeoutS > 0 {
+		return p.TimeoutS
+	}
+	return DefaultPreflightTimeoutS
 }
 
 // Service describes one process or container ensemble supervises.

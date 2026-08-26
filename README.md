@@ -478,6 +478,29 @@ Note the naming proximity to, but non-collision with, the top-level
 `latency.profiles` is a different concept at a different YAML path. Docs and
 `--help` say "latency profile" in full for exactly this reason.
 
+### Preflight checks
+
+Some failures have nothing to do with ensemble.yaml — docker/podman isn't
+running, a VPN is down, an internal service the stack depends on is
+unreachable — and surfacing them deep inside the first `docker run` or build
+step is confusing. A top-level `preflight:` key runs commands up front and
+fails `ensemble up` fast, before anything starts:
+
+```yaml
+preflight:
+  - name: container runtime
+    run: podman info
+    message: "podman isn't running — start it and try again"
+  - name: vpn
+    run: curl -sf https://internal.example.com/health
+    timeout_s: 5   # default 10
+```
+
+Each check runs `run` under `/bin/sh -c`; a non-zero exit fails the whole
+command with `message` (if set) or the command's own output. Checks run in
+order and stop at the first failure — nothing is started, no port is bound,
+until every check passes.
+
 ### Readiness checks
 
 `health:` proves a process is listening; `on_ready` proves seeds/migrations ran.
