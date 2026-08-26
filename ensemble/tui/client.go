@@ -18,6 +18,7 @@ import (
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server"
 )
 
 // apiClient is every control-plane call a TUI panel needs. Client is its
@@ -25,6 +26,7 @@ import (
 // can substitute a fake instead of a live HTTP server.
 type apiClient interface {
 	Status(ctx context.Context) (StatusResponse, error)
+	Topology(ctx context.Context) (server.TopologyResponse, error)
 	Restart(ctx context.Context, name string) (orchestrator.ServiceState, error)
 	Flip(ctx context.Context, name string) (orchestrator.ServiceState, error)
 	Seed(ctx context.Context, name string) (SeedResponse, error)
@@ -121,6 +123,15 @@ type StatusResponse struct {
 func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
 	var out StatusResponse
 	err := c.do(ctx, http.MethodGet, "/api/status", nil, &out)
+	return out, err
+}
+
+// Topology fetches GET /api/topology, the only source of gateway nodes:
+// gateways are static listeners the proxy binds at Up, not
+// orchestrator-supervised nodes, so they never appear in StatusResponse.
+func (c *Client) Topology(ctx context.Context) (server.TopologyResponse, error) {
+	var out server.TopologyResponse
+	err := c.do(ctx, http.MethodGet, "/api/topology", nil, &out)
 	return out, err
 }
 

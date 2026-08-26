@@ -286,6 +286,34 @@ function StubRow({ node }: { node: TopologyNode }) {
   );
 }
 
+/** A cfg.Gateways entry, rendered from Topology's existing "gateway" category — gateways are
+    static listeners the proxy binds at Up, not orchestrator-supervised nodes, so like stubs
+    they never get a ServiceState. */
+function GatewayRow({ node }: { node: TopologyNode }) {
+  return (
+    <tr className="services-table__row">
+      <td className="services-table__name">{node.name}</td>
+      <td>
+        <Badge tone={statusTone(node.status)}>{node.status}</Badge>
+      </td>
+      <td>
+        <span className="services-table__dash">—</span>
+      </td>
+      <td>
+        <Badge tone="amber">gateway</Badge>
+      </td>
+      <td className="services-table__variant">
+        <span className="services-table__dash">—</span>
+      </td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__num">—</td>
+      <td className="services-table__actions" />
+    </tr>
+  );
+}
+
 export default function ServicesView() {
   const { services, topology, error, refresh } = useServicesPoll();
   const [sort, setSort] = useState<SortState | null>(null);
@@ -340,6 +368,9 @@ export default function ServicesView() {
   const stubNodes = (topology?.nodes ?? [])
     .filter((n) => n.category === 'stub')
     .sort((a, b) => a.name.localeCompare(b.name));
+  const gatewayNodes = (topology?.nodes ?? [])
+    .filter((n) => n.category === 'gateway')
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="services-view">
@@ -364,7 +395,7 @@ export default function ServicesView() {
           </tr>
         </thead>
         <tbody>
-          {sorted.length === 0 && stubNodes.length === 0 && (
+          {sorted.length === 0 && stubNodes.length === 0 && gatewayNodes.length === 0 && (
             <tr>
               <td colSpan={10} className="services-table__empty">
                 no services configured
@@ -381,6 +412,9 @@ export default function ServicesView() {
           ))}
           {stubNodes.map((n) => (
             <StubRow key={n.name} node={n} />
+          ))}
+          {gatewayNodes.map((n) => (
+            <GatewayRow key={n.name} node={n} />
           ))}
         </tbody>
       </table>

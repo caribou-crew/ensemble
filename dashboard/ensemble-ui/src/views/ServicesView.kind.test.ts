@@ -15,6 +15,7 @@ import type { ServiceState, Topology } from '../api/types';
 const TOPOLOGY: Topology = {
   nodes: [
     { name: 'payments-stub', category: 'stub', status: 'static' },
+    { name: 'public', category: 'gateway', status: 'static', entry: true },
     { name: 'web', category: 'service', status: 'healthy' },
   ],
   edges: [],
@@ -72,6 +73,22 @@ describe('ServicesView: entity kind', () => {
     expect(stubRow!.textContent).toContain('stub');
     // No lifecycle actions for a stub row (start/restart/stop/flip don't apply).
     const actionsCell = stubRow!.querySelector('.services-table__actions');
+    expect(actionsCell?.querySelector('button')).toBeFalsy();
+  });
+
+  it('renders a gateway from cfg.Gateways as its own row, badged "gateway", with dashes for the rest', async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(ServicesView));
+    });
+
+    expect(rowNames(container)).toContain('public');
+    const rows = Array.from(container.querySelectorAll('.services-table__row'));
+    const gatewayRow = rows.find((r) => r.querySelector('.services-table__name')?.textContent === 'public');
+    expect(gatewayRow, 'expected a row for the gateway').toBeTruthy();
+    expect(gatewayRow!.textContent).toContain('gateway');
+    // No lifecycle actions for a gateway row (start/restart/stop/flip don't apply).
+    const actionsCell = gatewayRow!.querySelector('.services-table__actions');
     expect(actionsCell?.querySelector('button')).toBeFalsy();
   });
 });

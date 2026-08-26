@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server"
 )
 
 // servicesPanel is the Services tab: a live table of every node's health
@@ -19,6 +20,10 @@ type servicesPanel struct {
 	table    table.Model
 	cols     []table.Column // ideal (untruncated) column widths — see fitColumns
 	services []orchestrator.ServiceState
+	// gateways holds "gateway"-category topology nodes, appended as
+	// read-only rows after services — gateways are static listeners with no
+	// ServiceState, so they never appear in a GET /api/status poll.
+	gateways []server.TopologyNode
 	status   string // last action/error, shown in the footer
 	loading  bool
 }
@@ -45,6 +50,15 @@ func fetchStatus(client apiClient) tea.Cmd {
 	}
 }
 
+// fetchTopology polls GET /api/topology, the Services panel's only source
+// of gateway nodes.
+func fetchTopology(client apiClient) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.Topology(context.Background())
+		return topologyMsg{resp: resp, err: err}
+	}
+}
+
 func (p *servicesPanel) applyStatus(msg statusMsg) {
 	p.loading = false
 	if msg.err != nil {
@@ -54,18 +68,47 @@ func (p *servicesPanel) applyStatus(msg statusMsg) {
 	p.setServices(msg.resp.Services)
 }
 
+// applyTopology updates the gateway rows only; a topology error is silently
+// dropped rather than surfaced as the panel status, since /api/status
+// already succeeding means the panel is otherwise healthy and gateways are
+// a config-derived addition to it, not its primary content.
+func (p *servicesPanel) applyTopology(msg topologyMsg) {
+	if msg.err != nil {
+		return
+	}
+	gateways := make([]server.TopologyNode, 0, len(msg.resp.Nodes))
+	for _, n := range msg.resp.Nodes {
+		if n.Category == "gateway" {
+			gateways = append(gateways, n)
+		}
+	}
+	sort.Slice(gateways, func(i, j int) bool { return gateways[i].Name < gateways[j].Name })
+	p.gateways = gateways
+	p.rebuildRows()
+}
+
 func (p *servicesPanel) setServices(services []orchestrator.ServiceState) {
 	sorted := append([]orchestrator.ServiceState(nil), services...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	p.services = sorted
+	p.rebuildRows()
+}
 
-	rows := make([]table.Row, len(sorted))
-	for i, s := range sorted {
+// rebuildRows renders services followed by gateways (each internally
+// sorted by name, rather than interleaved) into the table. Gateway rows use
+// "—" for the columns that don't apply — they have no placement, variant,
+// or lifecycle port the way a supervised service does.
+func (p *servicesPanel) rebuildRows() {
+	rows := make([]table.Row, 0, len(p.services)+len(p.gateways))
+	for _, s := range p.services {
 		port := ""
 		if s.Port > 0 {
 			port = fmt.Sprintf("%d", s.Port)
 		}
-		rows[i] = table.Row{s.Name, string(s.Status), s.Placement, s.Variant, port}
+		rows = append(rows, table.Row{s.Name, string(s.Status), s.Placement, s.Variant, port})
+	}
+	for _, g := range p.gateways {
+		rows = append(rows, table.Row{g.Name, "gateway", "—", "—", "—"})
 	}
 	p.table.SetRows(rows)
 }

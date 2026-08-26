@@ -6,6 +6,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server"
 )
 
 // fakeAPIClient is an in-memory apiClient used by panel/model tests —
@@ -18,6 +19,9 @@ type fakeAPIClient struct {
 	status   StatusResponse
 	statusErr error
 	calls    []string
+
+	topology    server.TopologyResponse
+	topologyErr error
 
 	restartResult orchestrator.ServiceState
 	restartErr    error
@@ -50,6 +54,11 @@ func (f *fakeAPIClient) Calls() []string {
 func (f *fakeAPIClient) Status(ctx context.Context) (StatusResponse, error) {
 	f.record("status")
 	return f.status, f.statusErr
+}
+
+func (f *fakeAPIClient) Topology(ctx context.Context) (server.TopologyResponse, error) {
+	f.record("topology")
+	return f.topology, f.topologyErr
 }
 
 func (f *fakeAPIClient) Restart(ctx context.Context, name string) (orchestrator.ServiceState, error) {

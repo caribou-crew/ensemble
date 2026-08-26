@@ -5,6 +5,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
+	"github.com/caribou-crew/ensemble/ensemble/server"
 )
 
 // pollInterval is how often the Services/Latency/Profiles panels refresh
@@ -20,6 +21,15 @@ type tickMsg time.Time
 // statusMsg carries the result of a GET /api/status poll.
 type statusMsg struct {
 	resp StatusResponse
+	err  error
+}
+
+// topologyMsg carries the result of a GET /api/topology poll. The Services
+// panel only reads this for gateway nodes — the sole category with no
+// ServiceState (gateways are static listeners, not orchestrator-supervised
+// nodes) and so otherwise invisible to a panel driven off statusMsg alone.
+type topologyMsg struct {
+	resp server.TopologyResponse
 	err  error
 }
 

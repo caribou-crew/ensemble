@@ -73,6 +73,7 @@ func scheduleTick() tea.Cmd {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		fetchStatus(m.client),
+		fetchTopology(m.client),
 		fetchLatency(m.client),
 		fetchProfiles(m.client),
 		waitForHop(m.hopCh),
@@ -87,7 +88,7 @@ func (m model) Init() tea.Cmd {
 func (m *model) fetchActive() tea.Cmd {
 	switch m.active {
 	case tabServices:
-		return fetchStatus(m.client)
+		return tea.Batch(fetchStatus(m.client), fetchTopology(m.client))
 	case tabLatency:
 		return fetchLatency(m.client)
 	case tabProfiles:
@@ -114,6 +115,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusMsg:
 		m.services.applyStatus(msg)
+		return m, nil
+	case topologyMsg:
+		m.services.applyTopology(msg)
 		return m, nil
 	case actionMsg:
 		m.services.applyAction(msg)
