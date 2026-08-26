@@ -2,7 +2,7 @@
 // otherwise, with a `truncated` banner when the capture hit the size cap
 // (core/trace/redact.go's Redactor.Payload). Body values redaction has
 // scrubbed render with the masked `.redacted` style — see redaction.ts.
-import { splitRedacted } from '../redaction';
+import { redactedTitle, splitRedacted } from '../redaction';
 import './JsonView.css';
 
 export interface JsonViewProps {
@@ -32,7 +32,7 @@ export default function JsonView({ body, truncated }: JsonViewProps) {
       <pre className={`json-view__pre${pretty ? '' : ' json-view__pre--raw'}`}>
         {segments.map((seg, i) =>
           seg.redacted ? (
-            <span key={i} className="redacted" title="revealed in task 4.8">
+            <span key={i} className="redacted" title={redactedTitle(seg.text)}>
               {seg.text}
             </span>
           ) : (

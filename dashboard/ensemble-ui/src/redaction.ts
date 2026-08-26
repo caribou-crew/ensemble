@@ -36,6 +36,20 @@ export function splitRedacted(text: string): RedactionSegment[] {
   return segments;
 }
 
+/** Tooltip copy for a redacted value. Two sentences, not one, because the
+ * two markers state materially different facts. A masked value was
+ * DESTROYED at capture — core/trace/redact.go writes the literal
+ * "[redacted]" over it before the hop reaches disk, so no later feature can
+ * bring it back and the tooltip must not imply one will. An `$enc:v1:`
+ * value is still present in the recording; it is this viewer that holds no
+ * key. Accepts the raw marker text, which may arrive quoted from a
+ * pretty-printed JSON body, hence includes() rather than startsWith(). */
+export function redactedTitle(marker: string): string {
+  return marker.includes('$enc:v1:')
+    ? 'This value was encrypted at capture. The dashboard holds no key for it, so it cannot be shown here.'
+    : 'This value was redacted at capture. The recording does not contain it, so there is nothing here to reveal.';
+}
+
 /** Whole-value redaction check for header cells: core/trace/redact.go
  * replaces a matching header's ENTIRE value, never a substring, so a
  * header only ever needs an equality/prefix check, not a scan. */

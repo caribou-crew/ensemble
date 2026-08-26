@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRedactedValue, splitRedacted } from './redaction';
+import { isRedactedValue, redactedTitle, splitRedacted } from './redaction';
 
 describe('splitRedacted', () => {
   it('marks a quoted [redacted] JSON string literal, quotes included', () => {
@@ -23,6 +23,34 @@ describe('splitRedacted', () => {
     expect(splitRedacted('plain text, nothing to see')).toEqual([
       { text: 'plain text, nothing to see', redacted: false },
     ]);
+  });
+});
+
+describe('redactedTitle', () => {
+  it('tells a masked value it is gone, not merely hidden', () => {
+    const title = redactedTitle('[redacted]');
+    expect(title).toMatch(/does not contain it/);
+    expect(title).toMatch(/nothing here to reveal/);
+  });
+
+  it('tells an encrypted value it is present but keyless', () => {
+    expect(redactedTitle('$enc:v1:abc==')).toMatch(/encrypted at capture/);
+  });
+
+  it('reads the encrypted marker through the quotes a JSON body adds', () => {
+    // splitRedacted hands back '"$enc:v1:abc=="' with the quotes attached,
+    // so a startsWith() check here would silently fall through to the
+    // destroyed-value wording and tell the user a recoverable value is gone.
+    expect(redactedTitle('"$enc:v1:abc=="')).toMatch(/encrypted at capture/);
+  });
+
+  it('never names an internal task number in user-facing copy', () => {
+    // The bug this replaced: both call sites shipped title="revealed in
+    // task 4.8" — a tracker id leaked into the UI, promising a reveal that
+    // a destroyed value can never receive.
+    for (const marker of ['[redacted]', '"[redacted]"', '$enc:v1:abc==']) {
+      expect(redactedTitle(marker)).not.toMatch(/task \d/i);
+    }
   });
 });
 

@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Tabs } from '@ensemble/design-system';
 import type { Hop, Timings } from '../api/types';
-import { isRedactedValue } from '../redaction';
+import { isRedactedValue, redactedTitle } from '../redaction';
 import { CALLER_ATTRIBUTION_TITLE, callerAttribution } from './attribution';
 import JsonView from './JsonView';
 import './HopDetail.css';
@@ -56,7 +56,10 @@ function HeadersTable({ headers }: { headers?: Record<string, string> }) {
           return (
             <tr key={name}>
               <td className="hop-detail__header-name">{name}</td>
-              <td className={redacted ? 'redacted' : undefined} title={redacted ? 'revealed in task 4.8' : undefined}>
+              <td
+                className={redacted ? 'redacted' : undefined}
+                title={redacted ? redactedTitle(value) : undefined}
+              >
                 {value}
               </td>
             </tr>

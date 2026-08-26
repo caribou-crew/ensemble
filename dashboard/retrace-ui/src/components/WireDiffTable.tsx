@@ -9,9 +9,14 @@ export const entryKey = (e: Entry) => `${e.method} ${e.normalizedPath} #${e.seqB
 // "[redacted]" a mask writes, and the "$enc:v1:" envelope Phase 4b adds.
 // They are MARKED, never revealed — there is deliberately no reveal control
 // in this task, so the marker plus a tooltip saying why is the whole
-// treatment.
+// treatment. The two get different sentences because they state different
+// facts: a mask DESTROYS the value at capture (core/trace/redact.go writes
+// the literal over it before the hop reaches disk), so no later feature can
+// bring it back; an envelope keeps the value and withholds the key.
 const REDACTED_TITLE =
   'This value was redacted at capture. The recording does not contain it, so there is nothing here to reveal.';
+const ENCRYPTED_TITLE =
+  'This value was encrypted at capture. The report holds no key for it, so it cannot be shown here.';
 
 export function isRedacted(value: unknown): boolean {
   return typeof value === 'string' && (value === '[redacted]' || value.startsWith('$enc:v1:'));
@@ -21,7 +26,10 @@ function Value({ value }: { value: unknown }) {
   const text = value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
   if (isRedacted(value)) {
     return (
-      <code className="wire-value redacted" title={REDACTED_TITLE}>
+      <code
+        className="wire-value redacted"
+        title={typeof value === 'string' && value.startsWith('$enc:v1:') ? ENCRYPTED_TITLE : REDACTED_TITLE}
+      >
         {text}
       </code>
     );
