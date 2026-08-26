@@ -10,6 +10,7 @@ import type { Hop } from '../api/types';
 import { causalHopOrder } from '../topology/traceLayout';
 import { hopDepths } from '../topology/hopTimeline';
 import { CALLER_ATTRIBUTION_TITLE, callerAttribution } from './attribution';
+import { hopPayloadBytes } from '../trafficFilter';
 import './HopTable.css';
 
 export interface HopTableProps {
@@ -87,15 +88,6 @@ function formatTimestamp(start: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}:${pad(d.getMilliseconds(), 3)}`;
 }
 
-const textEncoder = new TextEncoder();
-
-/** Byte length of a captured body — TextEncoder, not .length, so a
- * multi-byte UTF-8 body (unicode text, not just ASCII JSON) reports its
- * real wire size rather than its UTF-16 code-unit count. */
-function byteLength(body?: string): number {
-  return body ? textEncoder.encode(body).length : 0;
-}
-
 function formatBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
@@ -105,9 +97,11 @@ function formatBytes(n: number): string {
 /** Combined request+response payload size. Bodies are captured up to
  * core/proxy.CaptureLimit — a truncated one reports only what was
  * actually captured, flagged with a trailing "+" so it doesn't read as
- * the true wire size. */
+ * the true wire size. hopPayloadBytes is shared with trafficFilter's
+ * `size` comparisons so the column and the filter can never disagree on
+ * what "size" means. */
 function payloadSize(hop: Hop): string {
-  const bytes = byteLength(hop.req?.body) + byteLength(hop.resp?.body);
+  const bytes = hopPayloadBytes(hop);
   const truncated = Boolean(hop.req?.truncated || hop.resp?.truncated);
   return formatBytes(bytes) + (truncated ? '+' : '');
 }
@@ -150,7 +144,8 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
           <th>session</th>
           <th>trace</th>
           <th>route</th>
-          <th>request</th>
+          <th>method</th>
+          <th>path</th>
           <th aria-label="status flag" />
           <th>status</th>
           <th>size</th>
@@ -215,8 +210,9 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
                   )} → {hop.to}
                 </span>
               </td>
-              <td className="hop-table__request">
-                {hop.method && <span className="hop-table__method">{hop.method}</span>} {hop.path}
+              <td className="hop-table__method">{hop.method ?? '—'}</td>
+              <td className="hop-table__path">
+                {hop.path}
                 {hop.preflight && <Badge tone="blue">preflight</Badge>}
               </td>
               <td className={`hop-table__status-icon ${statusClass(hop)}`} aria-hidden="true">

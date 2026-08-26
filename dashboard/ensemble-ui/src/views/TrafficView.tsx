@@ -14,6 +14,8 @@ import { collapseGatewayHops } from '../topology/gatewayCollapse';
 import HopTable from '../components/HopTable';
 import HopDetail from '../components/HopDetail';
 import TraceDrawer from '../components/TraceDrawer';
+import QueryFilterInput from '../components/QueryFilterInput';
+import { hopMatchesQuery, parseFilterToken, type FilterToken } from '../trafficFilter';
 import './TrafficView.css';
 
 /** Seed page size for the initial GET /api/traffic — comfortably covers a
@@ -86,7 +88,8 @@ export default function TrafficView() {
   // whole Traffic tab.
   const { data: topology } = useAsync(() => api.topology(), []);
 
-  const [textFilter, setTextFilter] = useState('');
+  const [pills, setPills] = useState<FilterToken[]>([]);
+  const [draftText, setDraftText] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
   // Off by default: a CORS preflight ensemble answers itself is real debugging signal but noisy
   // (one per cross-origin request), so it stays out of the way until asked for.
@@ -147,10 +150,18 @@ export default function TrafficView() {
     }
   }, [distinctSessions, sessionFilter]);
 
+  // The word currently in the box, live — before Tab/Space commits it to a
+  // pill — still applies as a filter the moment it forms a complete token,
+  // exactly like a committed pill would (see QueryFilterInput's doc
+  // comment). Otherwise the whole draft is free text, same as before the
+  // query grammar existed.
+  const draftToken = useMemo(() => parseFilterToken(draftText), [draftText]);
+
   const filtered = useMemo(() => {
-    const needle = textFilter.trim().toLowerCase();
+    const tokens = draftToken ? [...pills, draftToken] : pills;
+    const freeText = draftToken ? '' : draftText;
     return collapsed.filter((h) => {
-      if (needle && !`${h.to} ${h.path ?? ''}`.toLowerCase().includes(needle)) return false;
+      if (!hopMatchesQuery(h, tokens, freeText)) return false;
       if (errorsOnly && !((h.status ?? 0) >= 400 || h.err)) return false;
       if (!showPreflight && h.preflight) return false;
       if (sessionFilter === 'ambient') {
@@ -160,7 +171,7 @@ export default function TrafficView() {
       }
       return true;
     });
-  }, [collapsed, textFilter, errorsOnly, showPreflight, sessionFilter]);
+  }, [collapsed, pills, draftToken, draftText, errorsOnly, showPreflight, sessionFilter]);
 
   // From `collapsed`, not raw `hops` — the detail panel should mirror whatever `to` the table
   // row it was opened from actually shows.
@@ -223,12 +234,13 @@ export default function TrafficView() {
   return (
     <div className="traffic-view">
       <div className="traffic-view__toolbar">
-        <input
-          type="text"
-          className="traffic-view__search"
-          placeholder="filter by service or path…"
-          value={textFilter}
-          onChange={(e) => setTextFilter(e.target.value)}
+        <QueryFilterInput
+          pills={pills}
+          onPillsChange={setPills}
+          draft={draftText}
+          onDraftChange={setDraftText}
+          hops={collapsed}
+          placeholder="filter by service or path… (try status:200, size>10kb)"
         />
         <button
           type="button"

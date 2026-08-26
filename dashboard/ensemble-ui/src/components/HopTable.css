@@ -102,10 +102,10 @@
 
 .hop-table__method {
   color: var(--status-blue);
-  margin-right: 0.35rem;
+  white-space: nowrap;
 }
 
-.hop-table__request {
+.hop-table__path {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 320px;

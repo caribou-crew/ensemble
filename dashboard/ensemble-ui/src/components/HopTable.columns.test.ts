@@ -133,6 +133,26 @@ describe('HopTable time and size columns', () => {
     expect(markup.match(/hop-table__caller--inferred/g)?.length).toBe(1);
   });
 
+  it('renders method and path as separate columns, not one combined request cell', () => {
+    const hop: Hop = {
+      schema: 'ensemble/1',
+      seq: 1,
+      to: 'catalog',
+      method: 'GET',
+      path: '/v1/products',
+      status: 200,
+      t: { start: '2026-01-01T00:00:00.000Z' },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HopTable, { hops: [hop], selectedSeq: null, onSelectHop: () => {} }),
+    );
+    const container = document.createElement('div');
+    container.innerHTML = markup;
+    expect(container.querySelector('td.hop-table__method')?.textContent).toBe('GET');
+    expect(container.querySelector('td.hop-table__path')?.textContent).toBe('/v1/products');
+    expect(container.querySelector('td.hop-table__request')).toBeNull();
+  });
+
   it('badges a CORS preflight hop distinctly from real proxied traffic', () => {
     const preflight: Hop = {
       schema: 'ensemble/1',

@@ -36,23 +36,6 @@
   cursor: pointer;
 }
 
-.traffic-view__search {
-  flex: 1;
-  min-width: 160px;
-  max-width: 320px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-hairline-strong);
-  border-radius: 6px;
-  color: var(--text-primary);
-  padding: 0.35rem 0.6rem;
-  font-size: 0.8rem;
-}
-
-.traffic-view__search:focus {
-  outline: none;
-  border-color: var(--accent-strong);
-}
-
 .traffic-view__toggle,
 .traffic-view__clear,
 .traffic-view__follow {
