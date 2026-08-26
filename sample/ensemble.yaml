@@ -1,10 +1,11 @@
 # "brew" sample stack (see openspec/changes/init-ensemble-retrace/design.md
 # §8, tasks.md Phase 5). Money path: client -> edge-gw -> storefront-bff ->
-# order-svc -> (catalog-svc + user-svc + payments stub) -> redis ->
+# order -> (catalog-svc + user-svc + payments stub) -> redis ->
 # notify-worker. ops-bff is a read-only internal aggregator over
-# catalog-svc/order-svc. order-svc is Java behind `profile: full` — the
-# rest of the stack runs and degrades gracefully without it (see
-# storefront-bff's checkout / ops-bff's /admin/orders 503 handling).
+# catalog-svc/order. order is a variants: service (see its entry below):
+# `stub` (plain Go, no JDK/MySQL) is the default so the money path works
+# out of the box; `real` is the Java/Spring/MySQL implementation, opt in
+# with `ensemble variant order real` or `ensemble up --variant order=real`.
 #
 # Not built yet: the rn-app (Expo) client — task 5.2 remainder. web-app
 # (React/Vite) is here, served by its own Vite dev server and talking to
@@ -57,30 +58,50 @@ services:
     health: /healthz
     depends_on: [postgres]
 
+  # Exercises ensemble's variants: feature — two backings of one logical
+  # service, same port/proxy/health/depends_on (see service-variants spec).
+  # `stub` (order-stub, plain Go, no datastore) is the default so the money
+  # path — checkout, ops-bff's /admin/orders — actually works with no JDK
+  # and no MySQL schema wait; `real` is the Java/Spring/MySQL
+  # implementation order-svc always was. Swap in the real one with
+  # `ensemble variant order real` or `ensemble up --variant order=real`;
+  # `ensemble variant order stub` (or a restart) swaps back. Both variants
+  # implement the identical /orders contract (see order-stub/main.go's doc
+  # comment), so storefront-bff/ops-bff never know which one they're
+  # talking to.
   order:
-    dir: ./services/order-svc
-    build: ./gradlew bootJar --console=plain
-    run: java -jar build/libs/order-svc-0.0.1.jar
     port: 8083
     proxy: 9083
-    env:
-      PORT: "8083"
-      DATASOURCE_URL: "jdbc:mysql://127.0.0.1:53306/orders"
-      DATASOURCE_USER: orders
-      DATASOURCE_PASSWORD: orders
-      REDIS_HOST: "127.0.0.1"
-      REDIS_PORT: "56379"
-      CATALOG_URL: "http://127.0.0.1:9081"
-      USER_URL: "http://127.0.0.1:9082"
-      PAYMENTS_URL: "http://127.0.0.1:9099"
     health: /actuator/health
     depends_on: [mysql, redis, catalog, user]
-    # First run without a JDK: leaving this off `ensemble up`'s active
-    # profile set means order-svc simply doesn't start, and the rest of the
-    # stack (storefront-bff's checkout, ops-bff's /admin/orders) is written
-    # to degrade to a 503 rather than fail — see specs/sample-stack/spec.md
-    # "First run without JDK" scenario. Activate with `--profile full`.
-    profile: full
+    default: stub
+    variants:
+      stub:
+        dir: ./services/order-stub
+        build: GOWORK=off go build -o order-stub .
+        run: ./order-stub
+        env:
+          PORT: "8083"
+          CATALOG_URL: "http://127.0.0.1:9081"
+          USER_URL: "http://127.0.0.1:9082"
+          PAYMENTS_URL: "http://127.0.0.1:9099"
+          REDIS_HOST: "127.0.0.1"
+          REDIS_PORT: "56379"
+      real:
+        dir: ./services/order-svc
+        build: ./gradlew bootJar --console=plain
+        run: java -jar build/libs/order-svc-0.0.1.jar
+        env:
+          PORT: "8083"
+          DATASOURCE_URL: "jdbc:mysql://127.0.0.1:53306/orders"
+          DATASOURCE_USER: orders
+          DATASOURCE_PASSWORD: orders
+          REDIS_HOST: "127.0.0.1"
+          REDIS_PORT: "56379"
+          CATALOG_URL: "http://127.0.0.1:9081"
+          USER_URL: "http://127.0.0.1:9082"
+          PAYMENTS_URL: "http://127.0.0.1:9099"
+        startup_timeout_s: 120
 
   notify:
     dir: ./services/notify-worker
@@ -198,6 +219,16 @@ stubs:
           status: 200
           headers: { content-type: application/json }
           body: '{"ciphertext":"stub-ciphertext"}'
+
+# Exercises the dashboard's Entities tab: a generic CRUD view over
+# catalog-svc's existing /products REST resource — no per-entity code, just
+# base + id. Points at catalog's *proxy* port (9081, not its real port
+# 8081), so creates/edits/deletes made from the Entities tab show up in
+# Traffic too, same as any other captured hop.
+entities:
+  products:
+    base: http://127.0.0.1:9081/products
+    id: id
 
 # Exercises ensemble's own gateways: feature (distinct from edge-gw above,
 # which is a real Go service the sample app happens to call "edge" — this

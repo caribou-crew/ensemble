@@ -6,30 +6,43 @@ The full "brew" sample stack is spec'd in
 (Phase 5).
 
 **Built:** all 7 backend services (`edge-gw`, `catalog-svc`, `user-svc`,
-`order-svc`, `notify-worker`, `storefront-bff`, `ops-bff`), all 4 storage
-backends (Postgres, MySQL, Redis, DynamoDB Local), the `payments` stub on
-the money path plus decorative `analytics`/`kms` stubs, all 4 named seeds
-(`baseline`, `empty`, `bulk`, `outage`), and the `web-app` (React/Vite)
-browser client.
+`order` [`order-stub` + `order-svc`], `notify-worker`, `storefront-bff`,
+`ops-bff`), all 4 storage backends (Postgres, MySQL, Redis, DynamoDB
+Local), the `payments` stub on the money path plus decorative
+`analytics`/`kms` stubs, all 4 named seeds (`baseline`, `empty`, `bulk`,
+`outage`), `entities:` over catalog's products, and the `web-app`
+(React/Vite) browser client.
 
 **Not built yet:** the `rn-app` (Expo) client — the rest of task 5.2.
 
-Money path: `edge-gw` → `storefront-bff` → `order-svc` → (`catalog-svc` +
+Money path: `edge-gw` → `storefront-bff` → `order` → (`catalog-svc` +
 `user-svc` + `payments` stub) → Redis → `notify-worker`. `ops-bff` is a
-read-only internal aggregator over `catalog-svc`/`order-svc`, off the money
-path. `order-svc` (the only JVM service) runs behind `profile: full` — the
-rest of the stack runs and degrades gracefully without it: `storefront-bff`
-returns `503 {"error":"ordering unavailable"}` from checkout, `ops-bff`
-returns `503 {"error":"orders unavailable"}` from `/admin/orders`, and
-neither has a hard `depends_on` on `order`.
+read-only internal aggregator over `catalog-svc`/`order`, off the money
+path.
+
+`order` exercises ensemble's `variants:` feature — one logical service, two
+backings sharing the same port/proxy/health/depends_on. `stub`
+(`order-stub`, plain Go, in-memory, no JDK/MySQL needed) is the default, so
+the whole money path — checkout, `/admin/orders` — works the moment you run
+`ensemble up`, no Java required. `real` is the Java/Spring/MySQL
+implementation `order-svc` always was, opt in on demand:
+
+```sh
+ensemble variant order real   # swap the running stack to the JVM backend
+ensemble variant order stub   # swap back
+```
+
+Both variants implement the identical `/orders` contract, so
+`storefront-bff`/`ops-bff` never know (or care) which one they're talking
+to — see `order-stub/main.go`'s doc comment.
 
 ## Run it
 
 ```sh
 cd sample
-ensemble up -c ensemble.yaml                # money path only
-ensemble up -c ensemble.yaml --profile full  # + order-svc (needs a JDK)
-ensemble seed baseline                       # starter products + users
+ensemble up -c ensemble.yaml                       # money path, order defaults to the Go stub
+ensemble up -c ensemble.yaml --variant order=real   # + the real order-svc (needs a JDK)
+ensemble seed baseline                              # starter products + users
 ```
 
 `web` starts automatically with everything else — open
@@ -45,8 +58,8 @@ curl -X POST -H "Authorization: Bearer demo-token" -H "content-type: application
   -d '{"product_id":1,"quantity":2}' \
   http://127.0.0.1:9080/cart/1/items
 
-# checkout — cart -> order-svc -> catalog/user/payments -> redis -> notify.
-# Needs --profile full, else 503 "ordering unavailable".
+# checkout — cart -> order -> catalog/user/payments -> redis -> notify.
+# Works out of the box: order defaults to the order-stub variant.
 curl -X POST -H "Authorization: Bearer demo-token" \
   http://127.0.0.1:9080/cart/1/checkout
 ```
@@ -59,8 +72,8 @@ down to the async `notify-worker` leg.
 
 - `baseline` — a handful of starter products + users. The default.
 - `empty` — truncates products and users (Postgres only; doesn't touch
-  MySQL `orders`/`order_items`, which may not exist if `full` was never
-  activated).
+  MySQL `orders`/`order_items`, which only exist once the `real` order
+  variant has connected at least once).
 - `bulk` — ~20 products, ~15 users, for pagination/perf demos.
 - `outage` — arms a 5s fixed latency on `catalog` via `/api/latency`, to
   demo the dashboard's latency view.
@@ -84,18 +97,36 @@ ensemble ready       # blocks until both checks pass (or 30s), exits 0/1
 ensemble status      # also shows "READINESS: 2/2 passed"
 ```
 
+### Entities
+
+`entities:` (wired via ensemble.yaml's `entities:` key) gives the
+dashboard's Entities tab a generic CRUD view over catalog-svc's existing
+`/products` REST resource — no per-entity code, just `base` + `id`:
+
+```sh
+open http://127.0.0.1:4700   # dashboard -> Entities tab -> products
+# or drive it directly, same as the dashboard does:
+curl -X POST -H "content-type: application/json" \
+  -d '{"name":"Cortado","price_cents":425}' \
+  http://127.0.0.1:9081/products
+```
+
+Because `base` points at catalog's *proxy* port (`9081`), that create shows
+up in `ensemble traffic` too, same as any other captured hop.
+
 ## How the trace stays connected
 
 - ensemble's proxy stamps `traceparent`/`baggage` automatically on every hop
   it fronts — no code in any service does anything for a plain
   reverse-proxied leg (e.g. `edge-gw` → `catalog-svc`).
 - Wherever a service makes its own outbound call (`catalog-svc` → payments,
-  `storefront-bff`/`ops-bff` → `catalog-svc`/`order-svc`, `order-svc` → its
+  `storefront-bff`/`ops-bff` → `catalog-svc`/`order`, `order` → its
   downstreams), it explicitly copies `traceparent`/`baggage` from the
   inbound request — the same ~5-line `forwardTraceHeaders`/
-  `TraceHeaders.forward` pattern in every service (Go, Node, and Java).
-  That's the entire "propagation contract" from design.md §8: two headers,
-  no ensemble dependency.
+  `TraceHeaders.forward` pattern in every service (Go, Node, and Java) —
+  including both `order` variants, `order-stub` and `order-svc`. That's the
+  entire "propagation contract" from design.md §8: two headers, no ensemble
+  dependency.
 - Downstream calls always target the *proxy* port (e.g. `9081` for catalog,
   not its real port `8081`) — that's what puts the hop in the trace at all.
 - A service behind a proxy whose real process is down still gets a `200`-
@@ -129,8 +160,8 @@ these to retrace don't exist yet, so today these are two plain, independent
 test suites).
 
 Both need the full stack running and seeded first
-(`ensemble up -c ensemble.yaml --profile full && ensemble seed baseline`)
-— they exercise the real backend, not a mock.
+(`ensemble up -c ensemble.yaml && ensemble seed baseline`) — they exercise
+the real backend, not a mock.
 
 ```sh
 cd clients/web-app
@@ -157,7 +188,8 @@ sample/
     ├── edge-gw/                # Go   — entry + auth stub + CORS, routes to storefront/catalog
     ├── catalog-svc/            # Go   — Postgres CRUD, calls payments stub
     ├── user-svc/               # Node — Postgres CRUD (users.accounts schema)
-    ├── order-svc/               # Java/Spring/Gradle — MySQL, profile `full`
+    ├── order-stub/               # Go   — order's default variant: in-memory, no JDK
+    ├── order-svc/                # Java/Spring/Gradle — order's "real" variant, MySQL
     ├── notify-worker/           # Go   — Redis BRPOP consumer, async tail
     ├── storefront-bff/          # Node — DynamoDB-backed cart, checkout
     └── ops-bff/                  # Node — read-only admin aggregator
