@@ -103,6 +103,10 @@ Read these fields off `retrace diff --json`:
   not ok
 - `capture` — the capture-trust banner for this comparison
 - `counts` — per-plane tallies
+- `suppressions` — every tolerance that actually silenced a difference in this
+  run, loudest first: `plane`, `target`, `source` (`wire_rule` | `wire_ignore`
+  | `builtin`), `matcher`, `count`. **A clean verdict bought by a rule looks
+  identical to a clean verdict earned. This is where you tell them apart.**
 - `checkpoints`, `wire`, `hops`, `unexpectedStatuses`, `perf`, `conformance` —
   the four planes in detail
 <!-- /retrace:fields -->
@@ -270,11 +274,18 @@ gates:
   pixel: { budget_pct: 2 }
 fail_on: [wire, hop]      # which planes may turn the verdict to "failed"
 wire_rules:
-  - headers: { date: http-date }
+  - headers: { traceparent: ignore }
 masks:
   catalog:
     - { x: 0, y: 0, width: 320, height: 48, why: "clock in the status bar" }
 ```
+
+`date: http-date`, `etag: etag` and `content-length: integer` are **built in** —
+do not write them. Every response carries a `date`, so without a tolerance two
+identical runs differ on 100% of paired calls. Name one of those headers in
+`wire_rules` to override it, or set `default_wire_rules: false` to drop all
+three. Nothing here is silent: every rule that actually suppressed a difference,
+built-ins included, is listed under `SUPPRESSED` and in `suppressions[]`.
 
 To disagree with a built-in triage row, add your own above it:
 

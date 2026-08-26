@@ -138,7 +138,14 @@ type Summary struct {
 	OpenAPIConfigured bool          `json:"openApiConfigured"`
 	Capture           CaptureBanner `json:"capture"`
 	Counts            Counts        `json:"counts"`
-	Gates             []string      `json:"gates"` // human-readable reasons the verdict is "failed"
+	// Suppressions lists every tolerance that actually silenced a
+	// difference in this run, with how many times each fired. It exists
+	// because a clean report and a report whose rules hid everything look
+	// identical from the outside — and the second is the one worth reading.
+	// Rows that suppressed nothing are absent, so an empty array means the
+	// verdict was earned rather than configured.
+	Suppressions []Suppression `json:"suppressions"`
+	Gates        []string      `json:"gates"` // human-readable reasons the verdict is "failed"
 	// Budgets is the configurable CI-gate wire contract: one entry per
 	// PLANE that retrace.yaml's `gates:` key names, never one per plane
 	// that merely exists. A plane `gates:` does not mention gets no entry
@@ -569,6 +576,9 @@ func Build(in BuildInput) (Summary, error) {
 // future signal keyed on nil-ness cannot depend on which call ran first.
 func (s *Summary) finish(cfg *config.Config) {
 	s.ensureArrays()
+	// After ensureArrays, which seeds the field with an empty slice, and
+	// before nothing in particular — triage does not read suppressions.
+	s.Suppressions = suppressionsOf(*s, cfg)
 	s.Triage = triageOf(*s, cfg)
 }
 
@@ -1005,8 +1015,30 @@ func RenderText(w io.Writer, s Summary) {
 
 	renderConformance(w, s.Conformance)
 
+	renderSuppressions(w, s.Suppressions)
 	renderTriage(w, s.Triage)
 	fmt.Fprintf(w, "VERDICT: %s\n", s.Verdict)
+}
+
+// renderSuppressions prints the tolerances that fired, immediately before
+// the verdict. Position is the point: a clean verdict and a verdict its own
+// rules bought look the same, and this is the line that tells them apart
+// for someone reading a CI log rather than the JSON.
+//
+// Nothing is printed when nothing fired — an empty heading would train the
+// reader to skip the section on the runs where it matters.
+func renderSuppressions(w io.Writer, ss []Suppression) {
+	if len(ss) == 0 {
+		return
+	}
+	total := 0
+	for _, s := range ss {
+		total += s.Count
+	}
+	fmt.Fprintf(w, "SUPPRESSED: %d difference(s) across %d rule(s)\n", total, len(ss))
+	for _, s := range ss {
+		fmt.Fprintf(w, "  %-6s %-24s %-11s %-12s ×%d\n", s.Plane, s.Target, s.Source, s.Matcher, s.Count)
+	}
 }
 
 // triageAdvice is the one-line "so what" for each built-in label. A project
@@ -1135,6 +1167,9 @@ func (s *Summary) ensureArrays() {
 	}
 	if s.Budgets == nil {
 		s.Budgets = []Gate{}
+	}
+	if s.Suppressions == nil {
+		s.Suppressions = []Suppression{}
 	}
 	if s.UnmeasuredGates == nil {
 		s.UnmeasuredGates = []string{}
@@ -1266,5 +1301,8 @@ func ensureEntryArrays(e *Entry) {
 	}
 	if e.HeaderDiff == nil {
 		e.HeaderDiff = []HeaderDiff{}
+	}
+	if e.HeaderIgnored == nil {
+		e.HeaderIgnored = []HeaderDiff{}
 	}
 }

@@ -381,6 +381,11 @@ type Entry struct {
 	BodyIgnored     []FieldDiff   `json:"bodyIgnored"`
 	OrderingChanges []FieldDiff   `json:"orderingChanges"`
 	HeaderDiff      []HeaderDiff  `json:"headerDiff"`
+	// HeaderIgnored mirrors BodyIgnored one plane over: headers an `ignore`
+	// matcher silenced. Separate from HeaderDiff because everything in that
+	// list is a finding — classify() and triage both read it that way — and
+	// an ignored header is the opposite of one.
+	HeaderIgnored []HeaderDiff `json:"headerIgnored"`
 }
 
 type Wire struct {
@@ -748,7 +753,16 @@ func lowerHeaders(m map[string]string) map[string]string {
 // (both reported Type: "changed", with only the label-not-outcome Matcher
 // field to tell them apart). A one-sided header stays "added"/"removed" —
 // Classify is always Changed for those, never Tolerated/Violation.
-func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []HeaderDiff {
+// It returns TWO lists. diffs is the findings list every consumer already
+// reads. ignored is the headers an `ignore` matcher silenced, which used to
+// be dropped on the floor — a `continue` with no record anywhere, making an
+// ignored header the only suppression in the engine that left no trace at
+// all (the body plane has kept BodyIgnored for exactly this reason). They
+// are deliberately kept OUT of diffs rather than added to it with a new
+// Type: classify() treats every non-"tolerated" HeaderDiff as a real
+// change, and triage reads the same list, so folding them in would turn
+// every ignored header into both a "changed" entry and a triage signal.
+func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) (diffs, ignored []HeaderDiff) {
 	la, lb := lowerHeaders(a), lowerHeaders(b)
 	seen := map[string]bool{}
 	var names []string
@@ -777,6 +791,10 @@ func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []Hea
 		m := res.ForHeader(name)
 		outcome := rules.Classify(m, av, bv, bothPresent)
 		if outcome == rules.Ignored {
+			ignored = append(ignored, HeaderDiff{
+				Scope: scope, Name: name, A: av, B: bv,
+				Type: "ignored", Matcher: m.Label(),
+			})
 			continue
 		}
 		hd := HeaderDiff{Scope: scope, Name: name, A: av, B: bv}
@@ -797,7 +815,7 @@ func DiffHeaders(a, b map[string]string, res rules.Resolved, scope string) []Hea
 		}
 		out = append(out, hd)
 	}
-	return out
+	return out, ignored
 }
 
 func buildEntry(p Pair, res rules.Resolved, o Options) Entry {
@@ -829,10 +847,10 @@ func buildEntry(p Pair, res rules.Resolved, o Options) Entry {
 	e.BodyViolations = acc.Violations
 	e.BodyIgnored = acc.Ignored
 	e.OrderingChanges = acc.Ordering
-	e.HeaderDiff = append(
-		DiffHeaders(p.A.Req.Headers, p.B.Req.Headers, res, "req"),
-		DiffHeaders(p.A.Resp.Headers, p.B.Resp.Headers, res, "resp")...,
-	)
+	reqHeaders, reqIgnored := DiffHeaders(p.A.Req.Headers, p.B.Req.Headers, res, "req")
+	respHeaders, respIgnored := DiffHeaders(p.A.Resp.Headers, p.B.Resp.Headers, res, "resp")
+	e.HeaderDiff = append(reqHeaders, respHeaders...)
+	e.HeaderIgnored = append(reqIgnored, respIgnored...)
 	return e
 }
 

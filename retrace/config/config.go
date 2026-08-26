@@ -84,6 +84,13 @@ type Config struct {
 	ProxyPort  int               `yaml:"proxy_port"`
 	WireIgnore []WireIgnoreEntry `yaml:"wire_ignore"`
 	WireRules  []rules.Raw       `yaml:"wire_rules"`
+	// DefaultWireRules switches the built-in header tolerances (see
+	// builtins.go) off wholesale. Absent — the overwhelmingly common case —
+	// means ON; see useBuiltinWireRules for why absent is the permissive
+	// reading here and why this cannot be a plain bool. Individual headers
+	// do not need this: a user rule for the same header simply wins, and
+	// `date: exact` restores strict comparison of that one header.
+	DefaultWireRules *bool `yaml:"default_wire_rules"`
 	// QueryIgnore names query parameters that do not identify a call — a
 	// cache-buster, a client-side timestamp — so strict replay matches on
 	// what is left of the query. It is PROJECT-WIDE and top-level, a
@@ -505,8 +512,40 @@ func applyDefaults(c *Config) {
 // Rules normalizes WireRules into evaluable rules.Rule values, surfacing
 // any unknown matcher (or other malformed rule) as an error naming the
 // offending rule — see rules.Normalize.
+//
+// The built-in header rules are PREPENDED, never stored: rules.Resolve
+// collapses the list with last-write-wins per key, so anything the user
+// wrote for the same header beats the built-in, and so does a reviewed
+// overlay rule (Discover appends those to WireRules, after the yaml ones).
+// Prepending here rather than mutating WireRules also keeps this function
+// idempotent — Load calls it to validate, Discover calls it again after
+// merging the overlay, and a version that appended to the field would grow
+// three built-ins per call.
+// The two lists are normalized SEPARATELY rather than concatenated first,
+// because rules.Normalize labels its errors by index into the slice it was
+// handed. Prepending three built-ins to the user's list renumbered every
+// one of their rules, so a bad matcher in the user's first rule reported as
+// `wireRules[3]` — an index pointing at a rule they never wrote. The
+// user's own list is normalized first for the same reason: their error is
+// the one worth reaching, and it should not queue behind ours.
 func (c *Config) Rules() ([]rules.Rule, error) {
-	return rules.Normalize(c.WireRules)
+	user, err := rules.Normalize(c.WireRules)
+	if err != nil {
+		return nil, err
+	}
+	if !c.useBuiltinWireRules() {
+		return user, nil
+	}
+	builtin, err := rules.Normalize(BuiltinWireRules())
+	if err != nil {
+		// Only reachable if builtinHeaderMatchers itself names a matcher
+		// that does not exist — a programming error, not a config error, so
+		// say so rather than letting it read as the user's fault.
+		return nil, fmt.Errorf("built-in wire rules are malformed (this is a bug in retrace, not in your config): %w", err)
+	}
+	// builtin is a fresh slice from a fresh BuiltinWireRules, so appending
+	// onto it cannot write into WireRules' backing array.
+	return append(builtin, user...), nil
 }
 
 // MasksFor resolves the masks for one checkpoint: the flow's own map wins,

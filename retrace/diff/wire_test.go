@@ -519,7 +519,7 @@ func TestWireIgnoreSuppressesABodyFieldDiff(t *testing.T) {
 func TestHeadersAreComparedCaseInsensitivelyAndEqualOnesOmitted(t *testing.T) {
 	a := map[string]string{"Content-Type": "application/json", "X-Request-Id": "abc"}
 	b := map[string]string{"content-type": "application/json", "x-request-id": "xyz"}
-	diffs := DiffHeaders(a, b, rules.Resolved{}, "req")
+	diffs, _ := DiffHeaders(a, b, rules.Resolved{}, "req")
 	if len(diffs) != 1 {
 		t.Fatalf("diffs = %+v, want exactly 1 — content-type is equal case-insensitively and must be omitted", diffs)
 	}
@@ -538,7 +538,7 @@ func TestAHeaderOnOneSideOnlyIsNeverToleratedByAValueMatcher(t *testing.T) {
 	res := rules.Resolved{Headers: map[string]rules.Matcher{"etag": mustMatcher(t, "etag")}}
 	a := map[string]string{"etag": `"abc"`}
 	b := map[string]string{}
-	diffs := DiffHeaders(a, b, res, "resp")
+	diffs, _ := DiffHeaders(a, b, res, "resp")
 	if len(diffs) != 1 || diffs[0].Type != "removed" {
 		t.Fatalf("diffs = %+v, want one removed entry", diffs)
 	}
@@ -551,7 +551,7 @@ func TestIgnoreDoesSilenceAnAppearingHeader(t *testing.T) {
 	res := rules.Resolved{Headers: map[string]rules.Matcher{"x-trace-id": mustMatcher(t, "ignore")}}
 	a := map[string]string{}
 	b := map[string]string{"x-trace-id": "newvalue"}
-	diffs := DiffHeaders(a, b, res, "resp")
+	diffs, _ := DiffHeaders(a, b, res, "resp")
 	if len(diffs) != 0 {
 		t.Fatalf("diffs = %+v, want none — an ignore rule must silence an appearing header", diffs)
 	}
@@ -564,17 +564,17 @@ func TestIgnoreDoesSilenceAnAppearingHeader(t *testing.T) {
 func TestHeaderDiffTypeReflectsTheRuleOutcomeNotJustChanged(t *testing.T) {
 	res := rules.Resolved{Headers: map[string]rules.Matcher{"etag": mustMatcher(t, "etag")}}
 
-	tolerated := DiffHeaders(map[string]string{"etag": `"abc"`}, map[string]string{"etag": `"def"`}, res, "resp")
+	tolerated, _ := DiffHeaders(map[string]string{"etag": `"abc"`}, map[string]string{"etag": `"def"`}, res, "resp")
 	if len(tolerated) != 1 || tolerated[0].Type != "tolerated" {
 		t.Fatalf("tolerated etag change = %+v, want Type=tolerated", tolerated)
 	}
 
-	violation := DiffHeaders(map[string]string{"etag": "garbage"}, map[string]string{"etag": "junk"}, res, "resp")
+	violation, _ := DiffHeaders(map[string]string{"etag": "garbage"}, map[string]string{"etag": "junk"}, res, "resp")
 	if len(violation) != 1 || violation[0].Type != "violation" {
 		t.Fatalf("violating etag change = %+v, want Type=violation", violation)
 	}
 
-	plain := DiffHeaders(map[string]string{"x": "1"}, map[string]string{"x": "2"}, rules.Resolved{}, "resp")
+	plain, _ := DiffHeaders(map[string]string{"x": "1"}, map[string]string{"x": "2"}, rules.Resolved{}, "resp")
 	if len(plain) != 1 || plain[0].Type != "changed" {
 		t.Fatalf("unruled header change = %+v, want Type=changed", plain)
 	}
@@ -1114,11 +1114,12 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 		BodyIgnored:     []FieldDiff{fd},
 		OrderingChanges: []FieldDiff{fd},
 		HeaderDiff:      []HeaderDiff{hd},
+		HeaderIgnored:   []HeaderDiff{hd},
 	}
 	assertJSONKeys(t, full, []string{
 		"method", "normalizedPath", "seqA", "seqB", "posA", "posB", "groupA", "groupB",
 		"moved", "truncated", "classes", "statusChange", "bodyDiff", "bodyTolerated",
-		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff",
+		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff", "headerIgnored",
 	})
 
 	// The `full` Entry above cannot detect an omitempty on any of these
@@ -1142,7 +1143,7 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	assertJSONKeys(t, bare, []string{
 		"method", "normalizedPath", "seqA", "seqB", "posA", "posB",
 		"moved", "truncated", "classes", "bodyDiff", "bodyTolerated",
-		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff",
+		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff", "headerIgnored",
 	})
 
 	note := ToleratedNote{ID: "d1", Reason: "expected"}

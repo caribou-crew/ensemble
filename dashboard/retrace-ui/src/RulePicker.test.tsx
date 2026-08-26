@@ -22,6 +22,7 @@ const entry: Entry = {
   bodyIgnored: [],
   orderingChanges: [],
   headerDiff: [],
+  headerIgnored: [],
 };
 
 const field: FieldDiff = { scope: 'resp', path: 'placedAt', type: 'changed' };

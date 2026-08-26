@@ -40,16 +40,15 @@ flows:
     # pathologically slow, not to police normal variance.
     perf_budget_ms: 60000
 
-# Header tolerances. `date` is not optional decoration: every response
-# carries one, so without this rule two identical runs differ on 100% of
-# paired calls and the wire gate below fails every time — measured, on two
-# consecutive runs of this exact suite. `http-date` is a NAMED matcher: it
-# tolerates any two values that are both valid HTTP dates, rather than
-# ignoring the header outright, so a service that stops sending one still
-# reports as a change.
+# Header tolerances on top of the ones retrace ships with. `date`, `etag`
+# and `content-length` are NOT listed here: they are built in, because every
+# response carries a `date` and without a tolerance two identical runs differ
+# on 100% of paired calls — measured, on two consecutive runs of this exact
+# suite, before the built-ins existed. Set `default_wire_rules: false` to
+# turn them off; `retrace diff` reports every rule that actually fired under
+# SUPPRESSED, built-ins included, so nothing here is silent.
 wire_rules:
   - headers:
-      date: http-date
       # edge-gw stamps a fresh traceparent on every request that arrives
       # without one, which is every request the browser makes. Ignored
       # rather than pattern-matched: its whole purpose is to be unique per

@@ -146,10 +146,49 @@ never delete it.
       label or an unknown signal name/value.
 
 ## 8. Fired-ignore report + default header rules (Tasks 2, 8)
-- [ ] Summary lists each wireIgnore / wireRule that suppressed a difference,
+- [x] Summary lists each wireIgnore / wireRule that suppressed a difference,
       with count.
-- [ ] Built-in header rules `date: http-date`, `etag: etag`,
+- [x] Built-in header rules `date: http-date`, `etag: etag`,
       `content-length: integer`, overridable/disable-able in config.
+
+      Shapes as implemented:
+
+      1. `suppressions[]` on Summary — `{plane, target, source, matcher,
+         count}`, sorted loudest-first with a total tie-break so two identical
+         runs produce byte-identical JSON. `source` is `wire_rule` |
+         `wire_ignore` | `builtin`, resolved in `resolveField`'s own
+         precedence: a glob in both a rule and the ignore list is credited to
+         the rule that actually won, and a user rule that overrides a built-in
+         reattributes the row to them — otherwise the report sends a reader to
+         the wrong file to change it. Text output prints `SUPPRESSED: N
+         difference(s) across M rule(s)` before `VERDICT:`, and prints nothing
+         at all when no rule fired.
+      2. Only tolerances that ACTUALLY SILENCED something are listed. A rule
+         covering a field whose two values already matched suppressed nothing
+         and gets no row; the report answers "what did your rules hide", not
+         "what rules do you have".
+      3. `ignore` on a header previously left no trace anywhere — `DiffHeaders`
+         dropped it with a bare `continue`. It now returns a second list, and
+         `Entry` gained `headerIgnored[]`. Deliberately a separate array rather
+         than a new `type` on `headerDiff`: `classify()` counts every
+         non-`tolerated` `headerDiff` as a real change and triage reads the
+         same list, so folding them in would have turned each ignored header
+         into both a "changed" call and a triage signal — the opposite of what
+         `ignore` means.
+      4. The disable knob is `default_wire_rules: false` (per config, not per
+         header); overriding one header is just naming it in `wire_rules`.
+         Built-ins are normalized SEPARATELY from user rules and prepended, so
+         a malformed matcher is still reported at the user's own rule index —
+         concatenating first made `wireRules[0]` report as `wireRules[3]`.
+      5. Built-ins apply even with no config on disk and under
+         `--no-config`, and `suppressionsOf` attributes them as `builtin`
+         there too: a nil config reporting `wire_rule` would point at a file
+         that does not exist.
+      6. The tell that these belong in the product rather than in each
+         project's config: shipping them let us DELETE the `date` rule
+         `sample/retrace.yaml` had to hand-write. Without it, two identical
+         runs of the sample suite differed on 100% of paired calls and the
+         wire gate failed every time — measured, twice.
 
 ## 9. Client identity header (core/trace, Task 5)
 - [ ] `client_identity_headers:` (default `[x-source-client, x-local-client]`);

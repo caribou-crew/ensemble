@@ -20,6 +20,7 @@ const entry = (over: Partial<Entry> = {}): Entry => ({
   bodyIgnored: [],
   orderingChanges: [],
   headerDiff: [],
+  headerIgnored: [],
   ...over,
 });
 

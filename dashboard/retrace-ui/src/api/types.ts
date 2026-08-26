@@ -151,7 +151,12 @@ export interface FieldDiff {
 export interface HeaderDiff {
   scope: string;
   name: string;
-  type: 'changed' | 'added' | 'removed' | 'tolerated' | 'violation';
+  /**
+   * 'ignored' appears only in `Entry.headerIgnored`, never in
+   * `Entry.headerDiff` — the two lists are disjoint by construction and
+   * conflating them turns a silenced header into a finding.
+   */
+  type: 'changed' | 'added' | 'removed' | 'tolerated' | 'violation' | 'ignored';
   a?: string;
   b?: string;
   matcher?: string;
@@ -175,6 +180,13 @@ export interface Entry {
   bodyIgnored: FieldDiff[];
   orderingChanges: FieldDiff[];
   headerDiff: HeaderDiff[];
+  /**
+   * Headers an `ignore` matcher silenced. Kept out of `headerDiff` because
+   * everything in that array is a finding — the Go side's classify() and
+   * triage both read it that way — and an ignored header is the opposite of
+   * one. Render it as suppressed context, never as a difference.
+   */
+  headerIgnored: HeaderDiff[];
 }
 export interface Section {
   /**
@@ -395,7 +407,32 @@ export interface Summary {
    * `budgets` reports the second as the first.
    */
   unmeasuredGates: string[];
+  /**
+   * Every tolerance that actually silenced a difference in this run, with
+   * how many times it fired, loudest first. Rows that suppressed nothing
+   * are absent, so an empty array means the verdict was earned rather than
+   * configured — which is the one thing a clean report cannot otherwise
+   * say about itself.
+   */
+  suppressions: Suppression[];
   triage: Triage;
+}
+
+export interface Suppression {
+  plane: 'header' | 'body';
+  /** Header name, or the body field-path glob that matched. */
+  target: string;
+  /**
+   * Where the tolerance came from. `builtin` is one retrace ships with and
+   * nobody here asked for (see config.BuiltinWireRules) — worth showing
+   * differently from the two a person in this project chose.
+   *
+   * Deliberately a union: unlike a triage label, these three are the
+   * complete set the engine can emit and are not configurable.
+   */
+  source: 'wire_rule' | 'wire_ignore' | 'builtin';
+  matcher: string;
+  count: number;
 }
 
 /**
