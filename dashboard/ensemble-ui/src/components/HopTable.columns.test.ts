@@ -181,7 +181,7 @@ describe('HopTable time and size columns', () => {
     expect(markup).toContain('hop-table__status--5xx');
   });
 
-  it('marks 3xx/4xx/5xx/transport-error status cells with a glyph, leaves 2xx bare', () => {
+  it('marks 3xx/4xx/5xx/transport-error status cells with a glyph in its own column, leaves 2xx bare', () => {
     const hopWith = (status: number, err?: string): Hop => ({
       schema: 'ensemble/1',
       seq: status,
@@ -205,9 +205,15 @@ describe('HopTable time and size columns', () => {
         onSelectHop: () => {},
       }),
     );
-    expect(markup.match(/hop-table__status-icon/g)?.length).toBe(4);
-    expect(markup).toContain('↪');
-    expect(markup).toContain('⚠');
-    expect(markup.match(/✕/g)?.length).toBe(2);
+    const container = document.createElement('div');
+    container.innerHTML = markup;
+    const iconCells = Array.from(container.querySelectorAll('td.hop-table__status-icon'));
+    // One icon cell per row, kept separate from the status-code cell, so a
+    // glyph on one row can never shift another row's digits — see the
+    // regression this guards against.
+    expect(iconCells).toHaveLength(5);
+    expect(iconCells.map((td) => td.textContent)).toEqual(['', '↪', '⚠', '✕', '✕']);
+    const statusCells = Array.from(container.querySelectorAll('td.hop-table__status'));
+    expect(statusCells.map((td) => td.textContent)).toEqual(['200', '302', '404', '500', 'err']);
   });
 });

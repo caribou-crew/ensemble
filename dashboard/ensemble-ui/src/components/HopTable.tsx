@@ -151,6 +151,7 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
           <th>trace</th>
           <th>route</th>
           <th>request</th>
+          <th aria-label="status flag" />
           <th>status</th>
           <th>size</th>
           <th>done</th>
@@ -218,12 +219,10 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
                 {hop.method && <span className="hop-table__method">{hop.method}</span>} {hop.path}
                 {hop.preflight && <Badge tone="blue">preflight</Badge>}
               </td>
+              <td className={`hop-table__status-icon ${statusClass(hop)}`} aria-hidden="true">
+                {icon}
+              </td>
               <td className={`hop-table__status ${statusClass(hop)}`}>
-                {icon && (
-                  <span className="hop-table__status-icon" aria-hidden="true">
-                    {icon}
-                  </span>
-                )}
                 {hop.err ? 'err' : (hop.status ?? '—')}
               </td>
               <td className="hop-table__size">{payloadSize(hop)}</td>

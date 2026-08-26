@@ -134,9 +134,13 @@ td.hop-table__status--error {
   font-weight: 600;
 }
 
-.hop-table__status-icon {
-  display: inline-block;
-  margin-right: 0.3rem;
+/* Its own narrow column, not inline in front of the status code — so a
+   glyph on one row (⚠, ✕, ↪) never shifts that row's digits out of
+   alignment with a plain, icon-less 2xx above/below it. */
+td.hop-table__status-icon {
+  width: 1em;
+  padding-right: 0;
+  text-align: center;
 }
 
 .hop-table__done {
