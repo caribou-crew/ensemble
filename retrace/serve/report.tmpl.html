@@ -30,6 +30,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .row--not-compared { border-left-color: #b45309; background: #b4530910; }
 .row__flow { font-weight: 600; font-size: 1.05rem; }
 .row__runs, .row__counts, .row__whynot { display: block; color: #555; }
+.row__triage { color: #444; font-family: ui-monospace, monospace; font-size: 0.85em; }
 .row__whynot { color: #b45309; font-weight: 600; }
 .badge { border-radius: 999px; padding: .05rem .55rem; font-size: .8rem; border: 1px solid currentColor; }
 .badge--failed, .badge--quarantined { color: #b91c1c; }
@@ -98,6 +99,10 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{range .Rows}}<section class="row {{if .Compared}}row--compared{{else}}row--not-compared{{end}}" data-flow="{{.Key}}" data-score="{{score .Score}}">
   {{if .Href}}<a class="row__flow" href="{{.Href}}">{{.Key}}</a>{{else}}<span class="row__flow">{{.Key}}</span>{{end}}
   <span class="badge badge--{{.Verdict}}">{{.Verdict}}</span>
+  {{- /* Omitted, never defaulted, on a row that obtained no Summary: those
+      rows compared nothing, so they have nothing to attribute, and a label
+      invented for them would be the one claim this artifact cannot check. */ -}}
+  {{if .Triage}}<span class="row__triage">{{.Triage}}</span>{{end}}
   {{if .Compared}}
   <span class="row__runs">run <code>{{.RunID}}</code> vs reference <code>{{if .RefRunID}}{{.RefRunID}}{{else}}(none recorded){{end}}</code></span>
   <span class="row__counts">{{if .Counts}}{{.Counts}}{{else}}no differences{{end}} — {{.Compare}}</span>
@@ -138,6 +143,20 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 {{end}}
 
 {{template "capture" .Row}}
+
+{{- /* Triage sits ABOVE the gates and the planes because it is the question
+    a reader arrives with — whose problem is this — and the planes below are
+    the evidence for the answer. The signal vector is printed with it for the
+    same reason it is on the wire: a label the reader cannot check against
+    the evidence is one they have to take on faith. */ -}}
+{{with .Summary}}{{with .Triage}}{{if .Label}}
+<h2>Triage</h2>
+<p><strong>{{.Label}}</strong> <span class="meta">by rule <code>{{.Rule}}</code></span></p>
+<p class="meta">signals moved:
+{{- if or .Signals.Capture .Signals.Wire .Signals.Hop .Signals.Spec .Signals.Pixel}}
+{{if .Signals.Capture}}<code>capture</code> {{end}}{{if .Signals.Wire}}<code>wire</code> {{end}}{{if .Signals.Hop}}<code>hop</code> {{end}}{{if .Signals.Spec}}<code>spec</code> {{end}}{{if .Signals.Pixel}}<code>pixel</code> {{end}}
+{{- else}} none{{end}}</p>
+{{end}}{{end}}{{end}}
 
 {{if .Row.Gates}}<h2>Why this flow needs attention</h2><ul class="gates">{{range .Row.Gates}}<li>{{.}}</li>{{end}}</ul>{{end}}
 

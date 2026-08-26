@@ -179,6 +179,10 @@ type Summary struct {
 	// their own capture-trust verdict was not "ok". Empty unless
 	// --allow-degraded was NOT passed and at least one side warranted it.
 	Quarantined []Quarantine `json:"quarantined"`
+	// Triage says WHOSE problem this is — the one question the four planes
+	// leave to the reader. See triage.go; never empty on a Summary Build
+	// returned, including both quarantine exits.
+	Triage Triage `json:"triage"`
 }
 
 // Gate is one configured CI budget for one diff plane, read from
@@ -408,7 +412,7 @@ func Build(in BuildInput) (Summary, error) {
 	if q := incompleteCheck(in.A, in.B); len(q) > 0 {
 		s.Quarantined = q
 		s.Verdict = "quarantined"
-		s.ensureArrays()
+		s.finish(in.Cfg)
 		return s, nil
 	}
 
@@ -420,7 +424,7 @@ func Build(in BuildInput) (Summary, error) {
 		if q := quarantineCheck(in.A, in.B); len(q) > 0 {
 			s.Quarantined = q
 			s.Verdict = "quarantined"
-			s.ensureArrays()
+			s.finish(in.Cfg)
 			return s, nil
 		}
 	}
@@ -549,8 +553,23 @@ func Build(in BuildInput) (Summary, error) {
 	default:
 		s.Verdict = "pass"
 	}
-	s.ensureArrays()
+	s.finish(in.Cfg)
 	return s, nil
+}
+
+// finish is the ONE exit ritual every return path in Build shares: normalise
+// the arrays, then classify. Both quarantine returns and the ordinary return
+// go through it, so a fifth exit added later inherits both steps instead of
+// silently shipping a Summary whose triage label is the empty string.
+//
+// Ordered deliberately — triageOf reads Verdict and Counts, which are set by
+// the time any caller reaches here, and reads Quarantined, which ensureArrays
+// may have just turned from nil into an empty slice. len() is the same for
+// both, so the order is not load-bearing today; it is fixed anyway so that a
+// future signal keyed on nil-ness cannot depend on which call ran first.
+func (s *Summary) finish(cfg *config.Config) {
+	s.ensureArrays()
+	s.Triage = triageOf(*s, cfg)
 }
 
 // untolerated counts the calls in cs that no approved deviation covers.
@@ -903,6 +922,10 @@ func RenderText(w io.Writer, s Summary) {
 		for _, q := range s.Quarantined {
 			fmt.Fprintf(w, "  side %s: %s\n", q.Side, q.Reason)
 		}
+		// Printed on this path too. A quarantine is the one verdict readers
+		// most often mistake for a small failure and go looking for in their
+		// application code; "TRIAGE: harness" is the line that redirects them.
+		renderTriage(w, s.Triage)
 		return
 	}
 
@@ -982,7 +1005,52 @@ func RenderText(w io.Writer, s Summary) {
 
 	renderConformance(w, s.Conformance)
 
+	renderTriage(w, s.Triage)
 	fmt.Fprintf(w, "VERDICT: %s\n", s.Verdict)
+}
+
+// triageAdvice is the one-line "so what" for each built-in label. A project
+// label has none, and gets the line without it rather than a fabricated one.
+var triageAdvice = map[string]string{
+	TriageHarness:        "the recording is not trustworthy — fix the capture, not the code",
+	TriageClientBehavior: "the client sent something different",
+	TriageStack:          "the client sent the same requests; the stack answered differently",
+	TriageContractDrift:  "traffic is unchanged, so the spec moved",
+	TriageClientUI:       "a rendering change, with no traffic change",
+	TriageNone:           "nothing moved",
+	TriageUnclassified:   "nothing the triage signals cover moved — read GATE: above for what failed",
+}
+
+// renderTriage prints the classification and the signal vector behind it. The
+// vector is printed, not just the label, for the same reason it is on the
+// wire: a label the reader cannot check against the evidence is a label they
+// have to take on faith.
+func renderTriage(w io.Writer, t Triage) {
+	if t.Label == "" {
+		return // a hand-built Summary that never went through Build
+	}
+	line := fmt.Sprintf("TRIAGE: %s (%s)", t.Label, t.Rule)
+	if advice := triageAdvice[t.Label]; advice != "" {
+		line += " — " + advice
+	}
+	fmt.Fprintln(w, line)
+	var moved []string
+	for _, s := range []struct {
+		name  string
+		moved bool
+	}{
+		{"capture", t.Signals.Capture}, {"wire", t.Signals.Wire}, {"hop", t.Signals.Hop},
+		{"spec", t.Signals.Spec}, {"pixel", t.Signals.Pixel},
+	} {
+		if s.moved {
+			moved = append(moved, s.name)
+		}
+	}
+	if len(moved) == 0 {
+		fmt.Fprintln(w, "  signals moved: none")
+		return
+	}
+	fmt.Fprintf(w, "  signals moved: %s\n", strings.Join(moved, ", "))
 }
 
 // renderConformance prints the conformance section of the human-facing

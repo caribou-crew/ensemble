@@ -91,6 +91,8 @@ Read these fields off `retrace diff --json`:
 
 <!-- retrace:fields -->
 - `verdict` — `pass` | `changed` | `failed` | `quarantined`
+- `triage` — whose problem it is: `label`, the `rule` that decided, and the
+  `signals` vector it decided from. See the next section.
 - `gates` — human-readable reasons the verdict is `failed`
 - `budgets` — one row per plane your `gates:` config names: `plane`,
   `threshold`, `observed`, `failed`
@@ -118,21 +120,48 @@ Read these fields off `retrace diff --json`:
 means no comparison happened at all. Treating it as a finding to fix in your
 application code sends you editing code that was never measured.
 
-### Which plane moved tells you whose problem it is
+### Whose problem it is — read `triage`
 
-There is no single field that answers this yet, so read the planes:
+`triage.label` answers this directly. Get it backwards and you will spend an
+hour "fixing" a client that never changed.
 
-- **pixel only** — a client rendering change. Nothing about the traffic moved.
-- **wire moved** — the client is making different calls: different requests,
-  different order, different bodies.
-- **hop only, wire same** — the client behaved identically and the *stack*
-  answered differently. Suspect the backend or a seed, not your change.
-- **conformance fails, everything else same** — contract drift against the
-  OpenAPI spec.
-- **capture not ok** — a harness problem. None of the above is reliable.
+| `label` | What it means | Where to look |
+|---|---|---|
+| `harness` | The recording is not trustworthy | The capture. Nothing below is reliable |
+| `client-behavior` | The client sent something different | Your client code |
+| `stack` | The same requests, different answers | The backend, or a seed |
+| `contract-drift` | Identical traffic, no longer matches the spec | The OpenAPI file |
+| `client-ui` | A rendering change, no traffic change | Your client's rendering |
+| `none` | Nothing moved, and the verdict is clean | Nothing |
+| `unclassified` | Nothing moved and it still is not a pass | `gates` — see below |
 
-Get this backwards and you will spend an hour "fixing" a client that never
-changed.
+`unclassified` is not a synonym for `none`. A perf budget, an unexpected
+status, a `hopRequire` route and an unevaluated gate all fail a run without
+moving any of the five signals. The label says so instead of implying the run
+was clean; `gates` says which one.
+
+**Check the label before you act on it.** `triage.signals` is the evidence —
+five booleans, `pixel` / `wire` / `hop` / `spec` / `capture`. The rule is:
+*the first signal that moved, in the order capture → wire → hop → spec →
+pixel, names the label.* `triage.rule` names the row that fired.
+
+The five are **causes, not planes**, and the wire plane feeds two of them,
+split by whether the difference was in the request or the response:
+
+- `wire` — the client sent something different: a call missing, extra or
+  reordered, or a request body or header that changed.
+- `hop` — the stack answered differently: a changed status, response body or
+  response header, or a moved cross-service chain.
+
+So a backend returning different data reads as `stack`, not as
+`client-behavior`, even on a standalone run with no hop chain recorded.
+
+A project may add its own rows under `triage:` in `retrace.yaml`, which is why
+`label` is not a fixed enum — treat an unfamiliar label as a project-specific
+one and go read their config.
+
+A `quarantined` verdict is always `harness`, and a project rule cannot
+override it: nothing was compared, so there is nothing to attribute.
 
 ## Step 4 — fix, then recapture
 
@@ -246,6 +275,20 @@ masks:
   catalog:
     - { x: 0, y: 0, width: 320, height: 48, why: "clock in the status bar" }
 ```
+
+To disagree with a built-in triage row, add your own above it:
+
+```yaml
+triage:
+  - name: seed-drift
+    label: seeds
+    why: "our hop plane moves whenever the fixture seed is regenerated"
+    when: { hop: moved, wire: same }
+```
+
+Signals you do not name are unconstrained. Config rows are consulted *before*
+the built-in table, so the defaults still cover everything yours does not
+match — you never restate the table.
 
 Also available: `upstream`, `proxy_host`, `proxy_port`, `wire_ignore`,
 `query_ignore`, `path_normalize`, `expected_statuses`, `hop_require`,

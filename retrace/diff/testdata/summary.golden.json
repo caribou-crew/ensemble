@@ -158,5 +158,16 @@
     }
   ],
   "unmeasuredGates": [],
-  "quarantined": []
+  "quarantined": [],
+  "triage": {
+    "label": "client-ui",
+    "rule": "pixel-only",
+    "signals": {
+      "pixel": true,
+      "wire": false,
+      "hop": false,
+      "spec": false,
+      "capture": false
+    }
+  }
 }

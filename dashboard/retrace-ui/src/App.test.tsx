@@ -112,6 +112,15 @@ const summary = (over: Partial<Summary> = {}): Summary => ({
   gates: [],
   budgets: [],
   unmeasuredGates: [],
+  // Spelled out rather than left optional. `triage` is required on the Go
+  // side — diff.Build sets it at every exit — so a fixture that omitted it
+  // would be a shape the server cannot produce, and typing the field as
+  // optional here to make the fixture compile would have hidden that.
+  triage: {
+    label: 'client-behavior',
+    rule: 'wire-moved',
+    signals: { pixel: false, wire: true, hop: false, spec: false, capture: false },
+  },
   ...over,
 });
 
@@ -593,6 +602,55 @@ describe('the item screen', () => {
       expect.stringContaining('ds-badge--amber'),
       expect.stringContaining('ds-badge--amber'),
     ]);
+  });
+
+  /**
+   * The four planes each report WHAT moved; none of them reports whose
+   * problem it is, and a reviewer reading them in isolation goes and edits a
+   * client that never changed. `triage` is the answer, and `signals` is what
+   * lets the reviewer check the answer rather than take it on faith.
+   */
+  it('says whose problem the flow is, with the evidence behind the label', async () => {
+    const calls = stubServer({
+      item: summary({
+        triage: {
+          label: 'stack',
+          rule: 'hop-only',
+          signals: { pixel: false, wire: false, hop: true, spec: false, capture: false },
+        },
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const el = container.querySelector('.item__triage');
+    expect(el).not.toBeNull();
+    expect(el?.textContent).toContain('stack');
+    expect(el?.textContent).toContain('hop-only');
+    expect(el?.textContent).toContain('signals moved: hop');
+    // The signals that did NOT move are absent, not listed as false. A vector
+    // rendered in full reads as five findings.
+    expect(el?.textContent).not.toContain('pixel');
+  });
+
+  /**
+   * A project's own `triage:` rule may emit any string. Rendering must not
+   * switch exhaustively over the built-in labels, or a configured label
+   * silently disappears from the one screen a reviewer looks at.
+   */
+  it('renders a label the built-in table never produces', async () => {
+    const calls = stubServer({
+      item: summary({
+        triage: {
+          label: 'seeds',
+          rule: 'seed-drift',
+          signals: { pixel: false, wire: false, hop: true, spec: false, capture: false },
+        },
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+    expect(container.querySelector('.item__triage')?.textContent).toContain('seeds');
   });
 
   it('says nothing about unevaluated gates when every gate ran', async () => {

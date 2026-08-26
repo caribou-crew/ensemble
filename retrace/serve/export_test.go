@@ -1410,3 +1410,42 @@ func TestAPlaneWithNoCallsToExamineDoesNotReportAPass(t *testing.T) {
 		})
 	}
 }
+
+// TestEveryComparedFlowSaysWhoseProblemItIs. The four planes each report
+// what moved; none of them reports what to do about it, and this artifact is
+// read by someone who was not there for the run. The label is the answer, and
+// the signal vector beside it is what lets them check the answer — a
+// classification a reader must take on faith is one they cannot act on.
+func TestEveryComparedFlowSaysWhoseProblemItIs(t *testing.T) {
+	pages := itemPages(t, gatedProject(t))
+	for key, page := range pages {
+		sec := pageSection(t, page, "Triage")
+		if !strings.Contains(sec, "by rule <code>") {
+			t.Errorf("%s has a Triage section that names no rule — the label is then an assertion the reader cannot trace:\n%s", key, sec)
+		}
+		if !strings.Contains(sec, "signals moved:") {
+			t.Errorf("%s prints a triage label with none of the evidence behind it:\n%s", key, sec)
+		}
+	}
+	// Every flow in this fixture records the same run twice, so nothing
+	// moved anywhere — and "nothing moved" has its own label, distinct from
+	// every plane-attribution label.
+	paired := pageSection(t, pages["web/paired"], "Triage")
+	if !strings.Contains(paired, "<strong>none</strong>") {
+		t.Errorf("a flow where nothing moved is not labelled `none`:\n%s", paired)
+	}
+	if !strings.Contains(paired, "signals moved:\nnone") && !strings.Contains(paired, "signals moved: none") {
+		t.Errorf("a flow where nothing moved does not say its signal vector is empty:\n%s", paired)
+	}
+}
+
+// TestTheOverviewCarriesTheTriageLabel. The overview is the page a reader
+// opens first and, for a passing build, the only one they open. A label
+// available only one click in is a label that does not reach them.
+func TestTheOverviewCarriesTheTriageLabel(t *testing.T) {
+	_, out := exportTo(t, gatedProject(t), "", "")
+	index := readText(t, out, "index.html")
+	if strings.Count(index, `class="row__triage"`) != 4 {
+		t.Errorf("the overview carries %d triage labels across 4 compared flows:\n%s", strings.Count(index, `class="row__triage"`), index)
+	}
+}

@@ -111,6 +111,11 @@ type Config struct {
 	// CI budget layered on top, defaulted from it but independently
 	// settable.
 	Gates map[string]Gate `yaml:"gates"`
+	// Triage holds project-specific rows for the triage table, consulted
+	// before the built-in defaults (see TriageRule). Absent for almost every
+	// project: the built-in table is a total function over the five signals,
+	// so a config needs an entry here only to disagree with it.
+	Triage []TriageRule `yaml:"triage"`
 	// FailOn lists the plane keys ("pixel", "wire", "hop", "perf") whose
 	// gate failures should fail the run. Shape only: which planes actually
 	// gate a build is the consuming task's decision, not this package's.
@@ -391,6 +396,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := validateWireIgnore(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// validateTriage also FILLS each unnamed rule's Name from its index, so it
+	// must run on the value that is returned, not on a copy.
+	if err := validateTriage(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil

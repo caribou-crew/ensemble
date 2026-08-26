@@ -395,6 +395,50 @@ export interface Summary {
    * `budgets` reports the second as the first.
    */
   unmeasuredGates: string[];
+  triage: Triage;
+}
+
+/**
+ * The five moved/same signals the triage table classifies on. `true` means
+ * that plane moved.
+ *
+ * Carried alongside the label rather than re-derived from the rest of the
+ * Summary, and three of the five could not be re-derived correctly anyway:
+ * `hop` folds new routes, gone routes and per-service count deviation into
+ * one bit; `spec` excludes "unchecked" conformance findings, which are the
+ * absence of evidence rather than drift; and `capture` is true for a
+ * quarantine whose own capture verdict is "ok" — a signal-killed run.
+ */
+export interface TriageSignals {
+  pixel: boolean;
+  wire: boolean;
+  hop: boolean;
+  spec: boolean;
+  capture: boolean;
+}
+
+/**
+ * Whose problem this is — the one question the four planes leave to the
+ * reader.
+ *
+ * `label` is one of the built-ins (`harness`, `client-behavior`, `stack`,
+ * `contract-drift`, `client-ui`, `none`, `unclassified`) OR any string a
+ * project's own `triage:` rule chose, so do NOT type it as a union: a
+ * project label is an ordinary configuration, not a bad value, and an
+ * exhaustive switch over the built-ins would silently drop it.
+ *
+ * `none` and `unclassified` are NOT synonyms. `none` means no signal moved
+ * and the verdict is clean. `unclassified` means no signal moved and the run
+ * still is not a pass — a perf budget, an unexpected status, a hopRequire
+ * route or an unevaluated gate, none of which the five signals cover.
+ * Rendering the second as "nothing to see" is the reassuring-value trap on
+ * the run that most needs reading; `gates` is where its reason lives.
+ */
+export interface Triage {
+  label: string;
+  /** The rule that matched: a built-in name, or the project rule's own. */
+  rule: string;
+  signals: TriageSignals;
 }
 
 /**

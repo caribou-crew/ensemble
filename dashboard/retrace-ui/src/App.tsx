@@ -3,7 +3,7 @@ import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf, ruleBlastRadius, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
-import type { Entry, FieldDiff, Item, Summary } from './api/types';
+import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
 import { verdictTone } from './tone';
 import { useUrlParam } from './urlState';
@@ -143,6 +143,19 @@ export function RulePicker({
   );
 }
 
+/**
+ * The triage signals that MOVED, in the priority order the classifier reads
+ * them — capture → wire → hop → spec → pixel — so the list reads as the rule
+ * that produced the label rather than as an arbitrary set.
+ *
+ * Keys are listed explicitly rather than derived with Object.keys: object key
+ * order is an implementation detail of the JSON decoder, and this order is
+ * the explanation.
+ */
+function movedSignals(signals: TriageSignals): string[] {
+  return (['capture', 'wire', 'hop', 'spec', 'pixel'] as const).filter((k) => signals[k]);
+}
+
 function ItemScreen({
   app,
   flow,
@@ -189,6 +202,28 @@ function ItemScreen({
       </header>
 
       <CaptureBanner capture={summary.capture} detail />
+
+      {/*
+        Above the gates and the planes, because "whose problem is this" is the
+        question a reviewer arrives with and everything below is the evidence
+        for the answer. The signal vector rides along for the same reason it
+        is on the wire: a label a reviewer cannot check against the evidence
+        is one they have to take on faith.
+
+        `label` is NOT switched on. A project's own `triage:` rule may emit
+        any string, and an exhaustive switch over the built-ins would drop it.
+      */}
+      {summary.triage.label ? (
+        <p className="item__triage">
+          <strong>{summary.triage.label}</strong>{' '}
+          <span className="item__triage-rule">by rule {summary.triage.rule}</span>{' '}
+          <span className="item__triage-signals">
+            {movedSignals(summary.triage.signals).length > 0
+              ? `signals moved: ${movedSignals(summary.triage.signals).join(', ')}`
+              : 'signals moved: none'}
+          </span>
+        </p>
+      ) : null}
 
       {summary.gates.length > 0 ? (
         <ul className="item__gates">

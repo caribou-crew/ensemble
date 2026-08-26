@@ -185,6 +185,30 @@ func TestDocsOnlyNameSummaryFieldsThatExist(t *testing.T) {
 	}
 }
 
+// TestRecipeNamesEveryTriageLabel guards the SECOND table an agent branches
+// on. `triage.label` is the field that tells an agent which repository to go
+// edit, so a label the CLI can emit and the recipe does not explain is a
+// label an agent meets in production and guesses at — and guessing wrong here
+// costs an hour spent "fixing" a client that never changed.
+//
+// diff.TriageLabels() is derived from the built-in table itself, so this
+// checks the docs against the code and not against a second hand-kept list.
+// Project labels from `triage:` in retrace.yaml are deliberately NOT covered:
+// they are configuration, and no recipe can document a stranger's config.
+func TestRecipeNamesEveryTriageLabel(t *testing.T) {
+	docs := docFiles(t)
+	skill := docs[filepath.Join(".claude", "skills", "retrace-iterate", "SKILL.md")]
+	labels := diff.TriageLabels()
+	if len(labels) < 5 {
+		t.Fatalf("diff.TriageLabels() returned %d labels (%v) — the built-in table is smaller than the brief's five defaults, so this test is checking almost nothing", len(labels), labels)
+	}
+	for _, l := range labels {
+		if !strings.Contains(skill, "`"+l+"`") {
+			t.Errorf("the CLI can classify a run as %q and the skill never explains that label", l)
+		}
+	}
+}
+
 // TestRecipeNamesEveryVerdict guards the one table an agent branches on. A
 // verdict the CLI can emit and the recipe does not explain is a verdict an
 // agent will meet for the first time in production and guess at.

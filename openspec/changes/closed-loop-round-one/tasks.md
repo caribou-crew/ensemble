@@ -74,11 +74,76 @@ never delete it.
       a percentage.
 
 ## 7. Triage classification (Task 10)
-- [ ] Summary adds `triage: { label, rule }` from a table over
+- [x] Summary adds `triage: { label, rule }` from a table over
       `{pixel, wire, hop, spec, capture}` moved/same — defaults:
       pixel-only → `client-ui`; wire moved → `client-behavior`; hop-only →
       `stack`; spec fails with all else same → `contract-drift`; capture
       non-ok → `harness`. Overridable under `triage:` in config.
+
+      Amended in implementation, five ways:
+
+      0. **The wire plane is split by SCOPE, and this is the amendment that
+         matters.** The brief's "wire moved → `client-behavior`" is wrong for
+         the single most common real change there is. Found by running the
+         real CLI against a stack whose RESPONSE body changed: it printed
+         "TRIAGE: client-behavior — the client is making different calls"
+         over a client that had sent the byte-identical request. Every test
+         agreed with the code, because they shared its premise.
+         `FieldDiff`/`HeaderDiff` already carry `scope: "req" | "resp"`, so
+         the five signals are now CAUSES rather than planes: `wire` = the
+         client sent something different (call missing/extra/reordered, or a
+         changed request body or header); `hop` = the stack answered
+         differently (changed status, response body or response header at the
+         client edge, OR a moved cross-service chain). The response half
+         matters most on a STANDALONE run, which records no hops.jsonl at all
+         — without it a changed response has no bit to move and the only
+         reading left is the client's fault. Tolerated and ignored
+         differences attribute nothing, on either half. An unattributable
+         changed entry falls back to `wire`, so a changed run can never report
+         `unclassified`: an imprecise answer beats a vacuous one, and the
+         client's own diff is the cheaper place to send a reader.
+
+      1. `triage` also carries `signals` — the five booleans the label was
+         derived from. Three of them are NOT re-derivable from the rest of
+         the Summary without re-implementing `signalsOf` (`hop` folds new
+         routes, gone routes and per-service count deviation into one bit;
+         `spec` excludes `unchecked` findings; `capture` is true for a
+         quarantine whose own capture verdict is `ok`). Shipping the label
+         without its evidence would make it a claim no consumer can check,
+         and re-derivation across four surfaces is the defect
+         `unmeasuredGates` already exists to fix.
+      2. The table is ORDERED and its rows are mutually exclusive: the
+         first signal that moved, in the order capture → wire → hop → spec
+         → pixel, names the label. That resolves every overlap the brief's
+         five rows leave open (pixel AND hop moved with wire same, etc.)
+         and makes the table total over all 32 vectors, so no run can fall
+         through to an empty label. wire above hop because a client making
+         different calls CAUSES the chain to differ; spec above pixel
+         because with wire and hop unmoved the traffic is identical, so a
+         conformance finding means the spec moved.
+      3. TWO labels for "no signal moved", not one. `none` is a clean run;
+         `unclassified` is a run that failed on something the five signals
+         do not cover — a perf budget, an unexpected status, a hopRequire
+         route, an unevaluated gate — and points the reader at `gates`.
+         Collapsing them would put a reassuring label on the run that most
+         needs reading. Perf was deliberately NOT added as a sixth signal:
+         its cause is genuinely ambiguous between client and stack, and
+         inventing a plane for it would be inventing a cause.
+      4. Config rows are consulted BEFORE the built-in table rather than
+         replacing it, so a project specialises without restating the
+         defaults — a config that replaced the table wholesale would most
+         often lose the `harness` row. The one exemption: a `quarantined`
+         verdict is always `harness` and the table is not consulted at all,
+         because Build returns before a single plane is computed, so the
+         four traffic signals are false for want of DATA. A project rule
+         matching `wire: same, pixel: same` would otherwise relabel a
+         comparison that never happened.
+
+      `retrace.yaml` gains `triage:` — a list of `{name?, label, why?, when}`
+      where `when` names any subset of the five signals as `moved`/`same`.
+      Validated at Load: a rule that constrains nothing is a config error
+      (it matches every run and kills every rule below it), as is a missing
+      label or an unknown signal name/value.
 
 ## 8. Fired-ignore report + default header rules (Tasks 2, 8)
 - [ ] Summary lists each wireIgnore / wireRule that suppressed a difference,
@@ -137,9 +202,11 @@ never delete it.
       step reads the planes directly (pixel-only → client UI; wire moved →
       client behaviour; hop-only → stack; conformance-only → contract
       drift; capture not ok → harness), which is exactly what item 7 will
-      later collapse into one field. **When item 7 lands, add `triage` to
+      later collapse into one field. ~~**When item 7 lands, add `triage` to
       the skill's `<!-- retrace:fields -->` block and fold the plane table
-      into it.**
+      into it.**~~ **Done** — item 7 shipped and the recipe now reads
+      `triage` first, with the plane table replaced by a label table and the
+      signal vector documented as the evidence to check it against.
 - [x] CI check: the skill's documented flag names appear in `retrace --help`.
       Implemented as `retrace/cmd/retrace/docs_contract_test.go`, so it runs
       in the existing CI job rather than as a separate step. Extended beyond
@@ -147,7 +214,9 @@ never delete it.
       exists on `diff.Summary` (by reflection, not a second hand-kept list)
       and that every verdict value is explained. The field half is what
       would have caught the `triage` drift above without reading the source
-      by hand.
+      by hand. Extended again when item 7 landed: every label the built-in
+      triage table can emit must be explained in the recipe, checked against
+      `diff.TriageLabels()` — derived from the table, never a second list.
 
   NOT done, and not one of this item's checkboxes: the end-to-end walkthrough
   against `sample/`. There is no `retrace.yaml` anywhere in the repo yet, and

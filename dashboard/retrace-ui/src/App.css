@@ -95,6 +95,18 @@
   font-family: var(--font-mono);
 }
 
+.item__triage {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.item__triage-rule,
+.item__triage-signals {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
 .item__gates {
   margin: 0;
   padding-left: 1.25rem;

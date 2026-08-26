@@ -185,6 +185,13 @@ type reportRow struct {
 	WhyNot   string
 	Counts   string // the strip; "" when there is nothing to say
 	Compare  string // what was actually compared, e.g. "3 checkpoints · 8 wire calls"
+	// Triage is diff.Summary.Triage.Label, COPIED — never re-derived, for the
+	// same reason UnmeasuredGates is copied below. Empty on the two rows that
+	// never obtained a Summary at all (un-evaluable, and a comparison this
+	// export could not reproduce): there was no diff to classify, and those
+	// rows already say so in WhyNot. Empty here means "no classification",
+	// never "clean" — the overview omits the label rather than printing one.
+	Triage string
 }
 
 type reportIndex struct {
@@ -469,9 +476,11 @@ func (e *exporter) item(it Item) (reportRow, error) {
 	// nothing here may be reported as clean.
 	if sum.Verdict == "quarantined" {
 		row.WhyNot = "could not be evaluated — the comparison was refused because a side's capture was not trusted"
+		row.Triage = sum.Triage.Label
 		return row, e.render(path.Join(dir, "index.html"), "item", reportItem{Generated: e.generated, Row: row, Summary: &sum})
 	}
 
+	row.Triage = sum.Triage.Label
 	row.Compared = true
 	row.RunID, row.RefRunID = it.RunID, it.RefRunID
 	row.Counts = countsStrip(it.Counts)
