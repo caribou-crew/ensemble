@@ -1,0 +1,101 @@
+{
+  "schema": "retrace/1",
+  "app": "brew",
+  "flow": "checkout",
+  "runId": "20260827T040735Z-a19376b",
+  "mode": "ensemble",
+  "git": {
+    "sha": "a19376bd86af6c52eccffff342880cc24e6a59bd",
+    "branch": "main",
+    "dirty": true
+  },
+  "startedAt": "2026-08-26T23:07:35.016866-05:00",
+  "finishedAt": "2026-08-26T23:07:38.424514-05:00",
+  "checkpoints": [
+    {
+      "name": "cart",
+      "file": "shots/cart.png",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "name": "cart-emptied",
+      "file": "shots/cart-emptied.png",
+      "width": 640,
+      "height": 67
+    },
+    {
+      "name": "catalog",
+      "file": "shots/catalog.png",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "name": "unknown-user-error",
+      "file": "shots/unknown-user-error.png",
+      "width": 1280,
+      "height": 720
+    }
+  ],
+  "groups": [
+    {
+      "name": "browse",
+      "startedAt": "2026-08-27T04:07:37.303Z",
+      "endedAt": "2026-08-27T04:07:37.659Z"
+    },
+    {
+      "name": "checkout",
+      "startedAt": "2026-08-27T04:07:37.66Z",
+      "endedAt": "2026-08-27T04:07:37.811Z"
+    },
+    {
+      "name": "unknown-user",
+      "startedAt": "2026-08-27T04:07:37.946Z",
+      "endedAt": "2026-08-27T04:07:38.182Z"
+    }
+  ],
+  "capture": {
+    "status": "ok",
+    "summary": "capture looks complete"
+  },
+  "wire": {
+    "calls": 32,
+    "recorded": true
+  },
+  "hops": {
+    "calls": 90,
+    "recorded": true
+  },
+  "test": {
+    "command": "/bin/sh -c pnpm -C clients/web-app run e2e",
+    "exitCode": 0,
+    "durationMs": 3229
+  },
+  "env": {
+    "go": "go1.25.6",
+    "platform": "darwin/arm64",
+    "retrace": "dev+a19376b-dirty"
+  },
+  "device": {
+    "kind": "shot",
+    "id": "cart",
+    "width": 1280,
+    "height": 720
+  },
+  "stack": {
+    "services": {
+      "catalog": "a19376bd86af+e4811dae",
+      "edge": "a19376bd86af+4f9b496d",
+      "notify": "a19376bd86af+e4811dae",
+      "ops": "a19376bd86af+e4811dae",
+      "order": "a19376bd86af+e4811dae",
+      "storefront": "a19376bd86af+e4811dae",
+      "user": "a19376bd86af+e4811dae",
+      "web": "a19376bd86af+e4811dae"
+    },
+    "seed": {
+      "name": "baseline",
+      "appliedAt": "2026-08-26T23:03:16.180202-05:00"
+    }
+  }
+}

@@ -14,10 +14,16 @@ dist/
 #
 # The recording team key is a secret: it comes from RETRACE_RECORDING_KEY or
 # .retrace/recording.key, and must never be committed. It is covered here.
-.retrace/*
+#
+# The leading `**/` is load-bearing. A pattern with a slash anywhere but the
+# end is anchored to THIS file's directory, so a bare `.retrace/*` covers the
+# repo root and nothing else — and this repo has a second retrace root at
+# sample/, where the walkthrough's runs (and its recording.key, if anyone
+# sets one) would have been offered up by `git status` on every clone.
+**/.retrace/*
 # ...except the machine-owned wire-rule overlay, which IS committed — it is
 # the reviewed record of which fields are allowed to vary (config.OverlayPath).
-!.retrace/wire-rules.json
+!**/.retrace/wire-rules.json
 #
 # Reference bundles ARE committed — .retrace-ref/<app>/<flow>/reference is
 # the blessed artifact a diff runs against, and an ignored bundle is a diff
@@ -57,9 +63,12 @@ npm/retrace-*/bin/retrace
 # sample/ Go services are standalone modules (not part of go.work); `go
 # build -o <name> .` in each one drops an extensionless binary named after
 # the module right next to main.go (see each one's build: in ensemble.yaml).
+# One line per `go build -o <name>` in sample/ensemble.yaml; the other
+# services are npm or Gradle and drop nothing here.
 sample/services/*/catalog-svc
 sample/services/*/edge-gw
 sample/services/*/notify-worker
+sample/services/*/order-stub
 # notify-worker's simulated "sent notifications" log — regenerated every run.
 sample/services/notify-worker/notifications.log
 # order-svc is a standalone Gradle project (also not part of go.work, and

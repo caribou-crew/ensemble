@@ -85,20 +85,33 @@ path_normalize:
   - pattern: '/orders/[0-9]+'
     replacement: '/orders/{id}'
 
-# The error test drives a deliberate 404 — storefront-bff surfaces order's
-# rejection of user 999. Without an entry here it reads as a regression on
-# every single run, which is how a real gate gets switched off.
+# The error test drives a deliberate failure for user 999, and in ensemble
+# mode the whole chain is on the hop plane, so all three legs of it need an
+# entry — the browser's 400 and the two internal calls that produced it.
+# Without them the run reports three regressions every single time, which is
+# how a real gate gets switched off.
+#
+# A rule matches on path and status only (there is no method), so `/orders`
+# + 400 would also excuse a happy-path POST /orders that started failing.
+# hop_require below is what closes that: a rejected good user cannot reach
+# 201 on POST /cart/1/checkout.
 expected_statuses:
   - path: /cart/999/checkout
+    status: 400
+    why: "the unknown-user test drives this on purpose; the failure IS the assertion"
+  - path: /users/999
     status: 404
-    why: "the unknown-user test drives this on purpose; the 404 IS the assertion"
+    why: "baseline seeds users 1 and 2 only; user-svc correctly has no 999"
+  - path: /orders
+    status: 400
+    why: "order rejects the unknown user by name (order-stub: `unknown user 999`)"
 
 # The money path must actually be the money path. If a refactor makes the
 # browser talk to storefront-bff directly, or checkout stops reaching
 # order, the hop plane says so by name rather than by a vague count.
 hop_require:
   - { method: GET, path: /products, status: 200 }
-  - { method: POST, path: /cart/1/checkout, status: 200 }
+  - { method: POST, path: /cart/1/checkout, status: 201 }
 
 # Beyond core/trace's built-in header and query redaction: these are BODY
 # field names, and the sample app sends none of them today. They are here
@@ -135,7 +148,18 @@ fail_on:
 # above still passes. It IS counted by the verdict, which is why a run with
 # no differing call still reads `changed`.
 #
-# Triage currently labels that run `client-behavior` — "the client sent
-# something different" — which is not what happened here: the client sent
-# byte-identical requests in a different order. Read the per-call list, not
-# the label, when the only entries are `[moved]`.
+# Two more lines appear on every clean run of this stack, and both are
+# retrace telling the truth about a sample that reseeds:
+#
+#   STACK: seeded differently — A from baseline at ..., B from baseline at ...
+#   TRIAGE: stack (stack-changed)
+#
+# The suite's `beforeEach` re-applies the `baseline` seed (see
+# clients/web-app/tests/checkout.spec.js), so run B really did start from a
+# database run A's writes are no longer in. retrace compares a seed by name
+# AND application time for exactly that reason, so the second run is never
+# "the same stack" as the first — and triage, seeing a stack signal, says
+# `stack` rather than blaming the client.
+#
+# Read the per-call list, not the label: when the only wire entries are
+# `[moved]`, nothing about the traffic changed but its order.

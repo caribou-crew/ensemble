@@ -44,7 +44,14 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		// The identity headers belong here as much as Authorization does: a
+		// browser client that sends x-source-client (web-app does) makes every
+		// call a preflighted one, and a preflight that omits the header blocks
+		// the request outright — the app shows an empty page and the trace shows
+		// nothing at all, because nothing was ever sent. These two names are
+		// core/proxy.DefaultClientHeaders; a stack that sets
+		// client_identity_headers: in ensemble.yaml lists its own here.
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Source-Client, X-Local-Client")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
