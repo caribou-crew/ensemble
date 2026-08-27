@@ -1,6 +1,16 @@
-import { api } from '../api/client';
-import type { CheckpointVerdict } from '../api/types';
+import type { CheckpointVerdict } from '../diffTypes';
 import './ShotCompare.css';
+
+/**
+ * Builds the URL for one comparison side's PNG — `(app, flow, side, name) =>
+ * string`. Passed in rather than imported, because the two consumers of this
+ * component serve shots from different routes: retrace-ui's own `retrace
+ * serve` at `/api/shots/...`, ensemble-ui's embedded retrace routes at
+ * `/api/retrace/shots/...`. This component only ever calls it with a
+ * non-empty `name` (see the `images.a`/`images.b`/etc. guards below), so a
+ * resolver does not need to handle the empty-name case itself.
+ */
+export type ResolveShotUrl = (app: string, flow: string, side: string, name: string) => string;
 
 /** Copy for a comparison side the diff never wrote. It is an EXPLANATION and
  * not a blank pane: an empty pane in a diff viewer reads as "identical", which
@@ -14,10 +24,11 @@ const NO_IMAGE = 'No diff image was written for this checkpoint — the two shot
  * summary.go builds the "missing", "added" and "unreadable" verdicts as a
  * bare CheckpointVerdict with a zero CheckpointImages, so both `images.a`
  * and `images.b` are "" on exactly the checkpoints a reviewer opened the
- * flow to look at. Calling api.shotUrl with an empty name throws, and a
- * throw HERE is in the render phase — not a rejected promise — so useAsync
- * never sees it and React unmounts the whole tree. The reviewer would get a
- * white page in place of the checkpoint that went missing.
+ * flow to look at. Building a URL from an empty name is nonsense, and doing
+ * that HERE would be in the render phase — not a rejected promise — so
+ * useAsync never sees any resulting failure and React unmounts the whole
+ * tree. The reviewer would get a white page in place of the checkpoint that
+ * went missing.
  *
  * So this pane says which checkpoint it is and why there is nothing to
  * compare, the same treatment NO_IMAGE gives the diff cell. */
@@ -29,10 +40,12 @@ export default function ShotCompare({
   app,
   flow,
   checkpoint,
+  resolveShotUrl,
 }: {
   app: string;
   flow: string;
   checkpoint: CheckpointVerdict;
+  resolveShotUrl: ResolveShotUrl;
 }) {
   const images = checkpoint.images;
 
@@ -63,7 +76,7 @@ export default function ShotCompare({
           {images.a ? (
             <img
               className="shot-compare__img"
-              src={api.shotUrl(app, flow, 'a', checkpoint.name)}
+              src={resolveShotUrl(app, flow, 'a', checkpoint.name)}
               alt={`reference shot of ${checkpoint.name}`}
             />
           ) : (
@@ -74,7 +87,7 @@ export default function ShotCompare({
           {images.b ? (
             <img
               className="shot-compare__img"
-              src={api.shotUrl(app, flow, 'b', checkpoint.name)}
+              src={resolveShotUrl(app, flow, 'b', checkpoint.name)}
               alt={`this run's shot of ${checkpoint.name}`}
             />
           ) : (
@@ -85,7 +98,7 @@ export default function ShotCompare({
           {images.diff ? (
             <img
               className="shot-compare__img"
-              src={api.shotUrl(app, flow, 'diff', checkpoint.name)}
+              src={resolveShotUrl(app, flow, 'diff', checkpoint.name)}
               alt={`diff image for ${checkpoint.name}`}
             />
           ) : (
@@ -96,7 +109,7 @@ export default function ShotCompare({
           <ShotCompareCell label="overlay">
             <img
               className="shot-compare__img"
-              src={api.shotUrl(app, flow, 'overlay', checkpoint.name)}
+              src={resolveShotUrl(app, flow, 'overlay', checkpoint.name)}
               alt={`overlay of differences for ${checkpoint.name}`}
             />
           </ShotCompareCell>

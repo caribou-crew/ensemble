@@ -1,5 +1,5 @@
-import { Badge } from '@ensemble/design-system';
-import type { HopDiff, Route } from '../api/types';
+import { Badge } from '../primitives';
+import type { HopDiff, Route } from '../diffTypes';
 import './HopDeltaList.css';
 
 const routeKey = (r: Route) => `${r.method} ${r.path} → ${r.to}`;

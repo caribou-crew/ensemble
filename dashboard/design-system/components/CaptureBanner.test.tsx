@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CaptureTrust, Verdict } from '../api/types';
+import type { CaptureTrust, Verdict } from '../diffTypes';
 import CaptureBanner from './CaptureBanner';
 
 const trust = (status: Verdict, over: Partial<CaptureTrust> = {}): CaptureTrust => ({

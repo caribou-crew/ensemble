@@ -1,8 +1,15 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CheckpointVerdict } from '../api/types';
-import ShotCompare from './ShotCompare';
+import type { CheckpointVerdict } from '../diffTypes';
+import ShotCompare, { type ResolveShotUrl } from './ShotCompare';
+
+// A fake standing in for what a real consumer (retrace-ui, ensemble-ui) would
+// wire up — see ShotCompare's own doc on why the URL shape is the caller's
+// choice. This mirrors retrace-ui's `/api/shots/...` shape only because that
+// is a convenient, recognizable fixture, not because ShotCompare cares.
+const resolveShotUrl: ResolveShotUrl = (app, flow, side, name) =>
+  `/api/shots/${app}/${flow}/${side}/${name}`;
 
 const checkpoint = (over: Partial<CheckpointVerdict> = {}): CheckpointVerdict => ({
   name: 'results',
@@ -42,7 +49,7 @@ function cellLabels(): string[] {
 
 describe('ShotCompare', () => {
   it('lays out original, current, diff and overlay as clearly labeled panes', () => {
-    render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} />);
+    render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} resolveShotUrl={resolveShotUrl} />);
 
     expect(cellLabels()).toEqual(['original', 'current', 'diff', 'overlay']);
     expect((container.querySelector('.shot-compare__cell:nth-child(1) img') as HTMLImageElement).getAttribute(
@@ -65,6 +72,7 @@ describe('ShotCompare', () => {
         app="web"
         flow="search"
         checkpoint={checkpoint({ diffPct: 0, verdict: 'ok' })}
+        resolveShotUrl={resolveShotUrl}
       />,
     );
 
@@ -77,6 +85,7 @@ describe('ShotCompare', () => {
         app="web"
         flow="search"
         checkpoint={checkpoint({ images: { a: 'a.png', b: 'b.png', diff: 'diff.png' } })}
+        resolveShotUrl={resolveShotUrl}
       />,
     );
 
@@ -93,6 +102,7 @@ describe('ShotCompare', () => {
         app="web"
         flow="login"
         checkpoint={checkpoint({ verdict: 'ok', diffPct: 0, images: { a: 'shots/login.png', b: 'shots/login.png' } })}
+        resolveShotUrl={resolveShotUrl}
       />,
     );
 
@@ -117,7 +127,7 @@ describe('ShotCompare', () => {
     expect(missing.images.a).toBeUndefined();
     expect(missing.images.b).toBeUndefined();
 
-    render(<ShotCompare app="web" flow="checkout" checkpoint={missing} />);
+    render(<ShotCompare app="web" flow="checkout" checkpoint={missing} resolveShotUrl={resolveShotUrl} />);
 
     const explanation = container.querySelector('.shot-compare__explanation');
     expect(explanation).not.toBeNull();
@@ -132,7 +142,7 @@ describe('ShotCompare', () => {
     for (const verdict of ['added', 'unreadable'] as const) {
       const cp = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
       cp.verdict = verdict;
-      render(<ShotCompare app="web" flow="checkout" checkpoint={cp} />);
+      render(<ShotCompare app="web" flow="checkout" checkpoint={cp} resolveShotUrl={resolveShotUrl} />);
       expect(container.querySelector('.shot-compare__explanation')).not.toBeNull();
       expect(container.querySelector('.shot-compare__grid')).toBeNull();
     }

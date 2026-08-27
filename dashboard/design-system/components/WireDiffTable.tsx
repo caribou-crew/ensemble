@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Badge } from '@ensemble/design-system';
-import type { Entry, FieldDiff, Section } from '../api/types';
+import { Badge } from '../primitives';
+import type { Entry, FieldDiff, Section } from '../diffTypes';
 import './WireDiffTable.css';
 
 export const entryKey = (e: Entry) => `${e.method} ${e.normalizedPath} #${e.seqB || e.seqA}`;

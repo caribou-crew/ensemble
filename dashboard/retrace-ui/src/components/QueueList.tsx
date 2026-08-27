@@ -1,7 +1,7 @@
 import { Badge } from '@ensemble/design-system';
+import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
 import type { EmptyReason, Item } from '../api/types';
 import { verdictTone } from '../tone';
-import CaptureBanner from './CaptureBanner';
 import './QueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;

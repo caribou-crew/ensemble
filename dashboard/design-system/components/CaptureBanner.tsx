@@ -1,5 +1,5 @@
-import { Badge, type BadgeTone } from '@ensemble/design-system';
-import type { CaptureTrust, Verdict } from '../api/types';
+import { Badge, type BadgeTone } from '../primitives';
+import type { CaptureTrust, Verdict } from '../diffTypes';
 import './CaptureBanner.css';
 
 // The capture-trust verdict is banner-worthy on EVERY report surface — the

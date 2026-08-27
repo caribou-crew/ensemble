@@ -8,7 +8,12 @@
   "exports": {
     ".": "./primitives.tsx",
     "./tokens.css": "./tokens.css",
-    "./useAsync": "./useAsync.ts"
+    "./useAsync": "./useAsync.ts",
+    "./diffTypes": "./diffTypes.ts",
+    "./components/ShotCompare": "./components/ShotCompare.tsx",
+    "./components/WireDiffTable": "./components/WireDiffTable.tsx",
+    "./components/HopDeltaList": "./components/HopDeltaList.tsx",
+    "./components/CaptureBanner": "./components/CaptureBanner.tsx"
   },
   "scripts": {
     "test": "tsc --noEmit -p tsconfig.json && vitest run"

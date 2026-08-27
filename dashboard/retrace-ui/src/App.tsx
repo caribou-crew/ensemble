@@ -1,18 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
+import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
+import HopDeltaList from '@ensemble/design-system/components/HopDeltaList';
+import ShotCompare, { type ResolveShotUrl } from '@ensemble/design-system/components/ShotCompare';
+import WireDiffTable, { entryKey } from '@ensemble/design-system/components/WireDiffTable';
 import { api, messageOf, ruleBlastRadius, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
 import { verdictTone } from './tone';
 import { useUrlParam } from './urlState';
-import CaptureBanner from './components/CaptureBanner';
-import HopDeltaList from './components/HopDeltaList';
 import QueueList, { keyOf, visibleRows } from './components/QueueList';
-import ShotCompare from './components/ShotCompare';
-import WireDiffTable, { entryKey } from './components/WireDiffTable';
 import './App.css';
+
+/**
+ * Builds this app's own shot URLs — `/api/shots/{app}/{flow}/{side}/{name}` —
+ * the same route `api.shotUrl` built before ShotCompare moved to
+ * @ensemble/design-system and traded its `api/client` import for this prop
+ * (design.md D5). `encodeURIComponent` per segment matches `api.ts`'s `seg`
+ * helper.
+ */
+const resolveShotUrl: ResolveShotUrl = (app, flow, side, name) =>
+  `/api/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
 
 /**
  * What the accept verb just did, in the reviewer's words — F1.
@@ -247,7 +257,13 @@ function ItemScreen({
               <p className="item__none">This flow captured no checkpoints.</p>
             ) : (
               summary.checkpoints.map((cp) => (
-                <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} />
+                <ShotCompare
+                  key={cp.name}
+                  app={app}
+                  flow={flow}
+                  checkpoint={cp}
+                  resolveShotUrl={resolveShotUrl}
+                />
               ))
             )}
           </section>

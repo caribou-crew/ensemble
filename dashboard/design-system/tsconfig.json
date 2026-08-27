@@ -26,5 +26,5 @@
     // only through a consumer — which is the hole R-S closes.
     "types": ["vite/client"]
   },
-  "include": ["*.ts", "*.tsx"]
+  "include": ["*.ts", "*.tsx", "components/*.ts", "components/*.tsx"]
 }
