@@ -176,30 +176,39 @@
 
 ## 9. `dashboard/ensemble-ui`: Retrace tab
 
-- [ ] 9.1 Add `api/types.ts` additions for the queue response shape (`Item`
+- [x] 9.1 Add `api/types.ts` additions for the queue response shape (`Item`
       per `retrace/serve.Item`, including the optional `source` field) and
       `api/client.ts` functions for `GET /api/retrace/queue`, `GET
       /api/retrace/queue/{app}/{flow}`, and `POST /api/retrace/sync`.
-- [ ] 9.2 Add `views/RetraceView.tsx`: a table (app, flow, verdict, what
+      (`ensemble-ui` has no dependency on `retrace-ui`, so these mirror its
+      types field-for-field against the same Go structs rather than
+      importing them; the diff-viewer wire types come from
+      `@ensemble/design-system/diffTypes` as Task 8 intended.)
+- [x] 9.2 Add `views/RetraceView.tsx`: a table (app, flow, verdict, what
       changed, when, source badge) from `GET /api/retrace/queue`, a "Sync
       now" button calling `POST /api/retrace/sync` then re-fetching the
       queue (no auto-poll — matches `LatencyView`'s manual-refresh pattern,
       not `ServicesView`'s timer), and a "last synced" indicator.
-- [ ] 9.3 Row selection renders inline detail using `ShotCompare`,
+- [x] 9.3 Row selection renders inline detail using `ShotCompare`,
       `WireDiffTable`, `HopDeltaList`, and `CaptureBanner` from
       `@ensemble/design-system` (Task 8), fed by `GET
       /api/retrace/queue/{app}/{flow}` and `resolveShotUrl` built against
       `/api/retrace/shots/...`.
-- [ ] 9.4 Register the tab in `App.tsx` alongside Services/Topology/
+- [x] 9.4 Register the tab in `App.tsx` alongside Services/Topology/
       Traffic/Entities/Inspector, conditionally hidden when `GET
       /api/retrace/queue` responds 501 (no `retrace:` block configured) —
       mirroring how `service-freshness` badges are omitted rather than
-      shown empty.
-- [ ] 9.5 Component tests mirroring the existing views' style
+      shown empty. Probed once on mount (`useRetraceAvailable`); any
+      failure (not just 501) keeps the tab hidden, since there is no way
+      from the client to tell "not configured" apart from "briefly
+      unreachable" and hidden is the safe default for a feature most
+      stacks opt out of entirely.
+- [x] 9.5 Component tests mirroring the existing views' style
       (`RetraceView.tsx` alongside `ServicesView.tsx`'s
       `.poll-race.test.ts`/`.stale-error.test.ts` conventions): queue
       loads and renders; row click loads and renders detail; sync failure
-      shows inline, not a crash; tab is absent when the queue route 501s.
+      shows inline, not a crash; tab is absent when the queue route 501s
+      (`App.retrace-tab.test.tsx`).
 
 ## 10. End-to-end verification
 

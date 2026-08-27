@@ -217,3 +217,209 @@ export interface ProfilesState {
   active: string[];
   profiles: ProfileInfo[];
 }
+
+// --- retrace review queue (GET /api/retrace/queue, /queue/{app}/{flow}) ---
+//
+// Mirrors dashboard/retrace-ui/src/api/types.ts's own Item/Summary/Manifest
+// block field-for-field against the same Go structs (retrace/diff/summary.go,
+// retrace/runs/manifest.go, retrace/serve/queue.go) — this app has no
+// dependency on that one (a separate standalone app, not a shared package),
+// so the mirror is kept here rather than imported. The diff-viewer WIRE types
+// (CaptureTrust, CheckpointVerdict, Section, HopDiff, …) come from
+// @ensemble/design-system/diffTypes instead, since RetraceView renders
+// through the same ShotCompare/WireDiffTable/HopDeltaList/CaptureBanner
+// components retrace-ui uses.
+import type {
+  CaptureTrust,
+  CheckpointVerdict,
+  Entry,
+  HopDiff,
+  Section,
+  StatusFinding,
+} from '@ensemble/design-system/diffTypes';
+export type { Entry, FieldDiff, HopDiff, Section } from '@ensemble/design-system/diffTypes';
+
+export interface RetraceCounts {
+  checkpoints: number;
+  pixelChanged: number;
+  wirePaired: number;
+  wireChanged: number;
+  wireMoved: number;
+  wireMissing: number;
+  wireExtra: number;
+  violations: number;
+  hopNew: number;
+  hopGone: number;
+  unexpectedStatuses: number;
+  conformance: number;
+}
+
+/** `runs.Source` — set only for a run `retrace sync` merged in from CI; a
+ * local run omits the key entirely (see runs.Source's own doc comment for
+ * why absence, not a "local" value, is the encoding). */
+export interface RetraceSource {
+  schema: string;
+  kind: 'ci';
+  workflow: string;
+  runUrl: string;
+  sha: string;
+  syncedAt: string;
+}
+
+export interface RetraceItem {
+  app: string;
+  flow: string;
+  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
+  score: number;
+  runId: string;
+  /** Absent when no reference run resolved. */
+  refRunId?: string;
+  counts: RetraceCounts;
+  capture: { a: CaptureTrust; b: CaptureTrust };
+  gates: string[];
+  source?: RetraceSource;
+}
+
+export type RetraceEmptyReason = '' | 'no-runs' | 'all-clear';
+
+export interface RetraceQueueResponse {
+  items: RetraceItem[];
+  empty: RetraceEmptyReason;
+}
+
+export interface RetraceRunCounts {
+  calls: number;
+  recorded: boolean;
+  reason?: string;
+}
+
+export interface RetraceManifest {
+  schema: string;
+  app: string;
+  flow: string;
+  runId: string;
+  mode: 'ensemble' | 'standalone';
+  git: { sha: string; branch: string; dirty: boolean };
+  startedAt: string;
+  finishedAt: string;
+  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
+  groups: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
+  capture: CaptureTrust;
+  wire: RetraceRunCounts;
+  hops?: RetraceRunCounts;
+  test: { command: string; exitCode: number; durationMs: number };
+  env: { go: string; platform: string; retrace: string };
+}
+
+export interface RetraceRunRef {
+  runId: string;
+  kind: 'bundle' | 'run' | 'none';
+  dir: string;
+  manifest: RetraceManifest;
+}
+
+export interface RetracePerfResult {
+  status: 'ok' | 'over' | 'unset';
+  measuredMs: number;
+  budgetMs: number;
+}
+
+export interface RetraceConformanceFinding {
+  method: string;
+  path: string;
+  status: number;
+  kind:
+    | 'unknown-path'
+    | 'unknown-method'
+    | 'undocumented-status'
+    | 'missing-required-field'
+    | 'unchecked';
+  detail: string;
+}
+
+export interface RetraceGate {
+  plane: 'pixel' | 'wire' | 'hop' | 'perf';
+  threshold: number;
+  observed: number;
+  failed: boolean;
+  checkpoint?: string;
+}
+
+export interface RetraceQuarantine {
+  side: 'a' | 'b';
+  reason: string;
+}
+
+export interface RetraceCall {
+  method: string;
+  path: string;
+  seq: number;
+  status: number;
+  group?: string;
+  tolerated?: { id: string; reason: string };
+}
+
+export interface RetraceGroupNames {
+  a: string[];
+  b: string[];
+}
+
+export interface RetraceTriageSignals {
+  pixel: boolean;
+  wire: boolean;
+  hop: boolean;
+  spec: boolean;
+  capture: boolean;
+}
+
+export interface RetraceTriage {
+  label: string;
+  rule: string;
+  signals: RetraceTriageSignals;
+}
+
+export interface RetraceSuppression {
+  plane: 'header' | 'body';
+  target: string;
+  source: 'wire_rule' | 'wire_ignore' | 'builtin';
+  matcher: string;
+  count: number;
+  why?: string;
+}
+
+export interface RetraceSummary {
+  schema: string;
+  app: string;
+  flow: string;
+  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
+  a: RetraceRunRef;
+  b: RetraceRunRef;
+  quarantined: RetraceQuarantine[];
+  checkpoints: CheckpointVerdict[];
+  wire: { paired: Entry[]; missing: RetraceCall[]; extra: RetraceCall[]; groups?: RetraceGroupNames };
+  sections: Section[];
+  hops: HopDiff;
+  unexpectedStatuses: StatusFinding[];
+  perf: RetracePerfResult;
+  conformance: RetraceConformanceFinding[];
+  openApiConfigured: boolean;
+  capture: { a: CaptureTrust; b: CaptureTrust };
+  counts: RetraceCounts;
+  gates: string[];
+  budgets: RetraceGate[];
+  unmeasuredGates: string[];
+  suppressions: RetraceSuppression[];
+  triage: RetraceTriage;
+}
+
+export interface RetraceItemResponse {
+  summary: RetraceSummary;
+}
+
+/** `sync.Result` — POST /api/retrace/sync's body. `synced`/`skipped` are
+ * never null on the wire (see sync.Result's own doc comment), only ever `[]`
+ * for "nothing new". */
+export interface RetraceSyncResult {
+  synced: string[];
+  skipped: { artifact: string; reason: string }[];
+}

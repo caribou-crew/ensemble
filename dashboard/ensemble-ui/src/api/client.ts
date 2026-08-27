@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
+import type { RetraceQueueResponse, RetraceSummary, RetraceSyncResult } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -298,4 +299,34 @@ export const api = {
       jsonInit("DELETE"),
     );
   },
+
+  // --- retrace (Group 9): cross-app review queue, embedded from
+  // retrace/serve. 501s when no `retrace:` block is configured — callers
+  // should treat `err.status === 501` as "no retrace here", the same
+  // convention the inspector routes above use. ---
+
+  retraceQueue(): Promise<RetraceQueueResponse> {
+    return request<RetraceQueueResponse>("/api/retrace/queue");
+  },
+
+  retraceItem(app: string, flow: string): Promise<RetraceSummary> {
+    return request<{ summary: RetraceSummary }>(
+      `/api/retrace/queue/${encodeURIComponent(app)}/${encodeURIComponent(flow)}`,
+    ).then((r) => r.summary);
+  },
+
+  retraceSync(): Promise<RetraceSyncResult> {
+    return request<RetraceSyncResult>("/api/retrace/sync", jsonInit("POST"));
+  },
 };
+
+/** Builds `/api/retrace/shots/{app}/{flow}/{side}/{name}` — passed to
+ * ShotCompare as its `resolveShotUrl` prop rather than imported by it, the
+ * same seam retrace-ui uses for its own `/api/shots/...` route. */
+export const resolveRetraceShotUrl = (
+  app: string,
+  flow: string,
+  side: string,
+  name: string,
+): string =>
+  `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;

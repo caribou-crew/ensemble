@@ -10,9 +10,10 @@ import LatencyView from './views/LatencyView';
 import InspectorView from './views/InspectorView';
 import EntityView from './views/EntityView';
 import ServicesView from './views/ServicesView';
+import RetraceView from './views/RetraceView';
 import './App.css';
 
-const VIEWS: TabItem[] = [
+const BASE_VIEWS: TabItem[] = [
   { id: 'topology', label: 'Topology' },
   { id: 'services', label: 'Services' },
   { id: 'traffic', label: 'Traffic' },
@@ -21,7 +22,22 @@ const VIEWS: TabItem[] = [
   { id: 'entities', label: 'Entities' },
 ];
 
-const DEFAULT_VIEW = VIEWS[0].id;
+const DEFAULT_VIEW = BASE_VIEWS[0].id;
+
+/**
+ * Whether this stack has a `retrace:` block configured, probed once via the
+ * queue route itself rather than a separate "am I configured" endpoint —
+ * `GET /api/retrace/queue` 501s when it isn't (mirroring the inspector
+ * routes' own convention; see InspectorView's `useDatabases`). Any OTHER
+ * failure (a genuine outage) also keeps the tab hidden rather than showing
+ * a broken one — there is no way to tell "not configured" from "briefly
+ * unreachable" from here, and hidden is the safe default for a tab whose
+ * entire premise (CI test results exist to review) most stacks opt out of.
+ */
+function useRetraceAvailable(): boolean {
+  const { data } = useAsync(() => api.retraceQueue(), []);
+  return data !== null;
+}
 
 function useHealthPoll(intervalMs = 5000) {
   // A tick counter, not a mount-only load — useAsync re-runs `fn` whenever `deps` changes, so
@@ -96,13 +112,15 @@ function HealthStrip() {
 
 export default function App() {
   const [view, setView] = useUrlParam('view');
-  const activeView = view && VIEWS.some((v) => v.id === view) ? view : DEFAULT_VIEW;
+  const retraceAvailable = useRetraceAvailable();
+  const views = retraceAvailable ? [...BASE_VIEWS, { id: 'retrace', label: 'Retrace' }] : BASE_VIEWS;
+  const activeView = view && views.some((v) => v.id === view) ? view : DEFAULT_VIEW;
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="app-header__brand">ensemble</div>
-        <Tabs items={VIEWS} active={activeView} onSelect={setView} />
+        <Tabs items={views} active={activeView} onSelect={setView} />
         <HealthStrip />
       </header>
       <main className="app-main">
@@ -116,6 +134,8 @@ export default function App() {
           <LatencyView />
         ) : activeView === 'inspector' ? (
           <InspectorView />
+        ) : activeView === 'retrace' ? (
+          <RetraceView />
         ) : (
           <EntityView />
         )}

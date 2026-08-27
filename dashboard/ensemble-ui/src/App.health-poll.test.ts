@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import App from './App';
-import { api } from './api/client';
+import { api, ApiError } from './api/client';
 import type { ServiceState } from './api/types';
 
 // Final review F9: App.tsx had no test at all, and two of the review's mutations survived
@@ -28,6 +28,9 @@ describe('App: health strip poll', () => {
     document.body.appendChild(container);
     window.history.replaceState(null, '', '/?view=entities');
     vi.spyOn(api, 'entities').mockResolvedValue([]);
+    // App now probes retrace availability on mount (Group 9) — 501 keeps the
+    // Retrace tab hidden, isolated from this suite's health-strip focus.
+    vi.spyOn(api, 'retraceQueue').mockRejectedValue(new ApiError(501, 'retrace not configured'));
   });
 
   afterEach(() => {
@@ -97,6 +100,9 @@ describe('App: the offline banner is sticky across an in-flight retry', () => {
     document.body.appendChild(container);
     window.history.replaceState(null, '', '/?view=entities');
     vi.spyOn(api, 'entities').mockResolvedValue([]);
+    // App now probes retrace availability on mount (Group 9) — 501 keeps the
+    // Retrace tab hidden, isolated from this suite's health-strip focus.
+    vi.spyOn(api, 'retraceQueue').mockRejectedValue(new ApiError(501, 'retrace not configured'));
   });
 
   afterEach(() => {
