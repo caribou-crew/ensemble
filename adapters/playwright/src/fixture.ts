@@ -6,6 +6,7 @@ import {
   MISSING_HANDSHAKE_MESSAGE,
   endGroup as jsEndGroup,
   group as jsGroup,
+  recordDevice,
   requireHandshake,
   shotsDir,
   validateName,
@@ -23,6 +24,10 @@ export interface ShotTaker {
 // object — `{ screenshot, viewportSize, locator }` — and need no browser.
 export interface PageLike extends ShotTaker {
   locator(selector: string): ShotTaker;
+  // Playwright returns null when the page runs with the viewport disabled
+  // (`use: { viewport: null }`), where the window is the OS window and the
+  // page has no size of its own to report.
+  viewportSize(): { width: number; height: number } | null;
 }
 
 export interface RetraceFixture {
@@ -65,6 +70,20 @@ export async function performCheckpoint(
 
   const dir = shotsDir()!; // h.runDir is set, so shotsDir() cannot be null
   await fs.mkdir(dir, { recursive: true });
+
+  // Record the screen BEFORE taking the shot, and from the page rather than
+  // from the image. A selector-scoped checkpoint photographs an element, so
+  // the shot's own dimensions are the element's — the geometry the Go side
+  // would otherwise infer from it describes a cart widget, not the browser.
+  //
+  // Every checkpoint calls this, not just the first: there is no per-run hook
+  // to hang it on (a Playwright fixture is per-test, and any test in the file
+  // may be the one that runs first, or alone via `-g`). recordDevice is
+  // first-write-wins, so the repetition is a stat() after the first call.
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await recordDevice({ kind: 'browser', ...viewport });
+  }
 
   const target: ShotTaker =
     options?.selector === undefined

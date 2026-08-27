@@ -51,6 +51,87 @@ export function shotsDir(env: NodeJS.ProcessEnv = process.env): string | null {
   return h.runDir ? path.join(h.runDir, 'shots') : null;
 }
 
+// DeviceRecord mirrors retrace/runs.Device, the manifest's record of the
+// screen a run was captured on. `kind` says where the numbers came from, and
+// the diff message quotes it: two "browser" runs at different sizes is a
+// viewport someone changed, a "browser" against a "device" is two adapters
+// that were never comparable.
+//
+// "shot" is deliberately absent from this union. It is the Go side's own
+// label for the fallback it derives from the first screenshot when no adapter
+// wrote a device — an adapter claiming it would be claiming not to know its
+// own geometry, which is the one thing it always does know.
+export interface DeviceRecord {
+  kind: 'browser' | 'device';
+  id?: string;
+  width: number;
+  height: number;
+  scale?: number;
+}
+
+// DEVICE_FILE is retrace/capture.DeviceFile. It sits in the run directory,
+// beside shots/ rather than inside it.
+export const DEVICE_FILE = 'device.json';
+
+// recordDevice writes the screen this run is capturing on, which the Go side
+// prefers over the geometry it would otherwise infer from the first
+// screenshot. That preference matters most when a checkpoint is scoped to a
+// selector: the shot is then the size of the ELEMENT, and a run whose first
+// checkpoint is `checkpoint('cart', { selector: '#cart' })` would otherwise
+// report a 300x120 "screen" and disagree with the identical run whose first
+// checkpoint happens to be full-page.
+//
+// Zero dimensions throw rather than write. runs.validateDevice rejects them
+// too, but it does so at manifest-write time — at the END of a run, naming
+// neither the adapter nor the test that produced them. Failing here costs the
+// same run and says where to look.
+//
+// FIRST WRITE WINS, and a later, conflicting geometry warns on stderr instead
+// of overwriting. The manifest carries one screen; if the suite genuinely
+// spans two, no single value describes it, and letting the last writer win
+// would make the recorded geometry depend on which parallel worker finished
+// last — producing phantom geometry mismatches between two runs of the same
+// unchanged suite. Such a suite has a larger problem anyway: its checkpoints
+// collide by filename in shots/ long before their sizes disagree.
+export async function recordDevice(
+  device: DeviceRecord,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  if (!Number.isInteger(device.width) || !Number.isInteger(device.height) || device.width <= 0 || device.height <= 0) {
+    throw new Error(
+      `retrace: refusing to record a ${device.width}x${device.height} screen — ` +
+        `width and height must be positive integers (see retrace/runs.validateDevice)`,
+    );
+  }
+
+  const h = handshake(env);
+  if (!h.runDir) {
+    // File-only, like checkpoint(): a markerUrl-only handshake has no run
+    // directory to write into. Unlike checkpoint(), this is called BY the
+    // adapter rather than by the person writing the test, so it stays silent
+    // even in strict mode — strict promises that the caller's own markers are
+    // recorded, and failing a run over bookkeeping the caller never asked for
+    // would be a worse bargain than the geometry is worth.
+    return;
+  }
+
+  const file = path.join(h.runDir, DEVICE_FILE);
+  await fs.mkdir(h.runDir, { recursive: true });
+  try {
+    await fs.writeFile(file, JSON.stringify(device) + '\n', { encoding: 'utf8', flag: 'wx' });
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+    const existing = JSON.parse(await fs.readFile(file, 'utf8')) as DeviceRecord;
+    if (existing.width !== device.width || existing.height !== device.height) {
+      process.stderr.write(
+        `retrace: this run captured on more than one screen — keeping ${existing.width}x${existing.height} ` +
+          `and ignoring ${device.width}x${device.height}. Screen comparisons for this run describe the first ` +
+          `only.\n`,
+      );
+    }
+  }
+}
+
 interface GroupRecord {
   phase: 'start' | 'end';
   name?: string;

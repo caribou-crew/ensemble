@@ -40,6 +40,34 @@ func TestAnAdaptersDeviceFileIsUsedVerbatim(t *testing.T) {
 	}
 }
 
+func TestTheAdaptersOnDiskContractIsPinnedByLiteral(t *testing.T) {
+	// The one test in this file that does NOT use the DeviceFile constant.
+	// @caribou-crew/retrace-js writes this file from TypeScript and cannot
+	// import a Go constant, so renaming DeviceFile — or any json tag on
+	// runs.Device — would leave every other test here green while the
+	// adapter's file stopped being found. The failure is silent by
+	// construction: an unfound device.json falls back to the first shot,
+	// which for a selector-scoped checkpoint reports the size of an element
+	// as the size of the screen.
+	//
+	// The literal below is byte-for-byte what recordDevice() emits; keep it
+	// in sync with adapters/js/src/device.test.ts.
+	s := deviceSession(t)
+	const asWrittenByTheAdapter = `{"kind":"browser","id":"chromium","width":390,"height":844}`
+	if err := os.WriteFile(filepath.Join(s.Paths.RunDir, "device.json"), []byte(asWrittenByTheAdapter), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Device(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runs.Device{Kind: "browser", ID: "chromium", Width: 390, Height: 844}
+	if got == nil || *got != want {
+		t.Errorf("Device = %+v, want %+v — the adapter's file was not read", got, want)
+	}
+}
+
 func TestWithNoDeviceFileTheFirstShotIsTheEvidence(t *testing.T) {
 	// Without this fallback the guard is nil for every run captured by an
 	// adapter that writes no device.json — including every run captured

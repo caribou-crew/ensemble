@@ -95,6 +95,40 @@ describe('checkpoint', () => {
     await expect(fs.stat(path.join(runDir, 'shots', 'cart.trim'))).rejects.toThrow();
   });
 
+  it('records the viewport, not the size of the shot it took', async () => {
+    // The whole reason the adapter writes device.json at all. A
+    // selector-scoped checkpoint photographs an element, so a geometry
+    // derived from the image describes a cart widget — and an identical run
+    // whose first checkpoint happened to be full-page would report a
+    // different "screen" and be refused as a mismatch.
+    await withRun();
+    await performCheckpoint(fakePage(), 'cart', { selector: '#cart' });
+    const device = JSON.parse(await fs.readFile(path.join(runDir, 'device.json'), 'utf8'));
+    expect(device).toEqual({ kind: 'browser', width: 800, height: 600 });
+  });
+
+  it('records nothing when the page has no viewport of its own', async () => {
+    // `use: { viewport: null }` gives the page the OS window's size, which
+    // Playwright reports as null. Inventing a number there would be worse
+    // than the shot fallback, which at least measures something real.
+    await withRun();
+    const page: PageLike = { ...fakePage(), viewportSize: () => null };
+    await performCheckpoint(page, 'cart');
+    await expect(fs.stat(path.join(runDir, 'device.json'))).rejects.toThrow();
+    await expect(fs.stat(path.join(runDir, 'shots', 'cart.png'))).resolves.toBeDefined();
+  });
+
+  it('writes no device.json outside a run', async () => {
+    // performCheckpoint returns before recording anything when there is no
+    // run dir; this pins that the device write did not sneak in ahead of
+    // that check and drop a file into the cwd.
+    await withRun();
+    const stray = path.join(runDir, 'device.json');
+    delete process.env.RETRACE_RUN_DIR;
+    await performCheckpoint(fakePage(), 'cart');
+    await expect(fs.stat(stray)).rejects.toThrow();
+  });
+
   it('is a no-op outside a run when strict is off', async () => {
     saved = clearHandshakeEnv();
     let called = false;
