@@ -1,0 +1,76 @@
+# Example CI workflow for a team running retrace across multiple apps
+# (iOS, Android, React Native, web, ...). This is a template to copy into
+# your OWN repo and adapt — it is not run by this repo's own CI.
+#
+# What each job does:
+#   1. `retrace run` records the flow(s) against your test command, the
+#      same way it would on a developer's machine.
+#   2. `retrace export` renders a static, human-browsable report and its
+#      exit code gates the job (0 pass, 1 changed, 2 failed, 3
+#      quarantined) — see retrace/serve/export.go's own doc comment for
+#      why "quarantined" is the highest code, not the lowest.
+#   3. Upload of `.retrace/runs/<app>` is the artifact `retrace sync
+#      --from github` later pulls onto a developer's machine, so it must
+#      be `.retrace/runs`, not `.retrace/runs/<app>` — the upload path
+#      decides what directory structure survives inside the artifact, and
+#      sync expects to find `<app>/<flow>/<run-id>/manifest.json` intact.
+#
+# `retrace sync --from github --repo <org>/<repo>` (run locally, or from
+# `ensemble up`'s Retrace tab via "Sync now") then merges these artifacts
+# into your local `.retrace/runs/`, where the existing review queue
+# (`retrace serve`, or the ensemble dashboard's Retrace tab) diffs them
+# against whatever reference you've already accepted with `retrace ref
+# accept`.
+
+name: retrace
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  retrace-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ... set up your app's build + test toolchain here ...
+      - run: retrace run --app ios -- <your iOS test command>
+      - run: retrace export --out ./report --app ios --json
+      - uses: actions/upload-artifact@v4
+        if: always() # a failing run is exactly the one you want to sync
+        with:
+          name: retrace-runs-ios-${{ github.sha }}
+          path: .retrace/runs
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrace-report-ios-${{ github.sha }}
+          path: ./report
+          retention-days: 7
+
+  retrace-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: retrace run --app android -- <your Android test command>
+      - run: retrace export --out ./report --app android --json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrace-runs-android-${{ github.sha }}
+          path: .retrace/runs
+          retention-days: 7
+
+  retrace-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: retrace run --app web -- <your web test command>
+      - run: retrace export --out ./report --app web --json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrace-runs-web-${{ github.sha }}
+          path: .retrace/runs
+          retention-days: 7

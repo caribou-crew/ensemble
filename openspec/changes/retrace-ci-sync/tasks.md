@@ -77,17 +77,18 @@
 
 ## 5. CI workflow template
 
-- [ ] 5.1 Add `docs/retrace-ci-example.yml`: one job per app running
-      `retrace run --app <app>`, uploading `.retrace/runs/<app>` as
+- [x] 5.1 Add `docs/retrace-ci-example.yml`: one job per app running
+      `retrace run --app <app>`, uploading `.retrace/runs` (full tree, so
+      the `<app>/<flow>/<run-id>` structure survives) as
       `retrace-runs-<app>-${{ github.sha }}` (short retention, e.g. 7
       days), and a separate `retrace export --out ./report --json` step
       whose exit code gates the job (unchanged existing behavior — this
       step needs no changes, just needs to be shown alongside the new
       upload step).
-- [ ] 5.2 Add a short doc section (in the same file or a linked `.md`)
-      explaining: what `retrace sync --from github --repo org/repo` expects
-      to find (the `retrace-runs-<app>-*` artifacts), and the CLI-first
-      agent recipe (`retrace diff --flow <flow> --app <app> --json`) as the
+- [x] 5.2 Add a short doc section (`docs/retrace-ci-sync.md`) explaining:
+      what `retrace sync --from github --repo org/repo` expects to find
+      (the `retrace-runs-<app>-*` artifacts), and the CLI-first agent
+      recipe (`retrace diff --flow <flow> --app <app> --json`) as the
       documented LLM-integration path — no MCP server in this change.
 
 ## 6. `ensemble/config`: optional `retrace:` block
