@@ -212,11 +212,20 @@
 
 ## 10. End-to-end verification
 
-- [ ] 10.1 In `sample/` (which already has `.retrace/runs/brew/checkout/`
-      fixtures), add a synced-looking run directory with a `source.json` by
-      hand, run `ensemble up`, and confirm the Retrace tab shows both the
-      local and the "CI" row with correct badges — use the `retrace-iterate`
-      skill to capture and diff the dashboard change itself, per
-      `AGENTS.md`'s "verifying a change you made to a client" rule.
-- [ ] 10.2 `go test -race ./core/... ./ensemble/... ./retrace/...` and
+- [x] 10.1 Added `retrace:` to `sample/ensemble.yaml` (Group 6's config
+      block was otherwise unused by the sample stack). `.retrace/runs/` is
+      gitignored (only `.retrace-ref/`'s accepted bundle is committed —
+      see `.gitignore`'s own comment), so the "already has fixtures"
+      premise was runs left on disk by an earlier local `retrace run`, not
+      a repo fixture; recorded a synced-looking run directory
+      (`20260827T050000Z-a19376b`) by hand with a `source.json` alongside
+      them, matching what `retrace sync` itself would leave. Verified with
+      Playwright driving a headless browser against a real `ensemble up`
+      (adapters/playwright's `@playwright/test`, since no retrace-recorded
+      flow exists for the dashboard itself to run through the
+      `retrace-iterate` capture/diff loop — creating one is out of scope
+      for this change): the Retrace tab appears, the `brew/checkout` row
+      shows a `changed` verdict and a `CI` source badge, and clicking it
+      renders the inline shot/wire/hop detail with zero console errors.
+- [x] 10.2 `go test -race ./core/... ./ensemble/... ./retrace/...` and
       `pnpm -r --if-present test` both green.

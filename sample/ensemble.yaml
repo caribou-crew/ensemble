@@ -251,6 +251,15 @@ gateways:
     routes:
       - { prefix: /bff, service: storefront, strip_prefix: true }
 
+# Turns on the dashboard's Retrace tab (openspec/changes/retrace-ci-sync).
+# `dir` is omitted: .retrace/ sits right next to this file, populated by
+# `retrace run` locally (the runs themselves are gitignored — only
+# .retrace-ref/'s accepted reference bundle is committed, same as any
+# other retrace project). "Sync now" in the tab needs `repo` and `gh`
+# authenticated locally, same as the CLI's own `retrace sync` would.
+retrace:
+  repo: caribou-crew/ensemble
+
 # See tools/readiness.yaml: checks that run once, after on_ready, asserting
 # the seeded stack is actually queryable end-to-end — not just that every
 # service reports healthy. `ensemble ready` blocks on this; `ensemble up`
