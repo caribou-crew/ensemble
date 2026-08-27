@@ -302,7 +302,10 @@ func cmdRefReject(args []string, stdout, stderr io.Writer) int {
 // resolves to. It returns (nil, why) rather than an error: the caller wants
 // the bundle either way, and "why" is what stderr says instead.
 func rejectSummary(p project, flow, runID string) (*diff.Summary, string) {
-	a, err := resolveSide(p.cwd, p.app, flow, "reference")
+	// One root, always. A reference bundle is committed into ONE repository —
+	// `ref accept` writes into p.cwd's own tree — so searching others would
+	// let this summary describe a bundle that is not the one being written.
+	a, err := resolveSide([]string{p.cwd}, p.app, flow, "reference")
 	if err != nil {
 		return nil, fmt.Sprintf("side A did not resolve: %v", err)
 	}
@@ -317,7 +320,7 @@ func rejectSummary(p project, flow, runID string) (*diff.Summary, string) {
 	if a.Kind == "run" && a.RunID == runID {
 		return nil, fmt.Sprintf("the only reference available is %s itself — the run being rejected; run `retrace ref accept` on a known-good run first", runID)
 	}
-	b, err := resolveSide(p.cwd, p.app, flow, runID)
+	b, err := resolveSide([]string{p.cwd}, p.app, flow, runID)
 	if err != nil {
 		return nil, fmt.Sprintf("side B did not resolve: %v", err)
 	}

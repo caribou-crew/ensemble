@@ -419,8 +419,39 @@ Amendments:
       byte-equal to the ensemble-session path for the same traffic.
 
 ## 11. Cross-repo diff (Tasks 1, 10)
-- [ ] `--root` repeatable; selectors `app@runId`, `app@<sha-prefix>`,
+- [x] `--root` repeatable; selectors `app@runId`, `app@<sha-prefix>`,
       `app@latest`; `retrace runs --root …` lists across roots.
+      - **A root is a REPOSITORY directory** (the one holding `.retrace/`),
+        not the runs directory inside it — every other path in the CLI is
+        derived from the repo directory, and a flag that took the inner path
+        would be the one place the two differ. Values are made absolute and
+        deduplicated; an empty list resolves to `[cwd]`, so single-root and
+        many-roots are ONE code path rather than two that drift.
+      - **A selector matching in more than one root is REFUSED**, naming every
+        root and the run id it found there. First-wins would be a silent wrong
+        answer in exactly the situation the flag creates — two checkouts of
+        the same app, which is what anyone comparing a branch against main
+        has — and the diff that came out would be honestly labelled and
+        completely wrong.
+      - `app@sel` cuts at the FIRST `@` (ids and shas never contain one, and
+        `validateComponents` forbids it in an app name), so a stray separator
+        inside a selector stays a lookup failure instead of silently becoming
+        a different app. A leading `@` reads as the default app.
+      - `ref accept/reject` stays pinned to a single root: a bundle is
+        committed into ONE repository.
+      - `retrace runs` carries the root ON THE ROW, because with several trees
+        app/flow/run no longer identifies a run. `root`, `roots` and a row's
+        `root` are all repository directories — the previous `root` field was
+        the `.retrace/runs` path, and two fields a letter apart meaning two
+        different paths is a bug a consumer finds after shipping. The text
+        table spends a ROOT column only when there is more than one.
+      - **One unreadable root fails the whole listing.** A partial listing
+        that still exits 0 answers a question about N trees with an answer
+        about fewer, and nothing in the exit code says so. A *missing* root is
+        not this case — a tree that never recorded a run is empty, not broken.
+      - Cross-root results are sorted by identity, not by the order the
+        `--root` flags were typed; and a missing reference is explained per
+        root, since with several trees "there is no reference" is not one fact.
 
 ## 12. Stack fingerprint (ensemble/server, Tasks 4/5)
 - [x] ensemble.yaml `services.<name>.version:` (command) — default git sha of

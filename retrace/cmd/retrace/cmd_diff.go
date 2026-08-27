@@ -33,7 +33,9 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		allowDegraded = fs.Bool("allow-degraded", false, "compare even when a side's capture-trust verdict is not ok, instead of quarantining")
 		noFail        = fs.Bool("no-fail", false, "compute and report every gate/budget as usual, but always exit 0")
 		requireWhy    = fs.Bool("require-why", false, "refuse to run when any tolerance in the config carries no `why:`")
+		roots         rootList
 	)
+	fs.Var(&roots, "root", "repository directory to search for runs; repeatable (default: the working directory). With more than one, a selector may name its app: web@latest")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -67,7 +69,9 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		appName = filepath.Base(cwd)
 	}
 
-	a, err := resolveSide(cwd, appName, *flow, *aSel)
+	searchRoots := roots.resolve(cwd)
+
+	a, err := resolveSide(searchRoots, appName, *flow, *aSel)
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
@@ -75,14 +79,14 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	// (could not evaluate), naming the verb that fixes it — never a diff
 	// against an empty directory, which would report every call as missing.
 	if a.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle for side a: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(cwd, appName, *flow), *flow)
+		return fail(stderr, "diff: no reference bundle for side a: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(searchRoots, appName, *flow), *flow)
 	}
-	b, err := resolveSide(cwd, appName, *flow, *bSel)
+	b, err := resolveSide(searchRoots, appName, *flow, *bSel)
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
 	if b.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle for side b: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(cwd, appName, *flow), *flow)
+		return fail(stderr, "diff: no reference bundle for side b: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(searchRoots, appName, *flow), *flow)
 	}
 
 	opts, err := diff.OptionsFor(cfg, a.Manifest, b.Manifest)
@@ -136,41 +140,108 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
-// resolveSide resolves one --a/--b selector to a RunRef.
+// resolveSide resolves one --a/--b selector to a RunRef, searching every
+// --root in turn.
+//
+// The selector may name its own app (`web@latest`), which is what makes a
+// cross-repo comparison expressible: the two sides of one diff can come from
+// two repositories recording two different clients. A bare selector uses the
+// app the CLI resolved.
 //
 // "reference" goes through refs.Resolve — the committed bundle, else the
 // newest eligible run, else nothing with a reason. The returned Reference
 // maps onto a RunRef by copying Kind straight through: both use
 // "bundle" | "run" | "none", one vocabulary, nothing to translate.
-func resolveSide(cwd, app, flow, selector string) (diff.RunRef, error) {
-	root := runs.RunsRoot(cwd)
-	if selector == "reference" {
-		r := refs.Resolve(cwd, root, app, flow)
-		return diff.RunRef{RunID: r.RunID, Kind: r.Kind, Dir: r.Dir, Manifest: r.Manifest}, nil
+//
+// A selector matching in MORE than one root is refused rather than resolved
+// to the first. First-wins would be a silent wrong answer in the one
+// situation this flag creates — two checkouts of the same app, which is what
+// someone comparing a branch against main has — and the diff that came out
+// would be honestly labelled and completely wrong.
+func resolveSide(roots []string, defaultApp, flow, selector string) (diff.RunRef, error) {
+	app, sel := splitSelector(selector, defaultApp)
+
+	type hit struct {
+		root string
+		ref  diff.RunRef
 	}
-	id := runs.FindRun(root, app, flow, selector)
-	if id == "" {
-		return diff.RunRef{}, fmt.Errorf("no run matches %q for %s/%s", selector, app, flow)
+	var hits []hit
+	var noneRef diff.RunRef
+	haveNone := false
+
+	for _, root := range roots {
+		runsRoot := runs.RunsRoot(root)
+		if sel == "reference" {
+			r := refs.Resolve(root, runsRoot, app, flow)
+			ref := diff.RunRef{RunID: r.RunID, Kind: r.Kind, Dir: r.Dir, Manifest: r.Manifest}
+			if r.Kind == "none" {
+				// Kept, not discarded: if NO root resolves a reference, the
+				// caller still needs a RunRef whose Kind is "none" so its own
+				// "run `retrace ref accept`" message fires.
+				//
+				// Which root's "none" it is does not matter — a none carries
+				// no run id, no directory and no manifest, so they are all the
+				// same value. The reason a reader needs comes from noneReason,
+				// which asks every root.
+				noneRef, haveNone = ref, true
+				continue
+			}
+			hits = append(hits, hit{root, ref})
+			continue
+		}
+		id := runs.FindRun(runsRoot, app, flow, sel)
+		if id == "" {
+			continue
+		}
+		p, err := runs.PathsFor(runsRoot, app, flow, id)
+		if err != nil {
+			return diff.RunRef{}, err
+		}
+		m, err := runs.ReadManifest(p.ManifestPath)
+		if err != nil {
+			return diff.RunRef{}, fmt.Errorf("reading manifest for %s/%s/%s in %s: %w", app, flow, id, root, err)
+		}
+		hits = append(hits, hit{root, diff.RunRef{RunID: id, Kind: "run", Dir: p.RunDir, Manifest: m}})
 	}
-	p, err := runs.PathsFor(root, app, flow, id)
-	if err != nil {
-		return diff.RunRef{}, err
+
+	switch {
+	case len(hits) == 1:
+		return hits[0].ref, nil
+	case len(hits) > 1:
+		var where []string
+		for _, h := range hits {
+			where = append(where, fmt.Sprintf("%s (%s)", h.root, h.ref.RunID))
+		}
+		return diff.RunRef{}, fmt.Errorf("%q matches a run in more than one root: %s — name the one you mean with a single --root, or select it by run id",
+			selector, strings.Join(where, ", "))
+	case haveNone:
+		return noneRef, nil
 	}
-	m, err := runs.ReadManifest(p.ManifestPath)
-	if err != nil {
-		return diff.RunRef{}, fmt.Errorf("reading manifest for %s/%s/%s: %w", app, flow, id, err)
-	}
-	return diff.RunRef{RunID: id, Kind: "run", Dir: p.RunDir, Manifest: m}, nil
+	return diff.RunRef{}, fmt.Errorf("no run matches %q for %s/%s in %s", selector, app, flow, strings.Join(roots, ", "))
 }
 
 // noneReason re-asks refs.Resolve for the explanation behind a "none", so
 // the refusal names the runs it tried instead of only saying there is no
 // reference. Resolving twice is cheap (a few Stats and one JSON decode) and
 // keeps resolveSide's return type the RunRef every other caller wants.
-func noneReason(cwd, app, flow string) string {
-	r := refs.Resolve(cwd, runs.RunsRoot(cwd), app, flow)
-	if r.Reason == "" {
+//
+// Reported per root, because with several of them "there is no reference"
+// is not one fact — each tree has its own reason, and the one the reader
+// needs is whichever tree they thought they had accepted a bundle in.
+func noneReason(roots []string, app, flow string) string {
+	var parts []string
+	for _, root := range roots {
+		r := refs.Resolve(root, runs.RunsRoot(root), app, flow)
+		if r.Reason == "" {
+			continue
+		}
+		if len(roots) == 1 {
+			return r.Reason
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s", root, r.Reason))
+	}
+	if len(parts) == 0 {
 		return "no reference resolved"
 	}
-	return r.Reason
+	return strings.Join(parts, "; ")
 }
