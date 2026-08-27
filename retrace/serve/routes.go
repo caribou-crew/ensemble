@@ -62,7 +62,15 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // --- queue --------------------------------------------------------------
 
 func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
-	items, err := BuildQueue(s.deps())
+	WriteQueue(w, s.deps())
+}
+
+// WriteQueue writes the review queue as this handler's response would,
+// exported so a second HTTP surface (ensemble/server's retrace routes) can
+// serve the identical response without a second implementation of "what a
+// queue response looks like".
+func WriteQueue(w http.ResponseWriter, d Deps) {
+	items, err := BuildQueue(d)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -85,6 +93,14 @@ func (s *server) handleItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	WriteItem(w, d, app, flow)
+}
+
+// WriteItem writes one flow's diff summary, exported for the same reason
+// WriteQueue is: ensemble/server's GET /api/retrace/queue/{app}/{flow}
+// calls this directly rather than re-deriving what a 200/409 body looks
+// like.
+func WriteItem(w http.ResponseWriter, d Deps, app, flow string) {
 	sum, err := SummaryFor(d, app, flow)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
@@ -94,29 +110,42 @@ func (s *server) handleItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // flowFrom resolves and validates the {app}/{flow} pair every non-health
-// route carries, writing the refusal itself when it cannot.
+// route carries, writing the refusal itself when it cannot. It is a thin
+// HTTP wrapper over ResolveFlow — see that function for the three-way
+// status split.
+func (s *server) flowFrom(w http.ResponseWriter, r *http.Request) (Deps, string, string, bool) {
+	d := s.deps()
+	app, flow := r.PathValue("app"), r.PathValue("flow")
+	status, msg, ok := ResolveFlow(d, app, flow)
+	if !ok {
+		writeErr(w, status, msg)
+		return d, "", "", false
+	}
+	return d, app, flow, true
+}
+
+// ResolveFlow validates an {app}/{flow} pair and reports whether it names
+// something that exists at all, independent of any http.Request — exported
+// so a second HTTP surface (ensemble/server's retrace routes) reaches the
+// exact same three-way verdict this package's own routes do, rather than a
+// second guess at what counts as a malformed component vs. an unknown flow.
 //
 // The three answers are deliberately different codes. A component that
 // could escape the runs root is a 400 — the client sent something
 // malformed. A flow nothing has ever recorded (and that has no committed
-// bundle) is a 404. Anything else is the flow's own state and is answered
-// by the caller.
-func (s *server) flowFrom(w http.ResponseWriter, r *http.Request) (Deps, string, string, bool) {
-	d := s.deps()
-	app, flow := r.PathValue("app"), r.PathValue("flow")
+// bundle) is a 404. Anything else is fine to proceed with; the caller (a
+// SummaryFor call, typically) answers from there.
+func ResolveFlow(d Deps, app, flow string) (status int, msg string, ok bool) {
 	if err := runs.ValidateComponents(app, flow); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return d, "", "", false
+		return http.StatusBadRequest, err.Error(), false
 	}
 	if err := d.check(); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return d, "", "", false
+		return http.StatusInternalServerError, err.Error(), false
 	}
 	if !flowKnown(d, app, flow) {
-		writeErr(w, http.StatusNotFound, fmt.Sprintf("no flow %s/%s: nothing recorded under %s and no reference bundle", app, flow, runs.RunsRoot(d.Cwd)))
-		return d, "", "", false
+		return http.StatusNotFound, fmt.Sprintf("no flow %s/%s: nothing recorded under %s and no reference bundle", app, flow, runs.RunsRoot(d.Cwd)), false
 	}
-	return d, app, flow, true
+	return 0, "", true
 }
 
 // flowKnown reports whether this app/flow names something that exists at
@@ -404,8 +433,15 @@ func (s *server) handleShot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	side, name := r.PathValue("side"), r.PathValue("name")
+	WriteShot(w, d, app, flow, r.PathValue("side"), r.PathValue("name"))
+}
 
+// WriteShot writes one comparison-pane image, exported for the same reason
+// WriteQueue/WriteItem are: ensemble/server's GET
+// /api/retrace/shots/{app}/{flow}/{side}/{name} calls this directly, after
+// its own ResolveFlow check, rather than re-deriving checkpoint/side
+// resolution a second time.
+func WriteShot(w http.ResponseWriter, d Deps, app, flow, side, name string) {
 	// The name is validated BEFORE anything is resolved or read, so a
 	// traversal attempt is refused as malformed rather than answered with
 	// whatever the flow's state happens to be.
