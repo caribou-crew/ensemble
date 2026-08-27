@@ -219,6 +219,16 @@ export const api = {
     );
   },
 
+  /** Triggers an immediate freshness pass over every eligible service,
+   * outside the normal poll schedule, and returns the resulting status —
+   * the Services tab's "check now" control. */
+  freshnessCheck(): Promise<ServiceState[]> {
+    return request<{ services: ServiceState[] }>(
+      "/api/freshness/check",
+      jsonInit("POST"),
+    ).then((r) => r.services);
+  },
+
   // --- inspector (Task 3.5): databases/schema/rows. Every one of these
   // 501s when no inspector is configured for the stack — callers should
   // treat `err.status === 501` as "inspection unavailable", not a generic

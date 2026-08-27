@@ -95,7 +95,52 @@ type Config struct {
 	// "client" and never stored, so nothing a browser puts in the header
 	// reaches disk. A stack commonly wants one and not the other.
 	ClientIdentityHeaders []string `yaml:"client_identity_headers"`
-	Dir                   string   `yaml:"-"` // dir containing the config file (set by Load)
+	// Freshness enables the background git-freshness checker — see
+	// FreshnessConfig. Nil (no `freshness:` key) disables it entirely: no
+	// fetches run, and no ServiceState ever carries a Freshness field.
+	Freshness *FreshnessConfig `yaml:"freshness"`
+	Dir       string           `yaml:"-"` // dir containing the config file (set by Load)
+}
+
+// DefaultFreshnessDefaultBranch and DefaultFreshnessPollIntervalS apply when
+// a `freshness:` block is present but leaves the corresponding field unset
+// (its zero value).
+const (
+	DefaultFreshnessDefaultBranch = "main"
+	DefaultFreshnessPollIntervalS = 300
+)
+
+// FreshnessConfig enables the background git-freshness checker (see
+// ensemble/orchestrator's freshness.go): once every EffectivePollIntervalS,
+// ensemble runs `git fetch origin` against each eligible service's checkout
+// and reports how far it is behind its own remote branch and behind
+// DefaultBranch. Read-only — it never pulls, merges, or rebases; resolving
+// staleness stays a deliberate developer action.
+type FreshnessConfig struct {
+	// DefaultBranch is what "up to date with upstream" is measured
+	// against. Empty defaults to "main" — see EffectiveDefaultBranch.
+	DefaultBranch string `yaml:"default_branch"`
+	// PollIntervalS is how often the checker re-fetches. Empty (0)
+	// defaults to 300 (5 minutes) — see EffectivePollIntervalS.
+	PollIntervalS int `yaml:"poll_interval_s"`
+}
+
+// EffectiveDefaultBranch returns DefaultBranch, or
+// DefaultFreshnessDefaultBranch when it's left unset.
+func (f FreshnessConfig) EffectiveDefaultBranch() string {
+	if f.DefaultBranch != "" {
+		return f.DefaultBranch
+	}
+	return DefaultFreshnessDefaultBranch
+}
+
+// EffectivePollIntervalS returns PollIntervalS, or
+// DefaultFreshnessPollIntervalS when it's left unset (0).
+func (f FreshnessConfig) EffectivePollIntervalS() int {
+	if f.PollIntervalS > 0 {
+		return f.PollIntervalS
+	}
+	return DefaultFreshnessPollIntervalS
 }
 
 // OnReady runs once `ensemble up` has brought every active service and
@@ -475,6 +520,23 @@ func (c *Config) RoutablePort(name string) (port int, kind string, ok bool) {
 	return 0, "", false
 }
 
+// ReversePort resolves an EntityLink.Reverse entry's port: a routable
+// service/stub (see RoutablePort), or a gateway's own listen port. A
+// gateway is deliberately absent from RoutablePort itself — nothing
+// "routes to" a gateway the way a gateway route's target does — but it's
+// exactly the kind of thing a mobile app calls directly and needs
+// adb-reversed, alongside a stub like an auth service it also calls
+// directly. ok is false for a name that is none of these.
+func (c *Config) ReversePort(name string) (port int, ok bool) {
+	if port, _, ok := c.RoutablePort(name); ok {
+		return port, true
+	}
+	if gw, found := c.Gateways[name]; found && gw.Port > 0 {
+		return gw.Port, true
+	}
+	return 0, false
+}
+
 // Entity is a dashboard plugin slot: a generic CRUD page over one resource.
 type Entity struct {
 	Base string `yaml:"base"`
@@ -499,11 +561,21 @@ type Entity struct {
 // Simulator, which the browser cannot open a URL against directly — built
 // from a closed, Go-authored command table (see execcommands.go) named by
 // Exec. Exec is only meaningful, and only allowed, when Kind is "exec".
+//
+// Reverse names services/stubs/gateways whose port must be reachable from
+// the device before Exec runs — e.g. a gateway and an auth stub a mobile
+// app calls directly. Each name is resolved via ReversePort (which, for a
+// service, follows its proxy/intercept port when retrace is running — the
+// same resolution a gateway route or readiness check uses) and becomes an
+// "adb reverse tcp:<port> tcp:<port>" step ensemble prepends to Exec's own
+// steps. Only valid when Exec names a command with ReversePorts set (see
+// execcommands.go).
 type EntityLink struct {
-	Label    string `yaml:"label"`
-	Template string `yaml:"template"`
-	Kind     string `yaml:"kind,omitempty"`
-	Exec     string `yaml:"exec,omitempty"`
+	Label    string   `yaml:"label"`
+	Template string   `yaml:"template"`
+	Kind     string   `yaml:"kind,omitempty"`
+	Exec     string   `yaml:"exec,omitempty"`
+	Reverse  []string `yaml:"reverse,omitempty"`
 }
 
 // Latency holds the config-defined latency injection rules. Defaults are

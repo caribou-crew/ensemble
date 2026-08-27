@@ -308,6 +308,36 @@ template column, or whose resolved command would contain a control
 character, renders the button disabled with the reason instead of ever
 copying something wrong.
 
+An `adb`-based `exec:` command (currently just `adb-view`) also accepts
+`reverse:`, a list of service/stub/gateway names whose port needs to be
+reachable from the device or emulator before the command runs — an Android
+deep link that opens straight into calling a local backend needs those
+ports `adb reverse`d first, or the app just fails to connect. Each name
+resolves through the same port logic a gateway route uses (a service's
+proxy/intercept port when retrace is running, its real port otherwise), and
+becomes its own `adb reverse tcp:<port> tcp:<port>` step ahead of the
+command's own step, `&&`-joined so a failed reverse stops the rest instead
+of launching the app against a port that was never actually forwarded:
+
+```yaml
+entities:
+  widgets:
+    base: http://127.0.0.1:4281/widgets
+    id: widget_token
+    links:
+      - label: Open on Android
+        kind: exec
+        exec: adb-view
+        reverse: [gateway, auth]
+        template: "myapp://widget/{{widget_token}}"
+```
+
+which copies something like:
+
+```
+adb reverse tcp:8080 tcp:8080 && adb reverse tcp:9101 tcp:9101 && adb shell am start -a android.intent.action.VIEW -d 'myapp://widget/abc123'
+```
+
 This set is **not config-extensible** — you can't point `exec:` at an
 arbitrary binary. `ensemble.yaml` is a file that gets committed and shared,
 and a free-form command would mean a PR editing it could put a command of
@@ -579,13 +609,48 @@ returning; `ensemble ready` (below) is the thing that blocks on it, and
 per-service table. See `sample/tools/readiness.yaml` for a complete example,
 including the `headers_from` auth pattern.
 
+### Freshness
+
+A stack cloned across several repos drifts silently: someone pushes to the
+branch you're tracking, or `main` moves ahead of your feature branch, and the
+only way to notice is `cd`-ing into each service and running `git fetch &&
+git status` by hand. A top-level `freshness:` key runs that check in the
+background instead:
+
+```yaml
+freshness:
+  default_branch: main   # what "up to date with upstream" means (default main)
+  poll_interval_s: 300   # how often to re-fetch (default 300 = 5 minutes)
+```
+
+Once every `poll_interval_s`, ensemble runs `git fetch origin` (read-only —
+never pull, merge, or rebase) against every service whose `dir:` is its own
+git repository, distinct from the repo containing `ensemble.yaml` — a stub
+or script living in the config's own repo is always at whatever commit
+local-stack is, so it's skipped. Each check reports how many commits the
+service is behind its own remote branch and behind `default_branch`,
+surfaced as a `freshness` field on `ensemble status`/`ensemble status
+--json`, as freshness badges on the dashboard's Services tab (with a "check
+freshness" button for an immediate re-check), and via `ensemble freshness`:
+
+```
+SERVICE     BRANCH             BEHIND  MAIN BEHIND  CHECKED               ERROR
+catalog     feature/discounts  0       12           2026-08-27T10:04:00Z
+payments    main               3       0            2026-08-27T10:04:00Z
+```
+
+A fetch failure (VPN down, SSH key not forwarded) never reports a false
+"up to date" — it degrades to an `error` alongside whatever was last
+successfully known, or to "never checked" for a service that has never
+succeeded.
+
 ### CLI
 
 ```
 ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700] [--tui]
 ensemble dashboard [--no-open]
 ensemble tui
-ensemble status | ready [--timeout DURATION] | down | seed <name>
+ensemble status | freshness | ready [--timeout DURATION] | down | seed <name>
 ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
 ensemble traffic [--since N] [--errors-only] [--follow]
 ensemble trace <traceId> [--export har|curl|raw]

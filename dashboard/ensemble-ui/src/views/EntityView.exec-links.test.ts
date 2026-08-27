@@ -21,7 +21,7 @@ const ENTITIES: EntityInfo[] = [
         label: 'Open on Android',
         template: 'myapp://widget/{{widget_token}}',
         kind: 'exec',
-        argv: ['adb', 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', '{{url}}'],
+        steps: [['adb', 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', '{{url}}']],
       },
     ],
   },

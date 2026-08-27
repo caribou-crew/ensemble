@@ -157,11 +157,11 @@ func TestEntitiesDiscoveryListUrlLinkSerializesUnchanged(t *testing.T) {
 	}
 }
 
-// TestEntitiesDiscoveryListIncludesExecLinkArgv: a "kind: exec" link
-// carries its expanded argv (from the closed command table) and kind, so
+// TestEntitiesDiscoveryListIncludesExecLinkSteps: a "kind: exec" link
+// carries its expanded steps (from the closed command table) and kind, so
 // the dashboard can build the copy-to-clipboard command without a second
 // lookup or its own copy of the command table.
-func TestEntitiesDiscoveryListIncludesExecLinkArgv(t *testing.T) {
+func TestEntitiesDiscoveryListIncludesExecLinkSteps(t *testing.T) {
 	ts := newEntitiesTestEnv(t, map[string]config.Entity{
 		"gadgets": {
 			Base: "http://127.0.0.1:1", ID: "gadget_id",
@@ -180,10 +180,10 @@ func TestEntitiesDiscoveryListIncludesExecLinkArgv(t *testing.T) {
 	var got struct {
 		Entities []struct {
 			Links []struct {
-				Label    string   `json:"label"`
-				Template string   `json:"template"`
-				Kind     string   `json:"kind"`
-				Argv     []string `json:"argv"`
+				Label    string     `json:"label"`
+				Template string     `json:"template"`
+				Kind     string     `json:"kind"`
+				Steps    [][]string `json:"steps"`
 			} `json:"links"`
 		} `json:"entities"`
 	}
@@ -197,13 +197,18 @@ func TestEntitiesDiscoveryListIncludesExecLinkArgv(t *testing.T) {
 	if link.Kind != "exec" {
 		t.Errorf("kind = %q, want \"exec\"", link.Kind)
 	}
-	wantArgv := []string{"adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "{{url}}"}
-	if len(link.Argv) != len(wantArgv) {
-		t.Fatalf("argv = %v, want %v", link.Argv, wantArgv)
+	wantSteps := [][]string{{"adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "{{url}}"}}
+	if len(link.Steps) != len(wantSteps) {
+		t.Fatalf("steps = %v, want %v", link.Steps, wantSteps)
 	}
-	for i := range wantArgv {
-		if link.Argv[i] != wantArgv[i] {
-			t.Errorf("argv[%d] = %q, want %q", i, link.Argv[i], wantArgv[i])
+	for i := range wantSteps {
+		if len(link.Steps[i]) != len(wantSteps[i]) {
+			t.Fatalf("steps[%d] = %v, want %v", i, link.Steps[i], wantSteps[i])
+		}
+		for j := range wantSteps[i] {
+			if link.Steps[i][j] != wantSteps[i][j] {
+				t.Errorf("steps[%d][%d] = %q, want %q", i, j, link.Steps[i][j], wantSteps[i][j])
+			}
 		}
 	}
 	// The exec: config key itself is a server-side lookup key only — it
@@ -211,6 +216,74 @@ func TestEntitiesDiscoveryListIncludesExecLinkArgv(t *testing.T) {
 	// and checked above, so this only looks for the key form).
 	if strings.Contains(string(body), `"exec":`) {
 		t.Errorf("response must not expose the exec: config key, got: %s", body)
+	}
+}
+
+// TestEntitiesDiscoveryListResolvesReversePorts: an exec link's reverse:
+// list becomes one "adb reverse tcp:<port> tcp:<port>" step per named
+// service/stub, prepended to the command's own steps, in declared order —
+// resolved through the same RoutablePort a gateway route uses, so a
+// service's intercept (proxy) port is picked up automatically.
+func TestEntitiesDiscoveryListResolvesReversePorts(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"auth": {Port: 9001, Proxy: 9101, Run: "true"},
+		},
+		Gateways: map[string]config.Gateway{
+			"gateway": {Port: 8080, Routes: []config.GatewayRoute{{Prefix: "/", Service: "auth"}}},
+		},
+		Entities: map[string]config.Entity{
+			"gadgets": {
+				Base: "http://127.0.0.1:1", ID: "gadget_id",
+				Links: []config.EntityLink{
+					{
+						Label:    "Open on Android",
+						Template: "myapp://widget/{{gadget_id}}",
+						Kind:     "exec",
+						Exec:     "adb-view",
+						Reverse:  []string{"gateway", "auth"},
+					},
+				},
+			},
+		},
+	}
+	handler := server.New(server.Deps{Cfg: cfg, Version: "test"})
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/entities")
+	if err != nil {
+		t.Fatalf("GET /api/entities: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Entities []struct {
+			Links []struct {
+				Steps [][]string `json:"steps"`
+			} `json:"links"`
+		} `json:"entities"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, body)
+	}
+	if len(got.Entities) != 1 || len(got.Entities[0].Links) != 1 {
+		t.Fatalf("got = %+v", got)
+	}
+	wantSteps := [][]string{
+		{"adb", "reverse", "tcp:8080", "tcp:8080"},
+		{"adb", "reverse", "tcp:9101", "tcp:9101"}, // auth's proxy port, not its real port
+		{"adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "{{url}}"},
+	}
+	steps := got.Entities[0].Links[0].Steps
+	if len(steps) != len(wantSteps) {
+		t.Fatalf("steps = %v, want %v", steps, wantSteps)
+	}
+	for i := range wantSteps {
+		if strings.Join(steps[i], " ") != strings.Join(wantSteps[i], " ") {
+			t.Errorf("steps[%d] = %v, want %v", i, steps[i], wantSteps[i])
+		}
 	}
 }
 

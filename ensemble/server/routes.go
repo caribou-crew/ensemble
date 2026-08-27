@@ -39,6 +39,8 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/reconcile", s.withAnnotation(s.handleReconcile))
 
+	mux.HandleFunc("POST /api/freshness/check", s.withAnnotation(s.handleFreshnessCheck))
+
 	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/traffic/stream", s.handleTrafficStream)
 
@@ -476,6 +478,20 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// --- freshness ---
+
+// handleFreshnessCheck triggers an immediate freshness pass over every
+// eligible service, outside the normal poll schedule, and returns once it
+// completes — the dashboard's "check now" control and the CLI's
+// `ensemble freshness --check` (if ever added) both go through this rather
+// than waiting for the next scheduled poll. Returns the resulting status
+// payload's services, the same shape GET /api/status uses, so a caller
+// doesn't need a second round trip to see the fresh result.
+func (s *server) handleFreshnessCheck(w http.ResponseWriter, r *http.Request) {
+	s.Orch.TriggerFreshnessCheck(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{"services": s.Orch.States()})
 }
 
 // --- seed ---

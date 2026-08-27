@@ -18,13 +18,15 @@ func TestExecCommandsHaveExactlyOneURLSentinel(t *testing.T) {
 	}
 	for name, cmd := range execCommands {
 		count := 0
-		for _, arg := range cmd.Argv {
-			if arg == "{{url}}" {
-				count++
+		for _, step := range cmd.Steps {
+			for _, arg := range step {
+				if arg == "{{url}}" {
+					count++
+				}
 			}
 		}
 		if count != 1 {
-			t.Errorf("exec command %q: argv has %d {{url}} sentinels, want exactly 1 (argv=%v)", name, count, cmd.Argv)
+			t.Errorf("exec command %q: steps has %d {{url}} sentinels, want exactly 1 (steps=%v)", name, count, cmd.Steps)
 		}
 	}
 }

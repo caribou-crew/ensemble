@@ -83,6 +83,19 @@
   color: var(--text-tertiary);
 }
 
+.services-view__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.services-table__freshness {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
 .services-table__variant select {
   background: var(--bg-raised);
   border: 1px solid var(--border-hairline-strong);

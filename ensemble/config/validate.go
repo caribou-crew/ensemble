@@ -46,6 +46,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Freshness != nil && c.Freshness.PollIntervalS < 0 {
+		errs = append(errs, fmt.Errorf("freshness: poll_interval_s must be >= 0"))
+	}
+
 	for name, db := range c.Databases {
 		if db.Type == "" {
 			db.Type = inferDatabaseType(db.Image)
@@ -210,7 +214,7 @@ func (c *Config) Validate() error {
 				}
 				seenLabels[link.Label] = true
 			}
-			errs = append(errs, validateEntityLinkKind(name, i, link)...)
+			errs = append(errs, c.validateEntityLinkKind(name, i, link)...)
 		}
 	}
 
@@ -254,8 +258,10 @@ func hasControlByte(s string) bool {
 // validateEntityLinkKind checks the Kind/Exec-related rules for one entity
 // link. Split out from the main Validate loop because "exec" links carry
 // several rules of their own — see EntityLink's doc comment and
-// execcommands.go for why these exist.
-func validateEntityLinkKind(entityName string, i int, link EntityLink) []error {
+// execcommands.go for why these exist. A method on *Config (rather than a
+// free function) because Reverse names are resolved via c.RoutablePort,
+// the same resolution a gateway route or readiness check uses.
+func (c *Config) validateEntityLinkKind(entityName string, i int, link EntityLink) []error {
 	var errs []error
 
 	if !validEntityLinkKinds[link.Kind] {
@@ -267,13 +273,27 @@ func validateEntityLinkKind(entityName string, i int, link EntityLink) []error {
 		if link.Exec != "" {
 			errs = append(errs, fmt.Errorf("entity %q: link %d: exec is set but kind is %q (exec: only applies to kind: exec links)", entityName, i, link.Kind))
 		}
+		if len(link.Reverse) > 0 {
+			errs = append(errs, fmt.Errorf("entity %q: link %d: reverse is set but kind is %q (reverse: only applies to kind: exec links)", entityName, i, link.Kind))
+		}
 		return errs
 	}
 
+	var cmd ExecCommand
+	var cmdOK bool
 	if link.Exec == "" {
 		errs = append(errs, fmt.Errorf("entity %q: link %d: kind: exec requires exec: naming one of %s", entityName, i, strings.Join(ExecCommandNames(), ", ")))
-	} else if _, ok := LookupExecCommand(link.Exec); !ok {
+	} else if cmd, cmdOK = LookupExecCommand(link.Exec); !cmdOK {
 		errs = append(errs, fmt.Errorf("entity %q: link %d: exec %q is not a known command (must be one of %s)", entityName, i, link.Exec, strings.Join(ExecCommandNames(), ", ")))
+	}
+
+	if len(link.Reverse) > 0 && cmdOK && !cmd.ReversePorts {
+		errs = append(errs, fmt.Errorf("entity %q: link %d: reverse is set but exec %q does not support it", entityName, i, link.Exec))
+	}
+	for _, target := range link.Reverse {
+		if _, ok := c.ReversePort(target); !ok {
+			errs = append(errs, fmt.Errorf("entity %q: link %d: reverse references unknown/unroutable service/stub/gateway %q", entityName, i, target))
+		}
 	}
 
 	if link.Template != "" {

@@ -69,13 +69,35 @@ func TestValidateEntityLinkKindExec(t *testing.T) {
 			link:    EntityLink{Label: "L", Template: "myapp://widget/\n{{id}}", Kind: "exec", Exec: "adb-view"},
 			wantErr: []string{"users", "link 0", "control character"},
 		},
+		{
+			name: "exec link with reverse referencing a real service",
+			link: EntityLink{Label: "L", Template: "myapp://widget/{{id}}", Kind: "exec", Exec: "adb-view", Reverse: []string{"auth"}},
+		},
+		{
+			name:    "url link sets reverse",
+			link:    EntityLink{Label: "L", Template: "https://x/{{id}}", Kind: "url", Reverse: []string{"auth"}},
+			wantErr: []string{"users", "link 0", "reverse is set but kind is"},
+		},
+		{
+			name:    "reverse references unknown service",
+			link:    EntityLink{Label: "L", Template: "myapp://{{id}}", Kind: "exec", Exec: "adb-view", Reverse: []string{"does-not-exist"}},
+			wantErr: []string{"users", "link 0", `reverse references unknown/unroutable service/stub/gateway "does-not-exist"`},
+		},
+		{
+			name:    "reverse set on a command that doesn't support it",
+			link:    EntityLink{Label: "L", Template: "myapp://{{id}}", Kind: "exec", Exec: "ios-simctl-openurl", Reverse: []string{"auth"}},
+			wantErr: []string{"users", "link 0", `reverse is set but exec "ios-simctl-openurl" does not support it`},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Config{Entities: map[string]Entity{
-				"users": {Base: "http://x", ID: "id", Links: []EntityLink{tc.link}},
-			}}
+			c := &Config{
+				Services: map[string]Service{"auth": {Port: 9001, Run: "true"}},
+				Entities: map[string]Entity{
+					"users": {Base: "http://x", ID: "id", Links: []EntityLink{tc.link}},
+				},
+			}
 			err := c.Validate()
 			if len(tc.wantErr) == 0 {
 				if err != nil {

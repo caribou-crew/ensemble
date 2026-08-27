@@ -66,13 +66,17 @@ export type ExecCommandResult = { command: string } | { disabledReason: string }
 
 /** Builds the local CLI command a `kind: exec` link's button copies to the
  * clipboard: resolves the template against the row, single-quotes the
- * result into the link's argv template's one `{{url}}` slot (see
- * shellQuote), and joins argv into one string. Refuses to produce a
- * command — disabled reason instead — if a referenced column is
- * missing/empty, or if the fully assembled command contains an ASCII
- * control character. The control-character check runs on the *resolved
- * command*, not just the raw row value, so it also catches anything a
- * future argv template might introduce, not only what came from the row.
+ * result into whichever step's `{{url}}` slot holds it (see shellQuote),
+ * joins each step's argv into a shell command, and joins the steps
+ * together with ` && ` — so a compound command (e.g. one or more
+ * `adb reverse` steps ahead of an `adb shell am start`) aborts at the
+ * first failing step on paste, rather than running the rest against state
+ * an earlier step never actually set up. Refuses to produce a command —
+ * disabled reason instead — if a referenced column is missing/empty, or
+ * if the fully assembled command contains an ASCII control character. The
+ * control-character check runs on the *resolved command*, not just the
+ * raw row value, so it also catches anything a future argv template might
+ * introduce, not only what came from the row.
  *
  * A newline in a row value is the concrete risk this guards: it would
  * turn one copied "command" into two lines, and in a terminal without
@@ -81,12 +85,14 @@ export type ExecCommandResult = { command: string } | { disabledReason: string }
  * does real security work — everything else here is correctness (a
  * command that fails obviously beats one that looks right and isn't). */
 export function buildExecCommand(link: EntityLink, row: Record<string, unknown>): ExecCommandResult {
-  const argv = link.argv ?? [];
-  if (!argv.includes('{{url}}')) {
+  const steps = link.steps ?? [];
+  const sentinelCount = steps.reduce((n, step) => n + step.filter((arg) => arg === '{{url}}').length, 0);
+  if (sentinelCount !== 1) {
     // config.Validate guarantees every table entry has exactly one
-    // {{url}} sentinel — reachable only if the server ever serves a
-    // malformed argv, which would itself be a bug worth surfacing loudly
-    // rather than silently copying an incomplete command.
+    // {{url}} sentinel across its steps — reachable only if the server
+    // ever serves malformed steps, which would itself be a bug worth
+    // surfacing loudly rather than silently copying an incomplete or
+    // wrong command.
     return { disabledReason: 'exec link is misconfigured (no {{url}} in its command)' };
   }
 
@@ -96,7 +102,9 @@ export function buildExecCommand(link: EntityLink, row: Record<string, unknown>)
   }
 
   const resolved = resolveLinkTemplate(link.template, row);
-  const command = argv.map((arg) => (arg === '{{url}}' ? shellQuote(resolved) : arg)).join(' ');
+  const command = steps
+    .map((step) => step.map((arg) => (arg === '{{url}}' ? shellQuote(resolved) : arg)).join(' '))
+    .join(' && ');
 
   if (CONTROL_CHAR_RE.test(command)) {
     return { disabledReason: 'row value contains a control character' };

@@ -73,6 +73,28 @@ export interface ServiceState {
    * "service" (a real, unlabeled backing). Named kind, not type, to avoid colliding with
    * config.Database's `type:` (a validated engine enum — postgres, redis, etc). */
   kind?: string;
+  /** How far this service's checkout is behind its own remote branch and behind the
+   * configured default branch — absent unless `freshness:` is configured AND the service is
+   * eligible (its own git repo, distinct from the one containing ensemble.yaml). Populated by
+   * a background poll, not computed at read time — see FreshnessState. */
+  freshness?: FreshnessState;
+}
+
+/** One service's git-freshness snapshot — mirrors
+ * ensemble/orchestrator.FreshnessState's JSON shape exactly. */
+export interface FreshnessState {
+  branch: string;
+  behindBranch: number;
+  behindDefault: number;
+  defaultBranch: string;
+  /** RFC3339 timestamp of the last SUCCESSFUL check. Empty means this service has never been
+   * successfully checked — render as "unknown", never as "up to date". */
+  checkedAt?: string;
+  /** Set when the most recent check attempt failed (fetch failure, or the branch/rev-list
+   * comparison couldn't be resolved). May appear alongside a populated branch/behind* from an
+   * earlier successful check — that's "this is what we last knew, and the most recent
+   * recheck failed", not a fresh empty answer. */
+  error?: string;
 }
 
 export interface TopologyNode {
@@ -147,16 +169,19 @@ export interface DatabaseInfo {
 // fields — see format.ts's resolveLinkTemplate.
 //
 // `kind` is absent (or "url") for the original behavior: resolve and
-// navigate/open directly. `kind: "exec"` instead means `argv` is the
-// target command's argv template (exactly one element is the literal
-// sentinel "{{url}}") — the button builds and copies a local CLI command
-// to the clipboard rather than navigating. See format.ts's
-// buildExecCommand.
+// navigate/open directly. `kind: "exec"` instead means `steps` is the
+// target command's steps, each an argv template (exactly one element
+// across all of them is the literal sentinel "{{url}}") — the button
+// builds and copies a local CLI command to the clipboard, one step per
+// `&&`-joined shell command, rather than navigating. Any `adb reverse`
+// steps from the config's `reverse:` list are already resolved into
+// `steps` by the server — the client never sees `reverse:` or a port
+// number to resolve itself. See format.ts's buildExecCommand.
 export interface EntityLink {
   label: string;
   template: string;
   kind?: 'exec';
-  argv?: string[];
+  steps?: string[][];
 }
 
 // One entry in GET /api/entities' discovery list. `id` is the CONFIGURED

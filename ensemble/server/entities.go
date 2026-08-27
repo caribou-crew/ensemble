@@ -44,29 +44,38 @@ type entityInfo struct {
 // entityLink mirrors config.EntityLink — see its doc comment for the
 // {{column}} template contract. Resolved client-side, not here: this
 // endpoint only relays the raw label/template pair, plus (for "exec"
-// links) the target command's argv template. Kind and Argv are omitted
-// entirely for a "url" (or default) link, so the existing dashboard
-// client's shape is unchanged. link.Exec — the config-side lookup key
-// into the command table — is deliberately never serialized: the client
-// only ever needs the already-expanded argv.
+// links) the target command's steps, fully expanded. Kind and Steps are
+// omitted entirely for a "url" (or default) link, so the existing
+// dashboard client's shape is unchanged. link.Exec/link.Reverse — the
+// config-side lookup key and port-source names — are deliberately never
+// serialized: the client only ever needs the already-expanded steps.
 type entityLink struct {
-	Label    string   `json:"label"`
-	Template string   `json:"template"`
-	Kind     string   `json:"kind,omitempty"`
-	Argv     []string `json:"argv,omitempty"`
+	Label    string     `json:"label"`
+	Template string     `json:"template"`
+	Kind     string     `json:"kind,omitempty"`
+	Steps    [][]string `json:"steps,omitempty"`
 }
 
-// toEntityLink expands a config.EntityLink into its wire form. For a
-// "exec" link, Argv is looked up from the closed command table validated
-// at config load (config.Validate already guarantees link.Exec names a
-// real entry, so the ok-false branch here is unreachable in practice —
-// guarded anyway rather than assumed, since this runs on every request).
-func toEntityLink(l config.EntityLink) entityLink {
+// toEntityLink expands a config.EntityLink into its wire form. For an
+// "exec" link, Steps is the closed command table's own steps (validated at
+// config load, so the ok-false branch here is unreachable in practice —
+// guarded anyway rather than assumed, since this runs on every request),
+// prefixed with one "adb reverse tcp:<port> tcp:<port>" step per
+// link.Reverse entry — each name resolved through cfg.ReversePort so a
+// service's proxy/intercept port is used automatically when retrace is
+// running, exactly as a gateway route or readiness check would resolve it.
+func toEntityLink(cfg *config.Config, l config.EntityLink) entityLink {
 	out := entityLink{Label: l.Label, Template: l.Template}
 	if l.Kind == "exec" {
 		out.Kind = "exec"
 		if cmd, ok := config.LookupExecCommand(l.Exec); ok {
-			out.Argv = cmd.Argv
+			steps := make([][]string, 0, len(l.Reverse)+len(cmd.Steps))
+			for _, target := range l.Reverse {
+				if port, ok := cfg.ReversePort(target); ok {
+					steps = append(steps, []string{"adb", "reverse", fmt.Sprintf("tcp:%d", port), fmt.Sprintf("tcp:%d", port)})
+				}
+			}
+			out.Steps = append(steps, cmd.Steps...)
 		}
 	}
 	return out
@@ -86,7 +95,7 @@ func (s *server) handleEntities(w http.ResponseWriter, r *http.Request) {
 		}
 		links := make([]entityLink, len(e.Links))
 		for i, l := range e.Links {
-			links[i] = toEntityLink(l)
+			links[i] = toEntityLink(s.Cfg, l)
 		}
 		out = append(out, entityInfo{Name: name, ID: id, Links: links})
 	}

@@ -66,6 +66,12 @@ type ServiceState struct {
 	// Not tracked continuously: States()/Service() never set it, only
 	// WithMemory's own returned copy does.
 	RSSKB int64 `json:"rssKB,omitempty"`
+	// Freshness reports how far this service's checkout is behind its own
+	// remote branch and behind the configured default branch — nil unless
+	// `freshness:` is configured and the service is eligible (see
+	// eligibleForFreshness in freshness.go). Populated by the background
+	// freshness poll loop, not computed at read time.
+	Freshness *FreshnessState `json:"freshness,omitempty"`
 }
 
 // Opts configures an Orchestrator.
@@ -184,6 +190,16 @@ type Orchestrator struct {
 	// right after New, mirroring SQLRunner/DBReady. Nil only in tests that
 	// never configure a stub.
 	Rec *proxy.Recorder
+
+	// freshnessCancel stops the background freshness poll loop (see
+	// freshness.go's beginFreshness/stopFreshness) — nil when no
+	// freshness: is configured or the loop isn't currently running.
+	freshnessCancel context.CancelFunc
+	// freshnessDone is closed once the freshness loop's goroutine has
+	// actually returned, so Down can wait for it rather than merely signal
+	// it — a fetch in flight when Down cancels must not mutate
+	// orchestrator state after Down considers teardown complete.
+	freshnessDone chan struct{}
 
 	// readinessMu guards readinessState/readinessCheckStates, separately
 	// from mu: the readiness retry loop (see readiness.go) makes HTTP
@@ -641,6 +657,12 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 	o.lastConfig = *o.cfg
 	o.mu.Unlock()
 
+	// Never blocks on a fetch: beginFreshness only spawns the background
+	// loop. Started after per-node failures are known (not before) so it
+	// still runs against whatever partial stack came up — same rule as
+	// on_ready/readiness above.
+	o.beginFreshness()
+
 	return errors.Join(errs...)
 }
 
@@ -683,6 +705,12 @@ func firstFailedDep(deps []string, failed map[string]bool) (string, bool) {
 // Individual failures are collected and joined rather than aborting early,
 // so one stuck node doesn't strand the rest.
 func (o *Orchestrator) Down() error {
+	// Stopped first, and waited on: a freshness fetch that outlives Down
+	// would still be mutating o.states (via setState) after Down considers
+	// teardown complete, which is exactly the race the design's "stop when
+	// Down is called" requirement exists to rule out.
+	o.stopFreshness()
+
 	// Union of every name ever tracked as native or docker, taken up front
 	// so Down knows what to visit. The actual placement to tear down for
 	// each name is re-read under that name's lock below, not from this

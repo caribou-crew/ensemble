@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import type { ServiceState, Topology, TopologyNode } from '../api/types';
+import type { FreshnessState, ServiceState, Topology, TopologyNode } from '../api/types';
 import InlineError from '../components/InlineError';
 import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
@@ -41,6 +41,39 @@ function formatRSS(kb: number | undefined): string {
   const mb = kb / 1024;
   if (mb < 1024) return `${mb.toFixed(1)} MB`;
   return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+/** Renders one service's freshness state: nothing for a service that was never eligible
+    (no `freshness:` configured, or ineligible Dir); an "unknown" badge for one that's never
+    been successfully checked or whose last check failed (never a false "clean" or a false
+    "behind" from a stale/failed read); amber badge(s) naming exactly which counts are
+    nonzero; nothing (same as "never eligible") for a genuinely clean, checked service — so a
+    row with no news to report stays visually quiet. */
+function FreshnessCell({ freshness }: { freshness: FreshnessState | undefined }) {
+  if (!freshness) {
+    return <span className="services-table__dash">—</span>;
+  }
+  if (!freshness.checkedAt || freshness.error) {
+    return (
+      <span title={freshness.error || 'never checked'}>
+        <Badge tone="neutral">unknown</Badge>
+      </span>
+    );
+  }
+  if (freshness.behindBranch === 0 && freshness.behindDefault === 0) {
+    return <span className="services-table__dash">—</span>;
+  }
+  const detail = `branch ${freshness.branch} — checked ${new Date(freshness.checkedAt).toLocaleString()}`;
+  return (
+    <span className="services-table__freshness" title={detail}>
+      {freshness.behindBranch > 0 && <Badge tone="amber">↓{freshness.behindBranch}</Badge>}
+      {freshness.behindDefault > 0 && (
+        <Badge tone="amber">
+          {freshness.defaultBranch} ↓{freshness.behindDefault}
+        </Badge>
+      )}
+    </span>
+  );
 }
 
 function formatUptime(startedAt: string | undefined): string {
@@ -234,6 +267,9 @@ function ServiceRow({
       <td className="services-table__num">{state.proxyPort ?? '—'}</td>
       <td className="services-table__num">{formatRSS(state.rssKB)}</td>
       <td className="services-table__num">{formatUptime(state.startedAt)}</td>
+      <td>
+        <FreshnessCell freshness={state.freshness} />
+      </td>
       <td className="services-table__actions">
         {stopped ? (
           <button type="button" disabled={busy !== null} onClick={() => void run('start')}>
@@ -281,6 +317,9 @@ function StubRow({ node }: { node: TopologyNode }) {
       <td className="services-table__num">—</td>
       <td className="services-table__num">—</td>
       <td className="services-table__num">—</td>
+      <td>
+        <span className="services-table__dash">—</span>
+      </td>
       <td className="services-table__actions" />
     </tr>
   );
@@ -309,6 +348,9 @@ function GatewayRow({ node }: { node: TopologyNode }) {
       <td className="services-table__num">—</td>
       <td className="services-table__num">—</td>
       <td className="services-table__num">—</td>
+      <td>
+        <span className="services-table__dash">—</span>
+      </td>
       <td className="services-table__actions" />
     </tr>
   );
@@ -317,6 +359,21 @@ function GatewayRow({ node }: { node: TopologyNode }) {
 export default function ServicesView() {
   const { services, topology, error, refresh } = useServicesPoll();
   const [sort, setSort] = useState<SortState | null>(null);
+  const [checkingFreshness, setCheckingFreshness] = useState(false);
+  const [freshnessError, setFreshnessError] = useState<string | null>(null);
+
+  async function handleFreshnessCheck() {
+    setCheckingFreshness(true);
+    setFreshnessError(null);
+    try {
+      await api.freshnessCheck();
+      await refresh();
+    } catch (err) {
+      setFreshnessError(messageOf(err, 'freshness check failed'));
+    } finally {
+      setCheckingFreshness(false);
+    }
+  }
 
   const toggleSort = useCallback((key: SortKey) => {
     setSort((prev) =>
@@ -374,6 +431,12 @@ export default function ServicesView() {
 
   return (
     <div className="services-view">
+      <div className="services-view__toolbar">
+        <button type="button" disabled={checkingFreshness} onClick={() => void handleFreshnessCheck()}>
+          {checkingFreshness ? <Spinner /> : 'Check freshness'}
+        </button>
+        {freshnessError && <InlineError message={freshnessError} />}
+      </div>
       <table className="services-table">
         <thead>
           <tr>
@@ -391,13 +454,14 @@ export default function ServicesView() {
                 </button>
               </th>
             ))}
+            <th>freshness</th>
             <th />
           </tr>
         </thead>
         <tbody>
           {sorted.length === 0 && stubNodes.length === 0 && gatewayNodes.length === 0 && (
             <tr>
-              <td colSpan={10} className="services-table__empty">
+              <td colSpan={11} className="services-table__empty">
                 no services configured
               </td>
             </tr>

@@ -40,7 +40,7 @@ describe('buildExecCommand', () => {
     label: 'Open on Android',
     template: 'myapp://widget/{{widget_token}}',
     kind: 'exec',
-    argv: ['adb', 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', '{{url}}'],
+    steps: [['adb', 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', '{{url}}']],
   };
 
   test('builds a fully quoted command for a normal row', () => {
@@ -83,5 +83,34 @@ describe('buildExecCommand', () => {
   test('does not quote literal argv elements from the command table', () => {
     const result = buildExecCommand(adbLink, { widget_token: 'abc123' });
     expect((result as { command: string }).command).toContain('-a android.intent.action.VIEW');
+  });
+
+  test('joins a compound command\'s steps with && so a failing step stops the rest', () => {
+    const link: EntityLink = {
+      ...adbLink,
+      steps: [
+        ['adb', 'reverse', 'tcp:8080', 'tcp:8080'],
+        ['adb', 'reverse', 'tcp:9101', 'tcp:9101'],
+        ['adb', 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', '{{url}}'],
+      ],
+    };
+    const result = buildExecCommand(link, { widget_token: 'abc123' });
+    expect(result).toEqual({
+      command:
+        "adb reverse tcp:8080 tcp:8080 && adb reverse tcp:9101 tcp:9101 && " +
+        "adb shell am start -a android.intent.action.VIEW -d 'myapp://widget/abc123'",
+    });
+  });
+
+  test('disables with a reason when steps carry zero or more than one {{url}} sentinel', () => {
+    const noSentinel: EntityLink = { ...adbLink, steps: [['adb', 'reverse', 'tcp:8080', 'tcp:8080']] };
+    expect(buildExecCommand(noSentinel, { widget_token: 'abc123' })).toEqual({
+      disabledReason: 'exec link is misconfigured (no {{url}} in its command)',
+    });
+
+    const twoSentinels: EntityLink = { ...adbLink, steps: [...adbLink.steps!, ['echo', '{{url}}']] };
+    expect(buildExecCommand(twoSentinels, { widget_token: 'abc123' })).toEqual({
+      disabledReason: 'exec link is misconfigured (no {{url}} in its command)',
+    });
   });
 });
