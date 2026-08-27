@@ -31,6 +31,7 @@ Usage:
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
   retrace check [--url URL] [--app NAME] [--flow NAME] [--json] [--abandoned-after DUR]
+  retrace sync --from github --repo ORG/REPO [--workflow NAME] [--since 7d] [--json]
   retrace --version
 
 Run supervision:
@@ -119,6 +120,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRuns(args[1:], stdout, stderr)
 	case "check":
 		return cmdCheck(args[1:], stdout, stderr)
+	case "sync":
+		return cmdSync(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}

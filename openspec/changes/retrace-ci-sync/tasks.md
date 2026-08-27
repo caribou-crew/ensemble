@@ -28,19 +28,19 @@
 
 ## 3. `retrace/sync` package: GitHub backend
 
-- [ ] 3.1 Create `retrace/sync/sync.go`: `type Options struct { Cwd, Repo,
+- [x] 3.1 Create `retrace/sync/sync.go`: `type Options struct { Cwd, Repo,
       Workflow string; Since time.Duration }` and `type Result struct {
       Synced []string; Skipped []SkipReason }` (wire-shaped, since this
       backs both the CLI's `--json` output and the ensemble REST route).
-- [ ] 3.2 Add `github.go`: shell out to `gh run list --repo <repo> --json
+- [x] 3.2 Add `github.go`: shell out to `gh run list --repo <repo> --json
       databaseId,workflowName,headSha,url,createdAt [--workflow <name>]`
       (parse via `encoding/json`, filter by `Since` in Go rather than
       relying on `gh`'s own date flags), then `gh run download <id> --repo
       <repo> --dir <tmp>` per qualifying run into a temp directory.
-- [ ] 3.3 Add a clear, fast-failing check: if `exec.LookPath("gh")` fails,
+- [x] 3.3 Add a clear, fast-failing check: if `exec.LookPath("gh")` fails,
       return an error naming `gh auth login` before any `gh` invocation is
       attempted (spec: "`gh` is missing" scenario).
-- [ ] 3.4 Add the merge step: walk each downloaded artifact's temp
+- [x] 3.4 Add the merge step: walk each downloaded artifact's temp
       directory for `**/manifest.json`, derive `<app>/<flow>/<run-id>` from
       its parent path, and copy that whole run directory into
       `runs.RunsRoot(cwd)/<app>/<flow>/<run-id>/` — but only if that
@@ -49,10 +49,10 @@
       `source.json` (Task 1.1) into the copied directory afterward with
       `Kind: "ci"`, the workflow name, run URL, and SHA from the `gh run
       list` record, and `SyncedAt: now`.
-- [ ] 3.5 An artifact directory with no `manifest.json` anywhere under it
+- [x] 3.5 An artifact directory with no `manifest.json` anywhere under it
       is recorded in `Result.Skipped` with a reason and nothing from it is
       written (spec: "Malformed artifact is skipped" scenario).
-- [ ] 3.6 Tests using a fake `gh` on `PATH` (a test script/binary that
+- [x] 3.6 Tests using a fake `gh` on `PATH` (a test script/binary that
       prints canned `gh run list` JSON and pre-populates the `--dir` a `gh
       run download` call would have written to) covering: first sync merges
       everything in range; second sync with no new runs merges nothing;
@@ -60,18 +60,18 @@
 
 ## 4. `retrace sync` CLI command
 
-- [ ] 4.1 Add `retrace/cmd/retrace/cmd_sync.go`: flags `--from
+- [x] 4.1 Add `retrace/cmd/retrace/cmd_sync.go`: flags `--from
       github|s3` (only `github` implemented; `s3` errors "not yet
       supported"), `--repo`, `--workflow`, `--since` (duration, default
       `7d`), `--json`. Delegates entirely to `sync.Run` (Task 3.1) — no
       logic duplicated from the package.
-- [ ] 4.2 Wire `case "sync": return cmdSync(args[1:], stdout, stderr)` into
+- [x] 4.2 Wire `case "sync": return cmdSync(args[1:], stdout, stderr)` into
       `retrace/cmd/retrace/main.go`, matching the existing `ref`/`replay`
       dispatch pattern.
-- [ ] 4.3 `--json` prints `sync.Result` as the CI/agent-readable
+- [x] 4.3 `--json` prints `sync.Result` as the CI/agent-readable
       contract; without it, print one line per synced run and one line per
       skipped artifact with its reason.
-- [ ] 4.4 CLI tests mirroring `cmd_ref_test.go`'s process-level style:
+- [x] 4.4 CLI tests mirroring `cmd_ref_test.go`'s process-level style:
       missing `--repo` is a usage error; a successful sync's `--json`
       output round-trips through `sync.Result`'s JSON tags.
 
