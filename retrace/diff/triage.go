@@ -66,6 +66,11 @@ type TriageSignals struct {
 	Hop     bool `json:"hop"`
 	Spec    bool `json:"spec"`
 	Capture bool `json:"capture"`
+	// Stack is the one signal that is not a plane of the comparison. The
+	// other five describe what differs BETWEEN the two runs; this one
+	// describes what differed about the conditions they were recorded under,
+	// which is why it can explain any of the others.
+	Stack bool `json:"stack"`
 }
 
 // Triage is the classification: what kind of problem this is, and which rule
@@ -93,6 +98,13 @@ type Triage struct {
 //
 //   - capture first because a recording that is not trustworthy makes every
 //     plane below it confident nonsense.
+//   - stack second, above every traffic plane, because a backend that changed
+//     between the two runs can cause ANY of them to move — including wire,
+//     since a different response is what the client's next call is computed
+//     from. Reporting client-behavior against a redeployed stack is the exact
+//     misattribution this signal exists to prevent, and it is the one the
+//     reader is least equipped to catch: the client is the only thing their
+//     test touched, so it is the only thing they think to inspect.
 //   - wire above hop because a client making different calls is the CAUSE of
 //     the chain differing; reporting "stack" there sends the reader to the
 //     wrong repository.
@@ -112,25 +124,32 @@ var defaultTriageRules = []config.TriageRule{{
 	Label: TriageHarness,
 	When:  config.TriageWhen{Capture: config.TriageMoved},
 }, {
+	Name:  "stack-changed",
+	Label: TriageStack,
+	When:  config.TriageWhen{Capture: config.TriageSame, Stack: config.TriageMoved},
+}, {
 	Name:  "wire-moved",
 	Label: TriageClientBehavior,
-	When:  config.TriageWhen{Capture: config.TriageSame, Wire: config.TriageMoved},
+	When:  config.TriageWhen{Capture: config.TriageSame, Stack: config.TriageSame, Wire: config.TriageMoved},
 }, {
 	Name:  "hop-only",
 	Label: TriageStack,
-	When:  config.TriageWhen{Capture: config.TriageSame, Wire: config.TriageSame, Hop: config.TriageMoved},
+	When: config.TriageWhen{
+		Capture: config.TriageSame, Stack: config.TriageSame,
+		Wire: config.TriageSame, Hop: config.TriageMoved,
+	},
 }, {
 	Name:  "spec-only",
 	Label: TriageContractDrift,
 	When: config.TriageWhen{
-		Capture: config.TriageSame, Wire: config.TriageSame,
+		Capture: config.TriageSame, Stack: config.TriageSame, Wire: config.TriageSame,
 		Hop: config.TriageSame, Spec: config.TriageMoved,
 	},
 }, {
 	Name:  "pixel-only",
 	Label: TriageClientUI,
 	When: config.TriageWhen{
-		Capture: config.TriageSame, Wire: config.TriageSame,
+		Capture: config.TriageSame, Stack: config.TriageSame, Wire: config.TriageSame,
 		Hop: config.TriageSame, Spec: config.TriageSame, Pixel: config.TriageMoved,
 	},
 }}
@@ -173,6 +192,8 @@ func signalOf(s TriageSignals, name string) (moved bool, known bool) {
 		return s.Spec, true
 	case "capture":
 		return s.Capture, true
+	case "stack":
+		return s.Stack, true
 	}
 	return false, false
 }
@@ -317,6 +338,12 @@ func signalsOf(s Summary) TriageSignals {
 	sig.Capture = len(s.Quarantined) > 0 ||
 		s.Capture.A.Status != trace.VerdictOK ||
 		s.Capture.B.Status != trace.VerdictOK
+	// Only a DEMONSTRATED difference: Stack is nil when neither side recorded
+	// a fingerprint, or when the two share none. Absence is not evidence, the
+	// same rule geometryCheck follows — otherwise every run recorded before
+	// this field existed, and every standalone run, would report its backend
+	// as having changed.
+	sig.Stack = s.Stack != nil
 	return sig
 }
 

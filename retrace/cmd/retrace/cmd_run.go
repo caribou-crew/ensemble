@@ -529,6 +529,15 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		return runs.Manifest{}, err
 	}
 
+	// Reported, not swallowed, and not a trust note: a stack retrace could not
+	// fingerprint does not make the RECORDING less trustworthy, it makes one
+	// future comparison less informative. Recording it as a capture-trust note
+	// would make the verdict "suspect", and diff quarantines a suspect side —
+	// turning a missing diagnostic into a refused comparison.
+	if err := s.StackUnavailable(); err != nil {
+		fmt.Fprintf(o.Stderr, "retrace: could not fingerprint the stack (%v) — this run records no stack, so a diff against it cannot tell a redeployed backend from a client change\n", err)
+	}
+
 	hops := s.Hops()
 	trust := assessTrust(s, hops, checkpoints, groups, exitCode)
 
@@ -543,6 +552,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		FinishedAt:  o.Now(),
 		Checkpoints: checkpoints,
 		Device:      device,
+		Stack:       s.Stack(),
 		Groups:      groups,
 		Capture:     trust,
 		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},

@@ -16,6 +16,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
+	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
 // clientTimeout bounds a single HTTP round trip (including reading the
@@ -225,4 +226,49 @@ func (c *Client) EndSession(ctx context.Context, id string) (capture.EndReport, 
 	path := "/api/sessions/" + url.PathEscape(id)
 	err := c.do(ctx, http.MethodDelete, path, nil, &out)
 	return out, err
+}
+
+// statusResponse is the slice of ensemble's GET /api/status this command
+// needs. Decoded into a local shape rather than importing ensemble's own
+// types: retrace's whole relationship with ensemble is four HTTP calls, and
+// a shared struct would make every field ensemble adds a retrace rebuild.
+type statusResponse struct {
+	Services []struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"services"`
+	Seed *runs.SeedRef `json:"seed"`
+}
+
+// Stack fingerprints the running backend from GET /api/status.
+//
+// Returns (nil, nil) — not an empty Stack — when the control plane reports
+// no fingerprints and no seed, which is what an older ensemble does. An empty
+// Stack would be a claim ("this backend consists of nothing"), and it would
+// compare equal to every other run that recorded nothing, turning two
+// unfingerprinted runs into positive evidence that the stack did not move.
+//
+// Services with an empty version are dropped rather than recorded blank, for
+// the same reason: runs.SameStack skips a service missing from either side,
+// but a blank on one side against a real value on the other would otherwise
+// have to be read as a change nobody can substantiate.
+func (c *Client) Stack(ctx context.Context) (*runs.Stack, error) {
+	var out statusResponse
+	if err := c.do(ctx, http.MethodGet, "/api/status", nil, &out); err != nil {
+		return nil, err
+	}
+	stack := &runs.Stack{Seed: out.Seed}
+	for _, svc := range out.Services {
+		if svc.Name == "" || svc.Version == "" {
+			continue
+		}
+		if stack.Services == nil {
+			stack.Services = map[string]string{}
+		}
+		stack.Services[svc.Name] = svc.Version
+	}
+	if len(stack.Services) == 0 && stack.Seed == nil {
+		return nil, nil
+	}
+	return stack, nil
 }

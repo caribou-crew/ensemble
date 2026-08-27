@@ -20,6 +20,12 @@ type EnsembleClient interface {
 	StartSession(ctx context.Context, req SessionRequest) (edgeAddr string, err error)
 	SessionHops(ctx context.Context, id string) ([]trace.Hop, error)
 	EndSession(ctx context.Context, id string) (EndReport, error)
+	// Stack fingerprints what the backend currently is: a value per service
+	// and the last applied seed. A nil return is "this control plane told us
+	// nothing", which the manifest records as absence — never as an empty
+	// stack, which would compare equal to every other run that recorded
+	// nothing.
+	Stack(ctx context.Context) (*runs.Stack, error)
 }
 
 // SessionRequest is what StartSession registers with ensemble's control
@@ -71,8 +77,22 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		_ = os.RemoveAll(p.RunDir)
 		return nil, fmt.Errorf("register session with ensemble: %w", err)
 	}
+	// Read at the START of the run: this is the stack the test is about to
+	// exercise. Reading it at the end would report whatever the stack became,
+	// which after a mid-run redeploy is not what produced the recording.
+	//
+	// A failure here is not fatal. A control plane that cannot answer leaves
+	// the run with no stack record, and a diff with no record on one side
+	// reports no stack change — the same absence-is-not-evidence rule the
+	// screen-geometry guard follows. Refusing to record a run over a
+	// diagnostic would be the worse trade.
+	stackCtx, stackCancel := context.WithTimeout(context.Background(), controlTimeout)
+	stack, stackErr := c.Stack(stackCtx)
+	stackCancel()
+
 	s := &Session{
 		Paths: p, RunID: runID, App: o.App, Flow: o.Flow, Mode: runs.ModeEnsemble, StartedAt: now(),
+		stack: stack, stackErr: stackErr,
 		ProxyURL:    "http://" + edge,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		ens:         c,

@@ -168,7 +168,8 @@
       "wire": false,
       "hop": false,
       "spec": false,
-      "capture": false
+      "capture": false,
+      "stack": false
     }
   }
 }

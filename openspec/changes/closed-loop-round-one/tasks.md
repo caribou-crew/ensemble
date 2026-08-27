@@ -423,11 +423,33 @@ Amendments:
       `app@latest`; `retrace runs --root …` lists across roots.
 
 ## 12. Stack fingerprint (ensemble/server, Tasks 4/5)
-- [ ] ensemble.yaml `services.<name>.version:` (command) — default git sha of
+- [x] ensemble.yaml `services.<name>.version:` (command) — default git sha of
       `dir` when it is a repo; `/api/status` returns `{service: version}` +
       `seed: {name, appliedAt}`.
-- [ ] retrace copies it into `manifest.stack`; diff reports
+- [x] retrace copies it into `manifest.stack`; diff reports
       `stack: { changed: [svc…] }` and triage can emit `stack`.
+
+Amendments:
+
+- **The git default is the commit plus a digest of anything uncommitted.** A
+  bare sha reports two runs carrying two different uncommitted edits as the
+  same stack — the false negative this feature exists to prevent, on the
+  normal state of a developer's machine.
+- **`/api/status` reports the version on each service's own state row**
+  (`services[i].version`) rather than as a separate `{service: version}` map.
+  Same information, already keyed by name, and it inherits the existing
+  shape's absent-vs-empty handling.
+- **Only a proven difference is a stack change.** A service fingerprinted on
+  one side and not the other reports nothing, and a control plane with
+  nothing to report yields no `manifest.stack` at all rather than an empty
+  one — an empty stack compares equal to every other run that recorded
+  nothing. Same rule as section 6's geometry guard.
+- **`stack` is a sixth triage signal, below `capture` and above `wire`**, not
+  merely a new way to reach the existing `hop-only` rule. A backend that
+  moved can cause any plane to move, wire included, so a lower rank would
+  keep reporting `client-behavior` against a redeployed stack.
+- **Databases get no fingerprint.** They have no code of their own; what
+  varies about a database is its seed, which is recorded separately.
 
 ## 13. Run supervision (Task 4)
 - [x] `finalized` file written last; `retrace runs` flags dirs without it

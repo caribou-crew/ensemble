@@ -111,8 +111,13 @@ type Session struct {
 	// ens is nil in standalone mode and non-nil in ensemble-attached mode.
 	// It is the single discriminator every method below branches on — see
 	// Drain, Close, ProxyFailure and WatchProxy in ensemble.go.
-	ens        EnsembleClient
-	hops       []trace.Hop // drained from ensemble; nil in standalone
+	ens  EnsembleClient
+	hops []trace.Hop // drained from ensemble; nil in standalone
+	// stack is the backend fingerprint read at session start, nil when the
+	// control plane could not answer; stackErr is why. Both nil in standalone
+	// mode, which has no control plane to ask.
+	stack      *runs.Stack
+	stackErr   error
 	endReport  EndReport
 	ended      bool // EndSession actually returned a report — see EndVerdict
 	trustNotes []string
@@ -482,3 +487,20 @@ func GitInfo(dir string) runs.Git {
 	}
 	return g
 }
+
+// Stack is the backend fingerprint this run was recorded against, or nil when
+// there is none to report — a standalone run, a control plane too old to
+// answer, or one that failed to.
+//
+// Returned by value-or-nil rather than with an error, because every caller
+// treats a failure and an absence identically: the manifest records no stack,
+// and a diff missing the record on either side reports no stack change. The
+// reason is available separately for the log line, in StackUnavailable.
+func (s *Session) Stack() *runs.Stack { return s.stack }
+
+// StackUnavailable reports why the stack could not be fingerprinted, or nil
+// if it was (or if nothing was asked, as in standalone mode). Worth a line on
+// stderr: a run that silently recorded no stack looks identical to one
+// recorded against a control plane that has no stack to report, and the two
+// call for different fixes.
+func (s *Session) StackUnavailable() error { return s.stackErr }

@@ -17,7 +17,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
-// ensembleAPI is an httptest server that answers exactly the four routes
+// ensembleAPI is an httptest server that answers exactly the five routes
 // retrace uses, in exactly the shapes ensemble/server/routes.go serves
 // them. retrace must NOT import ensemble — not in production code and not
 // in a test (a test-only import is still a require + replace in
@@ -35,6 +35,10 @@ type ensembleAPI struct {
 	mu      sync.Mutex
 	started []string // session ids POST /api/sessions was called with
 	ended   []string // session ids DELETE /api/sessions/{id} was called with
+	// status is the raw GET /api/status body. Empty means the route reports a
+	// stack with nothing in it — the shape an ensemble predating `version:`
+	// serves, and the one every other test in this file exercises.
+	status string
 }
 
 func newEnsembleAPI(t *testing.T, hops []trace.Hop) *ensembleAPI {
@@ -51,6 +55,19 @@ func newEnsembleAPI(t *testing.T, hops []trace.Hop) *ensembleAPI {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(w, map[string]any{"ok": true, "version": "test"})
+	})
+	// The stack fingerprint, read once at session start. A control plane that
+	// does not serve this route leaves the run with no stack record rather
+	// than failing it.
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		body := a.status
+		a.mu.Unlock()
+		if body == "" {
+			body = `{"services":[{"name":"bff"}],"readiness":{"state":"ready"}}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
 	})
 	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ ID, Entry string }
@@ -564,5 +581,58 @@ func TestNoEnsembleForcesStandaloneEvenWhenEnsembleIsUp(t *testing.T) {
 	defer api.mu.Unlock()
 	if len(api.started) != 0 {
 		t.Fatalf("--no-ensemble still registered sessions: %v", api.started)
+	}
+}
+
+// TestAnAttachedRunRecordsTheStackItWasRecordedAgainst is the end of the
+// chain the fingerprint travels: ensemble reports it on /api/status, the
+// client decodes it, the session holds it, and the manifest keeps it. A
+// value that is read correctly and then dropped before the manifest is
+// written is worth exactly nothing, and every stage above this one passes
+// its own tests while that happens.
+func TestAnAttachedRunRecordsTheStackItWasRecordedAgainst(t *testing.T) {
+	api := newEnsembleAPI(t, chainHops())
+	api.status = `{"services":[{"name":"bff","version":"abc123"}],` +
+		`"seed":{"name":"baseline","appliedAt":"2026-08-01T12:00:00Z"}}`
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\nentry: bff\n")
+
+	args := append([]string{"run", "--flow", "checkout", "--ensemble", api.URL}, selfCmd(t, "TestHelperFetchesThroughProxy")...)
+	res := runRetrace(t, bin, cwd, "fetch", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+
+	m := onlyManifest(t, cwd, "web", "checkout")
+	if m.Stack == nil {
+		t.Fatal("the manifest records no stack for a run against a control plane that reported one")
+	}
+	if m.Stack.Services["bff"] != "abc123" {
+		t.Errorf("stack services = %v, want bff=abc123", m.Stack.Services)
+	}
+	if m.Stack.Seed == nil || m.Stack.Seed.Name != "baseline" {
+		t.Errorf("stack seed = %+v, want baseline", m.Stack.Seed)
+	}
+}
+
+// TestAnAttachedRunAgainstAnUnfingerprintedStackRecordsNone is the other
+// half: nil, never an empty stack. An empty one compares equal to every
+// other run that recorded nothing, which would turn two unfingerprinted runs
+// into positive evidence that the backend did not move.
+func TestAnAttachedRunAgainstAnUnfingerprintedStackRecordsNone(t *testing.T) {
+	api := newEnsembleAPI(t, chainHops())
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\nentry: bff\n")
+
+	args := append([]string{"run", "--flow", "checkout", "--ensemble", api.URL}, selfCmd(t, "TestHelperFetchesThroughProxy")...)
+	res := runRetrace(t, bin, cwd, "fetch", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+
+	if m := onlyManifest(t, cwd, "web", "checkout"); m.Stack != nil {
+		t.Errorf("manifest stack = %+v, want nil", m.Stack)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
@@ -190,6 +191,60 @@ type Summary struct {
 	// leave to the reader. See triage.go; never empty on a Summary Build
 	// returned, including both quarantine exits.
 	Triage Triage `json:"triage"`
+	// Stack names what was demonstrably different about the two backends.
+	// Nil when nothing was — including when there is nothing to compare,
+	// which is the common case for a standalone run or a recording made
+	// before ensemble reported fingerprints at all.
+	Stack *StackDiff `json:"stack,omitempty"`
+}
+
+// StackDiff is the evidence that the two runs were not recorded against the
+// same backend. It exists so a diff can stop short of blaming the client for
+// a change the client did not make: two runs against two builds of a service
+// produce a report that looks exactly like a client regression, because the
+// client is the only thing the test touched.
+//
+// Non-nil ONLY when something is demonstrably different. A side that recorded
+// no stack, or a service only one side fingerprinted, produces nothing here —
+// absence of evidence is not evidence, the same rule geometryCheck follows,
+// and for the same reason: a signal that fires on missing data fires on every
+// run made before the feature existed.
+type StackDiff struct {
+	// Changed names the services whose fingerprints differ, sorted. Both
+	// sides fingerprinted every service named here.
+	Changed []string `json:"changed,omitempty"`
+	// SeedA/SeedB name the seed each side started from, set only when the two
+	// differ. Two runs primed from different data are not comparable as
+	// behaviour, and nothing else in the report would ever say so.
+	SeedA string `json:"seedA,omitempty"`
+	SeedB string `json:"seedB,omitempty"`
+}
+
+// stackDiffOf compares the two manifests' stack records, or returns nil when
+// there is nothing to say. See StackDiff for why "nothing to say" is the
+// answer whenever either side recorded nothing.
+func stackDiffOf(a, b RunRef) *StackDiff {
+	changed, seedMoved := runs.SameStack(a.Manifest.Stack, b.Manifest.Stack)
+	if len(changed) == 0 && !seedMoved {
+		return nil
+	}
+	out := &StackDiff{Changed: changed}
+	if seedMoved {
+		out.SeedA = describeSeed(a.Manifest.Stack.Seed)
+		out.SeedB = describeSeed(b.Manifest.Stack.Seed)
+	}
+	return out
+}
+
+// describeSeed renders one side's seed for the report. The timestamp is
+// included because the same seed re-applied between two runs is a real
+// difference — whatever the first run left behind is gone — and the name
+// alone cannot say so.
+func describeSeed(s *runs.SeedRef) string {
+	if s == nil {
+		return ""
+	}
+	return s.Name + " at " + s.AppliedAt.Format(time.RFC3339)
 }
 
 // Gate is one configured CI budget for one diff plane, read from
@@ -494,6 +549,11 @@ func Build(in BuildInput) (Summary, error) {
 	// not about what got computed, and reporting false here for a run that
 	// did configure a spec would be untrue.
 	s.OpenAPIConfigured = in.Cfg.OpenAPI != ""
+	// Likewise before every exit, and for the same reason: what the two
+	// backends were is a fact about the runs, not about what got compared. A
+	// refused comparison whose two stacks disagree should say so — that is
+	// often the first thing worth knowing about it.
+	s.Stack = stackDiffOf(in.A, in.B)
 
 	// --- incomplete, checked first and unconditionally (not even
 	// --allow-degraded gets past it — see incompleteCheck's doc comment). A
@@ -1226,8 +1286,39 @@ func RenderText(w io.Writer, s Summary) {
 	renderConformance(w, s.Conformance)
 
 	renderSuppressions(w, s.Suppressions)
+	renderStack(w, s.Stack)
 	renderTriage(w, s.Triage)
 	fmt.Fprintf(w, "VERDICT: %s\n", s.Verdict)
+}
+
+// renderStack prints what was different about the two backends, immediately
+// before the triage line it most often explains. Position is the point: the
+// reader who is about to be told "client-behavior" should already have read
+// that the backend they tested against is not the one the reference was
+// recorded against.
+//
+// Nothing is printed when nothing differed, including when nothing was
+// recorded — see StackDiff. A heading on every clean run would train the
+// reader to skip the section on the runs where it matters.
+func renderStack(w io.Writer, sd *StackDiff) {
+	if sd == nil {
+		return
+	}
+	if len(sd.Changed) > 0 {
+		fmt.Fprintf(w, "STACK: %s changed between these two runs — a difference below may be the backend's, not the client's\n", strings.Join(sd.Changed, ", "))
+	}
+	if sd.SeedA != "" || sd.SeedB != "" {
+		fmt.Fprintf(w, "STACK: seeded differently — A from %s, B from %s\n", orNone(sd.SeedA), orNone(sd.SeedB))
+	}
+}
+
+// orNone renders an unrecorded seed as a word rather than as a blank, so the
+// line reads as a fact instead of as a truncated one.
+func orNone(s string) string {
+	if s == "" {
+		return "no seed"
+	}
+	return s
 }
 
 // renderSuppressions prints the tolerances that fired, immediately before
@@ -1291,7 +1382,8 @@ func renderTriage(w io.Writer, t Triage) {
 		name  string
 		moved bool
 	}{
-		{"capture", t.Signals.Capture}, {"wire", t.Signals.Wire}, {"hop", t.Signals.Hop},
+		{"capture", t.Signals.Capture}, {"stack", t.Signals.Stack},
+		{"wire", t.Signals.Wire}, {"hop", t.Signals.Hop},
 		{"spec", t.Signals.Spec}, {"pixel", t.Signals.Pixel},
 	} {
 		if s.moved {

@@ -66,6 +66,12 @@ type fakeEnsemble struct {
 	// and push becomes a no-op — a fake that keeps serving hops for an
 	// ended session cannot fail when a caller ends the session too early.
 	ended bool
+	// stack/stackErr are what Stack returns; stackCalls counts the asks, so a
+	// test can pin that the fingerprint is read once at session start and not
+	// polled.
+	stack      *runs.Stack
+	stackErr   error
+	stackCalls int
 }
 
 func (f *fakeEnsemble) push(h trace.Hop) {
@@ -78,6 +84,16 @@ func (f *fakeEnsemble) push(h trace.Hop) {
 }
 
 func (f *fakeEnsemble) Health(context.Context) error { return nil }
+
+// Stack returns whatever the test loaded into stack/stackErr — nil/nil by
+// default, which models the honest common case: a control plane with nothing
+// to report, not one that fails.
+func (f *fakeEnsemble) Stack(context.Context) (*runs.Stack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stackCalls++
+	return f.stack, f.stackErr
+}
 
 func (f *fakeEnsemble) StartSession(_ context.Context, req SessionRequest) (string, error) {
 	return "127.0.0.1:0", nil
@@ -517,5 +533,62 @@ func TestWatchProxyNeverDialsEnsemblesEdgeEvenWhenSomethingIsListening(t *testin
 	case <-dialed:
 		t.Fatal("WatchProxy dialed ensemble's client edge; attached sessions must never probe it")
 	default:
+	}
+}
+
+// TestTheStackIsFingerprintedOnceAtSessionStart pins both halves: that the
+// fingerprint is read at all, and that it is read at the START. Read at the
+// end it would report whatever the stack became, which after a mid-run
+// redeploy is not what produced the recording.
+func TestTheStackIsFingerprintedOnceAtSessionStart(t *testing.T) {
+	f := &fakeEnsemble{stack: &runs.Stack{Services: map[string]string{"api": "abc123"}}}
+	s := attachedSessionFor(t, f)
+	defer s.Close()
+
+	if f.stackCalls != 1 {
+		t.Errorf("Stack was called %d times, want exactly 1 — at session start", f.stackCalls)
+	}
+	got := s.Stack()
+	if got == nil || got.Services["api"] != "abc123" {
+		t.Errorf("Session.Stack() = %+v, want the control plane's answer", got)
+	}
+	if err := s.StackUnavailable(); err != nil {
+		t.Errorf("StackUnavailable = %v on a session that got an answer", err)
+	}
+}
+
+// TestAControlPlaneThatCannotFingerprintStillRecordsTheRun is the trade this
+// makes explicit: a missing diagnostic is not worth a refused recording. The
+// reason is kept so the run can say why rather than silently having no stack.
+func TestAControlPlaneThatCannotFingerprintStillRecordsTheRun(t *testing.T) {
+	f := &fakeEnsemble{stackErr: errors.New("status: 404 not found")}
+	s := attachedSessionFor(t, f)
+	defer s.Close()
+
+	if s.Stack() != nil {
+		t.Errorf("Session.Stack() = %+v after a failed fingerprint, want nil", s.Stack())
+	}
+	err := s.StackUnavailable()
+	if err == nil {
+		t.Fatal("StackUnavailable is nil after the control plane refused")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("the reason was replaced rather than carried: %v", err)
+	}
+}
+
+// TestAControlPlaneWithNothingToReportIsNotAFailure separates the two
+// absences. An older ensemble answers /api/status perfectly well and has no
+// fingerprints in it; that is a stack with nothing to say, not an error worth
+// putting on someone's stderr.
+func TestAControlPlaneWithNothingToReportIsNotAFailure(t *testing.T) {
+	s := attachedSessionFor(t, &fakeEnsemble{})
+	defer s.Close()
+
+	if s.Stack() != nil {
+		t.Errorf("Session.Stack() = %+v, want nil", s.Stack())
+	}
+	if err := s.StackUnavailable(); err != nil {
+		t.Errorf("StackUnavailable = %v; nothing failed", err)
 	}
 }

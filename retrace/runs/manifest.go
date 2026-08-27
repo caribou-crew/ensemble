@@ -78,6 +78,12 @@ type Manifest struct {
 	// meaningless — the guard belongs at run scale, where it can refuse once
 	// rather than mislead many times.
 	Device *Device `json:"device,omitempty"`
+	// Stack is what the backend was when this run was recorded. Nil in
+	// standalone mode and against any control plane too old to report it —
+	// the same absence-is-not-evidence encoding Device uses, and for the same
+	// reason: a zero Stack is an empty service map, which compares equal to
+	// every other run that failed to record one.
+	Stack *Stack `json:"stack,omitempty"`
 }
 
 // Device describes the screen a run's shots were taken on, read from a
@@ -297,6 +303,9 @@ func WriteManifest(p Paths, m *Manifest) error {
 	if err := validateDevice(m.Device); err != nil {
 		return err
 	}
+	if err := validateStack(m.Stack); err != nil {
+		return err
+	}
 	if m.Checkpoints == nil {
 		m.Checkpoints = []Checkpoint{}
 	}
@@ -368,6 +377,9 @@ func ReadManifest(path string) (Manifest, error) {
 	// not reach a comparison carrying a geometry that compares equal to
 	// another broken one.
 	if err := validateDevice(m.Device); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateStack(m.Stack); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil

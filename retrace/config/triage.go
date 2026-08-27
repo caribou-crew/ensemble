@@ -27,6 +27,11 @@ type TriageWhen struct {
 	Hop     string `yaml:"hop"`
 	Spec    string `yaml:"spec"`
 	Capture string `yaml:"capture"`
+	// Stack is true when the two runs were recorded against demonstrably
+	// different backends — a service fingerprint that moved, or a different
+	// seed. Unlike the other five it is not a plane of the comparison at all;
+	// it is evidence about the conditions the comparison was made under.
+	Stack string `yaml:"stack"`
 }
 
 // Constraints returns the rule's non-empty constraints keyed by signal name,
@@ -38,6 +43,7 @@ func (w TriageWhen) Constraints() [][2]string {
 	var out [][2]string
 	for _, c := range [][2]string{
 		{"capture", w.Capture},
+		{"stack", w.Stack},
 		{"wire", w.Wire},
 		{"hop", w.Hop},
 		{"spec", w.Spec},

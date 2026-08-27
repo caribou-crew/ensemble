@@ -153,8 +153,8 @@ th, td { border: 1px solid #8884; padding: .25rem .5rem; text-align: left; verti
 <h2>Triage</h2>
 <p><strong>{{.Label}}</strong> <span class="meta">by rule <code>{{.Rule}}</code></span></p>
 <p class="meta">signals moved:
-{{- if or .Signals.Capture .Signals.Wire .Signals.Hop .Signals.Spec .Signals.Pixel}}
-{{if .Signals.Capture}}<code>capture</code> {{end}}{{if .Signals.Wire}}<code>wire</code> {{end}}{{if .Signals.Hop}}<code>hop</code> {{end}}{{if .Signals.Spec}}<code>spec</code> {{end}}{{if .Signals.Pixel}}<code>pixel</code> {{end}}
+{{- if or .Signals.Capture .Signals.Stack .Signals.Wire .Signals.Hop .Signals.Spec .Signals.Pixel}}
+{{if .Signals.Capture}}<code>capture</code> {{end}}{{if .Signals.Stack}}<code>stack</code> {{end}}{{if .Signals.Wire}}<code>wire</code> {{end}}{{if .Signals.Hop}}<code>hop</code> {{end}}{{if .Signals.Spec}}<code>spec</code> {{end}}{{if .Signals.Pixel}}<code>pixel</code> {{end}}
 {{- else}} none{{end}}</p>
 {{end}}{{end}}{{end}}
 
