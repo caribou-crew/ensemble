@@ -146,24 +146,31 @@
 
 ## 8. `dashboard/design-system`: shared diff-viewer components
 
-- [ ] 8.1 Move `ShotCompare.tsx`/`.css`/`.test.tsx`, `WireDiffTable.tsx`/
+- [x] 8.1 Move `ShotCompare.tsx`/`.css`/`.test.tsx`, `WireDiffTable.tsx`/
       `.css`/`.test.tsx`, `HopDeltaList.tsx`/`.css`, and
       `CaptureBanner.tsx`/`.css`/`.test.tsx` from
       `dashboard/retrace-ui/src/components/` into `dashboard/design-system/
-      components/`, along with the wire types they render (`CaptureTrust`,
-      `Verdict`, `HopDiff`, `Route`, `Entry`, `FieldDiff`, `Section`,
-      `CheckpointVerdict`) currently in `retrace-ui/src/api/types.ts`, into
-      a new `design-system/diffTypes.ts`.
-- [ ] 8.2 Change `ShotCompare`'s image-URL construction: replace its
+      components/`, along with the wire types they render (and the
+      supporting types those depend on: `TrustReason`, `Gap`, `Rect`,
+      `HeaderDiff`, `ServiceCount`, `RouteFailure`, `StatusFinding`)
+      currently in `retrace-ui/src/api/types.ts`, into a new
+      `design-system/diffTypes.ts`. `retrace-ui/src/api/types.ts`
+      re-exports them from there so existing call sites (App.tsx,
+      api/client.ts, etc.) are unchanged.
+- [x] 8.2 Change `ShotCompare`'s image-URL construction: replace its
       `import { api } from '../api/client'` with a `resolveShotUrl: (app:
-      string, flow: string, side: string, name: string) => string` prop.
-- [ ] 8.3 Update `dashboard/design-system/package.json` exports to include
-      the four components and `diffTypes`.
-- [ ] 8.4 Update `dashboard/retrace-ui` to import these from
+      string, flow: string, side: string, name: string) => string` prop
+      (exported as `ResolveShotUrl`).
+- [x] 8.3 Update `dashboard/design-system/package.json` exports to include
+      the four components and `diffTypes` (one subpath per file, matching
+      the existing `./useAsync` pattern).
+- [x] 8.4 Update `dashboard/retrace-ui` to import these from
       `@ensemble/design-system` instead of its local `components/`/
       `api/types.ts`, passing a `resolveShotUrl` that builds `/api/shots/
-      ...` URLs (its existing behavior, now explicit).
-- [ ] 8.5 Run `pnpm -r --if-present test` and fix any import path fallout;
+      ...` URLs (its existing behavior, now explicit). `QueueList.tsx`'s
+      own `CaptureBanner` import was also repointed (not previously
+      listed, but broke on the move).
+- [x] 8.5 Run `pnpm -r --if-present test` and fix any import path fallout;
       confirm `retrace-ui`'s existing component tests still pass unchanged
       in their new location (moved, not rewritten).
 
