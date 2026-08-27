@@ -171,7 +171,15 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mem") == "1" {
 		states = s.Orch.WithMemory(r.Context(), states)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"services": states, "readiness": s.Orch.Readiness()})
+	body := map[string]any{"services": states, "readiness": s.Orch.Readiness()}
+	// Omitted entirely when no seed has been applied, rather than sent as
+	// null or as a zero-time record: "this stack was never seeded" and "this
+	// stack was seeded by a nameless seed at the epoch" are different facts,
+	// and retrace stores whichever one it is told.
+	if seed := s.Orch.LastSeed(); seed != nil {
+		body["seed"] = seed
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // TopologyNode is one node in the topology graph: a service, database,

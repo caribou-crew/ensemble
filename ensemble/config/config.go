@@ -153,6 +153,18 @@ type Service struct {
 	Proxy  int               `yaml:"proxy"` // intercept port (0 = auto-assign later)
 	Env    map[string]string `yaml:"env"`
 	Health string            `yaml:"health"` // path, e.g. /healthz
+	// Version is a shell command whose first line of stdout fingerprints
+	// what this service is currently running — a build id, an image digest,
+	// a `curl -s localhost:9000/version`. Left empty, ensemble takes the git
+	// commit of Dir (plus a digest of anything uncommitted) when Dir is a
+	// repository, and records nothing when it is not.
+	//
+	// It exists for retrace: two runs whose stacks disagree produce a diff
+	// that looks like a client regression, because the client is the only
+	// thing the test touched. The fingerprint is what lets the report say
+	// which services moved instead. Nothing parses or orders these values;
+	// they are only ever equal or not.
+	Version string `yaml:"version"`
 	// OnHealthy is a shell command run once each time this service's
 	// health gate passes — e.g. a database seed script that only makes
 	// sense once this service (and whatever it depends on) is actually

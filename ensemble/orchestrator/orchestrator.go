@@ -52,7 +52,13 @@ type ServiceState struct {
 	// variant, if any) — a free-form dashboard badge, empty meaning
 	// "service". Named Kind, not Type, to avoid colliding with the
 	// database Type enum (postgres/redis/...).
-	Kind      string    `json:"kind,omitempty"`
+	Kind string `json:"kind,omitempty"`
+	// Version fingerprints what this service is running, taken once when it
+	// became healthy — not at read time. A fingerprint describes the process
+	// actually serving traffic, and a source directory edited after start no
+	// longer describes it. Empty for databases, which have no code of their
+	// own; what varies about a database is its seed, tracked separately.
+	Version   string    `json:"version,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	LastErr   string    `json:"lastErr,omitempty"`
 	// RSSKB is resident memory in KB, sampled best-effort at read time (see
@@ -92,6 +98,9 @@ type Orchestrator struct {
 	states      map[string]*ServiceState
 	procs       map[string]*exec.Cmd // native nodes with a running process
 	dockerNodes map[string]bool      // nodes currently running as containers
+	// lastSeed is the most recent successfully applied seed, or nil. Guarded
+	// by mu like every other field here; read through LastSeed.
+	lastSeed *SeedRecord
 	// variants is each service's chosen config.Service variant, when it
 	// declares any: seeded from Opts.Variants, else the config default,
 	// and changed by SetVariant. Read through currentVariant.
@@ -994,10 +1003,16 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		o.logf("orchestrator: %s: on_healthy hook finished in %s", name, time.Since(hookStart).Round(time.Millisecond))
 	}
 
+	// Taken here, after the health gate and the on_healthy hook, because a
+	// `version:` command is allowed to ask the service itself — which cannot
+	// answer until it is up. Never fatal: see serviceVersion.
+	version := serviceVersion(ctx, svc.Version, workDir)
+
 	o.setState(name, func(s *ServiceState) {
 		s.Status = StatusHealthy
 		s.StartedAt = time.Now()
 		s.LastErr = ""
+		s.Version = version
 	})
 	return nil
 }

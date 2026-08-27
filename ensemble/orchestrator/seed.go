@@ -65,6 +65,11 @@ func (o *Orchestrator) Seed(ctx context.Context, name string) ([]SeedStepResult,
 		}
 	}
 
+	// Recorded only on the way out, after every step succeeded. A seed that
+	// failed halfway left the data in a state no name describes, and stamping
+	// the manifest with that name would tell retrace two runs started from
+	// the same data when one of them started from rubble.
+	o.noteSeed(name, time.Now())
 	return results, nil
 }
 

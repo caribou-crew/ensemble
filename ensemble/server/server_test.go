@@ -1151,3 +1151,52 @@ func TestServeReturnsPromptlyOnShutdownWithAttachedSSEStream(t *testing.T) {
 		t.Fatal("Serve did not return within 2s of ctx cancellation (shutdownGrace is 5s)")
 	}
 }
+
+// TestStatusOmitsTheSeedUntilOneIsApplied pins the absent-vs-zero
+// distinction. "This stack was never seeded" and "this stack was seeded by a
+// nameless seed at the epoch" are different facts, and a retrace manifest
+// records whichever one the status body told it.
+func TestStatusOmitsTheSeedUntilOneIsApplied(t *testing.T) {
+	e := newTestEnv(t)
+	_, body := e.get(t, "/api/status")
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := raw["seed"]; present {
+		t.Errorf("status carries a seed key before any seed ran: %s", body)
+	}
+}
+
+// TestStatusReportsTheAppliedSeed is the half retrace reads: two runs whose
+// data was primed by different seeds are not comparable as behaviour, and
+// this is the only place that fact is published.
+func TestStatusReportsTheAppliedSeed(t *testing.T) {
+	e := newTestEnv(t)
+	e.cfg.Seeds = map[string]config.Seed{
+		"promo-week": {HTTP: []config.SeedHTTP{{Method: http.MethodGet, URL: e.upstream.URL + "/"}}},
+	}
+	before := time.Now()
+	if resp, body := e.post(t, "/api/seed/promo-week", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("seed: status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	_, body := e.get(t, "/api/status")
+	var got struct {
+		Seed *orchestrator.SeedRecord `json:"seed"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Seed == nil {
+		t.Fatalf("status reports no seed after one was applied: %s", body)
+	}
+	if got.Seed.Name != "promo-week" {
+		t.Errorf("seed name = %q, want promo-week", got.Seed.Name)
+	}
+	// The timestamp is what distinguishes "seeded before this run" from
+	// "reseeded halfway through it"; a zero time would read as neither.
+	if got.Seed.AppliedAt.Before(before) {
+		t.Errorf("appliedAt = %s, want at or after %s", got.Seed.AppliedAt, before)
+	}
+}
