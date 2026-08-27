@@ -322,6 +322,28 @@ func (o *Orchestrator) reconcileEntities(old, newCfg config.Config, result *Reco
 
 // --- global, stack-wide settings ---
 
+// ApplyProxyGlobals copies every stack-wide proxy setting out of a config
+// onto a live proxy. It exists so `ensemble up`'s startup wiring and
+// reconcileGlobals' hot-reload path cannot disagree about WHICH settings
+// those are: the two are the same list, and a setting added to one and
+// forgotten in the other is a config key that works after a reload and not
+// on a cold start (or the reverse) — indistinguishable from a typo, from the
+// user's side.
+//
+// It is unconditional: every field is assigned, whether or not it changed.
+// reconcileGlobals below deliberately does NOT call it, because it must
+// report per-key actions and therefore has to compare first — but it is
+// checked against this function by TestReconcileGlobalsCoversEveryProxyGlobal.
+//
+// OnWarn is not here: its sink is the caller's business (a CLI has stderr, a
+// test has a slice, an embedder may have neither) and nothing in the config
+// names it.
+func ApplyProxyGlobals(px *proxy.Proxy, cfg config.Config) {
+	px.TraceHeader = cfg.TraceHeader
+	px.SourceHeaders = cfg.SourceHeaders
+	px.ClientHeaders = cfg.ClientIdentityHeaders
+}
+
 // reconcileGlobals applies a change to any stack-wide setting that a live
 // runtime object holds onto rather than re-reading from cfg per request:
 // the proxy's TraceHeader/SourceHeaders, the Recorder's redaction rules,
@@ -335,6 +357,10 @@ func (o *Orchestrator) reconcileGlobals(old, newCfg config.Config, result *Recon
 	if !reflect.DeepEqual(old.SourceHeaders, newCfg.SourceHeaders) {
 		o.px.SourceHeaders = newCfg.SourceHeaders
 		result.add("global", "source_header", "updated")
+	}
+	if !reflect.DeepEqual(old.ClientIdentityHeaders, newCfg.ClientIdentityHeaders) {
+		o.px.ClientHeaders = newCfg.ClientIdentityHeaders
+		result.add("global", "client_identity_headers", "updated")
 	}
 	if !reflect.DeepEqual(old.Redact, newCfg.Redact) && o.Rec != nil {
 		o.Rec.SetRedactor(trace.NewRedactor(newCfg.Redact, 0))

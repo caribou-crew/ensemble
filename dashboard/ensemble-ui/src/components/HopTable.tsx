@@ -9,7 +9,12 @@ import { Badge } from '@ensemble/design-system';
 import type { Hop } from '../api/types';
 import { causalHopOrder } from '../topology/traceLayout';
 import { hopDepths } from '../topology/hopTimeline';
-import { CALLER_ATTRIBUTION_TITLE, callerAttribution } from './attribution';
+import {
+  CALLER_ATTRIBUTION_TITLE,
+  CLIENT_IDENTITY_TITLE,
+  callerAttribution,
+  clientIdentity,
+} from './attribution';
 import { hopPayloadBytes } from '../trafficFilter';
 import './HopTable.css';
 
@@ -208,6 +213,17 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
                   ) : (
                     hop.from ?? 'client'
                   )} → {hop.to}
+                  {/* A badge, deliberately NOT folded into the arrow's left
+                      side. That slot already renders the literal placeholder
+                      'client' for an entry hop with no caller, and `client`
+                      also happens to be the value a MALFORMED identity is
+                      recorded as — so putting the identity there would make
+                      three different facts render as the same word. */}
+                  {clientIdentity(hop) && (
+                    <span className="hop-table__client" title={CLIENT_IDENTITY_TITLE}>
+                      {clientIdentity(hop)}
+                    </span>
+                  )}
                 </span>
               </td>
               <td className="hop-table__method">{hop.method ?? '—'}</td>

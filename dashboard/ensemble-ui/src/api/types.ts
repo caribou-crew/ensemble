@@ -42,6 +42,18 @@ export interface Hop {
   /** True when ensemble answered a CORS preflight itself rather than
    * forwarding it to an upstream — never set on real proxied traffic. */
   preflight?: boolean;
+  /** The client APPLICATION that sent this request — "web", "ios", "admin" —
+   * read from the first configured client-identity header present
+   * (`client_identity_headers:`, default x-source-client then x-local-client).
+   * Populated wherever that header arrives, which in practice is the entry
+   * hop: an internal call carries it only if that service forwards it.
+   *
+   * Not the same thing as `from`, which is a position in the service graph
+   * and a fallback for missing trace context. `client` is validated to
+   * `^[a-z0-9][a-z0-9:-]{0,31}$` at capture, so unlike `from` it is safe to
+   * group and filter on; a value that failed validation arrives as the
+   * literal "client" and the original is never stored. */
+  client?: string;
 }
 
 export interface ServiceState {

@@ -323,6 +323,14 @@ func TestLoadValidFullConfig(t *testing.T) {
 	if got := c.SourceHeaders; len(got) != 2 || got[0] != "x-source-client" || got[1] != "x-ensemble-caller" {
 		t.Errorf("source_header: got %v", got)
 	}
+	// A SEPARATE key from source_header, and the fixture deliberately gives
+	// them different values: they answer different questions (which service
+	// called this hop, vs which front-end started the request), and a parser
+	// that folded one into the other would still look right if both lists
+	// matched.
+	if got := c.ClientIdentityHeaders; len(got) != 2 || got[0] != "x-app-client" || got[1] != "x-local-client" {
+		t.Errorf("client_identity_headers: got %v", got)
+	}
 }
 
 // --- ServicesForProfiles: reconciling Service.Profile with top-level

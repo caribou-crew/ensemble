@@ -79,7 +79,23 @@ type Config struct {
 	// X-Ensemble-Caller header — set this only if the org already has its
 	// own convention (e.g. "x-source-client") to prefer instead/first.
 	SourceHeaders []string `yaml:"source_header"`
-	Dir           string   `yaml:"-"` // dir containing the config file (set by Load)
+	// ClientIdentityHeaders names request headers (checked in order,
+	// case-insensitive) carrying the name of the CLIENT APPLICATION that
+	// sent a request — "web", "ios", "admin" — which lands on
+	// trace.Hop.Client and shows in the traffic view. Empty (the default)
+	// checks core/proxy.DefaultClientHeaders: x-source-client, then
+	// x-local-client.
+	//
+	// Read this next to source_header and pick deliberately; they are
+	// neighbours, not alternatives. source_header answers "which SERVICE
+	// called this hop" and is a fallback for missing trace context.
+	// client_identity_headers answers "which of our FRONT-ENDS started
+	// this", is read on every request whether or not trace context exists,
+	// and is validated to an identifier — a value that fails is recorded as
+	// "client" and never stored, so nothing a browser puts in the header
+	// reaches disk. A stack commonly wants one and not the other.
+	ClientIdentityHeaders []string `yaml:"client_identity_headers"`
+	Dir                   string   `yaml:"-"` // dir containing the config file (set by Load)
 }
 
 // OnReady runs once `ensemble up` has brought every active service and

@@ -25,3 +25,21 @@ export function isDeclaredCaller(hop: Hop): boolean {
 export function callerAttribution(hop: Hop): 'inferred' | 'declared' | null {
   return hop.attribution ?? null;
 }
+
+/** Tooltip for the client-identity badge. One source of truth, same as
+ * CALLER_ATTRIBUTION_TITLE — the framing matters: `client` is a validated
+ * identifier the app declared about ITSELF, not a trace-derived fact about
+ * the service graph, and a reader who conflates it with `from` will read the
+ * topology wrong. */
+export const CLIENT_IDENTITY_TITLE =
+  'Client application, self-declared via a client-identity header ' +
+  '(client_identity_headers, default x-source-client / x-local-client). ' +
+  'Validated at capture; a malformed value is recorded as "client".';
+
+/** hop.client if the hop carries one, else null. A render site can then do
+ * one lookup instead of repeating the empty check, and — the reason this is
+ * not just `hop.client` — an empty string is normalized to null so a hop
+ * whose header arrived blank cannot render an empty badge. */
+export function clientIdentity(hop: Hop): string | null {
+  return hop.client ? hop.client : null;
+}

@@ -82,6 +82,20 @@
   text-underline-offset: 2px;
 }
 
+/* The client APPLICATION that sent the request, not a position in the service
+   graph — a pill rather than the dotted underline the two caller kinds share,
+   because it answers a different question and must not read as a third grade
+   of "how sure are we about `from`". */
+.hop-table__client {
+  margin-left: 0.5ch;
+  padding: 0 0.4ch;
+  border: 1px solid var(--border-subtle, var(--text-tertiary));
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
 .hop-table__trace-link {
   border: none;
   background: transparent;

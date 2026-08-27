@@ -235,10 +235,61 @@ never delete it.
          wire gate failed every time — measured, twice.
 
 ## 9. Client identity header (core/trace, Task 5)
-- [ ] `client_identity_headers:` (default `[x-source-client, x-local-client]`);
+- [x] `client_identity_headers:` (default `[x-source-client, x-local-client]`);
       first present value validated `^[a-z0-9][a-z0-9:-]{0,31}$` → `hop.client`.
       Invalid → `client` with a one-time warning, never an error.
-- [ ] ensemble-ui traffic view shows `client` on entry hops.
+- [x] ensemble-ui traffic view shows `client` on entry hops.
+
+      Amended in implementation, four ways:
+
+      1. **FIRST PRESENT wins, not first valid.** A request carrying a
+         malformed `x-source-client` and a well-formed `x-local-client`
+         records the fallback. Falling through would silently repair a
+         misconfigured app: the report looks clean while the value the team
+         believes it sends is discarded, and nobody is ever told.
+      2. **"A one-time warning" is once per DISTINCT (header, value), capped
+         at 32.** Once per process is the literal reading and is worse than it
+         sounds — `ensemble up` runs for hours, so the second app's mistake,
+         or the same app after a failed fix, gets nothing and the silence
+         reads as success. The cap is what keeps that from becoming a log
+         flood and an unbounded map when the bad value varies per request (a
+         request id in the wrong header, a hostile client). Past it the
+         warnings stop; they are diagnostics and no gate depends on them.
+      3. **The warning truncates the offending value at 32 bytes and strips
+         control characters.** A header this is the wrong place for often
+         holds a token, and echoing one in full moves a secret into a log
+         file; 32 bytes is the length a VALID identity could have had, so
+         nothing legitimate is cut. Control characters are stripped because
+         the value is attacker-controlled and the sink is a terminal.
+      4. **`""` and `"client"` are kept as different facts.** No header at
+         all is the overwhelming majority of traffic; a malformed one is
+         someone declaring an identity and getting it wrong. Collapsing them
+         would hide a misconfigured app inside the population where it would
+         never be found.
+
+      Two things the brief did not name and that turned out to matter:
+
+      - **`client` is NOT `from`, and the config docs now say so at both
+         keys.** `source_header` already existed, already used
+         `x-source-client` as its example, and already feeds an origin name
+         onto the hop. They answer different questions — `from` is a position
+         in the service graph and a FALLBACK for missing trace context;
+         `client` is which front-end started the request, read
+         unconditionally and validated as an identifier so it is safe to
+         group by. `TestClientAndFromStayIndependent` pins that a hop can
+         carry both.
+      - **Startup and hot-reload now share one list**
+         (`orchestrator.ApplyProxyGlobals`). Deleting the startup wiring
+         compiled clean and no test failed — a config key that would have
+         worked after `ensemble reload` and not on a cold start, which from
+         the user's side is indistinguishable from a typo.
+         `TestReconcileGlobalsCoversEveryProxyGlobal` guards the pair by
+         behaviour rather than by reading source.
+
+      Dogfooded with zero config: `sample/clients/web-app` sends
+      `x-source-client: web`, which is one of the two default headers, so the
+      sample stack shows a `client` badge in the traffic view without an
+      `ensemble.yaml` key at all.
 
 ## 10. Pluggable hop source (Task 5)
 - [ ] `hops.source: ensemble` (default, current behaviour) |

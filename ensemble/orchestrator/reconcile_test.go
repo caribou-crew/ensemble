@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -357,5 +358,111 @@ func TestReconcileStubChanged(t *testing.T) {
 	resp.Body.Close()
 	if string(body) != "v2" {
 		t.Errorf("stub response after reconcile = %q, want \"v2\"", body)
+	}
+}
+
+// TestReconcileAppliesClientIdentityHeadersLive pins the hot-reload path for
+// client_identity_headers. The proxy holds this list rather than re-reading
+// cfg per request, so without an explicit reconcile case an edit to
+// ensemble.yaml appears to take effect (the file changed, `ensemble reload`
+// reported success) and silently does not — the parsed-but-unapplied shape of
+// the same defect the lead ruled on for flows.<name>.command.
+func TestReconcileAppliesClientIdentityHeadersLive(t *testing.T) {
+	cfg := &config.Config{Dir: t.TempDir()}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	px := proxy.New(rec)
+	defer px.Close()
+	px.ClientHeaders = []string{"x-old"}
+
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	o.Rec = rec
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	newCfg := *cfg
+	newCfg.ClientIdentityHeaders = []string{"x-new"}
+	result, err := o.Reconcile(context.Background(), newCfg)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := actionFor(t, result, "global", "client_identity_headers"); got != "updated" {
+		t.Errorf("action = %q, want updated", got)
+	}
+	if len(px.ClientHeaders) != 1 || px.ClientHeaders[0] != "x-new" {
+		t.Errorf("the live proxy still reads %v — the edit did not take effect", px.ClientHeaders)
+	}
+}
+
+func TestApplyProxyGlobalsCopiesEverySetting(t *testing.T) {
+	px := proxy.New(proxy.NewRecorder(proxy.RecorderOpts{Ring: 1}))
+	defer px.Close()
+	ApplyProxyGlobals(px, config.Config{
+		TraceHeader:           "x-local-trace-id",
+		SourceHeaders:         []string{"x-caller"},
+		ClientIdentityHeaders: []string{"x-app-client"},
+	})
+	if px.TraceHeader != "x-local-trace-id" {
+		t.Errorf("TraceHeader = %q", px.TraceHeader)
+	}
+	if len(px.SourceHeaders) != 1 || px.SourceHeaders[0] != "x-caller" {
+		t.Errorf("SourceHeaders = %v", px.SourceHeaders)
+	}
+	if len(px.ClientHeaders) != 1 || px.ClientHeaders[0] != "x-app-client" {
+		t.Errorf("ClientHeaders = %v", px.ClientHeaders)
+	}
+}
+
+// TestReconcileGlobalsCoversEveryProxyGlobal is the guard that keeps the two
+// halves honest. ApplyProxyGlobals runs at startup and reconcileGlobals runs
+// on reload; a setting added to one and forgotten in the other is a config
+// key that works on a cold start and not after a reload, or the reverse —
+// from the user's side, indistinguishable from a typo.
+//
+// It asserts by BEHAVIOUR rather than by reading source: apply a config with
+// every proxy global set to one value, reconcile to a config with every one
+// set to another, and require the live proxy to end up carrying the second.
+func TestReconcileGlobalsCoversEveryProxyGlobal(t *testing.T) {
+	before := config.Config{
+		Dir:                   t.TempDir(),
+		TraceHeader:           "x-old-trace",
+		SourceHeaders:         []string{"x-old-caller"},
+		ClientIdentityHeaders: []string{"x-old-client"},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	px := proxy.New(rec)
+	defer px.Close()
+	ApplyProxyGlobals(px, before)
+
+	cfg := before
+	o := New(&cfg, px, Opts{LogDir: t.TempDir()})
+	o.Rec = rec
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	after := before
+	after.TraceHeader = "x-new-trace"
+	after.SourceHeaders = []string{"x-new-caller"}
+	after.ClientIdentityHeaders = []string{"x-new-client"}
+	if _, err := o.Reconcile(context.Background(), after); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Every global ApplyProxyGlobals knows how to set must also be
+	// reachable by a reload.
+	want := proxy.New(proxy.NewRecorder(proxy.RecorderOpts{Ring: 1}))
+	defer want.Close()
+	ApplyProxyGlobals(want, after)
+	if px.TraceHeader != want.TraceHeader {
+		t.Errorf("trace_header did not reconcile: %q, want %q", px.TraceHeader, want.TraceHeader)
+	}
+	if !reflect.DeepEqual(px.SourceHeaders, want.SourceHeaders) {
+		t.Errorf("source_header did not reconcile: %v, want %v", px.SourceHeaders, want.SourceHeaders)
+	}
+	if !reflect.DeepEqual(px.ClientHeaders, want.ClientHeaders) {
+		t.Errorf("client_identity_headers did not reconcile: %v, want %v", px.ClientHeaders, want.ClientHeaders)
 	}
 }

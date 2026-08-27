@@ -91,8 +91,37 @@ type Proxy struct {
 	// prior behavior for a stack with no such convention of its own.
 	SourceHeaders []string
 
+	// ClientHeaders names request headers (checked in order,
+	// case-insensitive) carrying the name of the CLIENT APPLICATION that
+	// sent a request — "web", "ios", "admin". The first header PRESENT wins,
+	// even if its value is malformed; see clientIdentity. Empty (the
+	// default) checks DefaultClientHeaders.
+	//
+	// Not the same setting as SourceHeaders even though both name headers
+	// that identify an origin, and they must not be merged: SourceHeaders
+	// answers "who called this hop" in the service graph, is consulted only
+	// when trace context has no answer, and accepts free text;
+	// ClientHeaders answers "which of our front-ends started this", is read
+	// unconditionally, and is validated to an identifier (see
+	// trace.Hop.Client). A stack may reasonably set one and not the other.
+	ClientHeaders []string
+
+	// OnWarn receives non-fatal diagnostics from live traffic — today, a
+	// malformed client identity. Nil (the default) discards them, which is
+	// what keeps a library with no logger from having to grow one.
+	//
+	// Invoked serially, never concurrently, so a sink needs no lock of its
+	// own. That is load-bearing: the natural sink is stderr.
+	OnWarn func(string)
+
 	mu      sync.Mutex
 	servers []*http.Server
+
+	// warnMu guards warnedClients AND serializes OnWarn — see warnBadClient.
+	// Separate from mu, which guards the server list: a warning fired from a
+	// request goroutine must never contend with Serve/Close.
+	warnMu        sync.Mutex
+	warnedClients map[string]bool
 }
 
 // declaredCaller returns the value of the first configured SourceHeaders
@@ -367,6 +396,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 			Session:       hopCtx.Session(),
 			From:          from,
 			Attribution:   attribution,
+			Client:        p.clientIdentity(r.Header),
 			To:            t.Name,
 			Method:        r.Method,
 			Path:          r.URL.RequestURI(),

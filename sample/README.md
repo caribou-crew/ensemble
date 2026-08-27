@@ -68,6 +68,20 @@ Then `open http://127.0.0.1:4700` and look at the trace for the checkout
 call, or `ensemble traffic --json` — one `traceId` covers the whole chain
 down to the async `notify-worker` leg.
 
+Hops from the browser app carry a `client` of `web`, shown as a small badge
+in the traffic view. That takes no configuration: `clients/web-app` sends
+`x-source-client`, one of the two headers ensemble checks by default. Add a
+second front-end sending `admin` and the two are told apart everywhere the
+hop is rendered. The value is validated as an identifier, so a malformed one
+records as `client` and the original never reaches disk — set
+`client_identity_headers:` in `ensemble.yaml` if your stack already spells
+that header its own way.
+
+`client` is not the same field as `from`. `from` is a position in the service
+graph — which service called this hop — and on an entry hop there is no
+service to name. `client` is which front-end started the request, and it is
+the one safe to group by.
+
 ### Seeds
 
 - `baseline` — a handful of starter products + users. The default.

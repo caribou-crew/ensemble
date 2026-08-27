@@ -1,5 +1,6 @@
 trace_header: x-local-trace-id
 source_header: [x-source-client, x-ensemble-caller]
+client_identity_headers: [x-app-client, x-local-client]
 services:
   bff:
     dir: ../my-company/bff-service

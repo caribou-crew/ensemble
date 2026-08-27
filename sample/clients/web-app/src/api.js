@@ -5,11 +5,24 @@
 const EDGE_URL = import.meta.env.VITE_EDGE_URL || 'http://127.0.0.1:9080';
 const AUTH_HEADER = 'Bearer demo-token';
 
+// Which of the stack's front-ends this is. ensemble reads it off the entry
+// hop with no configuration at all — x-source-client is one of the two
+// headers checked by default — and shows it in the traffic view, so a stack
+// with a web app and an admin app can tell whose call it is looking at.
+//
+// Lower-case and short because it is validated as an IDENTIFIER
+// (^[a-z0-9][a-z0-9:-]{0,31}$): a value that fails is recorded as the
+// literal "client" and the original is never stored, so nothing a browser
+// puts here reaches disk. Set `client_identity_headers:` in ensemble.yaml if
+// your stack already spells this header differently.
+const CLIENT_ID = 'web';
+
 async function request(path, opts = {}) {
   const res = await fetch(`${EDGE_URL}${path}`, {
     ...opts,
     headers: {
       Authorization: AUTH_HEADER,
+      'x-source-client': CLIENT_ID,
       ...(opts.body ? { 'content-type': 'application/json' } : {}),
       ...opts.headers,
     },

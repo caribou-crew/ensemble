@@ -193,8 +193,17 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
 
 	px := proxy.New(rec)
-	px.TraceHeader = cfg.TraceHeader
-	px.SourceHeaders = cfg.SourceHeaders
+	// One list, shared with the hot-reload path, so a setting cannot work
+	// after `ensemble reload` and not on a cold start.
+	orchestrator.ApplyProxyGlobals(px, *cfg)
+	// logf is the same serialized stderr sink Up's progress logging uses,
+	// and proxy.OnWarn is invoked serially (see warnBadClient), so a
+	// malformed client identity reported from a request goroutine cannot
+	// interleave with another one. It CAN interleave with Up's own logging
+	// while Up is still running — an accepted, bounded overlap: traffic
+	// carrying client headers essentially always arrives after the stack is
+	// up, and the alternative is a diagnostic nobody ever sees.
+	px.OnWarn = func(msg string) { logf("%s", msg) }
 	lat := proxy.NewLatencyStore(nil)
 	px.Latency = lat
 

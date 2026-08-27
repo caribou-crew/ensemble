@@ -49,6 +49,27 @@ type Hop struct {
 	// (never forwarded to an upstream), so consumers can distinguish it
 	// from real proxied traffic.
 	Preflight bool `json:"preflight,omitempty"`
+	// Client names the client APPLICATION that sent this request — "web",
+	// "ios", "admin" — read from the first configured client-identity header
+	// present (core/proxy.Proxy.ClientHeaders). It is populated wherever
+	// that header arrives, which in practice is the entry hop: an internal
+	// service-to-service call carries it only if that service forwards it.
+	//
+	// Distinct from From, and the two answer different questions. From is
+	// "who called THIS hop" — a position in the service graph, free text,
+	// and only consulted as a fallback when trace context cannot say. Client
+	// is "which of our front-ends started this", recorded whether or not
+	// trace context is present, and constrained to a small charset
+	// (core/proxy.ValidClient) precisely so it can be grouped and filtered
+	// on. On an entry hop the two often carry the same string from the same
+	// header; that overlap is why the constraint matters — Client is the one
+	// a consumer may treat as an identifier.
+	//
+	// Never an arbitrary caller-supplied string: a value failing validation
+	// is replaced with core/proxy.FallbackClient rather than stored, so
+	// nothing a client puts in that header reaches disk, a UI, or a group-by
+	// key unexamined.
+	Client string `json:"client,omitempty"`
 }
 
 // Timings breaks a hop into the three observable moments at the proxy.
