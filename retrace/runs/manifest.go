@@ -64,6 +64,61 @@ type Manifest struct {
 	Hops *Counts `json:"hops,omitempty"`
 	Test Test    `json:"test"`
 	Env  Env     `json:"env"`
+	// Device is the screen the shots in this run were taken on. A pointer,
+	// and nil when the run captured no shots and the adapter wrote no
+	// device.json: a zero Device is 0×0, which is not "unknown geometry" but
+	// a CLAIM of one — and two runs that both failed to record a device would
+	// compare 0×0 against 0×0 and agree.
+	//
+	// Distinct from the per-checkpoint Width/Height above, and both are
+	// needed. A checkpoint's geometry is one shot's; Device is the screen the
+	// whole run was captured on, which is what makes two RUNS comparable at
+	// all. A pair captured at different device sizes produces a per-checkpoint
+	// diff percentage for every checkpoint, and every one of those numbers is
+	// meaningless — the guard belongs at run scale, where it can refuse once
+	// rather than mislead many times.
+	Device *Device `json:"device,omitempty"`
+}
+
+// Device describes the screen a run's shots were taken on, read from a
+// `device.json` the adapter writes into the run directory.
+type Device struct {
+	// Kind says where the geometry came from, and is what stops two
+	// incomparable facts from being compared as one. "browser" is a viewport
+	// the test framework set; "device" is a real or emulated handset the
+	// adapter was told about; "shot" is the fallback, inferred from the first
+	// screenshot when no adapter reported anything.
+	Kind string `json:"kind"` // "browser" | "device" | "shot"
+	// ID names the device or browser profile when the adapter knows it
+	// ("iPhone 15 Pro", "Pixel_7_API_34"). Advisory: geometry decides
+	// comparability, and an id is what makes a mismatch message legible.
+	ID     string `json:"id,omitempty"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	// Scale is the device-pixel ratio when the adapter reports one. Optional
+	// and NOT part of the comparability test: at equal width and height, two
+	// runs at different scales produce shots of different pixel dimensions,
+	// which the per-checkpoint size check already catches with a far more
+	// precise message. Recorded because it explains that message.
+	Scale float64 `json:"scale,omitempty"`
+}
+
+// SameScreen reports whether two runs were captured on the same geometry.
+//
+// nil is never "the same as" anything, including another nil: an unknown
+// geometry compared against an unknown geometry is two unknowns, not a match.
+// Returning true there would make the guard vanish exactly when neither side
+// recorded a device — the case with the least evidence in it.
+//
+// Kind is deliberately NOT compared. The same 390×844 viewport reported by
+// Playwright and inferred from a shot is the same screen, and refusing that
+// pair would fail every run captured before the adapter learned to write a
+// device.json against every run captured after.
+func SameScreen(a, b *Device) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Width == b.Width && a.Height == b.Height
 }
 
 type Git struct {
@@ -183,6 +238,31 @@ func validateHops(hops *Counts) error {
 	return validateCounts("hops", *hops)
 }
 
+// validateDevice refuses a device whose geometry is not a real screen.
+//
+// A 0 or negative dimension is the whole reason Device is a pointer: nil
+// means "no device was recorded" and every consumer treats that as unknown,
+// but a present device.json reading 0×0 is a CLAIM — and two runs that both
+// wrote one would compare 0×0 against 0×0 and agree they were captured on
+// the same screen. The guard has to refuse the value at the door, because
+// downstream it is indistinguishable from a fact.
+//
+// Kind is required for the same reason it is recorded: "" is not one of the
+// three, and a device whose provenance is blank cannot be explained in the
+// mismatch message that is this feature's entire output.
+func validateDevice(d *Device) error {
+	if d == nil {
+		return nil
+	}
+	if d.Kind == "" {
+		return fmt.Errorf("runs: manifest device has no kind — want one of browser, device, shot")
+	}
+	if d.Width <= 0 || d.Height <= 0 {
+		return fmt.Errorf("runs: manifest device geometry is %dx%d — a device that is present must report a real screen, or it will compare equal to another broken one", d.Width, d.Height)
+	}
+	return nil
+}
+
 // WriteManifest stamps and normalizes m before writing manifest.json:
 //
 //   - Schema is always overwritten with the current constant.
@@ -212,6 +292,9 @@ func WriteManifest(p Paths, m *Manifest) error {
 		return err
 	}
 	if err := validateHops(m.Hops); err != nil {
+		return err
+	}
+	if err := validateDevice(m.Device); err != nil {
 		return err
 	}
 	if m.Checkpoints == nil {
@@ -278,6 +361,13 @@ func ReadManifest(path string) (Manifest, error) {
 		return Manifest{}, err
 	}
 	if err := validateHops(m.Hops); err != nil {
+		return Manifest{}, err
+	}
+	// Re-checked on read for the same reason Wire and Hops are: a manifest
+	// hand-edited, or written by a version that did not have this check, must
+	// not reach a comparison carrying a geometry that compares equal to
+	// another broken one.
+	if err := validateDevice(m.Device); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil

@@ -342,16 +342,31 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		testStdout = stderr
 	}
 	m, err := runFlow(sess, runOptions{
-		Cwd:     p.cwd,
-		App:     p.app,
-		Flow:    name,
-		TestCmd: testCmd,
-		Stdout:  testStdout,
-		Stderr:  stderr,
-		Now:     time.Now,
+		Cwd:       p.cwd,
+		App:       p.app,
+		Flow:      name,
+		TestCmd:   testCmd,
+		Stdout:    testStdout,
+		Stderr:    stderr,
+		Now:       time.Now,
+		Canonical: p.cfg.Flows[name].Canonical,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "retrace: run: %v\n", err)
+		// A refused canonical geometry is exit 2, not 3. The run completed,
+		// its manifest is on disk and readable, and exit 3 means "could not
+		// evaluate" — which would tell CI to discard a recording that is
+		// entirely intact. The manifest is returned rather than a zero one
+		// for the same reason: a multi-flow run must be able to report this
+		// flow, not a blank.
+		if errors.Is(err, errCanonicalRefused) {
+			// ok=true: the manifest JOINS the --json document. A refused run
+			// still recorded something, and the geometry it recorded is the
+			// single fact an agent needs in order to act — dropping it would
+			// hand back exit 2 and an empty array, which says a flow failed
+			// without saying anything about it.
+			return m, exitGate, true
+		}
 		return runs.Manifest{}, exitUsage, false
 	}
 
@@ -388,6 +403,11 @@ type runOptions struct {
 	Stdout    io.Writer
 	Stderr    io.Writer
 	Now       func() time.Time
+	// Canonical is the flow's declared screen geometry, or nil. Passed as
+	// the resolved value rather than as the whole Config: runFlow needs the
+	// one expectation, and handing it a Config would invite the next fact to
+	// be read from a second place.
+	Canonical *config.Canonical
 }
 
 // runFlow executes the test command against an already-started session and
@@ -463,6 +483,26 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		return runs.Manifest{}, err
 	}
 
+	// The screen these shots were taken on, from the adapter's device.json or
+	// — failing that — the first shot's own dimensions. Resolved here rather
+	// than inside Checkpoints() because it is a fact about the RUN, not about
+	// any one checkpoint, and because the fallback needs the sorted list
+	// Checkpoints just produced.
+	device, err := s.Device(checkpoints)
+	if err != nil {
+		return runs.Manifest{}, err
+	}
+	// Checked HERE, after the test, rather than before it as the brief asks.
+	// A browser adapter's viewport does not exist until the browser opens, so
+	// there is nothing to check before the test starts — the earliest honest
+	// moment is the one where the geometry first exists. The check is still
+	// worth what it is worth: what matters is that a run at the wrong size
+	// never becomes a comparison, not how many seconds were spent producing
+	// it. A non-strict block warns and records; a strict one refuses below,
+	// after the manifest is written, so the refusal leaves the evidence
+	// behind rather than only a message.
+	canonicalErr := checkCanonical(o, device)
+
 	// Flow-part groups: markers were appended to groups.jsonl by the marker
 	// door and by file-writing adapters. THIS is where they stop being a
 	// log and become part of the run. Without these three lines the wire
@@ -502,6 +542,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		StartedAt:   started,
 		FinishedAt:  o.Now(),
 		Checkpoints: checkpoints,
+		Device:      device,
 		Groups:      groups,
 		Capture:     trust,
 		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},
@@ -539,11 +580,69 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	// a run that could not record its own results is not complete, and
 	// leaving the directory un-finalized is what makes `retrace runs`
 	// surface it instead of listing it as clean.
-	return m, runs.Finalize(s.Paths, runs.Finalized{
+	if err := runs.Finalize(s.Paths, runs.Finalized{
 		RunID:      s.RunID,
 		FinishedAt: time.Now(),
 		ExitCode:   exitCode,
-	})
+	}); err != nil {
+		return m, err
+	}
+	// Reported LAST, after the manifest and the finalized sentinel. The run
+	// itself completed and its results are on disk and readable; what failed
+	// is the flow's own precondition about the screen it must be captured on.
+	// Returning before finalize would leave the directory looking abandoned,
+	// which is a different and misleading fact.
+	return m, canonicalErr
+}
+
+// checkCanonical enforces a flow's `canonical:` geometry against the screen
+// the run was actually captured on.
+//
+// Returns an error only for `strict: true`. A non-strict block warns on
+// stderr AND records a capture-trust note, which is the half that survives:
+// the note travels in manifest.json, so a comparison months later can still
+// say the run drifted, while the stderr line lives only as long as someone's
+// scrollback.
+//
+// A run with NO device at all (no adapter file, no shots) fails a canonical
+// check rather than passing it. "Nothing was recorded" is not evidence of the
+// right geometry, and a flow that declared one is precisely the flow that
+// should hear a run reported nothing.
+// errCanonicalRefused marks the one error runFlow returns for a run that
+// completed perfectly and simply must not be compared. The caller maps it to
+// exit 2 (refused) rather than exit 3 (could not evaluate): the recording is
+// intact, and telling CI otherwise would throw away a usable run.
+var errCanonicalRefused = errors.New("canonical geometry")
+
+func checkCanonical(o runOptions, device *runs.Device) error {
+	cn := o.Canonical
+	if cn == nil {
+		return nil
+	}
+	got := "no screen geometry was recorded for this run (no device.json and no shots)"
+	if device != nil {
+		if cn.Matches(device.Width, device.Height) {
+			return nil
+		}
+		got = fmt.Sprintf("captured at %dx%d (%s)", device.Width, device.Height, device.Kind)
+	}
+	msg := fmt.Sprintf("flow %q declares canonical %dx%d but this run was %s", o.Flow, cn.Width, cn.Height, got)
+	if cn.Strict {
+		return fmt.Errorf("%w: %s — shots at a different screen size are not comparable, so this run is refused (drop `strict: true` under flows.%s.canonical to record the drift instead)", errCanonicalRefused, msg, o.Flow)
+	}
+	// Deliberately NOT a capture-trust note, though that was the first
+	// design and it is the obvious one. A note makes the capture verdict
+	// "suspect", and `diff` quarantines a suspect side — so a non-strict
+	// block would end up refusing every COMPARISON while strict refuses only
+	// the RECORDING. Non-strict would be strictly worse than strict, which is
+	// the opposite of the ratchet it exists to be.
+	//
+	// The drift is durable regardless: manifest.device records the size the
+	// run was really captured at, so a reader months later can still see it
+	// beside the flow's declared canonical. What stderr adds is telling
+	// someone NOW, while they can still act.
+	fmt.Fprintf(o.Stderr, "retrace: %s — the run was recorded and manifest.device carries the real size; add `strict: true` under flows.%s.canonical to refuse instead\n", msg, o.Flow)
+	return nil
 }
 
 // assessTrust is the seam Task 4 left and Task 6 fills: it turns everything

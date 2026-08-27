@@ -326,6 +326,76 @@ func incompleteCheck(a, b RunRef) []Quarantine {
 	return out
 }
 
+// GeometryMismatch is the reason prefix a geometry refusal carries. It is a
+// stable, greppable token rather than only prose: this is the one refusal a
+// reader is most likely to mistake for a real diff ("the shots ARE different,
+// aren't they?"), so a CI log filter and an agent both need something to
+// match on that is not a percentage.
+const GeometryMismatch = "geometry-mismatch"
+
+// geometryCheck refuses a pair of runs captured on different screens.
+//
+// Reported on BOTH sides, not one. Neither run is the wrong one — a
+// comparison needs two runs that agree, and naming a single side would
+// invite someone to "fix" whichever was named. The reason text carries both
+// geometries and where each came from, because the fix depends entirely on
+// that: two "browser" runs at different sizes is a viewport someone changed,
+// and a "browser" against a "device" is two adapters that were never
+// comparable.
+//
+// This fires only on a PROVEN mismatch — both sides recorded a screen and the
+// two disagree. A side with no device at all is an absence of evidence, and
+// this check exists to catch a mismatch, not to police which adapters write
+// device.json. Waving those through is not a loophole but the upgrade path:
+// every recording made before device.json existed has Device == nil, and
+// re-recording one side gives it a device via capture's shot fallback, so
+// refusing the one-sided case would refuse every comparison against a stored
+// reference the moment someone upgraded retrace.
+//
+// runs.SameScreen answers a deliberately different question — "can I vouch
+// these are the same screen?", to which two unknowns are no — and cmd_run's
+// canonical check wants exactly that stricter answer, because there the user
+// named a geometry and asked to be held to it. Opt-in declarations fail on
+// silence; an always-on guard needs proof.
+//
+// The oracle case is unaffected: two runs that both went through capture both
+// have a device (the shot fallback gives one to any run with a screenshot),
+// so a 1206x2622 against a 1178x2556 is still refused by name.
+func geometryCheck(a, b RunRef) []Quarantine {
+	// No shots on either side means no pixel comparison to protect. Refusing
+	// there would break every wire-only run in the world for a plane it does
+	// not have.
+	if len(a.Manifest.Checkpoints) == 0 && len(b.Manifest.Checkpoints) == 0 {
+		return nil
+	}
+	if a.Manifest.Device == nil || b.Manifest.Device == nil {
+		return nil
+	}
+	if runs.SameScreen(a.Manifest.Device, b.Manifest.Device) {
+		return nil
+	}
+	reason := fmt.Sprintf("%s: side a is %s, side b is %s — shots taken on different screens differ at every edge, so a per-checkpoint diff percentage would be a precise and meaningless number for every checkpoint in this run",
+		GeometryMismatch, describeDevice(a.Manifest.Device), describeDevice(b.Manifest.Device))
+	return []Quarantine{{Side: "a", Reason: reason}, {Side: "b", Reason: reason}}
+}
+
+// describeDevice renders one side's geometry for a mismatch message,
+// including where the number came from — see geometryCheck.
+//
+// geometryCheck only reaches here with both devices present, so the nil
+// branch is defensive rather than reachable; it is kept (and tested) so a
+// second caller gets a sentence instead of a panic.
+func describeDevice(d *runs.Device) string {
+	if d == nil {
+		return "an unrecorded screen (no device.json and no shots)"
+	}
+	out := fmt.Sprintf("%dx%d (%s", d.Width, d.Height, d.Kind)
+	if d.ID != "" {
+		out += " " + d.ID
+	}
+	return out + ")"
+}
+
 // checkpointUnion returns every checkpoint name across both manifests, in
 // first-seen order (a's names, then any b-only name) — the same shape
 // unionNames already gives BuildSections' group names.
@@ -430,6 +500,33 @@ func Build(in BuildInput) (Summary, error) {
 	// signal-killed test command leaves a truncated recording, which is not
 	// evidence of anything, degraded or otherwise.
 	if q := incompleteCheck(in.A, in.B); len(q) > 0 {
+		s.Quarantined = q
+		s.Verdict = "quarantined"
+		s.finish(in.Cfg)
+		return s, nil
+	}
+
+	// --- geometry, checked next and equally unconditionally. Two runs
+	// captured at different screen sizes have no comparable checkpoint in
+	// them: every shot differs at every edge, so the pixel plane reports a
+	// large percentage for every checkpoint and not one of those numbers
+	// means anything. Refusing once is the whole point — the alternative is
+	// a report full of confident, precise, meaningless figures, which is far
+	// more likely to be acted on than an obvious error.
+	//
+	// NOT gated behind --allow-degraded, for incompleteCheck's reason:
+	// that flag lets a human accept a LOWER-CONFIDENCE comparison, and this
+	// is not lower confidence, it is a different screen. There is no
+	// comparison here to accept.
+	//
+	// The wire and hop planes WOULD still be comparable across geometries,
+	// and this refuses them too. That is deliberate: a pair this mismatched
+	// is a harness mistake — the wrong device, the wrong project, a viewport
+	// someone changed — and answering half the question invites the reader to
+	// trust the halves that were computed. `retrace diff` is one verdict per
+	// run, and a run that cannot answer its primary plane does not get to
+	// half-pass.
+	if q := geometryCheck(in.A, in.B); len(q) > 0 {
 		s.Quarantined = q
 		s.Verdict = "quarantined"
 		s.finish(in.Cfg)

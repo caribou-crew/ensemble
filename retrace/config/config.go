@@ -172,12 +172,56 @@ type Flow struct {
 	// package.
 	Setup    []string `yaml:"setup"`
 	Teardown []string `yaml:"teardown"`
+	// Canonical is the screen geometry this flow's shots are expected to be
+	// captured on. nil — the overwhelming majority — means the flow accepts
+	// whatever the adapter reports, and comparisons still refuse a pair of
+	// runs whose geometries disagree with EACH OTHER (see runs.SameScreen).
+	// Canonical adds the stronger claim: this flow's shots are only
+	// meaningful at this one size, so a run at any other size is refused
+	// against the config rather than only against its eventual partner.
+	Canonical *Canonical `yaml:"canonical"`
 	// Gates overrides the top-level Config.Gates for THIS flow. Resolved by
 	// Config.ResolveGates, never read directly: a consumer that read this map
 	// on its own would see a flow's overrides without the global budgets
 	// underneath them, and report a plane as ungated because this flow did not
 	// happen to mention it.
 	Gates map[string]Gate `yaml:"gates"`
+}
+
+// Canonical is a flow's expected screen geometry, under
+// `flows.<name>.canonical`.
+//
+// Strict is what turns the expectation into a refusal, and it is a plain
+// bool whose zero value — false — is the permissive one. That is the
+// opposite of this project's usual rule, and deliberately so: the field it
+// guards does not exist unless someone wrote it. A `canonical:` block with
+// no `strict: true` is a project declaring the size it means to capture at
+// and asking to be TOLD when a run drifts; adding `strict: true` is asking
+// to be stopped. Making strictness the default would mean the act of writing
+// down an expectation silently starts failing builds, which is how a useful
+// annotation becomes one nobody dares add.
+//
+// Both readings are enforced. Non-strict warns on stderr at run time and
+// carries the note into the capture-trust record, so the drift is on the
+// run's own paperwork rather than only in a scrollback nobody kept.
+type Canonical struct {
+	Width  int  `yaml:"width"`
+	Height int  `yaml:"height"`
+	Strict bool `yaml:"strict"`
+}
+
+// Matches reports whether a run's device geometry is the one this flow
+// expects.
+//
+// A nil device does NOT match: "no geometry recorded" is not evidence of the
+// right geometry, and a flow that went to the trouble of declaring one is
+// exactly the flow that should hear about a run which reported nothing. A
+// nil Canonical matches everything — there is no expectation to violate.
+func (c *Canonical) Matches(width, height int) bool {
+	if c == nil {
+		return true
+	}
+	return c.Width == width && c.Height == height
 }
 
 // Gate is one plane's CI budget entry under Config.Gates. BudgetPct is a
@@ -374,6 +418,31 @@ type Thresholds struct {
 // FailOn is a []string (there is no field-name concept to check at all).
 var validPlanes = map[string]bool{"pixel": true, "wire": true, "hop": true, "perf": true}
 
+// validateCanonical refuses a `canonical:` block that does not describe a
+// real screen.
+//
+// The trap this closes is `canonical: {strict: true}` with no dimensions —
+// which reads, to anyone skimming the file, as the strongest possible
+// assertion, and means 0×0. Every run would fail it, forever, for a reason
+// the message would never explain. Half a block (a width and no height) is
+// the same mistake with one line of evidence instead of none.
+//
+// Flows are walked in name order so a config with two bad blocks reports the
+// same one on every run; a user fixing the error they were shown must not
+// see it move.
+func validateCanonical(c *Config) error {
+	for _, name := range sortedFlowNames(c.Flows) {
+		cn := c.Flows[name].Canonical
+		if cn == nil {
+			continue
+		}
+		if cn.Width <= 0 || cn.Height <= 0 {
+			return fmt.Errorf("flows.%s.canonical: %dx%d is not a screen — `canonical:` needs a positive width and height (a block with `strict: true` and no dimensions fails every run at 0x0)", name, cn.Width, cn.Height)
+		}
+	}
+	return nil
+}
+
 // validatePlanes rejects a typo'd plane name in gates or fail_on, naming the
 // offender. Left unchecked, `gates: {pixle: ...}` loads clean and silently
 // ungates "pixle" while leaving "pixel" at its untouched default — the user
@@ -452,6 +521,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := validateWireIgnore(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := validateCanonical(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// validateTriage also FILLS each unnamed rule's Name from its index, so it

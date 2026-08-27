@@ -7,6 +7,8 @@ package capture
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/png"
@@ -391,6 +393,63 @@ func (s *Session) Checkpoints() ([]runs.Checkpoint, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// DeviceFile is the name an adapter writes its screen geometry to, in the
+// run directory beside manifest.json. A file rather than a marker-door route
+// for the same reason screenshots are: an adapter that can write shots can
+// write this, and one that cannot has no geometry to report anyway.
+const DeviceFile = "device.json"
+
+// Device resolves the screen this run's shots were taken on: the adapter's
+// device.json if it wrote one, otherwise the geometry of the first shot.
+//
+// The fallback is not a nicety. Without it, every run captured by an adapter
+// that does not write device.json — including every run captured before this
+// existed — would have a nil Device, and the comparison guard treats nil as
+// unknown and steps aside. A guard that turns itself off for the majority of
+// runs is not a guard, so the weakest evidence available (one screenshot's
+// own dimensions) is recorded, honestly labelled Kind "shot".
+//
+// It is genuinely weaker: a shot of a scrolled page or a single element is
+// not the screen. That is exactly why Kind is on the record and why a
+// mismatch message says where each side's number came from — a reader
+// comparing two "shot" runs needs to know they are comparing screenshots,
+// not viewports.
+//
+// checkpoints is passed in rather than re-scanned so the fallback names the
+// same first shot the manifest reports (Checkpoints sorts by name, so
+// "first" is deterministic rather than whatever the directory yielded).
+// Returns nil, nil when there is neither a device.json nor a single shot —
+// no evidence, stated as no evidence.
+func (s *Session) Device(checkpoints []runs.Checkpoint) (*runs.Device, error) {
+	b, err := os.ReadFile(filepath.Join(s.Paths.RunDir, DeviceFile))
+	switch {
+	case err == nil:
+		var d runs.Device
+		if err := json.Unmarshal(b, &d); err != nil {
+			return nil, fmt.Errorf("%s is not readable JSON: %w", DeviceFile, err)
+		}
+		// An adapter that wrote the file and left kind blank still told us
+		// something real; default it rather than refusing the run. "browser"
+		// is not assumed — that would put a provenance on the record nobody
+		// asserted.
+		if d.Kind == "" {
+			d.Kind = "device"
+		}
+		if d.Width <= 0 || d.Height <= 0 {
+			return nil, fmt.Errorf("%s reports a %dx%d screen — a device.json that is written at all must report a real one", DeviceFile, d.Width, d.Height)
+		}
+		return &d, nil
+	case errors.Is(err, os.ErrNotExist):
+		if len(checkpoints) == 0 {
+			return nil, nil
+		}
+		first := checkpoints[0]
+		return &runs.Device{Kind: "shot", ID: first.Name, Width: first.Width, Height: first.Height}, nil
+	default:
+		return nil, err
+	}
 }
 
 // gitSHA shells out to git for the run id's provenance suffix. A repo-less

@@ -308,3 +308,29 @@ flows:
 		t.Errorf("an unlisted flow got %+v, want the global 1.5", g.BudgetPct)
 	}
 }
+
+// --- canonical ------------------------------------------------------------
+
+func TestCanonicalComparesBothDimensions(t *testing.T) {
+	// One dimension equal is still a mismatch, and it is the case a
+	// half-written comparison passes: a viewport someone changed from
+	// 390x844 to 390x800 is exactly the drift this guard exists to catch.
+	c := &Canonical{Width: 390, Height: 844}
+	if !c.Matches(390, 844) {
+		t.Error("the declared size did not match itself")
+	}
+	if c.Matches(390, 800) {
+		t.Error("same width, different height matched")
+	}
+	if c.Matches(400, 844) {
+		t.Error("same height, different width matched")
+	}
+}
+
+func TestNoCanonicalBlockMatchesEverything(t *testing.T) {
+	// The overwhelming majority of flows. There is no expectation to violate.
+	var c *Canonical
+	if !c.Matches(1206, 2622) {
+		t.Error("a flow with no canonical block rejected a run")
+	}
+}
