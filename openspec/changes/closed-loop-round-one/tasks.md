@@ -197,14 +197,42 @@ never delete it.
       a fold that took the first non-zero would pass one and fail the other.
 
 ## 6. Screen-geometry guard (Tasks 1, 7, 17)
-- [ ] Adapters write `device.json` `{kind, id?, width, height, scale?}`
+- [x] Adapters write `device.json` `{kind, id?, width, height, scale?}`
       (playwright: viewport; maestro: from the adapter's env; else from the
       first shot). Manifest carries it.
-- [ ] Flow `canonical: { width, height, strict: true }` → `run` refuses before
+- [x] Flow `canonical: { width, height, strict: true }` → `run` refuses before
       the test starts when the reported geometry differs; `diff` refuses to
       compare mismatched geometry and reports both sizes.
-- [ ] Oracle: a 1206×2622 vs 1178×2556 pair reports `geometry-mismatch`, not
+- [x] Oracle: a 1206×2622 vs 1178×2556 pair reports `geometry-mismatch`, not
       a percentage.
+
+Amendments:
+
+- **The canonical check runs after the test, not before it.** A browser
+  viewport does not exist until the browser opens, so there is nothing to
+  check beforehand. A strict refusal still reports the manifest it recorded
+  alongside the gate exit code, so an agent can tell a refusal from a crash.
+- **`diff` refuses only a proven mismatch — both sides recorded a screen and
+  they differ.** Refusing anything it could not vouch for was written first
+  and caught by the suite: every recording predating `device.json` has none,
+  and re-recording one side gives it one via the shot fallback, so that
+  reading would have refused every comparison against a stored reference the
+  moment anyone upgraded. `canonical` keeps the strict reading, because an
+  opt-in declaration is a promise to record the screen.
+- **A non-strict canonical mismatch writes to stderr only**, with no
+  capture-trust note. A note makes the capture verdict `suspect`, and `diff`
+  quarantines a suspect side — so non-strict would have refused every
+  comparison while strict refuses only the recording, leaving the lenient
+  setting strictly harsher than the strict one.
+- **The geometry refusal is not `--allow-degraded`-able**, matching
+  `incompleteCheck`. That flag accepts a capture you cannot fully trust, not
+  a comparison between two things that were never comparable.
+- **Maestro writes no `device.json` yet.** It talks to the marker door over
+  HTTP and has no run directory, so it needs a new route rather than a file.
+  Its runs take the shot fallback, which for a full-screen device recorder is
+  the right answer; the wrong-answer case the adapter file exists to fix is
+  playwright's selector-scoped checkpoint, where the shot is the size of an
+  element.
 
 ## 7. Triage classification (Task 10)
 - [x] Summary adds `triage: { label, rule }` from a table over
