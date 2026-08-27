@@ -257,3 +257,64 @@ func TestReadinessLoopStopsOnCancellation(t *testing.T) {
 
 	waitForReadinessState(t, o, ReadinessNotReady, 3*time.Second)
 }
+
+// TestHeadersFromNeverResolvesThroughThePATH is a regression test for a bug
+// the sample stack surfaced: `ensemble up -c ensemble.yaml` sets Config.Dir
+// to ".", and filepath.Join(".", "./auth.sh") CLEANS to "auth.sh" — a name
+// with no separator, which exec.Command resolves through $PATH.
+//
+// The visible symptom was a readiness check that could never pass
+// (`executable file not found in $PATH`). The invisible one is worse: with
+// any same-named script anywhere on the PATH, ensemble runs THAT instead,
+// and a config that names a file next to itself silently executes a
+// stranger. A relative path in a config file is a path, never a command
+// name, so this test puts a decoy on the PATH and insists the local script
+// wins.
+//
+// Every other test here uses an absolute t.TempDir() as Config.Dir, where
+// Join always leaves a separator — which is exactly why none of them caught
+// it, and why this one takes the trouble to reproduce a RELATIVE config dir.
+func TestHeadersFromNeverResolvesThroughThePATH(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "auth.sh"),
+		[]byte("#!/bin/sh\necho 'X-Token: the-one-next-to-the-config'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	decoyDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(decoyDir, "auth.sh"),
+		[]byte("#!/bin/sh\necho 'X-Token: the-one-on-the-path'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", decoyDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The condition the sample hit: the config was loaded by a relative
+	// path, so its Dir is ".", and "." is the directory the process is in.
+	t.Chdir(configDir)
+
+	port := serverPort(t, server)
+	cfg := &config.Config{
+		Dir:      ".",
+		Services: map[string]config.Service{"catalog": {Port: port}},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	chk := config.ReadinessCheck{
+		Name: "catalog-up", Service: "catalog", Path: "/check",
+		HeadersFrom: "./auth.sh",
+	}
+	passed, err := o.runOneReadinessCheck(context.Background(), chk)
+	if err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	if !passed {
+		t.Fatal("check did not pass")
+	}
+	if got != "the-one-next-to-the-config" {
+		t.Errorf("header = %q — headers_from resolved through the PATH instead of against the config", got)
+	}
+}

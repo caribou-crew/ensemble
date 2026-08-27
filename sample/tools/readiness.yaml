@@ -20,6 +20,12 @@ checks:
     # stdout lines become request headers (see readiness-auth.sh). ops-bff
     # itself doesn't require auth, so this header is sent but ignored —
     # swap the script's contents for a real one against a service that does.
-    headers_from: ./readiness-auth.sh
+    #
+    # The path is relative to the directory holding ENSEMBLE.YAML, not to
+    # this file — see config.ReadinessCheck.HeadersFrom. That is why it says
+    # ./tools/ even though the script sits right next to this line: the same
+    # rule `readiness.file` above is resolved by, so a reader learns one rule
+    # instead of two.
+    headers_from: ./tools/readiness-auth.sh
     assert:
       status: 200

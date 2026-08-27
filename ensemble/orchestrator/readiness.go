@@ -264,13 +264,34 @@ func (o *Orchestrator) runOneReadinessCheck(ctx context.Context, chk config.Read
 // unless absolute) and parses its stdout as one "Header-Name: value" pair
 // per non-blank line. No new trust boundary versus on_ready's own shell
 // steps: an empty scriptPath is a no-op (nil, nil).
+//
+// "Resolved relative to workDir" is enforced by making the result ABSOLUTE —
+// see the comment at the join. A config-declared path must never fall
+// through to a $PATH lookup.
 func runHeadersFromScript(scriptPath, workDir string) (map[string]string, error) {
 	if scriptPath == "" {
 		return nil, nil
 	}
 	path := scriptPath
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(workDir, path)
+		// Made ABSOLUTE, not merely joined. filepath.Join(".", "./auth.sh")
+		// cleans to "auth.sh" — a name with no separator — and exec.Command
+		// resolves such a name through $PATH. workDir is "." whenever the
+		// config was loaded by a relative path (`ensemble up -c
+		// ensemble.yaml`), which is the common case, so the config's own
+		// neighbour would silently lose to any same-named script anywhere on
+		// the PATH. A relative path in a config file is a PATH, never a
+		// command name.
+		//
+		// Abs also settles a second ambiguity: Go resolves a relative program
+		// path against the PROCESS's working directory, not against cmd.Dir,
+		// so "tools/auth.sh" with cmd.Dir set elsewhere would look in the
+		// wrong place even with a separator present.
+		abs, err := filepath.Abs(filepath.Join(workDir, path))
+		if err != nil {
+			return nil, fmt.Errorf("headers_from %q: %w", scriptPath, err)
+		}
+		path = abs
 	}
 
 	var stdout, stderr bytes.Buffer
