@@ -57,6 +57,11 @@ func buildOpenAPI(version string) map[string]any {
 		// here since every verb's behavior/summary is the same.
 		"/api/entities/{name}/{path...}": {"get": {Summary: "Reverse-proxy (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS) to the entity's configured base"}},
 
+		"/api/retrace/queue":                            {"get": {Summary: "Retrace review queue across every app/flow (501 if no retrace: block is configured)"}},
+		"/api/retrace/queue/{app}/{flow}":               {"get": {Summary: "One flow's diff summary (verdict, pixel/wire/hop counts, gates, provenance)"}},
+		"/api/retrace/shots/{app}/{flow}/{side}/{name}": {"get": {Summary: "A reference/candidate screenshot referenced by the diff"}},
+		"/api/retrace/sync":                             {"post": {Summary: "Pull GitHub Actions retrace-runs artifacts per retrace.repo/workflow/since"}},
+
 		"/api/openapi.json": {"get": {Summary: "This document"}},
 
 		"/api/shutdown": {"post": {Summary: "Gracefully stop the ensemble process (loopback only)"}},

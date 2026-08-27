@@ -2,7 +2,10 @@ module github.com/caribou-crew/ensemble/ensemble
 
 go 1.25.0
 
-require github.com/caribou-crew/ensemble/core v0.0.0
+require (
+	github.com/caribou-crew/ensemble/core    v0.0.0
+	github.com/caribou-crew/ensemble/retrace v0.0.0
+)
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -46,3 +49,5 @@ require (
 )
 
 replace github.com/caribou-crew/ensemble/core => ../core
+
+replace github.com/caribou-crew/ensemble/retrace => ../retrace

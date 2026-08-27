@@ -106,37 +106,41 @@
 
 ## 7. `ensemble/server`: retrace routes
 
-- [ ] 7.1 Add `require github.com/caribou-crew/ensemble/retrace` to
+- [x] 7.1 Add `require github.com/caribou-crew/ensemble/retrace` to
       `ensemble/go.mod`; confirm `go build ./ensemble/...` succeeds and `go
       vet ./core/... ./ensemble/... ./retrace/...` reports no import-cycle
       or other issue (there is none: nothing under `retrace/` imports
       `ensemble`).
-- [ ] 7.2 Add `ensemble/server/retrace.go`: resolve the effective retrace
-      directory from `config.Retrace` (or "no retrace configured, and no
-      `.retrace/` next to `ensemble.yaml`" → routes not registered at all),
-      build a `retrace/serve.Deps` via `retrace/config.Discover(dir)`, and
-      register `GET /api/retrace/queue`, `GET
-      /api/retrace/queue/{app}/{flow}`, `GET
+- [x] 7.2 Add `ensemble/server/retrace.go`: resolve the effective retrace
+      directory from `config.Retrace`, build a `retrace/serve.Deps` via
+      `retrace/config.Discover(dir)`, and register `GET
+      /api/retrace/queue`, `GET /api/retrace/queue/{app}/{flow}`, `GET
       /api/retrace/shots/{app}/{flow}/{side}/{name}` delegating straight to
-      `serve.BuildQueue` / `serve.SummaryFor` / the same shot-resolution
-      helpers `retrace/serve/routes.go` uses (import and call them directly
-      — do not copy their bodies).
-- [ ] 7.3 Add `POST /api/retrace/sync`, decoding the stack's configured
-      sync source (repo/workflow — extend `RetraceConfig` with these sync
-      fields per Task 6.1 if not already present) and calling
-      `sync.Run` (Task 3.1) directly; on error, respond with the same error
-      text the CLI would print (spec: "Sync failure surfaces inline").
-- [ ] 7.4 Re-discover the retrace config (mirroring `retrace serve`'s own
-      `reloadConfig`) on the same reload trigger `ensemble/server` already
-      uses for its own config, so a `retrace ref rule`/`accept` run from the
-      CLI is reflected without restarting `ensemble up`.
-- [ ] 7.5 Route tests (mirroring `retrace/serve/routes_test.go`'s style):
+      the exported `serve.WriteQueue` / `serve.ResolveFlow` /
+      `serve.WriteItem` / `serve.WriteShot` (import and call them directly
+      — do not copy their bodies). Routes are always registered; a nil
+      `config.Retrace` answers 501 in JSON, mirroring the existing `Insp`
+      nil-disables-with-501 pattern — see the reconciled requirement in
+      `specs/ensemble-retrace-view/spec.md` (the dashboard's SPA fallback
+      answers any unmatched path with 200, so "not registered" cannot be
+      told apart from a typo without a route that always answers in JSON).
+- [x] 7.3 Add `POST /api/retrace/sync`, decoding the stack's configured
+      sync source (`RetraceConfig.Repo`/`Workflow`/`Since`, already added
+      in Task 6.1) and calling `sync.Run` (Task 3.1) directly; on error,
+      respond with the same error text the CLI would print (spec: "Sync
+      failure surfaces inline").
+- [x] 7.4 There is no config-reload trigger in `ensemble/server` (unlike
+      `retrace serve`'s own `reloadConfig`) to mirror — resolved instead by
+      calling `retrace/config.Discover(dir)` fresh on every request rather
+      than caching, so a `retrace ref rule`/`accept` run from the CLI is
+      reflected without restarting `ensemble up`, with no reload machinery
+      needed.
+- [x] 7.5 Route tests (mirroring `retrace/serve/routes_test.go`'s style):
       queue/item/shot routes return identical JSON to calling
       `retrace/serve` directly against the same `.retrace/` fixture; no
-      `.retrace/` and no `retrace:` config means the routes 404 (not
-      registered) rather than 500; sync route success and `gh`-missing
-      failure paths.
-- [ ] 7.6 Add the new routes to `ensemble/server`'s OpenAPI doc
+      `retrace:` config means the routes answer 501 in JSON rather than
+      404 or 500; sync route success and `gh`-missing failure paths.
+- [x] 7.6 Add the new routes to `ensemble/server`'s OpenAPI doc
       (`openapi.go`) — per `AGENTS.md`'s API-first-parity rule, these routes
       exist so this is not optional.
 
@@ -181,13 +185,14 @@
       `/api/retrace/shots/...`.
 - [ ] 9.4 Register the tab in `App.tsx` alongside Services/Topology/
       Traffic/Entities/Inspector, conditionally hidden when `GET
-      /api/retrace/queue` 404s (no `.retrace:` configured) — mirroring how
-      `service-freshness` badges are omitted rather than shown empty.
+      /api/retrace/queue` responds 501 (no `retrace:` block configured) —
+      mirroring how `service-freshness` badges are omitted rather than
+      shown empty.
 - [ ] 9.5 Component tests mirroring the existing views' style
       (`RetraceView.tsx` alongside `ServicesView.tsx`'s
       `.poll-race.test.ts`/`.stale-error.test.ts` conventions): queue
       loads and renders; row click loads and renders detail; sync failure
-      shows inline, not a crash; tab is absent when the queue route 404s.
+      shows inline, not a crash; tab is absent when the queue route 501s.
 
 ## 10. End-to-end verification
 

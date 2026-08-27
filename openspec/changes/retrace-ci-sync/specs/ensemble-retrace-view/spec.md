@@ -2,13 +2,16 @@
 
 ### Requirement: Ensemble serves the retrace review queue without a separate process
 `ensemble/server` SHALL expose `GET /api/retrace/queue`, returning every
-recorded flow across every app worst-first, whenever a stack's `.retrace/`
-directory exists (default: next to `ensemble.yaml`, overridable via a
-`retrace: { dir }` config block) — computed by the same
+recorded flow across every app worst-first, whenever a `retrace:` block is
+configured in `ensemble.yaml` — computed by the same
 `retrace/serve.BuildQueue` function `retrace serve` uses, never a
-re-implementation. A stack with no `.retrace/` directory and no `retrace:`
-config SHALL expose no retrace routes and the dashboard SHALL show no
-Retrace tab.
+re-implementation. The route is always registered (mirroring how
+`GET /api/databases` behaves when no inspector is configured): with no
+`retrace:` block it responds 501 with a JSON error rather than 404, because
+the dashboard's SPA fallback already answers any unmatched path with a 200
+app shell — a client checking for "no retrace here" needs a route that
+always exists and always answers in JSON to tell the two apart. The
+dashboard SHALL show no Retrace tab in that case.
 
 #### Scenario: Queue reflects local and CI runs identically to `retrace serve`
 - **WHEN** `.retrace/runs/` contains both a locally recorded run and a
@@ -17,11 +20,10 @@ Retrace tab.
   /api/queue` on a `retrace serve` instance pointed at the same directory
   return the same verdict, score, and counts for every flow
 
-#### Scenario: No `.retrace/` directory means no tab
-- **WHEN** a stack's config directory has no `.retrace/` directory and no
-  `retrace:` block in `ensemble.yaml`
-- **THEN** `ensemble up` starts normally, `GET /api/retrace/queue` is not
-  registered, and the dashboard shows no Retrace tab
+#### Scenario: No `retrace:` block means no tab
+- **WHEN** a stack's `ensemble.yaml` has no `retrace:` block
+- **THEN** `ensemble up` starts normally, `GET /api/retrace/queue` responds
+  501 with a JSON error, and the dashboard shows no Retrace tab
 
 #### Scenario: Latest run wins regardless of source
 - **WHEN** a flow has a local run recorded yesterday and a CI run synced
