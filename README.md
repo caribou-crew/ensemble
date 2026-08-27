@@ -276,6 +276,44 @@ percent-encoded. An `http(s)` template opens in a new tab; anything else
 (a custom scheme like `acmewallet://`) navigates the current page instead,
 since most browsers silently no-op `window.open` on non-http(s) schemes.
 
+A link's `kind: exec` swaps that "navigate" behavior for "copy a local CLI
+command to the clipboard" — for reaching a connected Android device or iOS
+Simulator, which the browser has no way to open a URL against directly:
+
+```yaml
+entities:
+  widgets:
+    base: http://127.0.0.1:4281/widgets
+    id: widget_token
+    links:
+      - label: Open on iOS Simulator
+        kind: exec
+        exec: ios-simctl-openurl
+        template: "myapp://widget/{{widget_token}}"
+      - label: Open on Android
+        kind: exec
+        exec: adb-view
+        template: "myapp://widget/{{widget_token}}"
+```
+
+`exec:` names one of a closed, built-in set of commands — currently
+`ios-simctl-openurl` (`xcrun simctl openurl booted <url>`) and `adb-view`
+(`adb shell am start -a android.intent.action.VIEW -d <url>`). `template:`
+resolves the same way as a `kind: url` link's, entirely client-side; the
+assembled command (with the resolved URL single-quoted for a safe paste
+into your shell) is copied to the clipboard on click, ready to paste into a
+terminal and run — ensemble never executes it for you. Hovering the button
+shows the exact command that will be copied. A row that's missing a
+template column, or whose resolved command would contain a control
+character, renders the button disabled with the reason instead of ever
+copying something wrong.
+
+This set is **not config-extensible** — you can't point `exec:` at an
+arbitrary binary. `ensemble.yaml` is a file that gets committed and shared,
+and a free-form command would mean a PR editing it could put a command of
+its author's choosing on a teammate's clipboard, one paste away from
+running. Adding a new built-in command is a Go change and a code review.
+
 ### Gateways
 
 `proxy:` is one-in, one-out — a single intercept port in front of a single

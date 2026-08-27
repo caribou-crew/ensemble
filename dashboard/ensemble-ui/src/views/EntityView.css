@@ -228,6 +228,19 @@
   border-color: var(--border-focus, var(--border-hairline-strong));
 }
 
+.entity-table__link-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Wraps one `kind: exec` link's button so its copied/copy-failed toast
+   (reusing .entity-table__copy-toast) positions relative to that one
+   button rather than the whole links cell. */
+.entity-table__link-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .entity-table__row {
   cursor: pointer;
 }

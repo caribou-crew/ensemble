@@ -491,9 +491,19 @@ type Entity struct {
 // embedding one URL inside another query param must be hand
 // percent-encoded by whoever writes the config). A placeholder naming a
 // column the row doesn't have resolves empty rather than erroring.
+//
+// Kind selects how the button behaves: "" or "url" (the default, and the
+// only behavior prior to Kind existing) opens/navigates to the resolved
+// template directly. "exec" instead copies an assembled local CLI command
+// to the clipboard — for reaching a connected Android device or iOS
+// Simulator, which the browser cannot open a URL against directly — built
+// from a closed, Go-authored command table (see execcommands.go) named by
+// Exec. Exec is only meaningful, and only allowed, when Kind is "exec".
 type EntityLink struct {
 	Label    string `yaml:"label"`
 	Template string `yaml:"template"`
+	Kind     string `yaml:"kind,omitempty"`
+	Exec     string `yaml:"exec,omitempty"`
 }
 
 // Latency holds the config-defined latency injection rules. Defaults are

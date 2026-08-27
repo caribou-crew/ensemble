@@ -131,6 +131,89 @@ func TestEntitiesDiscoveryListIncludesLinks(t *testing.T) {
 	}
 }
 
+// TestEntitiesDiscoveryListUrlLinkSerializesUnchanged guards that adding
+// kind/argv to entityLink didn't change the wire shape of a "url" (or
+// default) link — kind and argv must be entirely absent, not present with
+// zero values, so the existing dashboard client's assumptions still hold.
+func TestEntitiesDiscoveryListUrlLinkSerializesUnchanged(t *testing.T) {
+	ts := newEntitiesTestEnv(t, map[string]config.Entity{
+		"gadgets": {
+			Base: "http://127.0.0.1:1", ID: "gadget_id",
+			Links: []config.EntityLink{
+				{Label: "Open in admin-console", Template: "http://localhost:3000/modules?gadgetId={{gadget_id}}"},
+			},
+		},
+	})
+
+	resp, err := http.Get(ts.URL + "/api/entities")
+	if err != nil {
+		t.Fatalf("GET /api/entities: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if strings.Contains(string(body), `"kind"`) || strings.Contains(string(body), `"argv"`) {
+		t.Fatalf("url link response should omit kind/argv entirely, got: %s", body)
+	}
+}
+
+// TestEntitiesDiscoveryListIncludesExecLinkArgv: a "kind: exec" link
+// carries its expanded argv (from the closed command table) and kind, so
+// the dashboard can build the copy-to-clipboard command without a second
+// lookup or its own copy of the command table.
+func TestEntitiesDiscoveryListIncludesExecLinkArgv(t *testing.T) {
+	ts := newEntitiesTestEnv(t, map[string]config.Entity{
+		"gadgets": {
+			Base: "http://127.0.0.1:1", ID: "gadget_id",
+			Links: []config.EntityLink{
+				{Label: "Open on Android", Template: "myapp://widget/{{gadget_id}}", Kind: "exec", Exec: "adb-view"},
+			},
+		},
+	})
+
+	resp, err := http.Get(ts.URL + "/api/entities")
+	if err != nil {
+		t.Fatalf("GET /api/entities: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Entities []struct {
+			Links []struct {
+				Label    string   `json:"label"`
+				Template string   `json:"template"`
+				Kind     string   `json:"kind"`
+				Argv     []string `json:"argv"`
+			} `json:"links"`
+		} `json:"entities"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, body)
+	}
+	if len(got.Entities) != 1 || len(got.Entities[0].Links) != 1 {
+		t.Fatalf("got = %+v", got)
+	}
+	link := got.Entities[0].Links[0]
+	if link.Kind != "exec" {
+		t.Errorf("kind = %q, want \"exec\"", link.Kind)
+	}
+	wantArgv := []string{"adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "{{url}}"}
+	if len(link.Argv) != len(wantArgv) {
+		t.Fatalf("argv = %v, want %v", link.Argv, wantArgv)
+	}
+	for i := range wantArgv {
+		if link.Argv[i] != wantArgv[i] {
+			t.Errorf("argv[%d] = %q, want %q", i, link.Argv[i], wantArgv[i])
+		}
+	}
+	// The exec: config key itself is a server-side lookup key only — it
+	// must never appear as a JSON key (the "exec" kind VALUE is expected
+	// and checked above, so this only looks for the key form).
+	if strings.Contains(string(body), `"exec":`) {
+		t.Errorf("response must not expose the exec: config key, got: %s", body)
+	}
+}
+
 // TestEntitiesDiscoveryDefaultsEmptyIDToId guards final-review-phase-3.md's I4:
 // config.Validate requires entity.base but says nothing about entity.id, so
 // `entities: { users: { base: "..." } }` is a valid config — forwarding its

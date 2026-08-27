@@ -8,6 +8,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/caribou-crew/ensemble/ensemble/config"
 )
 
 // entityProxyClient forwards requests to a configured entity's Base. A
@@ -41,10 +43,33 @@ type entityInfo struct {
 
 // entityLink mirrors config.EntityLink — see its doc comment for the
 // {{column}} template contract. Resolved client-side, not here: this
-// endpoint only relays the raw label/template pair.
+// endpoint only relays the raw label/template pair, plus (for "exec"
+// links) the target command's argv template. Kind and Argv are omitted
+// entirely for a "url" (or default) link, so the existing dashboard
+// client's shape is unchanged. link.Exec — the config-side lookup key
+// into the command table — is deliberately never serialized: the client
+// only ever needs the already-expanded argv.
 type entityLink struct {
-	Label    string `json:"label"`
-	Template string `json:"template"`
+	Label    string   `json:"label"`
+	Template string   `json:"template"`
+	Kind     string   `json:"kind,omitempty"`
+	Argv     []string `json:"argv,omitempty"`
+}
+
+// toEntityLink expands a config.EntityLink into its wire form. For a
+// "exec" link, Argv is looked up from the closed command table validated
+// at config load (config.Validate already guarantees link.Exec names a
+// real entry, so the ok-false branch here is unreachable in practice —
+// guarded anyway rather than assumed, since this runs on every request).
+func toEntityLink(l config.EntityLink) entityLink {
+	out := entityLink{Label: l.Label, Template: l.Template}
+	if l.Kind == "exec" {
+		out.Kind = "exec"
+		if cmd, ok := config.LookupExecCommand(l.Exec); ok {
+			out.Argv = cmd.Argv
+		}
+	}
+	return out
 }
 
 func (s *server) handleEntities(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +86,7 @@ func (s *server) handleEntities(w http.ResponseWriter, r *http.Request) {
 		}
 		links := make([]entityLink, len(e.Links))
 		for i, l := range e.Links {
-			links[i] = entityLink{Label: l.Label, Template: l.Template}
+			links[i] = toEntityLink(l)
 		}
 		out = append(out, entityInfo{Name: name, ID: id, Links: links})
 	}

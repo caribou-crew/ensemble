@@ -145,9 +145,18 @@ export interface DatabaseInfo {
 // ensemble/server's entityLink. Template is a plain string with
 // {{column}} placeholders resolved client-side against each row's own
 // fields — see format.ts's resolveLinkTemplate.
+//
+// `kind` is absent (or "url") for the original behavior: resolve and
+// navigate/open directly. `kind: "exec"` instead means `argv` is the
+// target command's argv template (exactly one element is the literal
+// sentinel "{{url}}") — the button builds and copies a local CLI command
+// to the clipboard rather than navigating. See format.ts's
+// buildExecCommand.
 export interface EntityLink {
   label: string;
   template: string;
+  kind?: 'exec';
+  argv?: string[];
 }
 
 // One entry in GET /api/entities' discovery list. `id` is the CONFIGURED

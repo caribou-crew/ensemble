@@ -51,7 +51,7 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/databases/{name}/rows":   {"get": {Summary: "Paged rows of ?table=, limit default 50 (cap 500), ?offset="}},
 		"/api/inspector/stream":        {"get": {Summary: "Server-Sent Events stream of inspector change events"}},
 
-		"/api/entities": {"get": {Summary: "Configured entities available for the dashboard's entity pages"}},
+		"/api/entities": {"get": {Summary: "Configured entities available for the dashboard's entity pages, including per-row links (url, or exec with an argv template)"}},
 		// Registered once per method in routes.go (GET/HEAD/POST/PUT/PATCH/
 		// DELETE/OPTIONS all reverse-proxy identically) — listed under "get"
 		// here since every verb's behavior/summary is the same.

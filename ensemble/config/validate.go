@@ -195,10 +195,22 @@ func (c *Config) Validate() error {
 		if ent.Base == "" {
 			errs = append(errs, fmt.Errorf("entity %q: base is empty", name))
 		}
+		seenLabels := make(map[string]bool, len(ent.Links))
 		for i, link := range ent.Links {
 			if link.Label == "" || link.Template == "" {
 				errs = append(errs, fmt.Errorf("entity %q: link %d: label and template must both be non-empty", name, i))
 			}
+			if link.Label != "" {
+				// EntityView.tsx keys each link's button by its label, so a
+				// duplicate silently collides in React rather than erroring
+				// there — catch it here instead, where the message can name
+				// both the entity and the offending label.
+				if seenLabels[link.Label] {
+					errs = append(errs, fmt.Errorf("entity %q: link %d: duplicate label %q (link labels must be unique within an entity)", name, i, link.Label))
+				}
+				seenLabels[link.Label] = true
+			}
+			errs = append(errs, validateEntityLinkKind(name, i, link)...)
 		}
 	}
 
@@ -212,6 +224,72 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateLatencyProfiles()...)
 
 	return errors.Join(errs...)
+}
+
+// validEntityLinkKinds are the only values EntityLink.Kind may take. Empty
+// is equivalent to "url" — the only behavior that existed before Kind did.
+var validEntityLinkKinds = map[string]bool{"": true, "url": true, "exec": true}
+
+// execLinkSchemeRe matches a literal URI scheme (RFC 3986 §3.1) at the
+// start of a string, e.g. "myapp:" out of "myapp://widget/". Used to check
+// the text before an "exec" link's first {{ placeholder — see
+// validateEntityLinkKind.
+var execLinkSchemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*:`)
+
+// templatePlaceholderRe matches one {{column}} placeholder, for stripping
+// them out to inspect a link template's config-authored literal text.
+var templatePlaceholderRe = regexp.MustCompile(`\{\{\w+\}\}`)
+
+// hasControlByte reports whether s contains an ASCII control character
+// (byte < 0x20, or 0x7F/DEL).
+func hasControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEntityLinkKind checks the Kind/Exec-related rules for one entity
+// link. Split out from the main Validate loop because "exec" links carry
+// several rules of their own — see EntityLink's doc comment and
+// execcommands.go for why these exist.
+func validateEntityLinkKind(entityName string, i int, link EntityLink) []error {
+	var errs []error
+
+	if !validEntityLinkKinds[link.Kind] {
+		errs = append(errs, fmt.Errorf("entity %q: link %d: kind %q is not valid (must be \"url\" or \"exec\")", entityName, i, link.Kind))
+		return errs
+	}
+
+	if link.Kind != "exec" {
+		if link.Exec != "" {
+			errs = append(errs, fmt.Errorf("entity %q: link %d: exec is set but kind is %q (exec: only applies to kind: exec links)", entityName, i, link.Kind))
+		}
+		return errs
+	}
+
+	if link.Exec == "" {
+		errs = append(errs, fmt.Errorf("entity %q: link %d: kind: exec requires exec: naming one of %s", entityName, i, strings.Join(ExecCommandNames(), ", ")))
+	} else if _, ok := LookupExecCommand(link.Exec); !ok {
+		errs = append(errs, fmt.Errorf("entity %q: link %d: exec %q is not a known command (must be one of %s)", entityName, i, link.Exec, strings.Join(ExecCommandNames(), ", ")))
+	}
+
+	if link.Template != "" {
+		scheme := link.Template
+		if idx := strings.Index(link.Template, "{{"); idx >= 0 {
+			scheme = link.Template[:idx]
+		}
+		if !execLinkSchemeRe.MatchString(scheme) {
+			errs = append(errs, fmt.Errorf("entity %q: link %d: kind: exec requires a literal scheme before the first {{ (e.g. \"myapp://{{id}}\"), got template %q", entityName, i, link.Template))
+		}
+		if literal := templatePlaceholderRe.ReplaceAllString(link.Template, ""); hasControlByte(literal) {
+			errs = append(errs, fmt.Errorf("entity %q: link %d: template contains a control character", entityName, i))
+		}
+	}
+
+	return errs
 }
 
 // validateLatencyProfiles checks that every latency.profiles entry's file
