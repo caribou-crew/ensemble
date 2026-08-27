@@ -112,7 +112,12 @@ type Session struct {
 	// It is the single discriminator every method below branches on — see
 	// Drain, Close, ProxyFailure and WatchProxy in ensemble.go.
 	ens  EnsembleClient
-	hops []trace.Hop // drained from ensemble; nil in standalone
+	hops []trace.Hop // drained from ensemble, or collected from a configured hop source
+	// externalHops records that hops.jsonl was written from a configured
+	// source rather than from ensemble. Standalone mode has no hop plane at
+	// all, so "did anyone look?" cannot be answered by the mode alone once a
+	// hop source exists — see HopsRecorded.
+	externalHops bool
 	// stack is the backend fingerprint read at session start, nil when the
 	// control plane could not answer; stackErr is why. Both nil in standalone
 	// mode, which has no control plane to ask.

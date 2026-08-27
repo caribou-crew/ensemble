@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -58,6 +59,11 @@ type AssessInput struct {
 	SessionVerdict      trace.Verdict
 	SessionReasons      []string
 	Notes               []string // Session.trustNotes (drain shortfall, teardown failure)
+	// HopSource is the configured hop-source kind when it is NOT ensemble's
+	// own control plane. Empty for every run recorded the way runs have
+	// always been recorded, so the reason below appears only when there is
+	// something to say.
+	HopSource string
 }
 
 // Assess ranks every reason a capture might not be trustworthy and returns
@@ -207,15 +213,34 @@ func Assess(in AssessInput) runs.CaptureTrust {
 			"if the capture was restarted mid-run, calls in that window are missing, not absent")
 	}
 
+	// Provenance, not a complaint: a hop chain that came from somewhere other
+	// than ensemble is only as complete as the exporter that produced it, and
+	// a reader comparing two runs needs to know when the two planes were
+	// collected by different machinery. VerdictOK on purpose — an external
+	// source is a supported way to record, and ranking it any worse would
+	// quarantine every such run in `diff`, which reads Status != ok.
+	if in.HopSource != "" && in.HopSource != config.HopSourceEnsemble {
+		add("hop-source", trace.VerdictOK,
+			"hop-source: "+in.HopSource+" — the chain came from a configured source, not from ensemble",
+			"")
+	}
+
 	status := trace.VerdictOK
 	for _, r := range reasons {
 		status = status.Worse(r.Status)
 	}
 	out := runs.CaptureTrust{Status: status, Reasons: reasons, Gaps: gaps, Summary: "capture looks complete"}
-	for _, r := range reasons {
-		if r.Status == status {
-			out.Summary, out.Hint = r.Detail, r.Hint
-			break
+	// The summary names the WORST evidence — which, on a clean capture, is no
+	// evidence at all. Guarded on status rather than only on the loop below:
+	// an informational reason (hop-source) also carries VerdictOK, and without
+	// this the banner on a perfectly good run would read as whatever that
+	// reason happened to say.
+	if status != trace.VerdictOK {
+		for _, r := range reasons {
+			if r.Status == status {
+				out.Summary, out.Hint = r.Detail, r.Hint
+				break
+			}
 		}
 	}
 	return out

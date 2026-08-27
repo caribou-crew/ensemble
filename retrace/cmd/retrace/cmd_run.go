@@ -294,6 +294,15 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 	switch {
 	case p.noEnsemble:
 		// Explicit escape hatch — the user asked for standalone, so no note.
+	case p.cfg.Hops.Source.External():
+		// The config already said where the chain comes from, and attaching
+		// would produce a second answer: ensemble's session records BOTH the
+		// hop plane and the wire plane from its own proxies, so an attached
+		// run with an external hop source would have two producers for one
+		// plane and no rule for which wins. The configured source wins by
+		// being the only one asked.
+		fmt.Fprintf(stderr, "retrace: hops.source names a %s hop source — recording the client edge here and taking the chain from it\n",
+			p.cfg.Hops.Source.Resolved())
 	case p.cfg.Entry == "":
 		// retrace.yaml needing `entry:` is exactly the thing a new user
 		// forgets, and this is otherwise the one attach-vs-standalone
@@ -350,6 +359,14 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		Stderr:    stderr,
 		Now:       time.Now,
 		Canonical: p.cfg.Flows[name].Canonical,
+		// Commands run in the directory holding retrace.yaml, which is the
+		// working directory by construction: config.Discover reads
+		// ./retrace.yaml and deliberately never walks up, so there is no case
+		// where the config lives somewhere else and a "resolve against the
+		// config" branch would have anything to do. They get the session
+		// environment, which is how an export script finds the run it is
+		// exporting for.
+		HopSource: capture.HopSourceFrom(p.cfg.Hops.Source, p.cwd, sess.Env(), stderr),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "retrace: run: %v\n", err)
@@ -408,12 +425,29 @@ type runOptions struct {
 	// one expectation, and handing it a Config would invite the next fact to
 	// be read from a second place.
 	Canonical *config.Canonical
+	// HopSource is where this run's hop chain comes from. Its zero Kind is
+	// "ensemble", which is what every config that does not mention hops means.
+	HopSource capture.HopSource
 }
 
 // runFlow executes the test command against an already-started session and
 // returns the assembled manifest. Every Manifest field is set here; if a
 // field has no assignment in this function it has no writer at all.
 func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
+	// Armed BEFORE anything else: before the proxy watcher, before the clock,
+	// before the test command. The window has to be open for the first call,
+	// and a failure here costs seconds rather than a whole suite.
+	//
+	// Fatal, unlike the collection further down — the config asked for a
+	// chain, and a recording that silently has none is indistinguishable from
+	// a stack that made no downstream calls, which is the confusion this
+	// plane exists to end. Its own context, not the run's: the run's is
+	// cancelled the moment the test command exits, and arming happens before
+	// that context has a job to do.
+	if err := o.HopSource.Open(context.Background()); err != nil {
+		return runs.Manifest{}, err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	// watchDone closes when WatchProxy returns. runFlow joins it right after
 	// cancel() and strictly before s.Close(): WatchProxy's ctx.Done() branch
@@ -471,6 +505,24 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	if err := s.Drain(context.Background()); err != nil {
 		fmt.Fprintf(o.Stderr, "retrace: draining ensemble hops failed (%v) — the recording may be truncated\n", err)
 		s.NoteDrainFailure(err)
+	}
+	// Collected after the test command and before Close, for the same reason
+	// Drain is: this is the last moment the run is still open, and the window
+	// the source was asked to bound has just closed.
+	//
+	// A failure is REPORTED, never fatal. The wire plane and the shots are
+	// already on disk; discarding a good recording over a telemetry export
+	// that timed out would be the worse trade, and the shortfall goes into
+	// the durable trust record rather than only this stderr line — the same
+	// treatment a failed ensemble drain gets.
+	if o.HopSource.Kind == config.HopSourceCommand || o.HopSource.Kind == config.HopSourceFile {
+		hops, err := o.HopSource.Collect(context.Background())
+		if err != nil {
+			fmt.Fprintf(o.Stderr, "retrace: %v — this run records no hop chain\n", err)
+			s.NoteHopSourceFailure(err)
+		} else if err := s.RecordExternalHops(hops); err != nil {
+			return runs.Manifest{}, err
+		}
 	}
 	// Close flushes wire.jsonl and, in attached mode, writes hops.jsonl and
 	// wire.jsonl and then ends the ensemble session.
@@ -539,7 +591,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	}
 
 	hops := s.Hops()
-	trust := assessTrust(s, hops, checkpoints, groups, exitCode)
+	trust := assessTrust(s, hops, checkpoints, groups, exitCode, o.HopSource.Kind)
 
 	m := runs.Manifest{
 		Schema:      runs.Schema,
@@ -571,11 +623,14 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 			Retrace:  buildinfo.Resolve(version),
 		},
 	}
-	// Hops is a *Counts on purpose: nil means "standalone, no chain was
-	// recorded", present-and-zero means "the chain was recorded and was
-	// empty". Task 5 sets it; standalone leaves it nil.
-	if s.Mode == runs.ModeEnsemble {
-		m.Hops = &runs.Counts{Calls: len(hops), Recorded: true}
+	// Hops is a *Counts on purpose: nil means "no chain was recorded",
+	// present-and-zero means "the chain was recorded and was empty" — the
+	// difference between nobody looking and looking to find nothing. Set
+	// whenever a chain reached disk: drained from ensemble, or collected
+	// from the configured hop source. A standalone run with no hop source
+	// leaves it nil, and so does one whose source failed to answer.
+	if s.HopsRecorded() {
+		m.Hops = &runs.Counts{Calls: len(s.RecordedChain()), Recorded: true}
 	}
 	if err := runs.WriteManifest(s.Paths, &m); err != nil {
 		return m, err
@@ -659,7 +714,7 @@ func checkCanonical(o runOptions, device *runs.Device) error {
 // runFlow already gathered into the single capture-trust verdict every
 // report surface (this banner, and Tasks 10/11/13/16) reads.
 func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
-	groups []runs.Group, exitCode int) runs.CaptureTrust {
+	groups []runs.Group, exitCode int, hopSource string) runs.CaptureTrust {
 	return capture.Assess(capture.AssessInput{
 		ProxyFailure:        s.ProxyFailure(),
 		Hops:                hops,
@@ -678,6 +733,7 @@ func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 		SessionVerdict: s.EndVerdict(),
 		SessionReasons: s.EndReasons(),
 		Notes:          s.TrustNotes(),
+		HopSource:      hopSource,
 	})
 }
 

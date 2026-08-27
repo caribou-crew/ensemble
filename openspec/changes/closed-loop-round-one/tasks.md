@@ -409,14 +409,45 @@ Amendments:
       `ensemble.yaml` key at all.
 
 ## 10. Pluggable hop source (Task 5)
-- [ ] `hops.source: ensemble` (default, current behaviour) |
+- [x] `hops.source: ensemble` (default, current behaviour) |
       `{ arm, disarm, export }` commands (disarm stdout = one JSON line
       `{windowId}`; export stdout = hops NDJSON in `core/trace` schema) |
       `{ file: path }`.
-- [ ] Hops from any source go through the same Redactor before hitting disk;
+      - One field, three shapes — not three sibling keys with a precedence
+        rule. Naming a file AND a command is a parse error; so is arm/disarm
+        with no `export:` (the window opens, closes, and nothing reads it);
+        so is a scalar other than `ensemble`, which must never quietly
+        default to draining the control plane the config was pointing away
+        from.
+      - **An external source forces standalone capture.** An attached run
+        would have two producers for one plane and no rule for which wins;
+        the configured source wins by being the only one asked, and the run
+        says so on stderr.
+      - Arm failure is FATAL (before the test command, so it costs seconds
+        not a suite); collection failure is NOT (the wire plane and the shots
+        are already on disk) and lands in the durable trust record instead.
+- [x] Hops from any source go through the same Redactor before hitting disk;
       verdict gains `hop-source: <kind>`.
-- [ ] Oracle: a fixture export script yields a run whose hops.jsonl is
+      - The reason carries **VerdictOK**: it is provenance, not a complaint,
+        and ranking it worse would quarantine every such run in `diff`, which
+        reads `Status != ok`. Added only when the source is not ensemble.
+        Assess's summary loop is now guarded so an informational reason
+        cannot displace "capture looks complete".
+      - `Session.Hops()` (what retrace itself observed — reachability, gaps)
+        and `Session.RecordedChain()` (what reached hops.jsonl) are now
+        separate questions. Conflating them let a fixture vouch for a proxy
+        the app never routed through, and made the manifest count disagree
+        with the file it counts.
+      - Silent-shrinkage rulings: a malformed export line, a wrong-schema
+        export line, a missing fixture and a chatty disarm are all REFUSALS,
+        not skips — `runs.ReadHops`'s tolerance exists for a run that died
+        mid-write, and none of these is that.
+- [x] Oracle: a fixture export script yields a run whose hops.jsonl is
       byte-equal to the ensemble-session path for the same traffic.
+      - `TestAnExportedChainLandsByteEqualWithTheEnsemblePath` compares the
+        two files BYTE for byte and also asserts a secret in a hop header is
+        absent from both. It is what licenses comparing a run recorded
+        through one source against a run recorded through another.
 
 ## 11. Cross-repo diff (Tasks 1, 10)
 - [x] `--root` repeatable; selectors `app@runId`, `app@<sha-prefix>`,

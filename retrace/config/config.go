@@ -135,6 +135,9 @@ type Config struct {
 	// --require-why` set it for one invocation without editing the file,
 	// which is how a project tries the ratchet on before committing to it.
 	RequireWhy bool `yaml:"require_why"`
+	// Hops says where the hop chain comes from. Absent — every config that
+	// exists today — means ensemble's control plane, unchanged behaviour.
+	Hops Hops `yaml:"hops"`
 	// Preflight commands run once, before any flow. Per-flow Preflight (see
 	// Flow.Preflight) then runs before that specific flow. Executed by
 	// `retrace run` (cmd/retrace/hooks.go), never by this package: a
