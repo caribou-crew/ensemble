@@ -99,7 +99,12 @@ type Config struct {
 	// FreshnessConfig. Nil (no `freshness:` key) disables it entirely: no
 	// fetches run, and no ServiceState ever carries a Freshness field.
 	Freshness *FreshnessConfig `yaml:"freshness"`
-	Dir       string           `yaml:"-"` // dir containing the config file (set by Load)
+	// Retrace enables the dashboard's Retrace tab and its REST routes —
+	// see RetraceConfig. Nil (no `retrace:` key) means no retrace routes
+	// are registered at all and the dashboard shows no tab, regardless of
+	// whether a `.retrace/` directory happens to exist on disk.
+	Retrace *RetraceConfig `yaml:"retrace"`
+	Dir     string         `yaml:"-"` // dir containing the config file (set by Load)
 }
 
 // DefaultFreshnessDefaultBranch and DefaultFreshnessPollIntervalS apply when
@@ -141,6 +146,54 @@ func (f FreshnessConfig) EffectivePollIntervalS() int {
 		return f.PollIntervalS
 	}
 	return DefaultFreshnessPollIntervalS
+}
+
+// DefaultRetraceSince applies when a `retrace:` block is present but
+// leaves `since` unset.
+const DefaultRetraceSince = "7d"
+
+// RetraceConfig turns on the ensemble dashboard's Retrace tab: a
+// cross-app view of retrace's review queue, backed by importing
+// retrace/serve directly (no separate `retrace serve` process). See
+// openspec/changes/retrace-ci-sync/design.md.
+type RetraceConfig struct {
+	// Dir is where this stack's `.retrace/` directory lives, resolved
+	// relative to the directory containing ensemble.yaml if not absolute.
+	// Empty (the default) means the same directory as ensemble.yaml,
+	// matching sample/'s layout where .ensemble/ and .retrace/ are
+	// siblings.
+	Dir string `yaml:"dir"`
+	// Repo is the "org/repo" GitHub repository `POST /api/retrace/sync`
+	// pulls workflow-run artifacts from. Required for the sync route;
+	// the queue and detail routes work without it.
+	Repo string `yaml:"repo"`
+	// Workflow optionally narrows sync to one GitHub Actions workflow
+	// name. Empty means every workflow in Repo.
+	Workflow string `yaml:"workflow"`
+	// Since bounds how far back sync looks (e.g. "7d", "24h"). Empty
+	// defaults to DefaultRetraceSince — see EffectiveSince.
+	Since string `yaml:"since"`
+}
+
+// EffectiveDir returns Dir resolved against configDir (Config.Dir), or
+// configDir itself when Dir is empty.
+func (r RetraceConfig) EffectiveDir(configDir string) string {
+	if r.Dir == "" {
+		return configDir
+	}
+	if filepath.IsAbs(r.Dir) {
+		return r.Dir
+	}
+	return filepath.Join(configDir, r.Dir)
+}
+
+// EffectiveSince returns Since, or DefaultRetraceSince when it's left
+// unset.
+func (r RetraceConfig) EffectiveSince() string {
+	if r.Since != "" {
+		return r.Since
+	}
+	return DefaultRetraceSince
 }
 
 // OnReady runs once `ensemble up` has brought every active service and

@@ -8,6 +8,12 @@ import (
 	"strings"
 )
 
+// retraceSincePattern matches a bare integer plus one unit — "7d", "24h",
+// "30m" — the same shape retrace/sync's own parser accepts. Days aren't a
+// valid time.ParseDuration unit, which is exactly why this is a distinct,
+// looser check rather than a call into time.ParseDuration.
+var retraceSincePattern = regexp.MustCompile(`^[0-9]+[dhms]$`)
+
 // validDatabaseTypes are the emulators ensemble knows how to provision.
 var validDatabaseTypes = map[string]bool{
 	"postgres":   true,
@@ -48,6 +54,10 @@ func (c *Config) Validate() error {
 
 	if c.Freshness != nil && c.Freshness.PollIntervalS < 0 {
 		errs = append(errs, fmt.Errorf("freshness: poll_interval_s must be >= 0"))
+	}
+
+	if c.Retrace != nil && c.Retrace.Since != "" && !retraceSincePattern.MatchString(c.Retrace.Since) {
+		errs = append(errs, fmt.Errorf("retrace: since %q is not a duration like \"7d\", \"24h\", or \"30m\"", c.Retrace.Since))
 	}
 
 	for name, db := range c.Databases {

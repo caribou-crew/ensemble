@@ -92,15 +92,15 @@
 
 ## 6. `ensemble/config`: optional `retrace:` block
 
-- [ ] 6.1 Add `RetraceConfig` (`Dir string`, optional — defaults to the
+- [x] 6.1 Add `RetraceConfig` (`Dir string`, optional — defaults to the
       directory containing `ensemble.yaml` when the block is present but
       `dir` is omitted, per `service-freshness`'s precedent for optional
       blocks with defaults) to `ensemble/config/config.go` as `Retrace
       *RetraceConfig`.
-- [ ] 6.2 Validation: if `Retrace` is set and `Dir` is a relative path,
+- [x] 6.2 Validation: if `Retrace` is set and `Dir` is a relative path,
       resolve it relative to the config file's own directory (mirroring how
       service `Dir`s already resolve).
-- [ ] 6.3 Config tests: block absent; block present with an explicit `dir`;
+- [x] 6.3 Config tests: block absent; block present with an explicit `dir`;
       block present with `dir` omitted (defaults to the config directory).
 
 ## 7. `ensemble/server`: retrace routes
