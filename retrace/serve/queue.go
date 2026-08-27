@@ -41,6 +41,12 @@ type Item struct {
 	// rows a queue screen renders most of: `item.gates.length` is undefined
 	// there, and that throws synchronously inside the render.
 	Gates []string `json:"gates"`
+	// Source is nil for a run recorded locally — see runs.Source's own doc
+	// comment for why nil, not a "local" value, is the encoding — and set
+	// for one `retrace sync` merged in. omitempty because a queue is
+	// overwhelmingly local runs today, and `"source":null` on every row
+	// would train a reader to ignore the key on the rows where it matters.
+	Source *runs.Source `json:"source,omitempty"`
 }
 
 // Deps is everything the queue and its handlers need. It is a value, copied
@@ -264,7 +270,26 @@ func itemOf(s diff.Summary) Item {
 		Counts:   s.Counts,
 		Capture:  s.Capture,
 		Gates:    itemGates(s),
+		Source:   sourceOf(s.B.Dir),
 	}
+}
+
+// sourceOf reads the run-under-review's provenance sidecar, best-effort: a
+// missing or unreadable source.json degrades to nil (indistinguishable from
+// "recorded locally"), the same way a run captured before an adapter wrote
+// device.json degrades to Device being nil rather than failing the whole
+// item. Provenance is a display convenience, never an input to a verdict —
+// see runs.Source's own doc comment — so nothing here can change Verdict,
+// Score or Gates.
+func sourceOf(runDir string) *runs.Source {
+	if runDir == "" {
+		return nil
+	}
+	src, err := runs.ReadSource(runs.Paths{RunDir: runDir})
+	if err != nil {
+		return nil
+	}
+	return src
 }
 
 // itemGates is what the queue shows as the reasons this row needs

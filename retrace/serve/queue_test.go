@@ -968,3 +968,73 @@ func TestEveryFieldAnUnEvaluableRowCarriesIsPopulated(t *testing.T) {
 		}
 	}
 }
+
+// --- provenance -----------------------------------------------------------
+
+func TestALocallyRecordedItemCarriesNoSource(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Source != nil {
+		t.Fatalf("Source = %+v, want nil for a locally recorded run", items[0].Source)
+	}
+	b, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(b, &row); err != nil {
+		t.Fatalf("unmarshalling: %v", err)
+	}
+	if _, ok := row["source"]; ok {
+		t.Fatalf("a local item's JSON carries a \"source\" key at all: %s", b)
+	}
+}
+
+func TestASyncedItemCarriesItsSource(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	p := recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	syncedAt := time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC)
+	if err := runs.WriteSource(p, runs.Source{
+		Kind: runs.SourceKindCI, Workflow: "retrace-web", RunURL: "https://github.com/org/repo/actions/runs/1", SHA: "deadbee", SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("runs.WriteSource: %v", err)
+	}
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	got := items[0].Source
+	if got == nil {
+		t.Fatal("Source is nil for a synced item")
+	}
+	if got.Kind != runs.SourceKindCI || got.Workflow != "retrace-web" {
+		t.Fatalf("Source = %+v, want kind %q workflow %q", got, runs.SourceKindCI, "retrace-web")
+	}
+	// This item does not affect the verdict: a synced run diffed against
+	// the same reference an equivalent local run would use scores 0, same
+	// as if source.json had never been written.
+	if items[0].Score != 0 || items[0].Verdict != "pass" {
+		t.Fatalf("a synced-but-identical run scored %v/%q, want 0/pass — provenance must never change a verdict", items[0].Score, items[0].Verdict)
+	}
+}
