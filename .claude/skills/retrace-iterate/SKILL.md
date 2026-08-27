@@ -95,7 +95,11 @@ Read these fields off `retrace diff --json`:
   `signals` vector it decided from. See the next section.
 - `gates` — human-readable reasons the verdict is `failed`
 - `budgets` — one row per plane your `gates:` config names: `plane`,
-  `threshold`, `observed`, `failed`
+  `threshold`, `observed`, `failed`, and `checkpoint` when a per-checkpoint
+  budget decided the row (`gates: {pixel: {checkpoints: {cart: 8}}}`). A flow
+  can override any of these under `flows.<name>.gates`; the overrides merge
+  per key, so widening a flow's `budget_pct` never discards a checkpoint
+  budget declared globally.
 - `unmeasuredGates` — planes that are gated but which this run carried no
   evidence to measure. **A gate that could not be evaluated is not a gate that
   passed.**
@@ -212,7 +216,11 @@ cannot tell which.
 
 **Never widen a threshold to pass.** `gates:` budgets describe what the team
 accepts, not what today's run happens to produce. A threshold edited to fit a
-result is no longer a gate.
+result is no longer a gate. This covers the narrow knobs too: a
+`flows.<name>.gates` override or a `checkpoints:` entry added because one
+screen is failing today is the same edit wearing a smaller hat. They exist for
+a screen that is genuinely, permanently noisy — an animation, a live clock, a
+map tile — and that reason belongs in a `why:` beside it.
 
 **Never accept a reference to clear red.** See step 5.
 

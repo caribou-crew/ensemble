@@ -172,6 +172,12 @@ type Flow struct {
 	// package.
 	Setup    []string `yaml:"setup"`
 	Teardown []string `yaml:"teardown"`
+	// Gates overrides the top-level Config.Gates for THIS flow. Resolved by
+	// Config.ResolveGates, never read directly: a consumer that read this map
+	// on its own would see a flow's overrides without the global budgets
+	// underneath them, and report a plane as ungated because this flow did not
+	// happen to mention it.
+	Gates map[string]Gate `yaml:"gates"`
 }
 
 // Gate is one plane's CI budget entry under Config.Gates. BudgetPct is a
@@ -182,6 +188,19 @@ type Flow struct {
 // explicit zero are the same bits.
 type Gate struct {
 	BudgetPct *float64 `yaml:"budget_pct"`
+	// Checkpoints overrides BudgetPct for individually named checkpoints —
+	// `gates: {pixel: {budget_pct: 1.5, checkpoints: {cart: 8}}}` means "1.5%
+	// everywhere, except the cart screen, which is allowed 8%". Only the
+	// pixel plane has checkpoints; the other three planes have no per-item
+	// unit for this to key on, and ValidateGateCheckpoints rejects the key
+	// there rather than letting it load clean and do nothing.
+	//
+	// A plain float64, not a *float64, unlike BudgetPct: a map key's PRESENCE
+	// already draws the absent-vs-explicit-zero distinction that BudgetPct
+	// needs a pointer for, and `checkpoints: {cart: 0}` is a real setting
+	// ("this screen must not move at all") that a present key expresses
+	// perfectly well.
+	Checkpoints map[string]float64 `yaml:"checkpoints"`
 }
 
 type Normalize struct {
@@ -368,6 +387,22 @@ func validatePlanes(c *Config) error {
 	for _, name := range c.FailOn {
 		if !validPlanes[name] {
 			return fmt.Errorf("fail_on: unknown plane %q, want one of pixel, wire, hop, perf", name)
+		}
+	}
+	if err := validateGateCheckpoints("gates", c.Gates); err != nil {
+		return err
+	}
+	// Per-flow gates get the SAME two checks, or a typo is caught at the top
+	// level and waved through one level down — where it is harder to spot,
+	// because the plane name it shadows is spelled correctly right above it.
+	for _, flow := range sortedFlowNames(c.Flows) {
+		for _, plane := range sortedPlanes(c.Flows[flow].Gates) {
+			if !validPlanes[plane] {
+				return fmt.Errorf("flows.%s.gates: unknown plane %q, want one of pixel, wire, hop, perf", flow, plane)
+			}
+		}
+		if err := validateGateCheckpoints("flows."+flow+".gates", c.Flows[flow].Gates); err != nil {
+			return err
 		}
 	}
 	return nil

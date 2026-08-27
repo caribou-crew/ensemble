@@ -363,6 +363,16 @@ export interface Gate {
   threshold: number;
   observed: number;
   failed: boolean;
+  /**
+   * The checkpoint this row's `threshold` came from, set only when a
+   * per-checkpoint budget (`gates: {pixel: {checkpoints: {cart: 8}}}`)
+   * decided it. Absent means the plane's own `budget_pct` applied to
+   * everything, which is every run in a project that configures no
+   * overrides. Show it beside the plane rather than in place of it — a run
+   * where one screen is allowed 8% and the rest 1.5% otherwise displays a
+   * single threshold that is true of neither.
+   */
+  checkpoint?: string;
 }
 export interface Quarantine {
   side: 'a' | 'b';

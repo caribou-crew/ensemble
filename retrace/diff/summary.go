@@ -199,6 +199,19 @@ type Gate struct {
 	Threshold float64 `json:"threshold"`
 	Observed  float64 `json:"observed"`
 	Failed    bool    `json:"failed"`
+	// Checkpoint names the checkpoint this row's Threshold came from, and is
+	// set ONLY when a per-checkpoint override (`gates: {pixel: {checkpoints:
+	// {cart: 8}}}`) decided the row. Empty means the plane's own budget_pct
+	// applied to everything, which is every run in a project that uses no
+	// overrides — so the JSON is byte-identical to what it was before
+	// per-checkpoint budgets existed.
+	//
+	// It exists because without it the row lies by omission: a run where the
+	// cart screen is allowed 8% and every other screen 1.5% would otherwise
+	// print one threshold that is true of neither, and a reader comparing
+	// Observed against it would draw the wrong conclusion in whichever
+	// direction the reported number happened to fall.
+	Checkpoint string `json:"checkpoint,omitempty"`
 }
 
 // Quarantine records why one side of a comparison was refused instead of
@@ -544,13 +557,20 @@ func Build(in BuildInput) (Summary, error) {
 
 	s.Counts = countOf(s)
 	s.Gates = gatesOf(s)
-	// budgetsOf builds one Gate per plane cfg.Gates configures — NEVER one
-	// per plane that merely exists.
-	s.Budgets = budgetsOf(s, in.Cfg)
+	// Resolved ONCE, here, and handed to both consumers below. Each of them
+	// reading in.Cfg for itself is how one could pick up a flow's overrides
+	// while the other did not — and the pair are defined against each other
+	// (unmeasuredGatesOf names exactly what budgetsOf declined to emit), so
+	// disagreeing about which planes are configured would put a plane in
+	// neither list and gate it nowhere.
+	gates := resolvedGates(in.Cfg, in.Flow)
+	// budgetsOf builds one Gate per plane the resolved gates configure —
+	// NEVER one per plane that merely exists.
+	s.Budgets = budgetsOf(s, gates)
 	// ...and unmeasuredGatesOf names the planes budgetsOf REFUSED to emit a
 	// row for. The refusal is right; reading the resulting absence as "no
 	// gate failed" is what made an unevaluatable gate exit 0.
-	s.UnmeasuredGates = unmeasuredGatesOf(s, in.Cfg)
+	s.UnmeasuredGates = unmeasuredGatesOf(s, gates)
 	s.Gates = append(s.Gates, unevaluatedGateReasons(s.UnmeasuredGates, in.Cfg.FailOn)...)
 	switch {
 	case len(s.Gates) > 0 || failingBudget(s.Budgets, in.Cfg.FailOn):
@@ -717,12 +737,35 @@ func changed(s Summary) bool {
 //     implementer's original call and was overturned in review: under it,
 //     100 means "at budget" and every threshold on this one plane would
 //     have to be written around 100, unlike the other three.
-func budgetsOf(s Summary, cfg *config.Config) []Gate {
+//
+// resolvedGates layers `flows.<flow>.gates` over the top-level `gates:` for
+// the flow being compared. A nil config resolves to nil rather than panicking:
+// hand-built Summaries in tests and in the review UI reach Build without one,
+// and "no config" means "no gates", not "crash".
+func resolvedGates(cfg *config.Config, flow string) map[string]config.Gate {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.ResolveGates(flow)
+}
+
+func budgetsOf(s Summary, gates map[string]config.Gate) []Gate {
 	planes := []string{"hop", "perf", "pixel", "wire"}
 	var out []Gate
 	for _, plane := range planes {
-		g, ok := cfg.Gates[plane]
+		g, ok := gates[plane]
 		if !ok || g.BudgetPct == nil {
+			continue
+		}
+		// pixel is the one plane with a per-item unit, so it is the one plane
+		// whose budget can vary WITHIN a run. Handled apart from the shared
+		// path below because a single (Threshold, Observed) pair cannot
+		// describe a run where each checkpoint was judged against its own
+		// number.
+		if plane == "pixel" && len(g.Checkpoints) > 0 {
+			if pg, measurable := pixelGate(s, g); measurable {
+				out = append(out, pg)
+			}
 			continue
 		}
 		// An UNMEASURABLE plane gets no Gate — the same rule, and now the
@@ -746,6 +789,71 @@ func budgetsOf(s Summary, cfg *config.Config) []Gate {
 		out = append(out, Gate{Plane: plane, Threshold: threshold, Observed: observed, Failed: observed > threshold})
 	}
 	return out
+}
+
+// pixelGate evaluates the pixel plane when per-checkpoint budgets are in
+// force, where each checkpoint is judged against its OWN number.
+//
+// The row it returns describes the worst OVERAGE — the largest
+// (DiffPct - that checkpoint's budget) — not the largest DiffPct. Those pick
+// different checkpoints, and only the first one answers the question the gate
+// is asking. A cart screen allowed 8% and sitting at 7% has the biggest
+// DiffPct in the run and is entirely within budget; a login screen allowed 0%
+// and sitting at 0.4% is the one that fails. Reporting the cart would print a
+// passing row over a failing run.
+//
+// With no overrides configured this reduces exactly to the old behaviour —
+// every checkpoint shares one budget, so worst-overage and worst-DiffPct are
+// the same checkpoint — which is why budgetsOf only routes here when
+// overrides exist: the shared path stays the one that runs for almost every
+// project, unchanged.
+//
+// Ties break toward the higher DiffPct and then toward the alphabetically
+// earlier checkpoint, so a run reports the same row every time. Go's map
+// iteration is randomized and s.Checkpoints ordering is not this function's
+// to assume.
+func pixelGate(s Summary, g config.Gate) (Gate, bool) {
+	// found carries the empty-evidence rule the other planes get from
+	// observedFor: a run with no checkpoints returns (Gate{}, false), and the
+	// caller emits no row at all rather than a 0% that reads as "no pixels
+	// changed". There is deliberately no separate len(s.Checkpoints) == 0
+	// guard above — the loop below already produces exactly that, and a guard
+	// no mutation can distinguish from its absence is a line that claims to
+	// enforce something it does not.
+	var (
+		best  Gate
+		found bool
+	)
+	for _, cp := range s.Checkpoints {
+		budget, perCheckpoint, ok := g.BudgetFor(cp.Name)
+		if !ok {
+			// Unreachable while budgetsOf checks BudgetPct != nil before
+			// calling, and deliberately not an implicit zero: a budget of 0 is
+			// the strictest gate there is, and arriving at it by accident
+			// would fail a build over a change nobody gated.
+			continue
+		}
+		row := Gate{Plane: "pixel", Threshold: budget, Observed: cp.DiffPct, Failed: cp.DiffPct > budget}
+		if perCheckpoint {
+			row.Checkpoint = cp.Name
+		}
+		if !found || betterGateRow(row, best) {
+			best, found = row, true
+		}
+	}
+	return best, found
+}
+
+// betterGateRow reports whether a outranks b as the row to report: bigger
+// overage first, then bigger observed, then the earlier checkpoint name.
+func betterGateRow(a, b Gate) bool {
+	if oa, ob := a.Observed-a.Threshold, b.Observed-b.Threshold; oa != ob {
+		return oa > ob
+	}
+	if a.Observed != b.Observed {
+		return a.Observed > b.Observed
+	}
+	return a.Checkpoint < b.Checkpoint
 }
 
 // observedFor derives one plane's Observed percentage AND reports whether
@@ -838,16 +946,13 @@ func observedFor(s Summary, plane string) (observed float64, measurable bool) {
 // the second belongs here. The `g.BudgetPct == nil` test is what separates
 // them: it is the same test budgetsOf uses to decide the plane is
 // configured at all.
-func unmeasuredGatesOf(s Summary, cfg *config.Config) []string {
-	if cfg == nil {
-		return nil
-	}
+func unmeasuredGatesOf(s Summary, gates map[string]config.Gate) []string {
 	measured := map[string]bool{}
 	for _, g := range s.Budgets {
 		measured[g.Plane] = true
 	}
 	var out []string
-	for plane, g := range cfg.Gates {
+	for plane, g := range gates {
 		if g.BudgetPct == nil || measured[plane] {
 			continue
 		}
@@ -1002,7 +1107,15 @@ func RenderText(w io.Writer, s Summary) {
 		if b.Failed {
 			status = "FAILED"
 		}
-		fmt.Fprintf(w, "BUDGET: %s %.2f%% → %.2f%% %s\n", b.Plane, b.Threshold, b.Observed, status)
+		// The checkpoint name is appended, never substituted for the plane: a
+		// row that read "BUDGET: cart 8.00% → 9.00% FAILED" would lose which
+		// plane failed, and "cart" is not one of the four names every other
+		// gate surface is keyed on.
+		plane := b.Plane
+		if b.Checkpoint != "" {
+			plane += " (" + b.Checkpoint + ")"
+		}
+		fmt.Fprintf(w, "BUDGET: %s %.2f%% → %.2f%% %s\n", plane, b.Threshold, b.Observed, status)
 	}
 	// Printed after the BUDGET rows and before the verdict, because it is
 	// read as one list with them: these are the gates this project

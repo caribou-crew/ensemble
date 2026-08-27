@@ -19,19 +19,90 @@ deviations), `preflight`, `setup`, `teardown`, and manifest
 via plan amendment.
 
 ## 1. Configurable failing gates (shape first — Task 10)
-- [ ] `gates:` in retrace.yaml: `pixel: { budgetPct: 1.5 }` per flow/checkpoint
+- [x] `gates:` in retrace.yaml: `pixel: { budgetPct: 1.5 }` per flow/checkpoint
       override; `failOn: [pixel, wire, hop, status, perf, spec]` (default all);
       `--no-fail` CLI flag.
-- [ ] Summary JSON carries `gates[]` with `{plane, threshold, observed, failed}`.
-- [ ] Oracle: a 0.8% pixel change under a 1.5% budget exits 0 and is still
+- [x] Summary JSON carries `gates[]` with `{plane, threshold, observed, failed}`.
+- [x] Oracle: a 0.8% pixel change under a 1.5% budget exits 0 and is still
       listed as changed; 2% exits 1; `--no-fail` exits 0 with `failed:true`
       still in JSON.
 
+      Amended in implementation:
+
+      1. **The YAML is `budget_pct`, not `budgetPct`**, and `fail_on`, not
+         `failOn` — snake_case, like every other key in the file. A config
+         format with two conventions in it is a config format where half the
+         keys are typos.
+      2. **`fail_on` takes the four measurable planes** — pixel, wire, hop,
+         perf — not the six the brief lists. `status` and `spec` have no
+         budget to be a percentage OF: an unexpected status is a violation and
+         fails the run outright, and a spec finding is a conformance finding.
+         Naming them here would imply a threshold nobody can set.
+      3. **The Summary key is `budgets`, not `gates`.** `gates[]` was already
+         taken, by the human-readable list of reasons a verdict is "failed",
+         and two arrays named the same thing in one document is worse than
+         either name being imperfect.
+      4. **Per-flow overrides merge PER KEY, not wholesale**
+         (`Config.ResolveGates`). Replacing the plane's entry means a flow that
+         WIDENS its budget (`gates: {pixel: {budget_pct: 5}}`) silently
+         discards the global per-checkpoint budgets underneath it — so
+         loosening the flow would TIGHTEN the one screen already declared
+         noisy, from 8% down to 5%. A knob must only change what it names.
+      5. **A per-checkpoint budget reports the worst OVERAGE, not the worst
+         diff.** Those pick different checkpoints: a cart screen allowed 8%
+         and sitting at 7% has the largest diff in the run and is entirely
+         within budget, while a login screen allowed 0% and sitting at 0.4%
+         is the one that fails. Ranking by diff would print a PASSING row over
+         a FAILING run — the worst outcome available to a CI gate. The row
+         gains `checkpoint` naming which budget decided it, set ONLY for a
+         per-checkpoint override, so a project with none produces
+         byte-identical JSON.
+      6. **`checkpoints:` on wire/hop/perf is a config ERROR**, not an ignored
+         key. Those planes have no per-item unit for it to key on, so it would
+         otherwise load clean, validate clean, and do nothing — the same
+         silent-lie failure mode `validatePlanes` already exists to catch for
+         a typo'd plane name. Per-flow gates get the identical two checks: a
+         typo caught at the top level and waved through one level down is
+         worse than one caught nowhere, because the correctly-spelled plane
+         sits right above it in the same file.
+      7. **`--no-fail` does not zero a quarantine** — see section 2.
+
+      Not dogfooded in `sample/`, deliberately. The sample stack has no
+      genuinely noisy screen, and adding an override to demonstrate the
+      feature would model exactly what `retrace-iterate` tells a reader never
+      to do: widen a budget to fit a result rather than to describe a screen
+      that really does move on its own.
+
 ## 2. Quarantine non-ok captures (Tasks 6, 10)
-- [ ] `diff` refuses to compare a run whose `capture.status != ok` unless
+- [x] `diff` refuses to compare a run whose `capture.status != ok` unless
       `--allow-degraded`; summary reports `quarantined` with the verdict reason.
-- [ ] Manifest gains `wire: { missing: bool, reason }` set from the verdict.
-- [ ] Oracle: a proxy-died run diffs to `quarantined`, not to "0 changes".
+- [x] Manifest gains `wire: { missing: bool, reason }` set from the verdict.
+- [x] Oracle: a proxy-died run diffs to `quarantined`, not to "0 changes".
+
+      Amended in implementation: the manifest field is
+      `wire: { calls, recorded, reason }`, NOT `{ missing, reason }`. The
+      spec'd encoding has its zero value backwards — `Missing:false` asserts
+      "recorded and clean", so any code path that forgets to set `wire` claims
+      a clean wire plane it never recorded, which is the permissive reading
+      the project's zero-value constraint forbids. `Counts{}` is
+      `Recorded:false` — "unknown, refuse" for free. `Recorded` is never
+      `omitempty`, because a bool that vanishes when false is precisely how
+      "absent" and "fine" become the same bytes on disk. `Calls` then carries
+      what `missing` could not: `Recorded:true, Calls:0` is "recorded, and
+      there were none", a real and clean fact that `missing:false` cannot
+      distinguish from a plane nobody wrote.
+
+      Two quarantine paths exist, not one, and only the first is what this
+      section asked for: `quarantineCheck` (an untrusted capture verdict,
+      which `--allow-degraded` overrides) and `incompleteCheck` (a truncated
+      recording from a signal-killed test command, which it deliberately does
+      NOT override — the flag lets a human accept a DEGRADED comparison, not
+      an INCOMPLETE one; there is no complete data there to accept).
+      `TestAllowDegradedDoesNotOverrideASignalKilledTestCommand` pins it.
+
+      `--no-fail` does not zero a quarantine. It suppresses findings, and a
+      quarantine is not a finding — nothing was compared. `retrace diff` exits
+      3 on a quarantine regardless of the flag, and the usage text says so.
 - Sequence **after** Task 6 closes, not beside it: quarantine is only as good
   as the trust verdict, and at time of writing Task 6's `RequestsSeen()==0`
   rule counted mux-rejected requests (incl. the preflight probe) and Task 4's
@@ -90,22 +161,40 @@ via plan amendment.
       not the first. `sample/retrace.yaml` sets it and is guarded by a test.
 
 ## 4. Preflight + setup/teardown hooks (Task 4)
-- [ ] `preflight: [cmd…]` (global + per flow). Run in order before the proxy
+- [x] `preflight: [cmd…]` (global + per flow). Run in order before the proxy
       binds; non-zero → exit 2, stderr names the command and its exit code; no
       run dir is left behind.
-- [ ] Per-flow `setup:` / `teardown:` run inside the run env (RUN_DIR etc.);
+- [x] Per-flow `setup:` / `teardown:` run inside the run env (RUN_DIR etc.);
       `teardown` always runs; setup failure is recorded as verdict `failed`.
-- [ ] Oracle: a preflight `false` produces no run dir; a failing `setup`
+- [x] Oracle: a preflight `false` produces no run dir; a failing `setup`
       produces a run dir whose manifest says why.
+
+      Implemented in `retrace/cmd/retrace/hooks.go`, covered by
+      `cmd_run_hooks_test.go`. The ordering the spec implies is load-bearing
+      and is pinned: global `preflight` runs before a flow's own, and BOTH run
+      before the proxy binds — a precondition check that ran against a stack
+      the run had already started is not a precondition. `setup` and
+      `teardown` sit OUTSIDE the recording window, so a seed step's own
+      traffic is never captured and then diffed as though the app had made
+      those calls. `teardown` runs on every exit path including a failed flow,
+      which is when leftover state matters most: the next run inherits it.
 
 ## 5. Multi-flow runs (Task 4) — `flows.<name>.command` parsed-but-unread is a DEFECT
 Lead's ruling (precedent: `Env.Retrace` had no writer): a config key that is
 parsed and never read silently lies about what the file does; wire it up,
 never delete it.
-- [ ] `retrace run --flows a,b` and bare `retrace run` (all configured flows)
+- [x] `retrace run --flows a,b` and bare `retrace run` (all configured flows)
       execute `flows.<name>.command` sequentially in one process, one run dir
       each, one summary line each, exit = worst.
-- [ ] `--flow x -- <cmd>` keeps working and overrides the configured command.
+- [x] `--flow x -- <cmd>` keeps working and overrides the configured command.
+
+      Covered by `cmd_run_multiflow_test.go` (8 tests). "Exit = worst" is
+      worst by the four-value exit ladder, not by numeric maximum of anything
+      convenient: 0 pass, 1 changed, 2 failed, 3 quarantined — and 3 is the
+      HIGHEST deliberately, because "nobody could evaluate this" outranks
+      "this failed". A run where one flow failed and another was quarantined
+      exits 3 in either order; `cmd_export_test.go` pins both orderings, since
+      a fold that took the first non-zero would pass one and fail the other.
 
 ## 6. Screen-geometry guard (Tasks 1, 7, 17)
 - [ ] Adapters write `device.json` `{kind, id?, width, height, scale?}`

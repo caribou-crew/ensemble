@@ -184,15 +184,23 @@ func TestUpContinuesPastFailedNodeAndSkipsDependents(t *testing.T) {
 // service paying a slow classloading/Spring-context cost on every boot,
 // without raising the default for every other, fast-starting service.
 func TestUpHealthGateHonorsPerServiceStartupTimeout(t *testing.T) {
-	port := freePort(t)
+	// Bound ONCE and held, rather than freePort(t) followed by a re-listen on
+	// the number it returned. freePort closes its listener before returning,
+	// so that pattern leaves a window in which the kernel can hand the same
+	// ephemeral port to anyone else — `go test ./...` runs packages in
+	// parallel, and this test failed in CI on exactly that
+	// ("bind: address already in use"). Every other freePort caller hands the
+	// number to the orchestrator to bind and cannot avoid the window; this
+	// one binds the port itself, so it has no reason to let go of it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
 
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
 	srv.Listener.Close()
 	srv.Listener = ln
 	defer srv.Close()
