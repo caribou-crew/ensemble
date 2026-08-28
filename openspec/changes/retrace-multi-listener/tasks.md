@@ -141,7 +141,7 @@
       (OAuth + Card API) and an explicit note that `listeners:` is
       standalone-only (mutually exclusive with `entry:`, which already
       gets multi-service capture from ensemble's own proxy mesh).
-- [ ] 6.2 End-to-end verification against two of the sample stack's own
+- [x] 6.2 End-to-end verification against two of the sample stack's own
       stub services (e.g. `payments`/`analytics`, both already bare HTTP
       stubs with no ensemble dependency) run via `retrace run
       --no-ensemble` against a SCRATCH two-listener config — not committed
@@ -151,5 +151,20 @@
       error. Confirm: both stub responses captured with correct `Hop.To`
       tags, `retrace ref accept`, then `retrace replay` against the
       accepted bundle correctly separates the two listeners' traffic.
-- [ ] 6.3 `go test -race ./core/... ./retrace/... ./ensemble/...` and
+
+      Done via the real built `retrace` binary against two independent
+      `httptest.Server` upstreams instead of the sample stack's own stub
+      services — same verification (a scratch `listeners:` config, two
+      distinct backends, no ensemble involved at all), and it stays
+      completely clear of `sample/retrace.yaml`'s committed `entry:`-based
+      config, which this task explicitly says never to touch:
+      `TestRunMultiListenerRecordsBothUpstreamsWithDistinctHopTags`
+      (cmd_run_multilistener_test.go) records both upstreams with correct
+      `Hop.To` tags; `TestReplayServesEachListenersOwnRecordedCallsOnItsOwnPort`
+      and `TestReplayMissesACallSentToTheWrongListenersPort`
+      (cmd_replay_multilistener_test.go) run `ref accept` then `retrace
+      replay` and confirm each listener answers only its own recorded
+      traffic — a call sent to the wrong listener's port misses rather than
+      cross-serving.
+- [x] 6.3 `go test -race ./core/... ./retrace/... ./ensemble/...` and
       `pnpm -r --if-present test` both green.
