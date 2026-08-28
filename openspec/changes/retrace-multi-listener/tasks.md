@@ -1,16 +1,16 @@
 ## 1. `retrace/config`: `ListenerEntry` and `Listeners`
 
-- [ ] 1.1 Add to `retrace/config/config.go`: `type ListenerEntry struct { Name
+- [x] 1.1 Add to `retrace/config/config.go`: `type ListenerEntry struct { Name
       string; Upstream string; Host string; Port int }` (yaml tags
       `name`/`upstream`/`host`/`port`), and `Config.Listeners
       []ListenerEntry` (`yaml:"listeners"`).
-- [ ] 1.2 Add `(l ListenerEntry) EnvSuffix() string` — upper-cases `Name`
+- [x] 1.2 Add `(l ListenerEntry) EnvSuffix() string` — upper-cases `Name`
       and collapses runs of non-`[A-Za-z0-9]` to a single `_`, trimming
       leading/trailing `_` (e.g. `"card-api"` → `"CARD_API"`). This is the
       ONE place the env-var-name transform lives; both `retrace/capture`'s
       `Env()` (task 2) and `cmd_replay.go` (task 6) call it — no second
       implementation of the transform.
-- [ ] 1.3 In `applyDefaults` (or wherever `Discover`/`Load` finalizes a
+- [x] 1.3 In `applyDefaults` (or wherever `Discover`/`Load` finalizes a
       `Config` today): if `Listeners` is empty and `Upstream != ""`,
       synthesize `Listeners = []ListenerEntry{{Name: "client-edge",
       Upstream: Upstream, Host: ProxyHost, Port: ProxyPort}}` — the literal
@@ -18,14 +18,14 @@
       "client-edge"}` already hardcoded in `StartStandalone` today, so a
       config that never touches `listeners:` produces byte-identical
       `Hop.To` values before and after this change.
-- [ ] 1.4 Add load-time validation (alongside wherever `RedactEntry`'s
+- [x] 1.4 Add load-time validation (alongside wherever `RedactEntry`'s
       unknown-mode check lives, same "loud failure at load" standard):
       (a) non-empty `Listeners` AND non-zero `Upstream`/`ProxyHost`/
       `ProxyPort` together is an error naming both forms; (b) non-empty
       `Listeners` AND non-empty `Entry` together is an error naming both
       keys; (c) any entry with an empty `Name`, or two entries sharing a
       `Name`, is an error naming the conflict.
-- [ ] 1.5 Tests: bare `upstream:` config synthesizes exactly one
+- [x] 1.5 Tests: bare `upstream:` config synthesizes exactly one
       `client-edge`-named listener; an explicit `listeners:` list parses
       each field correctly; `upstream:` + `listeners:` together errors;
       `entry:` + `listeners:` together errors; empty name errors; duplicate
@@ -34,13 +34,13 @@
 
 ## 2. `retrace/capture`: multi-listener standalone capture
 
-- [ ] 2.1 Add `Options.Listeners []config.ListenerEntry` (reusing
+- [x] 2.1 Add `Options.Listeners []config.ListenerEntry` (reusing
       `retrace/config`'s own type — the same pattern `Options.Redact
       []config.RedactEntry` already established; `capture` already imports
       `retrace/config`, no new import cycle). `Options.Upstream`/`Host`/
       `Port` are UNCHANGED and keep serving `StartAttached` exactly as
       today — this task does not touch ensemble-attached mode.
-- [ ] 2.2 In `StartStandalone`: when `len(o.Listeners) > 0`, loop it instead
+- [x] 2.2 In `StartStandalone`: when `len(o.Listeners) > 0`, loop it instead
       of the current single `prox.ServeStoppable(proxy.Target{Name:
       "client-edge", ...})` call — one `ServeStoppable` per entry, on the
       SAME `*proxy.Proxy`/`*proxy.Recorder`/redactor/data-key (one run has
@@ -51,23 +51,23 @@
       using `o.Upstream`/`Host`/`Port` untouched — every existing
       `capture_test.go`/`hopsource_test.go` call site keeps working with
       zero changes.
-- [ ] 2.3 Replace `Session`'s singular `prox`/`stopProxy`/`ProxyURL` proxy
+- [x] 2.3 Replace `Session`'s singular `prox`/`stopProxy`/`ProxyURL` proxy
       state with a slice (`type sessionListener struct { Name, ProxyURL
       string; stop func() }`), keeping the exported `Session.ProxyURL`
       field set to the FIRST listener's URL for every existing reader
       (owner record, `retrace serve` display) that only knows about one.
       Add an unexported accessor for the full slice.
-- [ ] 2.4 `Session.Close()`'s teardown calls `stop()` for every listener,
+- [x] 2.4 `Session.Close()`'s teardown calls `stop()` for every listener,
       not just one; a failure stopping one listener does not prevent
       stopping the rest (log and continue, matching this codebase's
       "cleanup that only ran on the happy path is how state leaks"
       standard already documented elsewhere in this file).
-- [ ] 2.5 `Session.Env()` exports `RETRACE_PROXY_URL_<EnvSuffix>` for every
+- [x] 2.5 `Session.Env()` exports `RETRACE_PROXY_URL_<EnvSuffix>` for every
       listener plus keeps `RETRACE_PROXY_URL` pointing at the first
       listener's URL (so it equals that listener's own
       `RETRACE_PROXY_URL_<NAME>` var too — a single-listener config, sugar
       or explicit, gets both names pointing at the same address).
-- [ ] 2.6 Tests: two-listener `StartStandalone` call proxies both upstreams
+- [x] 2.6 Tests: two-listener `StartStandalone` call proxies both upstreams
       correctly (each captured hop's `To` matches its listener's name);
       `Env()` on a two-listener session has all three expected vars with
       correct values; `Close()` stops both listeners (a second request to
@@ -77,13 +77,13 @@
 
 ## 3. `retrace/cmd/retrace`: wire `cmd_run.go` to `cfg.Listeners`
 
-- [ ] 3.1 In `cmdRun`'s `capture.Options{...}` construction (the standalone
+- [x] 3.1 In `cmdRun`'s `capture.Options{...}` construction (the standalone
       path only — `StartAttached`'s call is untouched): replace
       `Upstream: p.upstream, Host: p.host, Port: p.port` with `Listeners:
       p.cfg.Listeners` — non-empty by construction, since task 1.3's sugar
       synthesis already ran inside `config.Discover`/`Load` before
       `cmdRun` sees `p.cfg`.
-- [ ] 3.2 Test: `retrace run` against a two-listener standalone config (no
+- [x] 3.2 Test: `retrace run` against a two-listener standalone config (no
       ensemble) records both upstreams into one run directory; `retrace
       run --json`'s manifest/env reporting (whatever surfaces env vars
       today, if anything does) is unaffected for a single-listener config.

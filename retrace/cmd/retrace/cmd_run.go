@@ -135,6 +135,36 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		port = cfg.ProxyPort
 	}
 
+	// listeners for the standalone path: cfg.Listeners is already
+	// non-empty whenever a real capture is possible at all (sugar
+	// synthesis or an explicit listeners: list — see applyDefaults).
+	// --upstream/--proxy-host/--proxy-port only make sense to fold in
+	// when there is exactly one listener to apply them to; against a real
+	// multi-listener config there is no single listener they could mean,
+	// so they are ignored with a note rather than silently picked apart
+	// across listeners.
+	listeners := append([]config.ListenerEntry(nil), cfg.Listeners...)
+	switch len(listeners) {
+	case 0:
+		if up != "" {
+			listeners = []config.ListenerEntry{{Name: "client-edge", Upstream: up, Host: host, Port: port}}
+		}
+	case 1:
+		if *upstream != "" {
+			listeners[0].Upstream = *upstream
+		}
+		if *proxyHost != "" {
+			listeners[0].Host = *proxyHost
+		}
+		if *proxyPort != 0 {
+			listeners[0].Port = *proxyPort
+		}
+	default:
+		if *upstream != "" || *proxyHost != "" || *proxyPort != 0 {
+			fmt.Fprintf(stderr, "retrace: --upstream/--proxy-host/--proxy-port are ignored — retrace.yaml configures %d listeners\n", len(listeners))
+		}
+	}
+
 	names, multi, err := selectFlows(*flow, *flows, cfg)
 	if err != nil {
 		return fail(stderr, "run: %v", err)
@@ -177,7 +207,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 
 	p := flowRunParams{
 		cfg: cfg, cwd: cwd, app: appName,
-		upstream: up, host: host, port: port,
+		upstream: up, host: host, port: port, listeners: listeners,
 		asJSON: *asJSON, noEnsemble: *noEnsemble, ensembleURL: *ensembleURL,
 		stdout: stdout, stderr: stderr,
 	}
@@ -223,10 +253,19 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 // flowRunParams is everything captureOneFlow needs that does not vary from one
 // flow to the next.
 type flowRunParams struct {
-	cfg                *config.Config
-	cwd, app           string
-	upstream, host     string
-	port               int
+	cfg      *config.Config
+	cwd, app string
+	// upstream, host, port are StartAttached's own fields (ensemble-
+	// attached mode's fixed bind address / URL-bound-auth upstream) —
+	// untouched by multi-listener, which does not apply to attached mode.
+	upstream, host string
+	port           int
+	// listeners is StartStandalone's field: cfg.Listeners (already
+	// non-empty by the time cmdRun runs, via applyDefaults' sugar
+	// synthesis or an explicit listeners: list) with --upstream/
+	// --proxy-host/--proxy-port folded in when exactly one listener is
+	// configured — see the flag-override comment where this is built.
+	listeners          []config.ListenerEntry
 	asJSON, noEnsemble bool
 	ensembleURL        string
 	stdout, stderr     io.Writer
@@ -269,14 +308,18 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 	}
 
 	opts := capture.Options{
-		Cwd:      p.cwd,
-		App:      p.app,
-		Flow:     name,
-		Upstream: p.upstream,
-		Host:     p.host,
-		Port:     p.port,
-		Redact:   p.cfg.Redact,
-		Now:      time.Now,
+		Cwd:  p.cwd,
+		App:  p.app,
+		Flow: name,
+		// Upstream/Host/Port are StartAttached's own fields — untouched by
+		// multi-listener. Listeners is StartStandalone's, and takes
+		// priority there whenever non-empty (see StartStandalone).
+		Upstream:  p.upstream,
+		Host:      p.host,
+		Port:      p.port,
+		Listeners: p.listeners,
+		Redact:    p.cfg.Redact,
+		Now:       time.Now,
 	}
 
 	// Attach when ensemble answers AND the config names an entry service.
