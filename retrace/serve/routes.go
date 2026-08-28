@@ -47,6 +47,10 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/rule", s.handleRule)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/redact", s.handleRedact)
 	mux.HandleFunc("GET /api/shots/{app}/{flow}/{side}/{name}", s.handleShot)
+	mux.HandleFunc("GET /api/evidence/{app}/{flow}", s.handleEvidence)
+	mux.HandleFunc("GET /api/videos/{app}/{flow}/{name}", s.handleVideo)
+	mux.HandleFunc("GET /api/report/{app}/{flow}", s.handleReport)
+	mux.HandleFunc("GET /api/report/{app}/{flow}/{path...}", s.handleReport)
 }
 
 // --- health -------------------------------------------------------------
@@ -554,6 +558,30 @@ func WriteShot(w http.ResponseWriter, d Deps, app, flow, side, name string) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	_, _ = w.Write(b)
+}
+
+func (s *server) handleEvidence(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	WriteEvidence(w, d, app, flow)
+}
+
+func (s *server) handleVideo(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	WriteVideo(w, r, d, app, flow, r.PathValue("name"))
+}
+
+func (s *server) handleReport(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	WriteReport(w, r, d, app, flow)
 }
 
 // shotDirFor resolves one of the four comparison sides to the directory
