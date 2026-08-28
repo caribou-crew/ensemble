@@ -236,5 +236,5 @@
       `retrace-ci-sync`, or a new one) showing `env: {
       RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }} }` on the
       replay/diff step.
-- [ ] 10.4 `go test -race ./core/... ./retrace/...` and `pnpm -r
+- [x] 10.4 `go test -race ./core/... ./retrace/...` and `pnpm -r
       --if-present test` both green.
