@@ -45,6 +45,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/accept", s.handleAccept)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/reject", s.handleReject)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/rule", s.handleRule)
+	mux.HandleFunc("POST /api/queue/{app}/{flow}/redact", s.handleRedact)
 	mux.HandleFunc("GET /api/shots/{app}/{flow}/{side}/{name}", s.handleShot)
 }
 
@@ -419,6 +420,58 @@ func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
 		// "the rules that decide this project's diffs" is the question a
 		// reviewer is actually asking.
 		"rules": s.deps().Cfg.WireRules,
+	})
+}
+
+// redactRequest is the "add redaction rule" form's body: a field name, a
+// mode (destroy/encrypt/display — see core/trace.Mode), and a why. Flow is
+// accepted but deliberately unused, same reasoning as ruleRequest.Scope: a
+// redact entry is project-wide, matching config.RedactEntry's own shape,
+// which carries no flow selector.
+type redactRequest struct {
+	Flow  string `json:"flow"`
+	Field string `json:"field"`
+	Mode  string `json:"mode"`
+	Why   string `json:"why"`
+}
+
+func (s *server) handleRedact(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	_, _ = app, flow // the rule is project-wide; see redactRequest.
+	var req redactRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Field) == "" {
+		writeErr(w, http.StatusBadRequest, `"field" is required`)
+		return
+	}
+
+	entry := config.RedactEntry{Field: req.Field, Mode: req.Mode, Why: req.Why}
+	// config.AppendRedactEntry is the SAME writer `retrace rekey`'s sibling
+	// commands and the config package's own tests exercise: it validates
+	// the mode, is idempotent, and holds the cross-process lock. Nothing
+	// here re-implements any of that.
+	if err := config.AppendRedactEntry(d.Cwd, entry); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Reloaded before responding, same reason handleRule reloads: the very
+	// next GET /api/queue/{app}/{flow} must see the new rule, or a reviewer
+	// who just added it would watch it appear to have no effect.
+	if err := s.reloadConfig(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"redact": entry,
+		// Every redact entry now in effect — the file's own plus the
+		// overlay's — matching handleRule's own "rules" field.
+		"rules": s.deps().Cfg.Redact,
 	})
 }
 

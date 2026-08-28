@@ -46,6 +46,18 @@ var lockOverlayFn = lockOverlay
 
 const OverlayPath = ".retrace/wire-rules.json"
 
+// redactOverlayMu is redactOverlayMu's own mutex, deliberately separate
+// from overlayMu: the two overlays are different files, and sharing one
+// mutex would serialize a wire-rule append behind an unrelated redact-rule
+// append (and vice versa) for no correctness reason.
+var redactOverlayMu sync.Mutex
+
+// RedactOverlayPath is the machine-owned counterpart to OverlayPath, for
+// AppendRedactEntry — same reason: the review queue's "add redaction rule"
+// action must never re-emit retrace.yaml and silently delete a human's
+// comments.
+const RedactOverlayPath = ".retrace/redact-rules.json"
+
 // DefaultGate and DefaultFine are the pixel thresholds every verdict is
 // measured against. They are named constants because they appear in
 // report copy, in `retrace diff --help`, and in the docs.
@@ -383,9 +395,9 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 // suddenly require a team key to capture at all — Mode defaults to
 // "destroy" both here and in the mapping form when mode is omitted.
 type RedactEntry struct {
-	Field string `yaml:"field"`
-	Mode  string `yaml:"mode"`
-	Why   string `yaml:"why"`
+	Field string `json:"field"          yaml:"field"`
+	Mode  string `json:"mode,omitempty" yaml:"mode"`
+	Why   string `json:"why,omitempty"  yaml:"why"`
 }
 
 func (e *RedactEntry) UnmarshalYAML(node *yaml.Node) error {
@@ -700,6 +712,11 @@ func Discover(cwd string) (*Config, error) {
 	if _, err := c.Rules(); err != nil {
 		return nil, fmt.Errorf("%s: %w", OverlayPath, err)
 	}
+	redactOverlay, err := readRedactOverlay(filepath.Join(cwd, RedactOverlayPath))
+	if err != nil {
+		return nil, err
+	}
+	c.Redact = append(c.Redact, redactOverlay...)
 	// AFTER the overlay merge, never inside Load: a machine-written rule is
 	// a tolerance like any other, and a ratchet that exempted the writer
 	// nobody reviews would be aimed at the wrong half of the list. This is
@@ -988,6 +1005,100 @@ func readOverlay(path string) ([]rules.Raw, error) {
 		return nil, err
 	}
 	var out []rules.Raw
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return out, nil
+}
+
+// AppendRedactEntry is AppendWireRule's counterpart for redaction rules —
+// the review queue's "add redaction rule" action writes here rather than
+// into retrace.yaml, for the exact reason the package doc gives for wire
+// rules: re-emitting YAML would silently delete a human's comments.
+//
+// dir is a working-directory root, exactly like AppendWireRule's — not a
+// path component, so it is not validated as one.
+func AppendRedactEntry(dir string, e RedactEntry) error {
+	if strings.TrimSpace(e.Field) == "" {
+		return fmt.Errorf("a redaction rule needs a field name")
+	}
+	if e.Mode == "" {
+		e.Mode = string(trace.ModeDestroy)
+	}
+	switch trace.Mode(e.Mode) {
+	case trace.ModeDestroy, trace.ModeEncrypt, trace.ModeDisplay:
+	default:
+		return fmt.Errorf("redact entry %q: unknown mode %q — want destroy, encrypt, or display", e.Field, e.Mode)
+	}
+	path := filepath.Join(dir, RedactOverlayPath)
+
+	redactOverlayMu.Lock()
+	defer redactOverlayMu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockOverlayFn(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	existing, err := readRedactOverlay(path)
+	if err != nil {
+		return err
+	}
+	want, _ := json.Marshal(e)
+	for _, ex := range existing {
+		if got, _ := json.Marshal(ex); string(got) == string(want) {
+			return nil
+		}
+	}
+	existing = append(existing, e)
+	b, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir2 := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir2, ".redact-rules-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// readRedactOverlay reads the machine-owned redact-rule overlay. A missing
+// overlay is not an error — no rule has been added from the review queue
+// yet.
+func readRedactOverlay(path string) ([]RedactEntry, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []RedactEntry
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&out); err != nil {
