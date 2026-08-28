@@ -10,7 +10,7 @@ import HopDeltaList from '@ensemble/design-system/components/HopDeltaList';
 import ShotCompare from '@ensemble/design-system/components/ShotCompare';
 import WireDiffTable, { entryKey } from '@ensemble/design-system/components/WireDiffTable';
 import type { Entry, FieldDiff } from '@ensemble/design-system/diffTypes';
-import { api, messageOf, resolveRetraceShotUrl } from '../api/client';
+import { api, messageOf, resolveRetraceShotUrl, resolveRetraceVideoUrl, retraceReportUrl } from '../api/client';
 import type { RetraceItem, RetraceSummary } from '../api/types';
 import './RetraceView.css';
 
@@ -120,6 +120,40 @@ function QueueTable({
   );
 }
 
+// EvidenceSection is a self-contained fetch, not a prop threaded down from
+// RetraceView's own summary useAsync: video/report are attached AFTER a run
+// finishes (see the design doc's D1), so they are never part of
+// RetraceSummary and are worth failing independently of it — a broken
+// evidence fetch must not blank out the pixel/wire/hop planes it sits
+// beside.
+function EvidenceSection({ app, flow }: { app: string; flow: string }) {
+  const { data } = useAsync(() => api.retraceEvidence(app, flow), [app, flow]);
+  if (!data || (data.videos.length === 0 && !data.hasReport)) return null;
+  return (
+    <section className="retrace-detail__plane retrace-detail__evidence">
+      <h3>evidence</h3>
+      {data.videos.map((name) => (
+        <video
+          key={name}
+          controls
+          src={resolveRetraceVideoUrl(app, flow, name)}
+          className="retrace-detail__video"
+        />
+      ))}
+      {data.hasReport && (
+        <a
+          className="retrace-detail__report-link"
+          href={retraceReportUrl(app, flow)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          View full test report ↗
+        </a>
+      )}
+    </section>
+  );
+}
+
 function DetailPane({ app, flow, summary }: { app: string; flow: string; summary: RetraceSummary }) {
   const [selectedField, setSelectedField] = useState<string | null>(null);
 
@@ -140,6 +174,8 @@ function DetailPane({ app, flow, summary }: { app: string; flow: string; summary
       </header>
 
       <CaptureBanner capture={summary.capture} detail />
+
+      <EvidenceSection app={app} flow={flow} />
 
       {summary.verdict === 'quarantined' ? (
         <div className="retrace-detail__quarantine">

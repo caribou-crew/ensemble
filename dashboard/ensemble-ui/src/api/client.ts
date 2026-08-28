@@ -13,7 +13,7 @@ import type {
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
-import type { RetraceQueueResponse, RetraceSummary, RetraceSyncResult } from "./types";
+import type { RetraceEvidence, RetraceQueueResponse, RetraceSummary, RetraceSyncResult } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -318,6 +318,12 @@ export const api = {
   retraceSync(): Promise<RetraceSyncResult> {
     return request<RetraceSyncResult>("/api/retrace/sync", jsonInit("POST"));
   },
+
+  retraceEvidence(app: string, flow: string): Promise<RetraceEvidence> {
+    return request<RetraceEvidence>(
+      `/api/retrace/evidence/${encodeURIComponent(app)}/${encodeURIComponent(flow)}`,
+    );
+  },
 };
 
 /** Builds `/api/retrace/shots/{app}/{flow}/{side}/{name}` — passed to
@@ -330,3 +336,15 @@ export const resolveRetraceShotUrl = (
   name: string,
 ): string =>
   `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
+
+/** Builds `/api/retrace/videos/{app}/{flow}/{name}` — the candidate run's
+ * video, passed straight to a <video> element's src. */
+export const resolveRetraceVideoUrl = (app: string, flow: string, name: string): string =>
+  `/api/retrace/videos/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(name)}`;
+
+/** Builds `/api/retrace/report/{app}/{flow}/` — the candidate run's HTML
+ * report root. Opened in a new tab rather than embedded: the report is a
+ * full self-routing SPA (Playwright's html reporter), and an iframe would
+ * fight its own routing. */
+export const retraceReportUrl = (app: string, flow: string): string =>
+  `/api/retrace/report/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/`;

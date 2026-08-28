@@ -116,6 +116,7 @@ describe('RetraceView', () => {
   it('row click loads and renders inline detail', async () => {
     vi.spyOn(api, 'retraceQueue').mockResolvedValue({ items: [item()], empty: '' });
     vi.spyOn(api, 'retraceItem').mockResolvedValue(summaryFor('web', 'checkout'));
+    vi.spyOn(api, 'retraceEvidence').mockResolvedValue({ videos: [], hasReport: false });
 
     root = createRoot(container);
     await act(async () => {
@@ -132,6 +133,53 @@ describe('RetraceView', () => {
 
     expect(api.retraceItem).toHaveBeenCalledWith('web', 'checkout');
     expect(container.querySelector('.retrace-detail')).toBeTruthy();
+  });
+
+  it('shows video and a report link when evidence is present', async () => {
+    vi.spyOn(api, 'retraceQueue').mockResolvedValue({ items: [item()], empty: '' });
+    vi.spyOn(api, 'retraceItem').mockResolvedValue(summaryFor('web', 'checkout'));
+    vi.spyOn(api, 'retraceEvidence').mockResolvedValue({ videos: ['ViewPan.webm'], hasReport: true });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(RetraceView));
+    });
+    await flush();
+
+    const row = container.querySelector('.retrace-table__row') as HTMLElement | null;
+    await act(async () => {
+      row!.click();
+    });
+    await flush();
+
+    expect(api.retraceEvidence).toHaveBeenCalledWith('web', 'checkout');
+    const video = container.querySelector('video');
+    expect(video).toBeTruthy();
+    expect(video!.getAttribute('src')).toBe('/api/retrace/videos/web/checkout/ViewPan.webm');
+    const link = Array.from(container.querySelectorAll('a')).find((a) => a.textContent?.includes('test report'));
+    expect(link).toBeTruthy();
+    expect(link!.getAttribute('href')).toBe('/api/retrace/report/web/checkout/');
+  });
+
+  it('renders no evidence section when none is attached', async () => {
+    vi.spyOn(api, 'retraceQueue').mockResolvedValue({ items: [item()], empty: '' });
+    vi.spyOn(api, 'retraceItem').mockResolvedValue(summaryFor('web', 'checkout'));
+    vi.spyOn(api, 'retraceEvidence').mockResolvedValue({ videos: [], hasReport: false });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(RetraceView));
+    });
+    await flush();
+
+    const row = container.querySelector('.retrace-table__row') as HTMLElement | null;
+    await act(async () => {
+      row!.click();
+    });
+    await flush();
+
+    expect(container.querySelector('video')).toBeNull();
+    expect(container.querySelector('.retrace-detail__evidence')).toBeNull();
   });
 
   it('a sync failure shows inline rather than crashing', async () => {

@@ -138,6 +138,19 @@
   font-size: 0.78rem;
 }
 
+.retrace-detail__video {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+}
+
+.retrace-detail__report-link {
+  font-size: 0.78rem;
+  color: var(--accent-strong);
+}
+
 .retrace-detail__quarantine {
   color: var(--text-secondary);
   font-size: 0.82rem;

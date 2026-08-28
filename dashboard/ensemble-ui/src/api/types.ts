@@ -423,3 +423,11 @@ export interface RetraceSyncResult {
   synced: string[];
   skipped: { artifact: string; reason: string }[];
 }
+
+/** GET /api/retrace/evidence/{app}/{flow}'s body — what's available to
+ * view for the candidate run, never the files themselves. `videos` is
+ * never null on the wire, only ever `[]` for "none attached". */
+export interface RetraceEvidence {
+  videos: string[];
+  hasReport: boolean;
+}
