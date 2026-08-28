@@ -50,10 +50,19 @@ type Options struct {
 	// already held by another process fails the run immediately — the OS
 	// bind error already names it, and retrace never silently picks a
 	// different port than the one asked for.
-	Port    int
-	Redact  []config.RedactEntry
-	MaxBody int
-	Now     func() time.Time
+	Port int
+	// Listeners, when non-empty, makes StartStandalone bind ONE listener
+	// per entry instead of the single Upstream/Host/Port listener above —
+	// an app that calls more than one backend during a flow needs each
+	// proxied to be captured at all. Reuses retrace/config's own type (the
+	// same pattern Redact below already established) rather than a
+	// mirrored one. Unused by StartAttached: ensemble-attached mode has a
+	// different, already-solved version of this problem (ensemble's own
+	// proxy mesh), and does not participate in this field at all.
+	Listeners []config.ListenerEntry
+	Redact    []config.RedactEntry
+	MaxBody   int
+	Now       func() time.Time
 }
 
 // listenPort normalizes Options.Port: zero means "the caller did not
@@ -79,6 +88,15 @@ func defaultHost(h string) string {
 	return h
 }
 
+// sessionListener is one bound standalone proxy listener: its configured
+// name (becomes Hop.To and the RETRACE_PROXY_URL_<NAME> suffix), the
+// address it answers on, and the func that stops it.
+type sessionListener struct {
+	Name     string
+	ProxyURL string
+	stop     func()
+}
+
 type Session struct {
 	Paths runs.Paths
 	RunID string
@@ -94,9 +112,16 @@ type Session struct {
 	Mode        string
 	StartedAt   time.Time
 
-	rec       *proxy.Recorder
-	prox      *proxy.Proxy
-	stopProxy func()
+	rec  *proxy.Recorder
+	prox *proxy.Proxy
+	// listeners holds every bound standalone listener (usually one, the
+	// legacy client-edge case). ProxyURL above stays the FIRST listener's
+	// URL for every existing reader that only knows about one; Env() (see
+	// below) walks the full slice to add one RETRACE_PROXY_URL_<NAME> per
+	// entry. Nil in ensemble-attached mode (s.ens != nil) — there is no
+	// local listener to stop or name, only the remote session Close (see
+	// ensemble.go) already releases.
+	listeners []sessionListener
 	markerSrv *http.Server
 	wireFile  *os.File
 	requests  atomic.Int64
@@ -153,7 +178,7 @@ func StartStandalone(o Options) (*Session, error) {
 	if now == nil {
 		now = time.Now
 	}
-	if o.Upstream == "" {
+	if o.Upstream == "" && len(o.Listeners) == 0 {
 		return nil, fmt.Errorf("standalone capture needs --upstream (the base URL clients would call)")
 	}
 	rules := config.RedactKeyRules(o.Redact)
@@ -189,27 +214,48 @@ func StartStandalone(o Options) (*Session, error) {
 		Writer:   trace.NewWriter(wire),
 	})
 	prox := proxy.New(rec)
-	addr, stop, err := prox.ServeStoppable(proxy.Target{
-		Name:          "client-edge",
-		Listen:        defaultHost(o.Host) + ":" + listenPort(o.Port),
-		Upstream:      strings.TrimRight(o.Upstream, "/"),
-		InjectBaggage: map[string]string{trace.BaggageSession: runID},
-	})
-	if err != nil {
-		wire.Close()
-		return nil, err
+
+	// o.Listeners empty is the overwhelmingly common case: one legacy
+	// client-edge listener from o.Upstream/Host/Port, exactly as before
+	// this field existed. cmd_run.go always passes a non-empty Listeners
+	// for the standalone path (config.applyDefaults already synthesized
+	// one from a bare upstream: too) — this fallback exists for every
+	// direct Options{Upstream: ...} caller (tests, and any future
+	// programmatic user of this package) that predates Listeners.
+	entries := o.Listeners
+	if len(entries) == 0 {
+		entries = []config.ListenerEntry{{Name: "client-edge", Upstream: o.Upstream, Host: o.Host, Port: o.Port}}
+	}
+	listeners := make([]sessionListener, 0, len(entries))
+	for _, l := range entries {
+		addr, stop, err := prox.ServeStoppable(proxy.Target{
+			Name:          l.Name,
+			Listen:        defaultHost(l.Host) + ":" + listenPort(l.Port),
+			Upstream:      strings.TrimRight(l.Upstream, "/"),
+			InjectBaggage: map[string]string{trace.BaggageSession: runID},
+		})
+		if err != nil {
+			for _, bound := range listeners {
+				bound.stop()
+			}
+			wire.Close()
+			return nil, err
+		}
+		listeners = append(listeners, sessionListener{Name: l.Name, ProxyURL: "http://" + addr, stop: stop})
 	}
 
 	s := &Session{
 		Paths: p, RunID: runID, App: o.App, Flow: o.Flow, Mode: runs.ModeStandalone,
-		StartedAt: now(), rec: rec, prox: prox, stopProxy: stop, wireFile: wire,
-		ProxyURL:    "http://" + addr,
+		StartedAt: now(), rec: rec, prox: prox, listeners: listeners, wireFile: wire,
+		ProxyURL:    listeners[0].ProxyURL,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		redact:      o.Redact, maxBody: maxBody,
 		dataKey: dataKey, keyID: keyID, wrappedDataKey: wrappedDataKey,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
-		stop()
+		for _, l := range listeners {
+			l.stop()
+		}
 		wire.Close()
 		return nil, err
 	}
@@ -274,6 +320,13 @@ func (s *Session) Env() []string {
 	}
 	if s.UpstreamURL != "" {
 		env = append(env, "RETRACE_UPSTREAM_URL="+s.UpstreamURL)
+	}
+	// One RETRACE_PROXY_URL_<NAME> per listener (including the first,
+	// which RETRACE_PROXY_URL above already names) — a single-listener
+	// config exports the same address under both spellings, so an adapter
+	// never has to special-case whether it's in multi-listener mode.
+	for _, l := range s.listeners {
+		env = append(env, "RETRACE_PROXY_URL_"+(config.ListenerEntry{Name: l.Name}).EnvSuffix()+"="+l.ProxyURL)
 	}
 	return env
 }

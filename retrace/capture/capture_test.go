@@ -380,7 +380,7 @@ func TestWatchProxyDetectsADeadListenerWithinASubTickWindow(t *testing.T) {
 	if s.ProxyFailure() != nil {
 		t.Fatalf("ProxyFailure = %+v after the initial probe against a healthy listener, want nil", s.ProxyFailure())
 	}
-	s.stopProxy() // the listener stops answering entirely, well inside 500ms
+	s.listeners[0].stop() // the listener stops answering entirely, well inside 500ms
 	cancel()      // and the flow "ends" immediately — far short of one tick
 
 	select {

@@ -207,9 +207,16 @@ func (s *Session) Close() error {
 		s.markerSrv.Close()
 	}
 	if s.ens == nil {
-		// Standalone: retrace owns the listener and the wire file.
-		if s.stopProxy != nil {
-			s.stopProxy()
+		// Standalone: retrace owns every listener and the wire file. Every
+		// entry is stopped even if an earlier one panics-free-errors —
+		// there is no error return from proxy's stop func to aggregate,
+		// but leaving listener 2 bound because listener 1's teardown came
+		// first is exactly the kind of half-torn-down state Close must
+		// never leave behind.
+		for _, l := range s.listeners {
+			if l.stop != nil {
+				l.stop()
+			}
 		}
 		if s.wireFile == nil {
 			return nil
