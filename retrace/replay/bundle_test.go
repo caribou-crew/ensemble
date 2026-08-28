@@ -101,6 +101,25 @@ func TestLoadBundleLowersRecordedHopsIntoExchanges(t *testing.T) {
 	if b.Dir != dir {
 		t.Fatalf("dir = %q, want %q", b.Dir, dir)
 	}
+	if b.Exchanges[0].Target != "client-edge" {
+		t.Fatalf("target = %q, want the hop's To lowered verbatim", b.Exchanges[0].Target)
+	}
+}
+
+func TestLoadBundleLowersEachHopsOwnTargetForMultiListenerBundles(t *testing.T) {
+	edge := hop(1, "GET", "/cart", "", 200, `{}`)
+	edge.To = "edge"
+	auth := hop(2, "GET", "/token", "", 200, `{}`)
+	auth.To = "auth"
+	dir := writeBundle(t, runs.Counts{Calls: 2, Recorded: true}, []trace.Hop{edge, auth})
+
+	b, err := LoadBundle(dir, "")
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if b.Exchanges[0].Target != "edge" || b.Exchanges[1].Target != "auth" {
+		t.Fatalf("targets = %q,%q, want edge,auth in recorded order", b.Exchanges[0].Target, b.Exchanges[1].Target)
+	}
 }
 
 func TestLoadBundleRefusesAWirePlaneThatWasNeverRecorded(t *testing.T) {

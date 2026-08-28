@@ -771,3 +771,46 @@ func TestARecordedCookieDomainIsStrippedSoTheSessionActuallyEstablishes(t *testi
 		t.Fatalf("Set-Cookie = %q, want the recorded %q unchanged", got, plain)
 	}
 }
+
+func TestATargetFilteredServerNeverServesAnotherListenersExchangeOverHttp(t *testing.T) {
+	edge := exch("GET", "/cart", "", nil, 200, `{"from":"edge"}`, 1)
+	edge.Target = "edge"
+	auth := exch("GET", "/cart", "", nil, 200, `{"from":"auth"}`, 2)
+	auth.Target = "auth"
+	b := bundleOf(edge, auth)
+
+	edgeServer, edgeURL := serve(t, b, Options{TargetFilter: "edge"}, "")
+	resp := do(t, "GET", edgeURL+"/cart", "", nil)
+	if got := readBody(t, resp); got != `{"from":"edge"}` {
+		t.Fatalf("body = %q, want the edge-target exchange only", got)
+	}
+
+	authServer, authURL := serve(t, b, Options{TargetFilter: "auth"}, "")
+	resp2 := do(t, "GET", authURL+"/cart", "", nil)
+	if got := readBody(t, resp2); got != `{"from":"auth"}` {
+		t.Fatalf("body = %q, want the auth-target exchange only", got)
+	}
+
+	if edgeServer.MissCount() != 0 || authServer.MissCount() != 0 {
+		t.Fatalf("MissCount = %d,%d, want both servers to have matched their own target's exchange",
+			edgeServer.MissCount(), authServer.MissCount())
+	}
+	if got := edgeServer.UnusedExchanges(); len(got) != 0 {
+		t.Fatalf("edge server UnusedExchanges = %+v, want none — it must not count the auth exchange it can never serve", got)
+	}
+}
+
+func TestATargetFilteredServerMissesARequestOnlyAnotherListenerRecorded(t *testing.T) {
+	auth := exch("GET", "/only-auth-has-this", "", nil, 200, `{}`, 1)
+	auth.Target = "auth"
+	b := bundleOf(auth)
+
+	s, url := serve(t, b, Options{TargetFilter: "edge"}, "")
+	resp := do(t, "GET", url+"/only-auth-has-this", "", nil)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 — this exchange belongs to a different listener and must never be served here", resp.StatusCode)
+	}
+	if s.MissCount() != 1 {
+		t.Fatalf("MissCount = %d, want 1", s.MissCount())
+	}
+}

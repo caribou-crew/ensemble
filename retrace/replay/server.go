@@ -135,6 +135,9 @@ func (s *Server) UnusedExchanges() []Key {
 	defer s.mu.Unlock()
 	var out []Key
 	for i := range s.bundle.Exchanges {
+		if s.opts.TargetFilter != "" && s.bundle.Exchanges[i].Target != s.opts.TargetFilter {
+			continue
+		}
 		if s.bundle.Exchanges[i].used == 0 {
 			out = append(out, s.bundle.Exchanges[i].Key)
 		}

@@ -90,17 +90,17 @@
 
 ## 4. `retrace/replay`: per-listener exchange filtering
 
-- [ ] 4.1 Add `Target string` to `replay.Exchange`, populated from
+- [x] 4.1 Add `Target string` to `replay.Exchange`, populated from
       `Hop.To` in `lower()` (the function that turns a `trace.Hop` into an
       `Exchange` — mirrors how `Key`'s other fields are already lowered
       from the hop).
-- [ ] 4.2 Add an optional target filter to `replay.NewServer`'s options
+- [x] 4.2 Add an optional target filter to `replay.NewServer`'s options
       (empty string = no filter = today's exact behavior, matching every
       exchange regardless of `Target`): when set, the server only matches
       exchanges whose `Target` equals the filter, and reports a request
       that would have matched a DIFFERENT target's exchange as a normal
       miss (not a match) — the whole point being no cross-listener leakage.
-- [ ] 4.3 Tests: a bundle with exchanges from two targets, served through a
+- [x] 4.3 Tests: a bundle with exchanges from two targets, served through a
       server filtered to one target, only answers that target's requests
       and misses the other's; an unfiltered server (empty target) matches
       both, preserving today's behavior for every existing bundle and

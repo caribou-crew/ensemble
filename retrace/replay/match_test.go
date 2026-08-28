@@ -462,3 +462,40 @@ func TestTheNearestExchangePrefersTheMatchingMethodOverACloserPath(t *testing.T)
 		t.Fatalf("nearest = %+v, want GET /cart", got.Nearest)
 	}
 }
+
+func twoTargetBundle() *Bundle {
+	edge := exch("GET", "/cart", "", nil, 200, `{"from":"edge"}`, 1)
+	edge.Target = "edge"
+	auth := exch("GET", "/cart", "", nil, 200, `{"from":"auth"}`, 2)
+	auth.Target = "auth"
+	return bundleOf(edge, auth)
+}
+
+func TestATargetFilterOnlyMatchesItsOwnListenersExchanges(t *testing.T) {
+	b := twoTargetBundle()
+	got := b.Match(Request{Method: "GET", Path: "/cart"}, Options{TargetFilter: "auth"})
+	if got.Miss || got.Hit == nil {
+		t.Fatalf("expected a hit filtered to target auth: %+v", got)
+	}
+	if got.Hit.Body != `{"from":"auth"}` {
+		t.Fatalf("body = %q, want the auth-target exchange's body", got.Hit.Body)
+	}
+}
+
+func TestATargetFilterMissesARequestOnlyTheOtherTargetRecorded(t *testing.T) {
+	b := bundleOf(
+		func() Exchange { e := exch("GET", "/only-on-auth", "", nil, 200, `{}`, 1); e.Target = "auth"; return e }(),
+	)
+	got := b.Match(Request{Method: "GET", Path: "/only-on-auth"}, Options{TargetFilter: "edge"})
+	if !got.Miss {
+		t.Fatalf("expected a miss: a request matching another target's exchange must never be served, got %+v", got)
+	}
+}
+
+func TestNoTargetFilterMatchesEitherTargetLikeBeforeMultiListener(t *testing.T) {
+	b := twoTargetBundle()
+	got := b.Match(Request{Method: "GET", Path: "/cart"}, Options{})
+	if got.Miss || got.Hit == nil {
+		t.Fatalf("expected an unfiltered hit: %+v", got)
+	}
+}

@@ -57,6 +57,17 @@ type Options struct {
 	Rules       []rules.Rule
 	Normalize   func(string) string
 	QueryIgnore []string
+	// TargetFilter restricts matching to exchanges recorded through one
+	// named listener (Exchange.Target). Empty means no filter — every
+	// exchange is eligible regardless of Target, which is today's exact
+	// behavior for every bundle recorded before multi-listener existed
+	// (and for a single-listener bundle recorded after). It exists so a
+	// multi-listener replay can bind one Server per listener without
+	// either ever answering from the other's recorded traffic: a request
+	// that matches by method+path+query+body but was recorded through a
+	// DIFFERENT target is not this server's to serve, so it is reported as
+	// an ordinary miss rather than a cross-listener hit.
+	TargetFilter string
 	// No MissPath here. The misses file has ONE name and ONE owner:
 	// runs.Paths.MissesPath. A second field naming the same file is a
 	// second thing to keep in sync, and the loser of that race writes
@@ -121,6 +132,9 @@ func (b *Bundle) Match(r Request, o Options) Result {
 	var byMethodAndPath []int
 	for i := range b.Exchanges {
 		e := &b.Exchanges[i]
+		if o.TargetFilter != "" && e.Target != o.TargetFilter {
+			continue
+		}
 		if strings.ToUpper(e.Key.Method) == method && normalizeWith(o, e.Key.Path) == path {
 			byMethodAndPath = append(byMethodAndPath, i)
 		}
@@ -231,6 +245,9 @@ func normalizeWith(o Options, p string) string {
 func (b *Bundle) nearest(method, path string, o Options) *Exchange {
 	best, bestScore := -1, 0
 	for i := range b.Exchanges {
+		if o.TargetFilter != "" && b.Exchanges[i].Target != o.TargetFilter {
+			continue
+		}
 		score := levenshtein(normalizeWith(o, b.Exchanges[i].Key.Path), path)
 		if strings.ToUpper(b.Exchanges[i].Key.Method) != method {
 			score += 100

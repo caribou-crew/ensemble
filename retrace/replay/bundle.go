@@ -40,6 +40,13 @@ type Key struct {
 // trace.Hop into the shape the matcher needs.
 type Exchange struct {
 	Key Key `json:"key"`
+	// Target is the listener this exchange was recorded through (Hop.To —
+	// the same tag a multi-listener standalone capture writes per hop, or
+	// "client-edge" for every single-listener recording made before or
+	// after that feature). Options.TargetFilter uses it to keep one
+	// listener's replay server from ever answering another listener's
+	// recorded traffic.
+	Target string `json:"target,omitempty"`
 	// ReqBody is the recorded request body DECODED, because matching is
 	// structural (a subset match, field by field, under wire rules) rather
 	// than byte-wise. nil means the recording carried no PARSEABLE request
@@ -326,6 +333,7 @@ func lower(h trace.Hop) Exchange {
 	path, query := diff.SplitPath(h.Path)
 	return Exchange{
 		Key:        Key{Method: strings.ToUpper(h.Method), Path: path, Query: query},
+		Target:     h.To,
 		ReqBody:    decodeBody(h.Req),
 		ReqRaw:     h.Req.Body,
 		ReqHeaders: h.Req.Headers,
