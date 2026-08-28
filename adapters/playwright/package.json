@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./reporter": { "types": "./dist/reporter.d.ts", "default": "./dist/reporter.js" }
   },
   "files": ["dist", "README.md"],
   "scripts": {
