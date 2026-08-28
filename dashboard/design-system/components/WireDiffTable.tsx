@@ -6,13 +6,13 @@ import './WireDiffTable.css';
 export const entryKey = (e: Entry) => `${e.method} ${e.normalizedPath} #${e.seqB || e.seqA}`;
 
 // The two redaction markers a captured value can carry: the literal
-// "[redacted]" a mask writes, and the "$enc:v1:" envelope Phase 4b adds.
-// They are MARKED, never revealed — there is deliberately no reveal control
-// in this task, so the marker plus a tooltip saying why is the whole
-// treatment. The two get different sentences because they state different
-// facts: a mask DESTROYS the value at capture (core/trace/redact.go writes
-// the literal over it before the hop reaches disk), so no later feature can
-// bring it back; an envelope keeps the value and withholds the key.
+// "[redacted]" a mask writes, and the "$enc:v1:" envelope an `encrypt` rule
+// adds. They get different treatments because they state different facts: a
+// mask DESTROYS the value at capture (core/trace/redact.go writes the
+// literal over it before the hop reaches disk), so nothing — not even the
+// team key — can bring it back; an envelope keeps the value and withholds
+// the key, so revealing it is a matter of asking the server whether the key
+// resolves now.
 const REDACTED_TITLE =
   'This value was redacted at capture. The recording does not contain it, so there is nothing here to reveal.';
 const ENCRYPTED_TITLE =
@@ -22,40 +22,168 @@ export function isRedacted(value: unknown): boolean {
   return typeof value === 'string' && (value === '[redacted]' || value.startsWith('$enc:v1:'));
 }
 
-function Value({ value }: { value: unknown }) {
-  const text = value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
-  if (isRedacted(value)) {
-    return (
-      <code
-        className="wire-value redacted"
-        title={typeof value === 'string' && value.startsWith('$enc:v1:') ? ENCRYPTED_TITLE : REDACTED_TITLE}
-      >
-        {text}
-      </code>
-    );
+function isEncrypted(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith('$enc:v1:');
+}
+
+const renderValue = (value: unknown) =>
+  value === undefined ? '—' : typeof value === 'string' ? value : JSON.stringify(value);
+
+export type FieldKind = 'changed' | 'violation' | 'tolerated' | 'ordering' | 'ignored';
+
+function fieldListFor(entry: Entry, kind: FieldKind): FieldDiff[] {
+  switch (kind) {
+    case 'violation':
+      return entry.bodyViolations;
+    case 'changed':
+      return entry.bodyDiff;
+    case 'tolerated':
+      return entry.bodyTolerated;
+    case 'ordering':
+      return entry.orderingChanges;
+    case 'ignored':
+      return entry.bodyIgnored;
   }
-  return <code className="wire-value">{text}</code>;
+}
+
+/**
+ * Locates the SAME field (by entry identity + which list it lives in +
+ * scope/path) inside a freshly-fetched set of sections — reveal-on-click
+ * re-fetches the whole item rather than trusting the already-loaded
+ * payload (design.md D6), so a click has to re-find its own field in the
+ * new response rather than reuse anything from the render that triggered it.
+ */
+export function findRevealedField(
+  sections: Section[],
+  entryK: string,
+  kind: FieldKind,
+  scope: string,
+  path: string,
+): FieldDiff | undefined {
+  for (const section of sections) {
+    for (const entry of section.entries) {
+      if (entryKey(entry) !== entryK) continue;
+      return fieldListFor(entry, kind).find((f) => f.scope === scope && f.path === path);
+    }
+  }
+  return undefined;
+}
+
+/** Re-fetches the sections for the entry/field currently being revealed.
+ * Supplied by the app (ensemble-ui, retrace-ui) so this component never
+ * needs to know an API base URL — the same seam ShotCompare's
+ * `resolveShotUrl` prop uses, adapted to a fetch instead of a URL because a
+ * reveal has to read a value out of the response, not just point at it. */
+export type RevealFields = () => Promise<Section[]>;
+
+type RevealState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'revealed'; value: unknown }
+  | { status: 'unavailable' };
+
+function RevealableValue({
+  value,
+  entryK,
+  kind,
+  field,
+  side,
+  onReveal,
+}: {
+  value: unknown;
+  entryK: string;
+  kind: FieldKind;
+  field: FieldDiff;
+  side: 'a' | 'b';
+  onReveal?: RevealFields;
+}) {
+  const [state, setState] = useState<RevealState>({ status: 'idle' });
+
+  if (state.status === 'revealed') {
+    return <code className="wire-value">{renderValue(state.value)}</code>;
+  }
+  if (!isRedacted(value)) {
+    return <code className="wire-value">{renderValue(value)}</code>;
+  }
+
+  const encrypted = isEncrypted(value);
+  const reveal = async (e: React.MouseEvent | React.KeyboardEvent) => {
+    // This value sits inside FieldRow's row-selection button — stop the
+    // click short of it, or revealing a field would also select it.
+    e.stopPropagation();
+    if (!onReveal) return;
+    setState({ status: 'loading' });
+    try {
+      const fresh = findRevealedField(await onReveal(), entryK, kind, field.scope, field.path);
+      const freshValue = fresh ? fresh[side] : undefined;
+      if (isEncrypted(freshValue)) {
+        setState({ status: 'unavailable' });
+      } else {
+        setState({ status: 'revealed', value: freshValue });
+      }
+    } catch {
+      setState({ status: 'unavailable' });
+    }
+  };
+
+  return (
+    <span className="wire-value-masked">
+      <code className="wire-value redacted" title={encrypted ? ENCRYPTED_TITLE : REDACTED_TITLE}>
+        {renderValue(value)}
+      </code>
+      {encrypted && onReveal ? (
+        // A <span role="button">, not a real <button> — this already sits
+        // inside FieldRow's row-selection button, and a nested <button> is
+        // invalid HTML the browser is free to restructure.
+        <span
+          role="button"
+          tabIndex={0}
+          className="wire-value__reveal"
+          aria-disabled={state.status === 'loading'}
+          onClick={(e) => {
+            if (state.status !== 'loading') void reveal(e);
+          }}
+          onKeyDown={(e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && state.status !== 'loading') {
+              e.preventDefault();
+              void reveal(e);
+            }
+          }}
+        >
+          {state.status === 'loading'
+            ? 'revealing…'
+            : state.status === 'unavailable'
+              ? 'key not available'
+              : 'reveal'}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 function FieldRow({
+  entryK,
   field,
   kind,
   selected,
   onSelect,
+  onReveal,
 }: {
+  entryK: string;
   field: FieldDiff;
-  kind: 'changed' | 'violation' | 'tolerated' | 'ordering' | 'ignored';
+  kind: FieldKind;
   selected: boolean;
   onSelect: () => void;
+  onReveal?: RevealFields;
 }) {
   return (
     <li className={`wire-field wire-field--${kind}${selected ? ' wire-field--selected' : ''}`}>
       <button type="button" className="wire-field__button" onClick={onSelect}>
         <span className="wire-field__scope">{field.scope}</span>
         <code className="wire-field__path">{field.path}</code>
-        <Value value={field.a} />
+        <RevealableValue value={field.a} entryK={entryK} kind={kind} field={field} side="a" onReveal={onReveal} />
         <span className="wire-field__arrow">→</span>
-        <Value value={field.b} />
+        <RevealableValue value={field.b} entryK={entryK} kind={kind} field={field} side="b" onReveal={onReveal} />
         {/* A tolerated field is NOT a change: it is a field a rule already
             says may vary, and showing it with the matcher that tolerated it
             is what tells a reviewer why it is not counted. */}
@@ -79,11 +207,14 @@ function EntryRows({
   entry,
   selectedField,
   onSelectField,
+  onReveal,
 }: {
   entry: Entry;
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
+  onReveal?: RevealFields;
 }) {
+  const entryK = entryKey(entry);
   const [open, setOpen] = useState(false);
   const changes = entry.bodyDiff.length + entry.bodyViolations.length + entry.headerDiff.length;
 
@@ -129,37 +260,45 @@ function EntryRows({
                 {entry.bodyViolations.map((f) => (
                   <FieldRow
                     key={`v:${f.scope}:${f.path}`}
+                    entryK={entryK}
                     field={f}
                     kind="violation"
-                    selected={selectedField === `${entryKey(entry)}|${f.scope}:${f.path}`}
+                    selected={selectedField === `${entryK}|${f.scope}:${f.path}`}
                     onSelect={() => onSelectField(entry, f)}
+                    onReveal={onReveal}
                   />
                 ))}
                 {entry.bodyDiff.map((f) => (
                   <FieldRow
                     key={`d:${f.scope}:${f.path}`}
+                    entryK={entryK}
                     field={f}
                     kind="changed"
-                    selected={selectedField === `${entryKey(entry)}|${f.scope}:${f.path}`}
+                    selected={selectedField === `${entryK}|${f.scope}:${f.path}`}
                     onSelect={() => onSelectField(entry, f)}
+                    onReveal={onReveal}
                   />
                 ))}
                 {entry.bodyTolerated.map((f) => (
                   <FieldRow
                     key={`t:${f.scope}:${f.path}`}
+                    entryK={entryK}
                     field={f}
                     kind="tolerated"
-                    selected={selectedField === `${entryKey(entry)}|${f.scope}:${f.path}`}
+                    selected={selectedField === `${entryK}|${f.scope}:${f.path}`}
                     onSelect={() => onSelectField(entry, f)}
+                    onReveal={onReveal}
                   />
                 ))}
                 {entry.orderingChanges.map((f) => (
                   <FieldRow
                     key={`o:${f.scope}:${f.path}`}
+                    entryK={entryK}
                     field={f}
                     kind="ordering"
-                    selected={selectedField === `${entryKey(entry)}|${f.scope}:${f.path}`}
+                    selected={selectedField === `${entryK}|${f.scope}:${f.path}`}
                     onSelect={() => onSelectField(entry, f)}
+                    onReveal={onReveal}
                   />
                 ))}
                 {entry.headerDiff.length > 0 ? (
@@ -201,10 +340,12 @@ export default function WireDiffTable({
   sections,
   selectedField,
   onSelectField,
+  onReveal,
 }: {
   sections: Section[];
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
+  onReveal?: RevealFields;
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -242,6 +383,7 @@ export default function WireDiffTable({
                     entry={entry}
                     selectedField={selectedField}
                     onSelectField={onSelectField}
+                    onReveal={onReveal}
                   />
                 ))}
               </table>

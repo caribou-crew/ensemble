@@ -164,6 +164,59 @@ export function ruleRequestFor(
 }
 
 /**
+ * The body of POST /api/queue/{app}/{flow}/redact.
+ *
+ * Unlike RuleRequest, there is no method/path to carry: config.RedactEntry
+ * matches by FIELD NAME alone (config.go's RedactKeyRules), so the dialect
+ * has nothing narrower to scope this to.
+ */
+export interface RedactRequest {
+  field: string;
+  mode: 'destroy' | 'encrypt' | 'display';
+  why?: string;
+}
+
+/**
+ * What writing this redaction rule will actually do — the same "say the
+ * consequence before the confirm" principle ruleBlastRadius exists for, D3.
+ *
+ * A redact rule matches by field name ONLY (RedactKeyRules), so it is even
+ * wider than a wire rule: no method/path box narrows it at all, in either
+ * direction. And it changes what CAPTURE WRITES TO DISK from here forward —
+ * a `destroy` or `encrypt` rule does not touch anything already recorded,
+ * but every future capture, in every flow, for a field with this exact
+ * name, is affected from the moment this rule is written.
+ */
+export function redactBlastRadius(field: string, mode: RedactRequest['mode']): string {
+  const consequence =
+    mode === 'destroy'
+      ? 'the value is IRREVERSIBLY overwritten at capture — not even the team key can bring it back'
+      : mode === 'encrypt'
+        ? 'the value is encrypted at capture — recoverable with the team key, but never written in the clear again'
+        : "the value passes through in the clear, but the dashboard masks it behind reveal-on-click ('fine on disk, not fine on screen')";
+  return `This applies to EVERY flow and EVERY app in this project, from the moment it is written: any field literally named "${field.trim() || '(unnamed)'}", wherever it appears, in every future capture. It does not touch anything already recorded. From here forward, ${consequence}.`;
+}
+
+/**
+ * config.RedactKeyRules matches by the BARE LEAF KEY (core/trace/redact.go's
+ * redactValue walks a JSON tree and checks each map key on its own, never a
+ * dotted path) — so a FieldDiff.path like `data.account.number` needs its
+ * last segment, not the whole path, as the redaction rule's field name.
+ */
+export function leafFieldName(path: string): string {
+  const last = path.split('.').pop() ?? '';
+  return last.replace(/\[\d+\]$/, '');
+}
+
+/**
+ * The redact request for a selected field — RulePicker's ruleRequestFor,
+ * mirrored for the redact dialect.
+ */
+export function redactRequestFor(field: FieldDiff, mode: RedactRequest['mode'], why: string): RedactRequest {
+  return { field: leafFieldName(field.path), mode, why: why.trim() || undefined };
+}
+
+/**
  * What POST .../accept actually answered — F1, and the most expensive
  * omission in this file.
  *
@@ -221,6 +274,9 @@ export const api = {
   },
   rule(app: string, flow: string, r: RuleRequest): Promise<{ ok: true }> {
     return request(`/api/queue/${seg(app)}/${seg(flow)}/rule`, jsonInit('POST', r));
+  },
+  redact(app: string, flow: string, r: RedactRequest): Promise<{ ok: true }> {
+    return request(`/api/queue/${seg(app)}/${seg(flow)}/redact`, jsonInit('POST', r));
   },
   /**
    * The URL of one comparison pane's PNG. The server already serves these as

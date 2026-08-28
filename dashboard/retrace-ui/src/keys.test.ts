@@ -5,10 +5,11 @@ const ev = (key: string, over: Partial<Parameters<typeof actionFor>[0]> = {}) =>
   ({ key, ctrlKey: false, metaKey: false, altKey: false, target: null, ...over });
 
 describe('actionFor', () => {
-  it('maps the three verbs', () => {
+  it('maps the four verbs', () => {
     expect(actionFor(ev('a'))).toBe('accept');
     expect(actionFor(ev('r'))).toBe('reject');
     expect(actionFor(ev('u'))).toBe('rule');
+    expect(actionFor(ev('m'))).toBe('redact');
   });
   it('maps navigation both by letter and by arrow', () => {
     expect(actionFor(ev('j'))).toBe('next');

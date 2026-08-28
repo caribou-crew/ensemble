@@ -1,8 +1,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Entry, Section } from '../diffTypes';
 import WireDiffTable from './WireDiffTable';
+
+// Only the reveal tests below await inside act() — react-dom's act() warns
+// about async updates unless this is set, and nothing else in this package
+// sets it globally.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const entry = (over: Partial<Entry> = {}): Entry => ({
   method: 'GET',
@@ -156,5 +161,106 @@ describe('WireDiffTable', () => {
     const name = container.querySelector('.wire-section__name');
     expect(name?.textContent).toBe('before any marker');
     expect(name?.textContent).not.toBe('');
+  });
+
+  const encryptedEntry = () =>
+    entry({
+      bodyDiff: [
+        { scope: 'resp', path: 'accountNumber', type: 'changed', a: '$enc:v1:aaaa', b: '$enc:v1:bbbb' },
+      ],
+    });
+
+  it('renders an encrypted field masked, with a reveal affordance, by default', () => {
+    render(
+      <WireDiffTable
+        sections={[section('checkout', [encryptedEntry()])]}
+        selectedField={null}
+        onSelectField={() => {}}
+        onReveal={() => Promise.resolve([])}
+      />,
+    );
+    expandTheOnlyRow();
+    // Both sides of the diff carry the marker, not the plaintext — nothing
+    // decrypted client-side, per design.md D6 ("no client-side crypto").
+    expect(container.querySelectorAll('.redacted')).toHaveLength(2);
+    expect(container.querySelector('.redacted')?.textContent).toBe('$enc:v1:aaaa');
+    const reveals = container.querySelectorAll('.wire-value__reveal');
+    expect(reveals).toHaveLength(2);
+    expect(reveals[0].textContent).toBe('reveal');
+  });
+
+  it('has no reveal affordance for a destroyed (non-reversible) field', () => {
+    // '[redacted]' means core/trace overwrote the value at capture — there is
+    // no key that could ever bring it back, so no reveal control is offered.
+    render(
+      <WireDiffTable
+        sections={[
+          section('checkout', [entry({ bodyDiff: [{ scope: 'resp', path: 'password', type: 'changed', a: '[redacted]', b: '[redacted]' }] })]),
+        ]}
+        selectedField={null}
+        onSelectField={() => {}}
+        onReveal={() => Promise.resolve([])}
+      />,
+    );
+    expandTheOnlyRow();
+    expect(container.querySelectorAll('.redacted')).toHaveLength(2);
+    expect(container.querySelectorAll('.wire-value__reveal')).toHaveLength(0);
+  });
+
+  it('reveal click re-fetches the field and displays the value the server sends back', async () => {
+    const onReveal = vi.fn().mockResolvedValue([
+      section('checkout', [
+        entry({
+          bodyDiff: [
+            { scope: 'resp', path: 'accountNumber', type: 'changed', a: 'real-account-1234', b: '$enc:v1:bbbb' },
+          ],
+        }),
+      ]),
+    ]);
+    render(
+      <WireDiffTable
+        sections={[section('checkout', [encryptedEntry()])]}
+        selectedField={null}
+        onSelectField={() => {}}
+        onReveal={onReveal}
+      />,
+    );
+    expandTheOnlyRow();
+    const [revealA] = container.querySelectorAll('.wire-value__reveal');
+    await act(async () => {
+      revealA.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onReveal).toHaveBeenCalledTimes(1);
+    // Side a is revealed (no longer masked); side b is untouched — only the
+    // field that was clicked comes back plaintext.
+    expect(container.querySelector('.wire-value:not(.redacted)')?.textContent).toBe('real-account-1234');
+    expect(container.querySelectorAll('.redacted')).toHaveLength(1);
+    // Clicking reveal must not ALSO select the field — it sits inside the
+    // row's own selection button, and a bare click bubbling up would.
+    expect(container.querySelector('.wire-field--selected')).toBeNull();
+  });
+
+  it('shows "key not available" rather than an error when the re-fetch still carries the marker', async () => {
+    const onReveal = vi.fn().mockResolvedValue([section('checkout', [encryptedEntry()])]);
+    render(
+      <WireDiffTable
+        sections={[section('checkout', [encryptedEntry()])]}
+        selectedField={null}
+        onSelectField={() => {}}
+        onReveal={onReveal}
+      />,
+    );
+    expandTheOnlyRow();
+    const [revealA] = container.querySelectorAll('.wire-value__reveal');
+    await act(async () => {
+      revealA.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.wire-value__reveal')?.textContent).toBe('key not available');
+    // Still masked — the marker itself is never shown as though it were live.
+    expect(container.querySelector('.redacted')?.textContent).toBe('$enc:v1:aaaa');
   });
 });

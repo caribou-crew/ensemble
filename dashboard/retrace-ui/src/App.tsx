@@ -5,7 +5,18 @@ import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
 import HopDeltaList from '@ensemble/design-system/components/HopDeltaList';
 import ShotCompare, { type ResolveShotUrl } from '@ensemble/design-system/components/ShotCompare';
 import WireDiffTable, { entryKey } from '@ensemble/design-system/components/WireDiffTable';
-import { api, messageOf, ruleBlastRadius, ruleRequestFor, type AcceptBundle, type RejectResult } from './api/client';
+import {
+  api,
+  leafFieldName,
+  messageOf,
+  redactBlastRadius,
+  redactRequestFor,
+  ruleBlastRadius,
+  ruleRequestFor,
+  type AcceptBundle,
+  type RedactRequest,
+  type RejectResult,
+} from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
@@ -153,6 +164,66 @@ export function RulePicker({
   );
 }
 
+/** The redact picker — RulePicker's sibling for "stop capturing this field
+ * in the clear." Field name is pre-filled from the selected field (the
+ * bare leaf key redaction actually matches on, not the full dotted path —
+ * see leafFieldName), and stays editable: the field a reviewer clicked on
+ * may not be the field they mean to protect, especially once they read the
+ * blast-radius sentence and realize it matches every occurrence of the
+ * name, project-wide. */
+export function RedactPicker({
+  field,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  field: FieldDiff;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (fieldName: string, mode: RedactRequest['mode'], why: string) => void;
+}) {
+  const [fieldName, setFieldName] = useState(leafFieldName(field.path));
+  const [mode, setMode] = useState<RedactRequest['mode']>('destroy');
+  const [why, setWhy] = useState('');
+
+  return (
+    <div className="picker" role="dialog" aria-label="add a redaction rule">
+      <h2>
+        Redact <code>{field.path}</code>
+      </h2>
+      <p className="picker__radius">{redactBlastRadius(fieldName, mode)}</p>
+      <label>
+        field name
+        <input value={fieldName} onChange={(e) => setFieldName(e.target.value)} />
+      </label>
+      <label>
+        mode
+        <select value={mode} onChange={(e) => setMode(e.target.value as RedactRequest['mode'])}>
+          <option value="destroy">destroy — irreversible, the default</option>
+          <option value="encrypt">encrypt — recoverable with the team key</option>
+          <option value="display">display — kept in the clear on disk, masked on screen</option>
+        </select>
+      </label>
+      <label>
+        why
+        <input value={why} onChange={(e) => setWhy(e.target.value)} placeholder="optional" />
+      </label>
+      <div className="picker__buttons">
+        <button type="button" onClick={onCancel} disabled={busy}>
+          cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => onConfirm(fieldName, mode, why)}
+          disabled={busy || fieldName.trim() === ''}
+        >
+          write the rule
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The triage signals that MOVED, in the priority order the classifier reads
  * them — capture → wire → hop → spec → pixel — so the list reads as the rule
@@ -274,6 +345,7 @@ function ItemScreen({
               sections={summary.sections}
               selectedField={selectedField}
               onSelectField={onSelectField}
+              onReveal={() => api.item(app, flow).then((r) => r.summary.sections)}
             />
           </section>
 
@@ -335,6 +407,7 @@ export default function App() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [picker, setPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
+  const [redactPicker, setRedactPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
 
   // Every fetch in this app goes through useAsync — the queue load, the item
@@ -384,8 +457,11 @@ export default function App() {
       setShowHelp((v) => !v);
       return;
     }
-    if (picker !== null) {
-      if (action === 'back') setPicker(null);
+    if (picker !== null || redactPicker !== null) {
+      if (action === 'back') {
+        setPicker(null);
+        setRedactPicker(null);
+      }
       return;
     }
     if (showHelp && action === 'back') {
@@ -442,6 +518,20 @@ export default function App() {
             for (const field of [...entry.bodyViolations, ...entry.bodyDiff, ...entry.bodyTolerated]) {
               if (`${entryKey(entry)}|${field.scope}:${field.path}` === selectedField) {
                 setPicker({ entry, field });
+                return;
+              }
+            }
+          }
+        }
+        return;
+      }
+      case 'redact': {
+        if (!selectedField || !item.data) return;
+        for (const section of item.data.sections) {
+          for (const entry of section.entries) {
+            for (const field of [...entry.bodyViolations, ...entry.bodyDiff, ...entry.bodyTolerated]) {
+              if (`${entryKey(entry)}|${field.scope}:${field.path}` === selectedField) {
+                setRedactPicker({ entry, field });
                 return;
               }
             }
@@ -542,6 +632,25 @@ export default function App() {
               });
               setPicker(null);
               return `wrote a wire rule for ${field.path}`;
+            });
+          }}
+        />
+      ) : null}
+
+      {redactPicker && app && flow ? (
+        <RedactPicker
+          field={redactPicker.field}
+          busy={busy}
+          onCancel={() => setRedactPicker(null)}
+          onConfirm={(fieldName, mode, why) => {
+            const { field } = redactPicker;
+            void mutate('writing the redaction rule', async () => {
+              await api.redact(app, flow, {
+                ...redactRequestFor(field, mode, why),
+                field: fieldName.trim(),
+              });
+              setRedactPicker(null);
+              return `wrote a redaction rule for "${fieldName.trim()}" (${mode})`;
             });
           }}
         />

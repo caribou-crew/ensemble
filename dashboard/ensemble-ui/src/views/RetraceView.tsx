@@ -167,7 +167,12 @@ function DetailPane({ app, flow, summary }: { app: string; flow: string; summary
 
           <section className="retrace-detail__plane">
             <h3>wire</h3>
-            <WireDiffTable sections={summary.sections} selectedField={selectedField} onSelectField={onSelectField} />
+            <WireDiffTable
+              sections={summary.sections}
+              selectedField={selectedField}
+              onSelectField={onSelectField}
+              onReveal={() => api.retraceItem(app, flow).then((s) => s.sections)}
+            />
           </section>
 
           <section className="retrace-detail__plane">

@@ -185,27 +185,27 @@
 
 ## 9. Dashboard: reveal-on-click + add-redaction-rule
 
-- [ ] 9.1 `dashboard/design-system`'s `WireDiffTable` (or the entry-detail
+- [x] 9.1 `dashboard/design-system`'s `WireDiffTable` (or the entry-detail
       view it renders into): a field value that is `trace.IsEncrypted` (or
       arrives from the API pre-decrypted — see 6.4, the API is the source
       of truth for whether it's masked) renders masked with a reveal
       affordance; clicking it re-fetches that one field's value from the
       owning app's existing item-detail endpoint rather than assuming the
       already-loaded payload has the plaintext.
-- [ ] 9.2 An "add redaction rule" action on any wire entry/field — opens a
+- [x] 9.2 An "add redaction rule" action on any wire entry/field — opens a
       small form (field name pre-filled, mode picker: destroy/encrypt/
       display, why) and calls a new mutation endpoint that appends a
       `RedactEntry` to `retrace.yaml`, mirroring the existing `rule` verb's
       write-back-to-config code path (`retrace/cmd/retrace/cmd_ref.go` or
       wherever `POST /api/rule` is currently handled — reuse that
       config-file-editing helper, don't duplicate YAML-node surgery).
-- [ ] 9.3 Wire the same component change through both consumers
+- [x] 9.3 Wire the same component change through both consumers
       (`dashboard/retrace-ui` and `dashboard/ensemble-ui`'s
       `RetraceView`) — no second implementation, per the existing
       shared-component seam `retrace-ci-sync` established
       (`resolveShotUrl`-style prop injection if the reveal fetch needs an
       app-specific URL).
-- [ ] 9.4 Tests: masked field renders masked by default; reveal click calls
+- [x] 9.4 Tests: masked field renders masked by default; reveal click calls
       the expected endpoint and displays the returned value; reveal on a
       server with no team key shows the "key not available" state from the
       spec, not an error boundary; add-rule form submission produces the

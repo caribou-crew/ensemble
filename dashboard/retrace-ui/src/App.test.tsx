@@ -393,6 +393,131 @@ describe('the three verbs', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 
+  it('the m key opens the redact picker for the selected field, pre-filled with its leaf name', async () => {
+    const withField = summary({
+      sections: [
+        {
+          name: 'checkout',
+          counts: { changed: 1 },
+          entries: [
+            {
+              method: 'GET',
+              normalizedPath: '/orders/{id}',
+              seqA: 1,
+              seqB: 1,
+              posA: 0,
+              posB: 0,
+              moved: false,
+              truncated: false,
+              classes: ['changed'],
+              bodyDiff: [{ scope: 'resp', path: 'account.number', type: 'changed', a: '1234', b: '5678' }],
+              bodyTolerated: [],
+              bodyViolations: [],
+              bodyIgnored: [],
+              orderingChanges: [],
+              headerDiff: [],
+              headerIgnored: [],
+            },
+          ],
+        },
+      ],
+    });
+    const calls = stubServer({ item: withField });
+    await mount();
+    await openAFlow(calls);
+
+    // Nothing is selected yet, so `m` has no field to write a redaction for.
+    await press('m');
+    expect(container.querySelector('.picker')).toBeNull();
+
+    await act(async () => {
+      (container.querySelector('.wire-row__toggle') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      (container.querySelector('.wire-field__button') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await press('m');
+
+    const picker = container.querySelector('.picker');
+    expect(picker).not.toBeNull();
+    expect(picker?.textContent).toContain('account.number');
+    // Pre-filled with the LEAF key ("number"), which is what config's
+    // RedactKeyRules actually matches — not the full dotted path.
+    const fieldInput = Array.from(picker!.querySelectorAll('input')).find((i) => i.value === 'number');
+    expect(fieldInput).toBeDefined();
+    // And no rule has been written by merely opening it.
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('the m key POSTs to redact — the endpoint, with the edited field/mode/why', async () => {
+    const withField = summary({
+      sections: [
+        {
+          name: 'checkout',
+          counts: { changed: 1 },
+          entries: [
+            {
+              method: 'GET',
+              normalizedPath: '/orders/{id}',
+              seqA: 1,
+              seqB: 1,
+              posA: 0,
+              posB: 0,
+              moved: false,
+              truncated: false,
+              classes: ['changed'],
+              bodyDiff: [{ scope: 'resp', path: 'accountNumber', type: 'changed', a: '1234', b: '5678' }],
+              bodyTolerated: [],
+              bodyViolations: [],
+              bodyIgnored: [],
+              orderingChanges: [],
+              headerDiff: [],
+              headerIgnored: [],
+            },
+          ],
+        },
+      ],
+    });
+    const calls = stubServer({ item: withField, posts: { redact: { ok: true } } });
+    await mount();
+    await openAFlow(calls);
+    await act(async () => {
+      (container.querySelector('.wire-row__toggle') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      (container.querySelector('.wire-field__button') as HTMLButtonElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      );
+    });
+    await press('m');
+
+    const select = container.querySelector('.picker select') as HTMLSelectElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(select, 'encrypt');
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const confirm = Array.from(container.querySelectorAll('.picker button')).find(
+      (b) => b.textContent === 'write the rule',
+    );
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const posts = calls.filter((c) => c.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toBe('/api/queue/web/search/redact');
+    expect(notice()).toMatch(/wrote a redaction rule for "accountNumber" \(encrypt\)/);
+    expect(container.querySelector('.picker')).toBeNull();
+  });
+
   it('refuses to accept or reject from the QUEUE screen, where the reviewer cannot see the run', async () => {
     // Both verbs are filesystem mutations, and ungated they fired from the
     // queue against whatever ?app=&flow= happened to hold — including a
