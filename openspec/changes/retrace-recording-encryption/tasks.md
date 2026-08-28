@@ -127,18 +127,18 @@
       decrypt (key unavailable) compares as still-masked (both sides equal
       only if both markers are byte-identical, same as today's `destroy`
       behavior) rather than erroring the whole diff.
-- [ ] 6.3 `retrace/replay`'s response server (`bundle.go` / server path):
+- [x] 6.3 `retrace/replay`'s response server (`bundle.go` / server path):
       decrypt `encrypt`-mode fields in the served body/headers before
       writing to the client; if the reference's data key can't be resolved
       (no team key), fail that response's replay with a named error rather
       than serving `$enc:v1:...` as the literal value (spec: "never leak
       the marker as data").
-- [ ] 6.4 `retrace/serve`'s item/queue response: decrypt for the JSON
+- [x] 6.4 `retrace/serve`'s item/queue response: decrypt for the JSON
       payload when the SERVING process's own key resolves; otherwise leave
       the marker as-is in the response (the API's existing shape needs no
       new field — a client sees either the plaintext or the marker string,
       and `trace.IsEncrypted` tells it which).
-- [ ] 6.5 Tests per site: diff sees a real change between two different
+- [x] 6.5 Tests per site: diff sees a real change between two different
       plaintext values behind two different encrypted markers (proving the
       marker alone would have hidden it); replay serves the decrypted
       value to a test client when the key is set, and fails clearly when
@@ -147,11 +147,11 @@
 
 ## 7. `retrace/refs`: carry `encryption.json` into reference bundles
 
-- [ ] 7.1 Add `encryption.json` to the file list `retrace ref accept`
+- [x] 7.1 Add `encryption.json` to the file list `retrace ref accept`
       copies into `.retrace-ref/<app>/<flow>/reference/`, byte-for-byte,
       alongside `manifest.json`/`wire.jsonl`/`hops.jsonl`/`shots/`. Absent
       when the source run has none.
-- [ ] 7.2 Test: accepting a run with `encryption.json` produces a
+- [x] 7.2 Test: accepting a run with `encryption.json` produces a
       reference bundle whose own `encryption.json` unwraps with the same
       team key and decrypts the same fields; accepting a run with none
       produces a reference bundle with none (no regression for every

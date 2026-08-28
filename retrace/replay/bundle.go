@@ -21,6 +21,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/reckey"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -79,6 +80,13 @@ type Bundle struct {
 	Dir       string        `json:"dir"`
 	Manifest  runs.Manifest `json:"manifest"`
 	Exchanges []Exchange    `json:"exchanges"`
+
+	// dataKey is this bundle's unwrapped per-recording key, resolved once
+	// at load time via reckey.ResolveDataKey — nil when the bundle has no
+	// encryption.json, or when no team key resolves. Unexported: it is
+	// serve-time state for decrypting a response before writing it, never
+	// bundle content, and it must never end up in a report or a log.
+	dataKey []byte
 }
 
 // LoadBundle reads a bundle directory into the exchange table a replay
@@ -130,7 +138,13 @@ type Bundle struct {
 //     header would serve a mangled body as if it were fine — plausible, and
 //     therefore worse. (The capture-layer root cause is out of scope here;
 //     this refusal is what makes it visible instead of silent.)
-func LoadBundle(dir string) (*Bundle, error) {
+//
+// cfgDir is the directory holding retrace.yaml — the same one every other
+// project-relative lookup in this tree uses — and is where the team key's
+// gitignored keyfile fallback (reckey.LoadTeamKey) is looked for when
+// RETRACE_RECORDING_KEY is not set. A bundle with no encrypt-mode field
+// needs no key at all, so an empty cfgDir is fine for one of those.
+func LoadBundle(dir, cfgDir string) (*Bundle, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("replay: bundle directory is empty — a bundle is never the process working directory")
 	}
@@ -153,7 +167,11 @@ func LoadBundle(dir string) (*Bundle, error) {
 	if skipped > 0 {
 		return nil, fmt.Errorf("replay: %s has %d unreadable line(s) — every one of them is a recorded exchange this server would then report as an unmatched call, so the accusation would be an artifact of our own reading; re-record the flow", p, skipped)
 	}
-	b := &Bundle{Dir: dir, Manifest: m, Exchanges: make([]Exchange, 0, len(hops))}
+	dataKey, err := reckey.ResolveDataKey(runs.Paths{RunDir: dir}, cfgDir)
+	if err != nil {
+		return nil, fmt.Errorf("replay: the bundle at %s: %w", dir, err)
+	}
+	b := &Bundle{Dir: dir, Manifest: m, Exchanges: make([]Exchange, 0, len(hops)), dataKey: dataKey}
 	for _, h := range hops {
 		if err := refuse(h); err != nil {
 			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w", dir, err)
@@ -164,6 +182,39 @@ func LoadBundle(dir string) (*Bundle, error) {
 		return nil, fmt.Errorf("replay: the bundle at %s records no exchanges — there is nothing to replay, and a server that answers every call with a miss is a broken mock rather than a strict one", dir)
 	}
 	return b, nil
+}
+
+// decryptExchange returns a copy of e with any encrypt-mode field in its
+// response Body and Headers decrypted under dataKey. ok is false the
+// moment it meets a marker it cannot open — a nil dataKey (no team key
+// resolved) or the wrong one — because this package fails CLOSED: a
+// replay server must never serve `$enc:v1:...` to a client as though it
+// were the field's real value (see the package doc).
+func decryptExchange(e Exchange, dataKey []byte) (Exchange, bool) {
+	ok := true
+	var bodyOK bool
+	e.Body, bodyOK = trace.DecryptBody(e.Body, dataKey)
+	if !bodyOK {
+		ok = false
+	}
+	if len(e.Headers) > 0 {
+		headers := make(map[string]string, len(e.Headers))
+		for k, v := range e.Headers {
+			if !trace.IsEncrypted(v) {
+				headers[k] = v
+				continue
+			}
+			plain, err := trace.DecryptField(dataKey, v)
+			if err != nil {
+				ok = false
+				headers[k] = v
+				continue
+			}
+			headers[k] = plain
+		}
+		e.Headers = headers
+	}
+	return e, ok
 }
 
 // refuse reports the recorded hops this package will not replay. Every

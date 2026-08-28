@@ -69,7 +69,7 @@ func cmdRevalidate(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	bundle, err := replay.LoadBundle(r.Dir)
+	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir)
 	if err != nil {
 		return fail(stderr, "revalidate: %v", err)
 	}

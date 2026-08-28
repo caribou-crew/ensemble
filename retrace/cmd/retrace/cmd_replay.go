@@ -128,7 +128,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	bundle, err := replay.LoadBundle(r.Dir)
+	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir)
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
@@ -290,26 +290,46 @@ func renderReplay(w io.Writer, app, flow, kind string, exchanges, served int, un
 		fmt.Fprintf(w, "  every call matched the recording\n")
 		return
 	}
-	fmt.Fprintf(w, "\n  %d unmatched call(s) — the client made a request the reference bundle does not contain:\n", len(misses))
+	var unmatched, keyUnavailable []replay.Miss
 	for _, m := range misses {
-		q := ""
-		if m.Query != "" {
-			q = "?" + m.Query
-		}
-		near := "no comparable exchange"
-		if m.Nearest != nil {
-			near = "nearest " + m.Nearest.Method + " " + m.Nearest.Path
-			if m.Nearest.Query != "" {
-				near += "?" + m.Nearest.Query
-			}
-		}
-		fmt.Fprintf(w, "    %s %s%s — %s\n", m.Method, m.Path, q, near)
-		for _, f := range m.Diff {
-			fmt.Fprintf(w, "      %s: expected %s, got %s\n", f.Field, f.Expected, f.Actual)
+		if m.Kind == replay.MissKeyUnavailable {
+			keyUnavailable = append(keyUnavailable, m)
+		} else {
+			unmatched = append(unmatched, m)
 		}
 	}
-	fmt.Fprintf(w, "\n  Either the client changed — this is the deviation replay exists to catch — or the\n")
-	fmt.Fprintf(w, "  recording is stale: `retrace revalidate --ref %s --upstream URL` says which.\n", flow)
+	if len(unmatched) > 0 {
+		fmt.Fprintf(w, "\n  %d unmatched call(s) — the client made a request the reference bundle does not contain:\n", len(unmatched))
+		for _, m := range unmatched {
+			q := ""
+			if m.Query != "" {
+				q = "?" + m.Query
+			}
+			near := "no comparable exchange"
+			if m.Nearest != nil {
+				near = "nearest " + m.Nearest.Method + " " + m.Nearest.Path
+				if m.Nearest.Query != "" {
+					near += "?" + m.Nearest.Query
+				}
+			}
+			fmt.Fprintf(w, "    %s %s%s — %s\n", m.Method, m.Path, q, near)
+			for _, f := range m.Diff {
+				fmt.Fprintf(w, "      %s: expected %s, got %s\n", f.Field, f.Expected, f.Actual)
+			}
+		}
+		fmt.Fprintf(w, "\n  Either the client changed — this is the deviation replay exists to catch — or the\n")
+		fmt.Fprintf(w, "  recording is stale: `retrace revalidate --ref %s --upstream URL` says which.\n", flow)
+	}
+	if len(keyUnavailable) > 0 {
+		fmt.Fprintf(w, "\n  %d call(s) matched a recording this server could not decrypt:\n", len(keyUnavailable))
+		for _, m := range keyUnavailable {
+			q := ""
+			if m.Query != "" {
+				q = "?" + m.Query
+			}
+			fmt.Fprintf(w, "    %s %s%s — %s\n", m.Method, m.Path, q, m.Detail)
+		}
+	}
 }
 
 // pathQuery renders a query for display, "" when there is none.

@@ -65,7 +65,7 @@ func TestLoadBundleLowersRecordedHopsIntoExchanges(t *testing.T) {
 		hop(2, "post", "/checkout", `{"pay":"card"}`, 201, `{"ok":true}`),
 	})
 
-	b, err := LoadBundle(dir)
+	b, err := LoadBundle(dir, "")
 	if err != nil {
 		t.Fatalf("LoadBundle: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestLoadBundleRefusesAWirePlaneThatWasNeverRecorded(t *testing.T) {
 	dir := writeBundle(t, runs.Counts{Recorded: false, Reason: "the proxy never started"},
 		[]trace.Hop{hop(1, "GET", "/cart", "", 200, `{}`)})
 
-	_, err := LoadBundle(dir)
+	_, err := LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a bundle whose wire plane says it was not recorded")
 	}
@@ -134,7 +134,7 @@ func TestLoadBundleRefusesACorruptWireLine(t *testing.T) {
 		hop(1, "GET", "/cart", "", 200, `{}`),
 		hop(2, "GET", "/checkout", "", 200, `{}`),
 	})
-	if _, err := LoadBundle(dir); err != nil {
+	if _, err := LoadBundle(dir, ""); err != nil {
 		t.Fatalf("the intact bundle did not load: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestLoadBundleRefusesACorruptWireLine(t *testing.T) {
 	f.WriteString("{\"schema\":\"ensemble/1\",\"method\":\"GET\"\n") // truncated, as a killed writer leaves it
 	f.Close()
 
-	_, err = LoadBundle(dir)
+	_, err = LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a wire.jsonl with an unreadable line — every dropped line is an exchange this server would then call a client deviation")
 	}
@@ -157,7 +157,7 @@ func TestLoadBundleRefusesACorruptWireLine(t *testing.T) {
 
 func TestLoadBundleRefusesABundleWithNoExchanges(t *testing.T) {
 	dir := writeBundle(t, runs.Counts{Calls: 0, Recorded: true}, nil)
-	_, err := LoadBundle(dir)
+	_, err := LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a bundle with no exchanges — a server that answers every call with a miss is a broken mock, not a strict one")
 	}
@@ -175,14 +175,14 @@ func TestLoadBundleRefusesAnUnreadableManifest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{ not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBundle(dir); err == nil {
+	if _, err := LoadBundle(dir, ""); err == nil {
 		t.Fatal("LoadBundle accepted a corrupt manifest")
 	}
 
 	if err := os.Remove(filepath.Join(dir, "manifest.json")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBundle(dir); err == nil {
+	if _, err := LoadBundle(dir, ""); err == nil {
 		t.Fatal("LoadBundle accepted a bundle with no manifest at all")
 	}
 }
@@ -190,8 +190,8 @@ func TestLoadBundleRefusesAnUnreadableManifest(t *testing.T) {
 func TestLoadBundleRefusesAnEmptyDirectoryArgument(t *testing.T) {
 	// "" would resolve to the process working directory. A bundle is never
 	// that, and the zero value of a path must not address something real.
-	if _, err := LoadBundle(""); err == nil {
-		t.Fatal("LoadBundle(\"\") was accepted")
+	if _, err := LoadBundle("", ""); err == nil {
+		t.Fatal(`LoadBundle("", "") was accepted`)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestLoadBundleRefusesAnExchangeRecordedWithContentEncoding(t *testing.T) {
 	h.Resp.Headers["Content-Encoding"] = "gzip"
 	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
 
-	_, err := LoadBundle(dir)
+	_, err := LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted an exchange recorded with Content-Encoding — replay would re-assert it over bytes that are no longer compressed")
 	}
@@ -226,12 +226,12 @@ func TestLoadBundleRefusesAnExchangeRecordedWithContentEncoding(t *testing.T) {
 	// "identity" — the header's own no-op, which is not a claim about the
 	// bytes.
 	clean := hop(2, "GET", "/cart", "", 200, `{"items":[]}`)
-	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{clean})); err != nil {
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{clean}), ""); err != nil {
 		t.Fatalf("a bundle with no Content-Encoding did not load: %v", err)
 	}
 	identity := hop(3, "GET", "/cart", "", 200, `{"items":[]}`)
 	identity.Resp.Headers["Content-Encoding"] = "identity"
-	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity})); err != nil {
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity}), ""); err != nil {
 		t.Fatalf("a bundle recording Content-Encoding: identity did not load: %v", err)
 	}
 }
@@ -246,7 +246,7 @@ func TestLoadBundleRefusesATruncatedRecordedRequestBody(t *testing.T) {
 	h.Req.Truncated = true
 	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
 
-	_, err := LoadBundle(dir)
+	_, err := LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a truncated recorded request body")
 	}
@@ -256,7 +256,7 @@ func TestLoadBundleRefusesATruncatedRecordedRequestBody(t *testing.T) {
 
 	// The mirror: the same body, not truncated, loads and constrains.
 	whole := hop(1, "POST", "/checkout", `{"pay":"card"}`, 201, `{"ok":true}`)
-	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole})); err != nil {
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole}), ""); err != nil {
 		t.Fatalf("an untruncated bundle did not load: %v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestLoadBundleRefusesATruncatedRecordedResponseBody(t *testing.T) {
 	h.Resp.Truncated = true
 	dir := writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h})
 
-	_, err := LoadBundle(dir)
+	_, err := LoadBundle(dir, "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a truncated recorded response body — replay would serve a knowingly-short body as if it were the complete recorded response")
 	}
@@ -288,7 +288,7 @@ func TestLoadBundleRefusesATruncatedRecordedResponseBody(t *testing.T) {
 	// time is how the ordinary case eventually stops loading. The same
 	// hop, the same body, not truncated — loads AND serves.
 	whole := hop(1, "GET", "/cart", "", 200, `{"items":[{"sku":"a"}]}`)
-	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole}))
+	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{whole}), "")
 	if err != nil {
 		t.Fatalf("an untruncated response body did not load: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestLoadBundleRefusesARecordedPartialResponse(t *testing.T) {
 			for k, v := range c.headers {
 				h.Resp.Headers[k] = v
 			}
-			_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+			_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}), "")
 			if err == nil {
 				t.Fatal("LoadBundle accepted a recorded partial response — it can only ever be served to a client asking for a different byte range, on a hit, with the run exiting 0")
 			}
@@ -345,7 +345,7 @@ func TestLoadBundleRefusesARecordedPartialResponse(t *testing.T) {
 	t.Run("Accept-Ranges alone still loads and serves", func(t *testing.T) {
 		h := hop(1, "GET", "/download", "", 200, `{"items":[]}`)
 		h.Resp.Headers["Accept-Ranges"] = "bytes"
-		b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+		b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}), "")
 		if err != nil {
 			t.Fatalf("a full response from a range-capable server did not load: %v", err)
 		}
@@ -370,7 +370,7 @@ func TestLoadBundleRefusesARecordedRequestContentEncoding(t *testing.T) {
 	// sending someone to debug a service that is behaving correctly.
 	h := hop(1, "POST", "/ingest", "��mangled gzip", 200, `{"ok":true}`)
 	h.Req.Headers = map[string]string{"Content-Type": "application/json", "Content-Encoding": "gzip"}
-	_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}))
+	_, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{h}), "")
 	if err == nil {
 		t.Fatal("LoadBundle accepted a recorded request Content-Encoding — revalidate would re-issue it over bytes that are not that encoding and call the rejection drift")
 	}
@@ -383,13 +383,13 @@ func TestLoadBundleRefusesARecordedRequestContentEncoding(t *testing.T) {
 	// and a request with no Content-Encoding at all loads and serves.
 	identity := hop(1, "POST", "/ingest", `{"n":1}`, 200, `{"ok":true}`)
 	identity.Req.Headers = map[string]string{"Content-Encoding": "identity"}
-	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity})); err != nil {
+	if _, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{identity}), ""); err != nil {
 		t.Fatalf("a request recording Content-Encoding: identity did not load: %v", err)
 	}
 
 	plain := hop(1, "POST", "/ingest", `{"n":1}`, 200, `{"ok":true}`)
 	plain.Req.Headers = map[string]string{"Content-Type": "application/json"}
-	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{plain}))
+	b, err := LoadBundle(writeBundle(t, runs.Counts{Calls: 1, Recorded: true}, []trace.Hop{plain}), "")
 	if err != nil {
 		t.Fatalf("an uncompressed recorded request did not load: %v", err)
 	}

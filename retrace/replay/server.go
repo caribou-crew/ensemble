@@ -35,11 +35,19 @@ import (
 //     recorded exchange and must never be a miss.
 //   - every other verb falls through to Match, and a miss is a 501.
 
-// MissUnmatched is the only miss kind there is today, and it is set on
-// every Miss this package produces. Kind is never left empty: an
-// unclassified miss in misses.jsonl reads to a consumer grouping by kind
-// as no miss at all.
+// MissUnmatched is set on a Miss where no recorded exchange answers the
+// request at all. Kind is never left empty: an unclassified miss in
+// misses.jsonl reads to a consumer grouping by kind as no miss at all.
 const MissUnmatched = "unmatched"
+
+// MissKeyUnavailable is set on a Miss where a recorded exchange DID match
+// the request, but carries an encrypt-mode field this server cannot open
+// (no team key resolved, or the wrong one) — see decryptExchange. This is
+// a distinct kind from MissUnmatched: the recording is not stale, and the
+// message a report gives a human must not say "the client made a request
+// the reference bundle does not contain" about a request the bundle
+// answers just fine.
+const MissKeyUnavailable = "key_unavailable"
 
 // maxRequestBody caps what the handler reads off one request before
 // matching. Matching is structural over decoded JSON; a body larger than
@@ -58,6 +66,11 @@ type Miss struct {
 	Query   string      `json:"query,omitempty"`
 	Diff    []MissField `json:"diff,omitempty"`
 	Nearest *Key        `json:"nearest,omitempty"`
+	// Detail is a human-readable reason, set on a MissKeyUnavailable miss
+	// (Diff and Nearest describe a MATCH FAILURE, which is not what
+	// happened here — the exchange matched and could not be safely
+	// served).
+	Detail string `json:"detail,omitempty"`
 }
 
 // Server answers from a Bundle and remembers every miss.
@@ -192,9 +205,28 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// Copied out under the lock: the Exchange lives in a slice the next
 	// Match may re-read, and the response is written after the unlock.
 	hit := *res.Hit
+	dataKey := s.bundle.dataKey
+	s.mu.Unlock()
+
+	decrypted, ok := decryptExchange(hit, dataKey)
+	if !ok {
+		miss := Miss{
+			TS: s.now().UTC(), Kind: MissKeyUnavailable,
+			Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
+			Detail: "the matched recorded exchange has an encrypt-mode field this replay server cannot decrypt — " +
+				"set RETRACE_RECORDING_KEY (or the project's .retrace/recording.key) to the team key the recording was captured under",
+		}
+		s.mu.Lock()
+		s.misses = append(s.misses, miss)
+		s.appendMissLocked(miss)
+		s.mu.Unlock()
+		writeKeyUnavailable(w, miss)
+		return
+	}
+	s.mu.Lock()
 	s.served++
 	s.mu.Unlock()
-	writeHit(w, r, hit)
+	writeHit(w, r, decrypted)
 }
 
 // writeHit replays one recorded exchange. Headers are replayed as
@@ -388,6 +420,28 @@ func writeMiss(w http.ResponseWriter, m Miss) {
 			"replay exists to catch, or the recording is stale — re-record the flow with `retrace run` and " +
 			"promote it with `retrace ref accept`.",
 		Method: m.Method, Path: m.Path, Query: m.Query, Nearest: m.Nearest, Diff: m.Diff,
+	})
+}
+
+// writeKeyUnavailable is the loud refusal for a MissKeyUnavailable: the
+// recording DID match, and is refused anyway rather than leaking
+// `$enc:v1:...` to the client as though it were the field's real value.
+// 500, not 501: MissUnmatched (no match at all) and this are different
+// facts, and the two response bodies must not be mistaken for each other
+// on the wire either.
+func writeKeyUnavailable(w http.ResponseWriter, m Miss) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error  string `json:"error"`
+		Hint   string `json:"hint"`
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Query  string `json:"query,omitempty"`
+	}{
+		Error:  "replay: matched exchange for " + m.Method + " " + m.Path + pathQuery(m.Query) + " has an encrypted field this server cannot decrypt",
+		Hint:   m.Detail,
+		Method: m.Method, Path: m.Path, Query: m.Query,
 	})
 }
 

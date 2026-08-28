@@ -418,7 +418,7 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	reported := unmatchedNames(m.Checkpoints, o.ProjectMaskedCheckpoints)
 
 	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
-	for _, name := range []string{"wire.jsonl", "hops.jsonl"} {
+	for _, name := range []string{"wire.jsonl", "hops.jsonl", runs.EncryptionFile} {
 		src := filepath.Join(p.RunDir, name)
 		if _, err := os.Stat(src); err == nil {
 			files = append(files, bundleFile{rel: name, src: src})
