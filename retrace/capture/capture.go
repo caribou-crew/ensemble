@@ -26,6 +26,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -50,7 +51,7 @@ type Options struct {
 	// bind error already names it, and retrace never silently picks a
 	// different port than the one asked for.
 	Port    int
-	Redact  []string
+	Redact  []config.RedactEntry
 	MaxBody int
 	Now     func() time.Time
 }
@@ -105,8 +106,15 @@ type Session struct {
 	// writes its hops at Close time rather than streaming them through a
 	// Recorder. Set in BOTH constructors: a Session that forgot them would
 	// write the user's own keys to disk in plaintext.
-	redact  []string
+	redact  []config.RedactEntry
 	maxBody int
+	// dataKey is this run's per-recording AES-256 key, generated once at
+	// Start* when any redact rule needs mode encrypt; nil otherwise. keyID
+	// and wrappedDataKey are its team-key-wrapped form, written to
+	// encryption.json at Close — see resolveDataKey.
+	dataKey        []byte
+	keyID          string
+	wrappedDataKey string
 
 	// ens is nil in standalone mode and non-nil in ensemble-attached mode.
 	// It is the single discriminator every method below branches on — see
@@ -148,6 +156,11 @@ func StartStandalone(o Options) (*Session, error) {
 	if o.Upstream == "" {
 		return nil, fmt.Errorf("standalone capture needs --upstream (the base URL clients would call)")
 	}
+	rules := config.RedactKeyRules(o.Redact)
+	dataKey, keyID, wrappedDataKey, err := resolveDataKey(o.Cwd, rules)
+	if err != nil {
+		return nil, err
+	}
 	runID := runs.NewRunID(now(), gitSHA(o.Cwd))
 	p, err := runs.Create(runs.RunsRoot(o.Cwd), o.App, o.Flow, runID)
 	if err != nil {
@@ -162,11 +175,17 @@ func StartStandalone(o Options) (*Session, error) {
 		maxBody = proxy.CaptureLimit
 	}
 	// Redaction at capture: the Recorder scrubs before the ring, before the
-	// writer, before anything is streamed. Phase 4b swaps per-key modes in
-	// at exactly this seam.
+	// writer, before anything is streamed. Per-key modes (destroy/encrypt/
+	// display) dispatch at exactly this seam.
+	red, err := trace.NewRedactor(rules, maxBody, dataKey)
+	if err != nil {
+		wire.Close()
+		os.RemoveAll(p.RunDir)
+		return nil, err
+	}
 	rec := proxy.NewRecorder(proxy.RecorderOpts{
 		Ring:     8192,
-		Redactor: trace.NewRedactor(o.Redact, maxBody),
+		Redactor: red,
 		Writer:   trace.NewWriter(wire),
 	})
 	prox := proxy.New(rec)
@@ -187,6 +206,7 @@ func StartStandalone(o Options) (*Session, error) {
 		ProxyURL:    "http://" + addr,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		redact:      o.Redact, maxBody: maxBody,
+		dataKey: dataKey, keyID: keyID, wrappedDataKey: wrappedDataKey,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
 		stop()

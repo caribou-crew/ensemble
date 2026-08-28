@@ -154,7 +154,7 @@ func TestResolveRouteTrailingSlashPrefix(t *testing.T) {
 // checks path/query forwarding, the 404 hop, and that the downstream hop
 // names the gateway as its caller.
 func TestGatewayRoutesAcrossUpstreams(t *testing.T) {
-	rec := NewRecorder(RecorderOpts{Ring: 64, Redactor: trace.NewRedactor(nil, 65536)})
+	rec := NewRecorder(RecorderOpts{Ring: 64, Redactor: mustRedactor(t, nil, 65536)})
 	p := New(rec)
 	defer p.Close()
 

@@ -199,7 +199,7 @@ func TestHopsFromAnExternalSourceAreRedactedByRetraceItself(t *testing.T) {
 	cwd := t.TempDir()
 	s, err := StartStandalone(Options{
 		Cwd: cwd, App: "web", Flow: "checkout",
-		Upstream: "http://127.0.0.1:1", Redact: []string{"x-team-token"},
+		Upstream: "http://127.0.0.1:1", Redact: destroyEntries("x-team-token"),
 	})
 	if err != nil {
 		t.Fatal(err)

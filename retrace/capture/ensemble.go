@@ -9,6 +9,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -65,6 +66,11 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 	if now == nil {
 		now = time.Now
 	}
+	rules := config.RedactKeyRules(o.Redact)
+	dataKey, keyID, wrappedDataKey, err := resolveDataKey(o.Cwd, rules)
+	if err != nil {
+		return nil, err
+	}
 	runID := runs.NewRunID(now(), gitSHA(o.Cwd))
 	p, err := runs.Create(runs.RunsRoot(o.Cwd), o.App, o.Flow, runID)
 	if err != nil {
@@ -97,6 +103,7 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		ens:         c,
 		redact:      o.Redact, maxBody: bodyLimit(o.MaxBody),
+		dataKey: dataKey, keyID: keyID, wrappedDataKey: wrappedDataKey,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
 		endCtx, endCancel := context.WithTimeout(context.Background(), controlTimeout)
@@ -187,6 +194,15 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+	// Written once, regardless of mode: a run with an encrypt-mode field
+	// generated a data key at Start*, and the sidecar is what makes it
+	// recoverable at all — absent for every other run, matching
+	// source.json's own absence-is-the-local-case reading.
+	if s.dataKey != nil {
+		if err := runs.WriteEncryption(s.Paths, runs.Encryption{KeyID: s.keyID, WrappedDataKey: s.wrappedDataKey}); err != nil {
+			return err
+		}
+	}
 	if s.markerSrv != nil {
 		s.markerSrv.Close()
 	}
@@ -208,7 +224,14 @@ func (s *Session) Close() error {
 	// m.sessions, and only End releases them. Skipping End here leaks that
 	// listener and keeps `route`'s heuristics firing against a session that
 	// will never end for the rest of `ensemble up`'s lifetime (Major 2).
-	red := trace.NewRedactor(s.redact, s.maxBody)
+	red, err := trace.NewRedactor(config.RedactKeyRules(s.redact), s.maxBody, s.dataKey)
+	if err != nil {
+		// Unreachable in practice: the data key was already resolved at
+		// Start* (or is nil, if no rule needs one), and every mode was
+		// validated at config-load time — see resolveDataKey and
+		// RedactEntry.UnmarshalYAML.
+		return fmt.Errorf("capture: rebuilding the redactor at close: %w", err)
+	}
 	written := 0
 	writeErr := writeHops(s.Paths.HopsPath, s.hops, red, func(trace.Hop) bool { return true }, &written)
 	wire := 0

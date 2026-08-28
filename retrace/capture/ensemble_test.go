@@ -380,7 +380,7 @@ func TestAttachedWritesArePushedThroughRetracesOwnRedactor(t *testing.T) {
 	f.push(h)
 
 	s, err := StartAttached(Options{
-		Cwd: t.TempDir(), App: "web", Flow: "checkout", Redact: []string{"token"},
+		Cwd: t.TempDir(), App: "web", Flow: "checkout", Redact: destroyEntries("token"),
 	}, f, "bff")
 	if err != nil {
 		t.Fatalf("StartAttached: %v", err)

@@ -28,7 +28,7 @@ func forwardCtx(dst *http.Request, src *http.Request) {
 // client -> [proxy svc-a] -> svc-a -> [proxy svc-b] -> svc-b -> [proxy svc-c] -> svc-c,
 // all three intercept listeners in this one process.
 func TestThreeHopChainThroughOneProcess(t *testing.T) {
-	rec := NewRecorder(RecorderOpts{Ring: 64, Redactor: trace.NewRedactor(nil, 65536)})
+	rec := NewRecorder(RecorderOpts{Ring: 64, Redactor: mustRedactor(t, nil, 65536)})
 	p := New(rec)
 	defer p.Close()
 
@@ -328,7 +328,7 @@ func TestProxyRecordsUpstreamFailureAsHop(t *testing.T) {
 }
 
 func TestCapturedBodyIsValidJSONForRedaction(t *testing.T) {
-	rec := NewRecorder(RecorderOpts{Ring: 8, Redactor: trace.NewRedactor([]string{"pan"}, 0)})
+	rec := NewRecorder(RecorderOpts{Ring: 8, Redactor: mustRedactor(t, []string{"pan"}, 0)})
 	p := New(rec)
 	defer p.Close()
 

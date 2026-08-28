@@ -184,7 +184,12 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	}
 	defer hopsFile.Close()
 
-	redactor := trace.NewRedactor(cfg.Redact, 0)
+	redactor, err := trace.NewRedactor(trace.DestroyKeys(cfg.Redact), 0, nil)
+	if err != nil {
+		// Unreachable: DestroyKeys only ever produces ModeDestroy rules,
+		// which never need a data key.
+		return fmt.Errorf("build redactor: %w", err)
+	}
 	rec := proxy.NewRecorder(proxy.RecorderOpts{
 		Redactor: redactor,
 		Writer:   trace.NewWriter(hopsFile),

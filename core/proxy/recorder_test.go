@@ -146,7 +146,7 @@ func TestSubscribeReplaysFullRingWithoutDeadlock(t *testing.T) {
 }
 
 func TestRecorderAppliesRedaction(t *testing.T) {
-	rec := NewRecorder(RecorderOpts{Ring: 8, Redactor: trace.NewRedactor(nil, 0)})
+	rec := NewRecorder(RecorderOpts{Ring: 8, Redactor: mustRedactor(t, nil, 0)})
 	rec.Record(trace.Hop{To: "a", Req: trace.Payload{Headers: map[string]string{"authorization": "Bearer x"}}})
 	if got := rec.Snapshot()[0].Req.Headers["authorization"]; got != trace.Redacted {
 		t.Fatalf("not redacted: %q", got)

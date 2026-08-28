@@ -363,7 +363,14 @@ func (o *Orchestrator) reconcileGlobals(old, newCfg config.Config, result *Recon
 		result.add("global", "client_identity_headers", "updated")
 	}
 	if !reflect.DeepEqual(old.Redact, newCfg.Redact) && o.Rec != nil {
-		o.Rec.SetRedactor(trace.NewRedactor(newCfg.Redact, 0))
+		redactor, err := trace.NewRedactor(trace.DestroyKeys(newCfg.Redact), 0, nil)
+		if err != nil {
+			// Unreachable: DestroyKeys only ever produces ModeDestroy
+			// rules, which never need a data key — see
+			// core/trace.NewRedactor.
+			panic(err)
+		}
+		o.Rec.SetRedactor(redactor)
 		result.add("global", "redact", "updated")
 	}
 	if !reflect.DeepEqual(old.Latency, newCfg.Latency) && o.px.Latency != nil {

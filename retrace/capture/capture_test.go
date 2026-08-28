@@ -29,7 +29,7 @@ func TestStandaloneCaptureRecordsClientEdgeHopsAndWritesWireJsonl(t *testing.T) 
 	cwd := t.TempDir()
 	s, err := StartStandalone(Options{
 		Cwd: cwd, App: "web", Flow: "checkout", Upstream: upstream.URL,
-		Redact: []string{"token"},
+		Redact: destroyEntries("token"),
 		Now:    func() time.Time { return time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {

@@ -250,7 +250,13 @@ func (h HopSource) run(ctx context.Context, command string, extraEnv []string) (
 // applies its own key list to everything that reaches its disk, whoever
 // produced it.
 func (s *Session) RecordExternalHops(hops []trace.Hop) error {
-	red := trace.NewRedactor(s.redact, s.maxBody)
+	// The SAME already-resolved data key the ensemble/standalone path used
+	// (s.dataKey, set at Start*) — one data key per run, whichever path
+	// wrote hops, never a second load/generate here.
+	red, err := trace.NewRedactor(config.RedactKeyRules(s.redact), s.maxBody, s.dataKey)
+	if err != nil {
+		return fmt.Errorf("capture: rebuilding the redactor for external hops: %w", err)
+	}
 	n := 0
 	if err := writeHops(s.Paths.HopsPath, hops, red, func(trace.Hop) bool { return true }, &n); err != nil {
 		return err

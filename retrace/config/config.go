@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
 
@@ -105,7 +106,7 @@ type Config struct {
 	Masks            map[string][]Rect `yaml:"masks"`
 	Thresholds       Thresholds        `yaml:"thresholds"`
 	OpenAPI          string            `yaml:"openapi"`
-	Redact           []string          `yaml:"redact"`
+	Redact           []RedactEntry     `yaml:"redact"`
 	Deviations       string            `yaml:"deviations"`
 	// Gates holds the per-plane CI budget (percent of checkpoints/calls
 	// allowed to differ before the run fails). Plane keys are "pixel",
@@ -366,6 +367,96 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 	}
 	*w = WireIgnoreEntry(p)
 	return nil
+}
+
+// RedactEntry is one entry of Config.Redact. It accepts two YAML shapes,
+// the same reason WireIgnoreEntry does:
+//
+//	redact:
+//	  - password                              # bare scalar: Field=password, Mode=destroy
+//	  - field: account_number
+//	    mode: encrypt
+//	    why: "checkout total needs the real account id to assert against"
+//
+// The bare-scalar form must keep working: every existing project's
+// redact: list uses it, and upgrading retrace must not make any of them
+// suddenly require a team key to capture at all — Mode defaults to
+// "destroy" both here and in the mapping form when mode is omitted.
+type RedactEntry struct {
+	Field string `yaml:"field"`
+	Mode  string `yaml:"mode"`
+	Why   string `yaml:"why"`
+}
+
+func (e *RedactEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		e.Field = s
+		e.Mode = string(trace.ModeDestroy)
+		e.Why = ""
+		return nil
+	}
+	// Known-field enforcement by hand, matching WireIgnoreEntry's own
+	// UnmarshalYAML: node.Decode below gets a fresh decoder with
+	// KnownFields off, so a typo'd key (e.g. "whyy") would otherwise
+	// silently decode as if the field weren't there at all.
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			switch node.Content[i].Value {
+			case "field", "mode", "why":
+			default:
+				return fmt.Errorf("line %d: field %s not found in type config.RedactEntry",
+					node.Content[i].Line, node.Content[i].Value)
+			}
+		}
+	}
+	// Avoid infinite recursion into RedactEntry.UnmarshalYAML by decoding
+	// into a distinct named type with the same fields.
+	type plain RedactEntry
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	if p.Mode == "" {
+		p.Mode = string(trace.ModeDestroy)
+	}
+	switch trace.Mode(p.Mode) {
+	case trace.ModeDestroy, trace.ModeEncrypt, trace.ModeDisplay:
+	default:
+		return fmt.Errorf("redact entry %q: unknown mode %q — want destroy, encrypt, or display", p.Field, p.Mode)
+	}
+	*e = RedactEntry(p)
+	return nil
+}
+
+// RedactKeyRules converts a Config.Redact list into the trace.KeyRule slice
+// core/trace's Redactor consumes — the seam retrace/capture calls instead
+// of reading Redact directly, matching WireIgnorePaths' own role for
+// WireIgnore. A free function (not only a method) so retrace/capture can
+// convert an Options.Redact list that did not come from a loaded Config
+// through the exact same logic.
+func RedactKeyRules(entries []RedactEntry) []trace.KeyRule {
+	out := make([]trace.KeyRule, 0, len(entries))
+	for _, e := range entries {
+		if e.Field == "" {
+			continue
+		}
+		mode := trace.Mode(e.Mode)
+		if mode == "" {
+			mode = trace.ModeDestroy
+		}
+		out = append(out, trace.KeyRule{Key: e.Field, Mode: mode})
+	}
+	return out
+}
+
+// RedactKeyRules is the Config-bound convenience form of the free function
+// above.
+func (c *Config) RedactKeyRules() []trace.KeyRule {
+	return RedactKeyRules(c.Redact)
 }
 
 // WireIgnorePaths returns just the paths from Config.WireIgnore, for the
