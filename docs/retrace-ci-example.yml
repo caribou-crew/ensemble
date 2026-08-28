@@ -21,6 +21,16 @@
 # (`retrace serve`, or the ensemble dashboard's Retrace tab) diffs them
 # against whatever reference you've already accepted with `retrace ref
 # accept`.
+#
+# If your retrace.yaml has any `redact:` entry with `mode: encrypt`, set
+# RETRACE_RECORDING_KEY from a secret — same env var name whether it's read
+# by `retrace run` (capture: wraps that run's data key under it — with no
+# key resolvable, capture refuses rather than write an encrypt rule's
+# field unredacted), or by `retrace diff` / `retrace replay` / `retrace
+# export` (decrypts an `$enc:v1:…` marker back to the real value; without
+# the key they still run, but every encrypted field stays a marker, never
+# the plaintext). See the retrace-iterate skill's "Field-level encryption"
+# section and openspec/changes/retrace-recording-encryption/design.md.
 
 name: retrace
 on:
@@ -66,8 +76,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # RETRACE_RECORDING_KEY only needs to be set on steps that touch an
+      # encrypt-mode field — harmless to set on every step here, since a
+      # project with no `mode: encrypt` rule just never reads it.
       - run: retrace run --app web -- <your web test command>
+        env:
+          RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }}
       - run: retrace export --out ./report --app web --json
+        env:
+          RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

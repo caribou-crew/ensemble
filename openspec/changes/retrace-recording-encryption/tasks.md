@@ -214,7 +214,7 @@
 
 ## 10. Docs, sample config, end-to-end verification
 
-- [ ] 10.1 `sample/retrace.yaml`: add one `encrypt`-mode entry (a
+- [x] 10.1 `sample/retrace.yaml`: add one `encrypt`-mode entry (a
       plausible "account number"-shaped field, even if the sample app
       doesn't actually send one today — comment explaining it's here to
       demonstrate the capability, same spirit as the existing
@@ -228,11 +228,11 @@
       decrypted comparison → `retrace ref accept` copies the sidecar →
       `retrace rekey` rotates it → dashboard reveal shows the real value
       with the key present and stays masked without it.
-- [ ] 10.2 Add a short section to whichever doc already covers `redact:`
+- [x] 10.2 Add a short section to whichever doc already covers `redact:`
       (`retrace-iterate` skill or `docs/`) describing the three modes, the
       key env var / keyfile, and `retrace rekey` — cross-reference rather
       than duplicate the design doc's D5/D6.
-- [ ] 10.3 A CI-facing note (near the existing CI workflow template from
+- [x] 10.3 A CI-facing note (near the existing CI workflow template from
       `retrace-ci-sync`, or a new one) showing `env: {
       RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }} }` on the
       replay/diff step.

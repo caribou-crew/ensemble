@@ -120,6 +120,16 @@ hop_require:
 redact:
   - password
   - card_number
+  # `encrypt`, unlike the bare-scalar entries above, keeps the value —
+  # sealed under a team key (RETRACE_RECORDING_KEY / .retrace/recording.key,
+  # see retrace/reckey) instead of destroyed — so a checkout assertion can
+  # still compare the real account number, and CI can too, without it ever
+  # landing in a committed run in the clear. account_number is not a field
+  # this sample app sends either; it demonstrates the config shape, the
+  # same spirit as password/card_number above.
+  - field: account_number
+    mode: encrypt
+    why: "checkout needs to assert against the real account id, in CI too"
 
 gates:
   # Any wire change at all fails the run. The sample stack is deterministic

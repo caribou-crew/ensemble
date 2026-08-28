@@ -342,6 +342,47 @@ Also available: `upstream`, `proxy_host`, `proxy_port`, `wire_ignore`,
 `thresholds`, `openapi`, `redact`, `deviations`, and `preflight` / per-flow
 `setup` / `teardown` hook commands.
 
+### Field-level encryption (`redact:` with `mode: encrypt`)
+
+A bare `redact:` entry (`- password`) destroys the value at capture,
+irreversibly — the recorded body just says `[redacted]`, forever. That is
+fine for a field you never need to see again, but it also means CI cannot
+assert against it: an account number a checkout test needs to check is one
+you cannot both hide from the committed recording and read from it.
+
+`mode: encrypt` is the middle ground — the value is sealed (AES-256-GCM),
+not destroyed:
+
+```yaml
+redact:
+  - password                              # mode: destroy (the default) — gone for good
+  - field: account_number
+    mode: encrypt                         # sealed; recoverable with the team key
+    why: "checkout needs to assert against the real account id, in CI too"
+  - field: display_name
+    mode: display                         # written in the clear; dashboard masks it on screen
+```
+
+An `encrypt`-mode field is sealed with a per-run key that is itself wrapped
+under a shared **team key** — `retrace diff`, `retrace replay`, `retrace
+serve`, and the review dashboards all decrypt it back to the real value
+when that team key resolves, and show the `$enc:v1:…` marker (never the
+plaintext) when it does not. The team key comes from `RETRACE_RECORDING_KEY`
+(hex or base64) or a gitignored `.retrace/recording.key` file — the exact
+same environment variable name a GitHub Actions secret maps onto, so a
+workflow that sets one secret gets real values in CI diffs and replays too.
+
+`retrace rekey --init` writes a fresh key to `.retrace/recording.key` for a
+project that has none yet (never overwrites an existing one). Rotating an
+existing key (a leak, an offboarding, routine hygiene) is `retrace rekey
+--old <old> --new <new>` — it walks every run and reference bundle under
+`.retrace/`, rewrapping each `encryption.json` sidecar from the old key to
+the new one, and reports anything it could not rewrap rather than guessing
+which key an unrelated file belongs to.
+
+Full design and the exact marker/decrypt-on-read contract:
+`openspec/changes/retrace-recording-encryption/design.md` (D3–D6).
+
 ## When you are stuck
 
 - `retrace diff --out DIR` writes a static report that opens with `file://`.
