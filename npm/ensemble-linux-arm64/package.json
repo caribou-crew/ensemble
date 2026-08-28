@@ -1,0 +1,11 @@
+{
+  "name": "@caribou-crew/ensemble-linux-arm64",
+  "version": "0.0.1",
+  "description": "Prebuilt ensemble binary for linux/arm64. Installed automatically as an optionalDependency of @caribou-crew/ensemble — not for direct use.",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/ensemble"],
+  "scripts": {
+    "build": "true"
+  }
+}

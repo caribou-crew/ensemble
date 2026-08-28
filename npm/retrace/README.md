@@ -30,7 +30,8 @@ of [caribou-crew/ensemble](https://github.com/caribou-crew/ensemble)).
 
 ## Publishing
 
-`"private": true` is deliberate, same as every other npm package in this
-repo: it stays on until the maintainer syncs npm credentials and the
-`npm-publish` job in `.github/workflows/release.yml` is enabled. See that
-job's comment for the other half of the gate.
+Published via GitHub Actions' `publish.yml` workflow using npm's [trusted
+publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC) — no
+long-lived npm token stored in this repo. See that workflow's comments for
+the one-time per-package setup a maintainer with publish rights on
+`@caribou-crew` has to do on npmjs.com before the first release.

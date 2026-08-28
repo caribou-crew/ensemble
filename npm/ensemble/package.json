@@ -1,0 +1,29 @@
+{
+  "name": "@caribou-crew/ensemble",
+  "version": "0.0.1",
+  "description": "ensemble CLI: run a multi-service stack from one ensemble.yaml, with a live dashboard.",
+  "type": "module",
+  "bin": {
+    "ensemble": "bin/ensemble.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "true"
+  },
+  "optionalDependencies": {
+    "@caribou-crew/ensemble-darwin-arm64": "workspace:*",
+    "@caribou-crew/ensemble-darwin-x64": "workspace:*",
+    "@caribou-crew/ensemble-linux-arm64": "workspace:*",
+    "@caribou-crew/ensemble-linux-x64": "workspace:*"
+  }
+}

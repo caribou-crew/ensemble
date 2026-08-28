@@ -2,7 +2,6 @@
   "name": "@caribou-crew/retrace",
   "version": "0.0.1",
   "description": "retrace CLI: record and replay flows, diff them on pixels/wire/hops.",
-  "private": true,
   "type": "module",
   "bin": {
     "retrace": "bin/retrace.mjs"

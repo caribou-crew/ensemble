@@ -1,0 +1,115 @@
+name: publish
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version to publish (e.g. "0.0.4") — the tag v<version> must
+          already exist and its `release` workflow run must have finished
+          (goreleaser has built and drafted the GitHub release for it).
+        required: true
+
+permissions:
+  contents: write
+  # Required for npm trusted publishing (OIDC) — see the npm publish step
+  # below. No NPM_TOKEN/NODE_AUTH_TOKEN secret exists in this repo; the npm
+  # CLI exchanges this job's GitHub-issued OIDC token for a short-lived npm
+  # publish token at publish time, scoped to exactly this repo + workflow
+  # file + package. https://docs.npmjs.com/trusted-publishers/
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: v${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+
+      # npm trusted publishing needs npm CLI >= 11.5.1; the version bundled
+      # with actions/setup-node's Node lags behind, so upgrade explicitly
+      # rather than gate this workflow on whatever ships with today's LTS.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@^11.5.1
+
+      # Makes the release goreleaser already built visible — see
+      # .goreleaser.yaml's `release: draft: true`. Everything before this
+      # step only reads a tag that already exists; this is the one action
+      # in this workflow that changes something outside this run.
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      # goreleaser's own job already built and archived these; this job
+      # runs separately (own runner, no dist/), so it re-fetches the
+      # darwin/linux archives from the release just published and unpacks
+      # each binary to where scripts/prepare-npm-binary.mjs expects it:
+      # .npm-stage/<node-platform>/<binary>. Windows isn't published to npm
+      # (see npm/retrace/README.md's "Supported platforms"), so its
+      # archives are left alone.
+      - name: Stage platform binaries from the release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .npm-stage
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'ensemble_*_darwin_*.tar.gz' \
+            --pattern 'ensemble_*_linux_*.tar.gz' \
+            --pattern 'retrace_*_darwin_*.tar.gz' \
+            --pattern 'retrace_*_linux_*.tar.gz' \
+            --dir .npm-stage
+          for archive in .npm-stage/*.tar.gz; do
+            # ensemble_0.0.4_linux_amd64.tar.gz -> binary=ensemble, platform=linux-x64
+            base=$(basename "$archive" .tar.gz)
+            binary=$(echo "$base" | sed -E 's/_.*//')
+            goos_goarch=$(echo "$base" | sed -E 's/^[^_]+_[^_]+_//')
+            platform=$(echo "$goos_goarch" | sed -E 's/_/-/; s/amd64/x64/')
+            mkdir -p ".npm-stage/$platform"
+            tar xzf "$archive" -C ".npm-stage/$platform" "$binary"
+          done
+
+      # Each package below needs a ONE-TIME setup before its first release
+      # through this workflow — npm trusted publishing can only be
+      # configured for a package that already exists in the registry
+      # (https://docs.npmjs.com/trusted-publishers/), so there is no way
+      # around a first manual publish per package:
+      #
+      #   1. From a machine with npm CLI >= 11.5.1 and publish rights on
+      #      the @caribou-crew org: `npm login`, then `npm publish
+      #      --access public` from each npm/<name> and npm/<name>-<platform>
+      #      directory once, to reserve the name.
+      #   2. On npmjs.com, open that package's Settings -> Trusted
+      #      Publisher -> add GitHub Actions: Organization/user
+      #      "caribou-crew", Repository "ensemble", Workflow filename
+      #      "publish.yml" (just the filename, not the full path), Allowed
+      #      actions "npm publish".
+      #   3. Repeat for all 10 packages (npm/ensemble + 4 platforms,
+      #      npm/retrace + 4 platforms).
+      #
+      # After that, this job needs no npm credentials at all — the
+      # `id-token: write` permission above is the entire auth story, and
+      # npm additionally attaches a signed provenance attestation to every
+      # publish automatically.
+      - name: Pack npm packages
+        run: |
+          set -euo pipefail
+          export RELEASE_VERSION="${{ inputs.version }}"
+          BINARY=ensemble node scripts/prepare-npm-binary.mjs
+          BINARY=retrace node scripts/prepare-npm-binary.mjs
+
+      - name: Publish npm packages
+        run: |
+          set -euo pipefail
+          for pkg in npm/ensemble-darwin-arm64 npm/ensemble-darwin-x64 \
+                     npm/ensemble-linux-arm64 npm/ensemble-linux-x64 npm/ensemble \
+                     npm/retrace-darwin-arm64 npm/retrace-darwin-x64 \
+                     npm/retrace-linux-arm64 npm/retrace-linux-x64 npm/retrace; do
+            npm publish --access public "$pkg"
+          done
