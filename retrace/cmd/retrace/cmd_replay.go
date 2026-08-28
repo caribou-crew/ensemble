@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,17 +147,19 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 
 	// runs.Paths.MissesPath, at the one call site that knows the run
 	// directory. There is exactly one name for that file.
-	srv := replay.NewServer(bundle, opts, p.MissesPath)
-	ln, err := net.Listen("tcp", *listen)
+	replayLns, err := bindReplayListeners(cfg.Listeners, *listen, r.Dir, cfg.Dir, opts, p.MissesPath)
 	if err != nil {
-		return fail(stderr, "replay: cannot listen on %s: %v", *listen, err)
+		return fail(stderr, "replay: %v", err)
 	}
-	httpSrv := &http.Server{Handler: srv}
-	go httpSrv.Serve(ln)
+	for _, rl := range replayLns {
+		go rl.httpSrv.Serve(rl.ln)
+	}
 
 	markerLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		httpSrv.Close()
+		for _, rl := range replayLns {
+			rl.httpSrv.Close()
+		}
 		return fail(stderr, "replay: cannot open the marker door: %v", err)
 	}
 	markerSrv := &http.Server{Handler: capture.NewMarkerDoor(p, time.Now)}
@@ -165,16 +168,28 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), replayShutdownTimeout)
 		defer cancel()
-		_ = httpSrv.Shutdown(ctx)
+		for _, rl := range replayLns {
+			_ = rl.httpSrv.Shutdown(ctx)
+		}
 		_ = markerSrv.Shutdown(ctx)
 	}()
 
-	// The same three variables `retrace run` exports, so an adapter cannot
-	// tell a replay from a recording and needs no second code path.
+	// The same variables `retrace run` exports, so an adapter cannot tell a
+	// replay from a recording and needs no second code path. Every
+	// listener's own RETRACE_PROXY_URL_<NAME> is added alongside — task
+	// 5.2 — except when cfg.Listeners is empty (no standalone `listeners:`
+	// or `upstream:` in this config, e.g. an `entry:`-mode config replayed
+	// on its own): that config never had a listener name to suffix, so
+	// only the bare var is exported, exactly as before this change.
 	env := []string{
 		"RETRACE_RUN_DIR=" + p.RunDir,
-		"RETRACE_PROXY_URL=http://" + ln.Addr().String(),
+		"RETRACE_PROXY_URL=http://" + replayLns[0].ln.Addr().String(),
 		"RETRACE_MARKER_URL=http://" + markerLn.Addr().String(),
+	}
+	for _, rl := range replayLns {
+		if rl.name != "" {
+			env = append(env, "RETRACE_PROXY_URL_"+(config.ListenerEntry{Name: rl.name}).EnvSuffix()+"=http://"+rl.ln.Addr().String())
+		}
 	}
 
 	// Under --json stdout carries the report ALONE, so the test runner's
@@ -196,16 +211,20 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		testExit = ee.ExitCode()
 	}
 
-	misses := srv.Misses()
-	if err := srv.MissLogErr(); err != nil {
-		// The count and the report are already correct — the in-memory
-		// record is authoritative — but the durable file a CI job reads
-		// afterwards is not, and that must not pass silently.
-		fmt.Fprintf(stderr, "retrace: replay: could not append to %s (%v) — the miss report below is complete, the file is not\n", p.MissesPath, err)
+	var misses []replay.Miss
+	var served int
+	var unused []replay.Key
+	for _, rl := range replayLns {
+		misses = append(misses, rl.srv.Misses()...)
+		if err := rl.srv.MissLogErr(); err != nil {
+			// The count and the report are already correct — the in-memory
+			// record is authoritative — but the durable file a CI job reads
+			// afterwards is not, and that must not pass silently.
+			fmt.Fprintf(stderr, "retrace: replay: could not append to %s (%v) — the miss report below is complete, the file is not\n", p.MissesPath, err)
+		}
+		served += rl.srv.ServedCount()
+		unused = append(unused, rl.srv.UnusedExchanges()...)
 	}
-
-	served := srv.ServedCount()
-	unused := srv.UnusedExchanges()
 
 	if *asJSON {
 		if err := writeJSON(stdout, replayReport{
@@ -351,6 +370,99 @@ func printCandidates(w io.Writer, r refs.Reference) {
 		}
 		fmt.Fprintf(w, "  %s: %s%s\n", c.RunID, c.Reason, detail)
 	}
+}
+
+// replayListener is one bound replay port: its listener name (empty for
+// the no-`listeners:`-configured case), the socket, the *http.Server
+// wrapping it, and the *replay.Server answering it — each with its OWN
+// *replay.Bundle (see bindReplayListeners) so two listeners under
+// concurrent load never mutate one Bundle's `used` counters from two
+// unsynchronized goroutines.
+type replayListener struct {
+	name    string
+	ln      net.Listener
+	httpSrv *http.Server
+	srv     *replay.Server
+}
+
+// bindReplayListeners opens one loopback socket per configured listener and
+// wires each to its own replay.Server. entries empty means this config
+// never declared `listeners:` (nor the `upstream:` sugar that synthesizes
+// one) — an `entry:`-mode config replayed standalone, for instance — and
+// today's exact single-listener, unfiltered behavior is preserved: one
+// server bound at listenFlag, answering from every recorded exchange
+// regardless of Target.
+//
+// Every entry loads its OWN Bundle from bundleDir rather than sharing one:
+// replay.Bundle.Match mutates the bundle's `used` counters and is
+// serialised only by the ONE Server that owns it (see match.go's doc
+// comment), so two listeners sharing a Bundle under concurrent traffic —
+// exactly what an app calling two backends in parallel produces — would
+// race on that counter. A bundle is a handful of exchanges; loading it
+// twice is cheap, and it is the only way each listener's Server can hold
+// its own lock over its own state.
+//
+// On any bind failure every socket and server already opened is closed
+// before returning, so a caller never has to reason about a partially
+// bound set of listeners.
+func bindReplayListeners(entries []config.ListenerEntry, listenFlag, bundleDir, cfgDir string, opts replay.Options, missesPath string) ([]replayListener, error) {
+	unfiltered := len(entries) == 0
+	if unfiltered {
+		entries = []config.ListenerEntry{{}}
+	}
+	var out []replayListener
+	closeAll := func() {
+		for _, rl := range out {
+			rl.httpSrv.Close()
+		}
+	}
+	for i, l := range entries {
+		addr := listenFlag
+		if i > 0 {
+			addr = defaultReplayHost(l.Host) + ":" + replayListenPort(l.Port)
+		}
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("cannot listen on %s: %w", addr, err)
+		}
+		b, err := replay.LoadBundle(bundleDir, cfgDir)
+		if err != nil {
+			ln.Close()
+			closeAll()
+			return nil, err
+		}
+		o := opts
+		if !unfiltered {
+			o.TargetFilter = l.Name
+		}
+		srv := replay.NewServer(b, o, missesPath)
+		out = append(out, replayListener{
+			name:    l.Name,
+			ln:      ln,
+			httpSrv: &http.Server{Handler: srv},
+			srv:     srv,
+		})
+	}
+	return out, nil
+}
+
+// replayListenPort mirrors retrace/capture's listenPort: zero means an
+// OS-chosen ephemeral port.
+func replayListenPort(p int) string {
+	if p == 0 {
+		return "0"
+	}
+	return strconv.Itoa(p)
+}
+
+// defaultReplayHost mirrors retrace/capture's defaultHost: empty means
+// loopback, never every interface.
+func defaultReplayHost(h string) string {
+	if h == "" {
+		return "127.0.0.1"
+	}
+	return h
 }
 
 // replayOptions assembles what the matcher is allowed to loosen, from the

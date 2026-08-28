@@ -342,6 +342,42 @@ Also available: `upstream`, `proxy_host`, `proxy_port`, `wire_ignore`,
 `thresholds`, `openapi`, `redact`, `deviations`, and `preflight` / per-flow
 `setup` / `teardown` hook commands.
 
+### Multiple upstreams (`listeners:`)
+
+A bare `upstream:` gives you one proxied backend. When the app under test
+calls more than one service directly — an OAuth service alongside the API
+you actually own, say — `listeners:` binds one proxy port per backend
+instead of hand-rolling a mock for every service besides the one you are
+testing:
+
+```yaml
+app: web
+listeners:
+  - name: card-api
+    upstream: http://localhost:4000
+  - name: oauth
+    upstream: http://localhost:4050
+```
+
+Each entry gets its own `RETRACE_PROXY_URL_<NAME>` (upper-cased, non-
+alphanumeric runs collapsed to `_` — `card-api` becomes
+`RETRACE_PROXY_URL_CARD_API`), so point each client at its own listener.
+Every recorded hop is tagged with the listener it went through, and
+`retrace replay` keeps that separation: one listener's recorded traffic
+never answers another's request, even when both listeners happen to record
+the same path.
+
+`listeners:` is **standalone-only** — it is a way of describing more than
+one backend a bare `upstream:` cannot name. It is mutually exclusive with
+`entry:`, which already gets multi-service capture for free from
+ensemble's own proxy mesh once you are attached to a service there; write
+one or the other, never both. A bare `upstream:` (no `listeners:` at all)
+still works exactly as before — it is sugar for a single listener named
+`client-edge`, which is why `RETRACE_PROXY_URL` keeps working unchanged
+for every project that has not adopted `listeners:`.
+
+Full design: `openspec/changes/retrace-multi-listener/design.md`.
+
 ### Field-level encryption (`redact:` with `mode: encrypt`)
 
 A bare `redact:` entry (`- password`) destroys the value at capture,

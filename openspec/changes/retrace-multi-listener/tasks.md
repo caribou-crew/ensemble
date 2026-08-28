@@ -108,7 +108,7 @@
 
 ## 5. `retrace/cmd/retrace`: `cmd_replay.go` binds N ports
 
-- [ ] 5.1 Replace the single `net.Listen(*listen)` + single
+- [x] 5.1 Replace the single `net.Listen(*listen)` + single
       `replay.NewServer(bundle, opts, missesPath)` with a loop over
       `cfg.Listeners` (same config `retrace diff`/`retrace run` already
       load): for the FIRST listener, honor `--listen` as its bind address
@@ -117,17 +117,17 @@
       ephemeral, same convention as `listenPort`/`defaultHost` in
       `retrace/capture`). Each gets its own filtered `replay.Server`
       (task 4.2) scoped to that listener's name.
-- [ ] 5.2 Env handed to the test command gets `RETRACE_PROXY_URL_<NAME>`
+- [x] 5.2 Env handed to the test command gets `RETRACE_PROXY_URL_<NAME>`
       per listener plus `RETRACE_PROXY_URL` for the first, mirroring
       `Session.Env()` (task 2.5) — same `ListenerEntry.EnvSuffix()` helper,
       no second implementation of the name transform.
-- [ ] 5.3 Served/unused/miss counts and the `--json` report aggregate
+- [x] 5.3 Served/unused/miss counts and the `--json` report aggregate
       across all listeners' servers (sum served, concatenate
       unused/misses) — a miss on ANY listener still fails the whole replay
       (`exitGate`), matching today's "any miss fails the run" rule.
-- [ ] 5.4 Shutdown (the existing `defer` block) closes every listener's
+- [x] 5.4 Shutdown (the existing `defer` block) closes every listener's
       `http.Server`, not just one.
-- [ ] 5.5 Tests: replaying a two-listener reference bundle serves each
+- [x] 5.5 Tests: replaying a two-listener reference bundle serves each
       listener's own recorded calls on its own port and misses a call sent
       to the wrong listener's port; a single-listener config (sugar or
       explicit) replays identically to today, including `--listen`
@@ -135,7 +135,7 @@
 
 ## 6. Docs and end-to-end verification
 
-- [ ] 6.1 Add a `listeners:` section to whichever doc already covers
+- [x] 6.1 Add a `listeners:` section to whichever doc already covers
       `upstream:`/`entry:` config (the `retrace-iterate` skill or
       `docs/`), with the strawman-shaped example from the feature request
       (OAuth + Card API) and an explicit note that `listeners:` is
