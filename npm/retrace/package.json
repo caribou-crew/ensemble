@@ -2,6 +2,10 @@
   "name": "@caribou-crew/retrace",
   "version": "0.0.1",
   "description": "retrace CLI: record and replay flows, diff them on pixels/wire/hops.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
   "type": "module",
   "bin": {
     "retrace": "bin/retrace.mjs"

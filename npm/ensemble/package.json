@@ -2,6 +2,10 @@
   "name": "@caribou-crew/ensemble",
   "version": "0.0.1",
   "description": "ensemble CLI: run a multi-service stack from one ensemble.yaml, with a live dashboard.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
   "type": "module",
   "bin": {
     "ensemble": "bin/ensemble.mjs"

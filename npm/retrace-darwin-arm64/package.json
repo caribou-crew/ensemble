@@ -2,6 +2,10 @@
   "name": "@caribou-crew/retrace-darwin-arm64",
   "version": "0.0.1",
   "description": "Prebuilt retrace binary for darwin/arm64. Installed automatically as an optionalDependency of @caribou-crew/retrace — not for direct use.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
   "os": [
     "darwin"
   ],

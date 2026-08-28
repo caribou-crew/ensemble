@@ -2,6 +2,10 @@
   "name": "@caribou-crew/ensemble-linux-x64",
   "version": "0.0.1",
   "description": "Prebuilt ensemble binary for linux/x64. Installed automatically as an optionalDependency of @caribou-crew/ensemble — not for direct use.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
   "os": ["linux"],
   "cpu": ["x64"],
   "files": ["bin/ensemble"],
