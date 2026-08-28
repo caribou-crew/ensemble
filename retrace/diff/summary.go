@@ -20,6 +20,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
+	"github.com/caribou-crew/ensemble/retrace/reckey"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -662,6 +663,13 @@ func Build(in BuildInput) (Summary, error) {
 		s.Checkpoints = append(s.Checkpoints, v)
 	}
 
+	// dataKeyA/dataKeyB: each side's own data key, if any encrypt-mode
+	// field was ever captured on that side and a team key resolves. Nil on
+	// either count — decryptHops is then a no-op and comparisons see
+	// whatever marker is on disk, same as today.
+	dataKeyA, _ := reckey.ResolveDataKey(runs.Paths{RunDir: in.A.Dir}, in.Cfg.Dir)
+	dataKeyB, _ := reckey.ResolveDataKey(runs.Paths{RunDir: in.B.Dir}, in.Cfg.Dir)
+
 	// --- wire, from each side's client-edge hops
 	hopsA, _, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
 	if err != nil {
@@ -671,6 +679,8 @@ func Build(in BuildInput) (Summary, error) {
 	if err != nil {
 		return Summary{}, fmt.Errorf("diff: Build: reading %s wire.jsonl: %w", in.B.Dir, err)
 	}
+	hopsA = decryptHops(hopsA, dataKeyA)
+	hopsB = decryptHops(hopsB, dataKeyB)
 	s.Wire = DiffWire(hopsA, hopsB, in.Options)
 	s.Sections = BuildSections(s.Wire.Paired, s.Wire.Groups)
 
@@ -684,6 +694,8 @@ func Build(in BuildInput) (Summary, error) {
 	if err != nil {
 		return Summary{}, fmt.Errorf("diff: Build: reading %s hops.jsonl: %w", in.B.Dir, err)
 	}
+	chainA = decryptHops(chainA, dataKeyA)
+	chainB = decryptHops(chainB, dataKeyB)
 	if chainA != nil || chainB != nil {
 		// NoCollapse is deliberately not set: folding is on by default, and
 		// the default is what every real run gets.

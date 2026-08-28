@@ -114,13 +114,13 @@
 
 ## 6. Decrypt-on-read: diff, replay, serve
 
-- [ ] 6.1 Add a small shared helper (`retrace/reckey` or a new tiny
+- [x] 6.1 Add a small shared helper (`retrace/reckey` or a new tiny
       `retrace/reckey/decrypt.go`): `ResolveDataKey(p runs.Paths, dir
       string) ([]byte, error)` — `ReadEncryption`, if nil return `(nil,
       nil)` (nothing to decrypt for this run); else `LoadTeamKey` +
       `UnwrapDataKey`. Every one of 6.2–6.4 calls this ONE function rather
       than re-deriving the key-resolution chain three times.
-- [ ] 6.2 `retrace/diff`'s wire field comparison (`wire.go`): before
+- [x] 6.2 `retrace/diff`'s wire field comparison (`wire.go`): before
       comparing two paired field values, if either is `trace.IsEncrypted`,
       resolve that side's data key (A's run dir, B's run dir — they can
       differ) and decrypt for the comparison; a field that fails to
