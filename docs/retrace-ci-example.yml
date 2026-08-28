@@ -72,6 +72,29 @@ jobs:
           path: .retrace/runs
           retention-days: 7
 
+  retrace-ios-maestro:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ... set up your iOS build + Maestro CLI here ...
+      - run: retrace run --app ios -- maestro test flows/checkout.yaml
+      # Maestro has no in-process hook to attach evidence automatically —
+      # unlike Playwright's reporter below, this is an explicit step. The
+      # env vars (RETRACE_RUN_DIR / RETRACE_STRICT) are the same handshake
+      # `retrace run` already set for the `maestro test` step above; this
+      # step runs AFTER it, once Maestro has finished writing its own
+      # recording/screenshots.
+      - run: |
+          node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs attach video ~/.maestro/tests/latest/recording.mp4
+          node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs attach report ~/.maestro/tests/latest/
+      - run: retrace export --out ./report --app ios --json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrace-runs-ios-${{ github.sha }}
+          path: .retrace/runs
+          retention-days: 7
+
   retrace-web:
     runs-on: ubuntu-latest
     steps:
@@ -79,6 +102,18 @@ jobs:
       # RETRACE_RECORDING_KEY only needs to be set on steps that touch an
       # encrypt-mode field — harmless to set on every step here, since a
       # project with no `mode: encrypt` rule just never reads it.
+      #
+      # Register the video/report reporter in YOUR playwright.config.ts:
+      #   import RetraceEvidenceReporter from '@caribou-crew/retrace-playwright/reporter';
+      #   export default defineConfig({
+      #     use: { video: 'on' },
+      #     reporter: [['html', { outputFolder: 'playwright-report' }], [RetraceEvidenceReporter]],
+      #   });
+      # No extra CI step needed for Playwright — every test's video (if
+      # `use: { video: 'on' }`) and the HTML report (once the html reporter
+      # above finishes) are copied into this run's videos/ and report/
+      # automatically, and `retrace sync` already carries a run's whole
+      # directory — see docs/retrace-ci-sync.md.
       - run: retrace run --app web -- <your web test command>
         env:
           RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }}

@@ -33,6 +33,30 @@ Re-running `retrace sync` is safe and cheap: a run already merged onto
 local disk (by run-id directory) is left untouched, not re-downloaded on
 top of.
 
+## Video and test-report evidence
+
+A run directory may also carry a `videos/` subdirectory (one file per
+test/checkpoint, `.webm` or `.mp4`) and a `report/` subdirectory (the test
+runner's own HTML report — Playwright's `html` reporter output, for
+example). `retrace sync` needs no flag for this: it already copies the
+*entire* directory a `manifest.json` sits in (see `copyOneRun` in
+`retrace/sync/github.go`), so anything placed alongside `manifest.json`,
+`wire.jsonl`, and `shots/` rides along automatically.
+
+- **Playwright** projects get this for free by registering
+  `@caribou-crew/retrace-playwright/reporter` in `playwright.config.ts` —
+  no CI script changes. See `docs/retrace-ci-example.yml`'s `retrace-web`
+  job.
+- **Maestro** projects add one explicit CI step after `maestro test`
+  finishes, using the same `retrace-maestro` bin the `group` marker command
+  already uses: `retrace-maestro attach video <path>` / `retrace-maestro
+  attach report <path>`. See `docs/retrace-ci-example.yml`'s
+  `retrace-ios-maestro` job.
+
+The ensemble dashboard's Retrace tab shows the candidate run's video
+(playable inline) and a link to the full report, when present, in the
+flow detail pane's "evidence" section.
+
 ## The CLI-first agent recipe
 
 The retrace CLI already emits structured JSON an agent can read directly
