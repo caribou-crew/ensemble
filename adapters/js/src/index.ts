@@ -132,6 +132,55 @@ export async function recordDevice(
   }
 }
 
+export type EvidenceKind = 'video' | 'report';
+
+// copyDirContents copies every entry of src directly INTO dest (dest
+// becomes what src's contents were), not as a nested dest/<basename(src)>
+// subdirectory — WriteReport (retrace/serve) serves report/index.html, so
+// index.html must land at report/index.html, not report/<name>/index.html.
+async function copyDirContents(src: string, dest: string): Promise<void> {
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  await Promise.all(
+    entries.map((e) => fs.cp(path.join(src, e.name), path.join(dest, e.name), { recursive: true })),
+  );
+}
+
+// attachEvidence copies a finished test-runner artifact (a video file, or a
+// whole HTML report directory) into the active run's videos/ or report/
+// subdirectory. Unlike checkpoint() and recordDevice(), a Manifest field
+// never carries this: the artifact is not ready until AFTER `retrace run`
+// exits (a video isn't flushed until test teardown; an HTML report isn't
+// written until the test command's own reporter finishes), so nothing here
+// can be part of the ONE write WriteManifest already owns. Discovery is by
+// directory listing instead — see the design doc's D1.
+//
+// File-only and silent outside a run, same rule as checkpoint(): there is
+// no HTTP marker equivalent for "attach this file" (retrace/capture/markers.go
+// has no such door), so a markerUrl-only handshake cannot satisfy this
+// either, and strict mode must still fail loudly when NEITHER is set.
+export async function attachEvidence(
+  kind: EvidenceKind,
+  srcPath: string,
+  name?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const h = requireHandshake(env);
+  if (!h.runDir) {
+    if (h.strict) throw new Error(MISSING_HANDSHAKE_MESSAGE);
+    return; // no-op outside a run
+  }
+
+  if (kind === 'video') {
+    const dir = path.join(h.runDir, 'videos');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.copyFile(srcPath, path.join(dir, name ?? path.basename(srcPath)));
+    return;
+  }
+
+  await copyDirContents(srcPath, path.join(h.runDir, 'report'));
+}
+
 interface GroupRecord {
   phase: 'start' | 'end';
   name?: string;
