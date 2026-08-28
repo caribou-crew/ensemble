@@ -2,6 +2,7 @@
   "name": "@caribou-crew/ensemble-linux-arm64",
   "version": "0.0.1",
   "description": "Prebuilt ensemble binary for linux/arm64. Installed automatically as an optionalDependency of @caribou-crew/ensemble — not for direct use.",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/caribou-crew/ensemble.git"

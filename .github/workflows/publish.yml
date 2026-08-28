@@ -111,6 +111,16 @@ jobs:
                      npm/ensemble-linux-arm64 npm/ensemble-linux-x64 npm/ensemble \
                      npm/retrace-darwin-arm64 npm/retrace-darwin-x64 \
                      npm/retrace-linux-arm64 npm/retrace-linux-x64 npm/retrace; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            # Re-running this workflow (e.g. after fixing one package's
+            # trusted-publisher setup) must not fail on the packages a prior
+            # run already published — npm rejects re-publishing an existing
+            # version, and without this check that rejection would abort the
+            # whole loop before it reached the packages still pending.
+            if npm view "$name@${{ inputs.version }}" version >/dev/null 2>&1; then
+              echo "$name@${{ inputs.version }} already published, skipping"
+              continue
+            fi
             # The leading ./ matters: without it, npm parses "npm/ensemble"
             # as GitHub owner/repo shorthand instead of a local path, and
             # tries to git-clone github.com/npm/ensemble.
