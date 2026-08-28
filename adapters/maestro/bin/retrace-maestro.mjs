@@ -14,7 +14,7 @@
 // imports this file) its types.
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { MISSING_HANDSHAKE_MESSAGE, handshake, validateName } from '@caribou-crew/retrace-js';
+import { MISSING_HANDSHAKE_MESSAGE, attachEvidence, handshake, validateName } from '@caribou-crew/retrace-js';
 
 function parseArgv(argv) {
   if (argv[0] !== 'group') {
@@ -61,12 +61,34 @@ export function markerRequest(argv, env) {
     : { url: joinMarkerPath(h.markerUrl, '/group'), body: JSON.stringify({ name: parsed.name }) };
 }
 
+// runAttach handles `attach video <path>` / `attach report <path>` — unlike
+// `group`, there is no marker POST: attachEvidence copies the video file or
+// report directory straight into the active run's videos/ or report/
+// subdirectory (see adapters/js/src/index.ts), which `retrace sync` then
+// carries to a developer's machine for free, same as the Playwright reporter.
+async function runAttach(argv, env) {
+  const kind = argv[1];
+  if (kind !== 'video' && kind !== 'report') {
+    throw new Error(`retrace-maestro: unknown attach kind ${JSON.stringify(kind ?? '')}; expected "video" or "report"`);
+  }
+  const srcPath = argv[2];
+  if (!srcPath) {
+    throw new Error(`retrace-maestro: "attach ${kind}" requires a source path (e.g. \`attach ${kind} ./${kind === 'video' ? 'recording.mp4' : 'report'}\`)`);
+  }
+  await attachEvidence(kind, srcPath, undefined, env);
+}
+
 async function main() {
   // Maestro's runScript passes a single env map, not real argv, hence
   // ARGS — but process.argv is honoured too, for `node bin/retrace-maestro.mjs
   // group checkout` direct invocation (and for testing this file itself).
   const direct = process.argv.slice(2);
   const argv = direct.length > 0 ? direct : (process.env.ARGS ?? '').trim().split(/\s+/).filter(Boolean);
+
+  if (argv[0] === 'attach') {
+    await runAttach(argv, process.env);
+    return;
+  }
 
   const req = markerRequest(argv, process.env);
   if (!req) return; // no active run, RETRACE_STRICT is not set

@@ -116,4 +116,50 @@ describe('bin/retrace-maestro.mjs as an executed process', () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+
+  it("attaches a video into the active run's videos/ directory", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-maestro-run-'));
+    const videoSrcDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-maestro-video-'));
+    try {
+      const video = path.join(videoSrcDir, 'recording.mp4');
+      await fs.writeFile(video, 'fake mp4 bytes');
+
+      const res = await run(BIN_PATH, ['attach', 'video', video], { RETRACE_RUN_DIR: runDir });
+      expect(res.code, `stderr: ${res.err}`).toBe(0);
+
+      const written = await fs.readFile(path.join(runDir, 'videos', 'recording.mp4'), 'utf8');
+      expect(written).toBe('fake mp4 bytes');
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true });
+      await fs.rm(videoSrcDir, { recursive: true, force: true });
+    }
+  });
+
+  it("attaches a report directory into the active run's report/ directory", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-maestro-run-'));
+    const reportSrcDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-maestro-report-'));
+    try {
+      await fs.writeFile(path.join(reportSrcDir, 'commands.json'), '[]');
+
+      const res = await run(BIN_PATH, ['attach', 'report', reportSrcDir], { RETRACE_RUN_DIR: runDir });
+      expect(res.code, `stderr: ${res.err}`).toBe(0);
+
+      const written = await fs.readFile(path.join(runDir, 'report', 'commands.json'), 'utf8');
+      expect(written).toBe('[]');
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true });
+      await fs.rm(reportSrcDir, { recursive: true, force: true });
+    }
+  });
+
+  it('exits non-zero for an unknown attach kind', async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), 'retrace-maestro-run-'));
+    try {
+      const res = await run(BIN_PATH, ['attach', 'screenshot', '/tmp/whatever'], { RETRACE_RUN_DIR: runDir });
+      expect(res.code).toBe(1);
+      expect(res.err).toMatch(/unknown attach kind/);
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true });
+    }
+  });
 });
