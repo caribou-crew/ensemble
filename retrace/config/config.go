@@ -94,7 +94,20 @@ type Config struct {
 	// configured port already held by another process fails the run
 	// immediately, naming the port — retrace never silently falls back
 	// to a different one.
-	ProxyPort  int               `yaml:"proxy_port"`
+	ProxyPort int `yaml:"proxy_port"`
+	// Listeners lets a standalone config (no entry:) proxy MORE than one
+	// upstream in one retrace run — an app that calls, say, an OAuth
+	// service and a separate API needs both proxied to be captured at
+	// all. Empty is the overwhelmingly common case: applyDefaults
+	// synthesizes a single entry from Upstream/ProxyHost/ProxyPort named
+	// "client-edge" — the exact name StartStandalone has always used for
+	// its one listener — so a config that never touches this key behaves
+	// byte-for-byte as it always has, including every existing recorded
+	// Hop.To value. Mutually exclusive with both Entry (entry: mode
+	// already captures every service ensemble's proxy mesh sees from one
+	// attach point) and the bare Upstream/ProxyHost/ProxyPort fields
+	// (one config, one form) — see validateListeners.
+	Listeners  []ListenerEntry   `yaml:"listeners"`
 	WireIgnore []WireIgnoreEntry `yaml:"wire_ignore"`
 	WireRules  []rules.Raw       `yaml:"wire_rules"`
 	// DefaultWireRules switches the built-in header tolerances (see
@@ -381,6 +394,88 @@ func (w *WireIgnoreEntry) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// ListenerEntry is one entry of Config.Listeners: a named proxy listener
+// and the upstream it forwards to.
+//
+//	listeners:
+//	  - name: edge
+//	    upstream: http://localhost:4000
+//	  - name: auth
+//	    upstream: http://localhost:4050
+//	    port: 4850
+//
+// Unlike WireIgnoreEntry/RedactEntry there is no bare-scalar form — a
+// listener needs a name AND an upstream, so there is no single value that
+// could stand in for the whole entry. Host/Port are optional per entry,
+// same meaning and same defaults (defaultHost/listenPort in
+// retrace/capture) as the top-level ProxyHost/ProxyPort fields they
+// replace once listeners: is in use.
+type ListenerEntry struct {
+	Name     string `yaml:"name"`
+	Upstream string `yaml:"upstream"`
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+}
+
+// EnvSuffix converts Name into the suffix retrace/capture and cmd_replay.go
+// both append to RETRACE_PROXY_URL_ (e.g. "card-api" -> "CARD_API"). It is
+// the ONE place this transform lives — both callers reuse it rather than
+// each rolling their own, which is how two slightly different sanitizers
+// for the same name would otherwise happen.
+func (l ListenerEntry) EnvSuffix() string {
+	var b strings.Builder
+	prevUnderscore := true // leading separators are trimmed, same as trailing
+	for _, r := range l.Name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+			prevUnderscore = false
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevUnderscore = false
+		default:
+			if !prevUnderscore {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+		}
+	}
+	return strings.TrimSuffix(b.String(), "_")
+}
+
+// validateListeners enforces Listeners' invariants on the RAW decoded
+// config, BEFORE applyDefaults' sugar synthesis runs — checking after
+// synthesis would see applyDefaults' own one-entry Listeners slice
+// alongside a populated Entry/Upstream and wrongly reject the extremely
+// common entry: + upstream: fallback pattern (see sample/retrace.yaml) as
+// though the user had written listeners: themselves.
+func validateListeners(c *Config) error {
+	if len(c.Listeners) == 0 {
+		return nil
+	}
+	if c.Entry != "" {
+		return fmt.Errorf("listeners: and entry: %q cannot both be set — entry: mode already captures every service ensemble's proxy mesh sees from one attach point and has no use for a second, standalone-only listener list", c.Entry)
+	}
+	if c.Upstream != "" || c.ProxyHost != "" || c.ProxyPort != 0 {
+		return fmt.Errorf("listeners: and upstream:/proxy_host:/proxy_port: cannot both be set — pick one form")
+	}
+	seen := make(map[string]bool, len(c.Listeners))
+	for i, l := range c.Listeners {
+		name := strings.TrimSpace(l.Name)
+		if name == "" {
+			return fmt.Errorf("listeners[%d]: name is required", i)
+		}
+		if seen[name] {
+			return fmt.Errorf("listeners[%d]: duplicate listener name %q", i, name)
+		}
+		seen[name] = true
+		if l.Upstream == "" {
+			return fmt.Errorf("listeners[%d] (%s): upstream is required", i, name)
+		}
+	}
+	return nil
+}
+
 // RedactEntry is one entry of Config.Redact. It accepts two YAML shapes,
 // the same reason WireIgnoreEntry does:
 //
@@ -607,6 +702,9 @@ func Load(path string) (*Config, error) {
 	}
 	c.Dir = filepath.Dir(path)
 	c.Loaded = true
+	if err := validateListeners(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	applyDefaults(&c)
 	if err := validateThresholds(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -730,6 +828,18 @@ func Discover(cwd string) (*Config, error) {
 }
 
 func applyDefaults(c *Config) {
+	// Sugar: a bare upstream:/proxy_host:/proxy_port: config (every config
+	// that exists today) becomes a single-entry Listeners list named
+	// "client-edge" — the literal name StartStandalone has always used for
+	// its one listener — so every existing recording's Hop.To value, and
+	// every committed .retrace-ref/ bundle built from one, is unaffected.
+	// validateListeners already refused Listeners set alongside Upstream,
+	// so len(c.Listeners) == 0 here is the only case this can fire in.
+	if len(c.Listeners) == 0 && c.Upstream != "" {
+		c.Listeners = []ListenerEntry{{
+			Name: "client-edge", Upstream: c.Upstream, Host: c.ProxyHost, Port: c.ProxyPort,
+		}}
+	}
 	if c.Thresholds.Gate == 0 {
 		c.Thresholds.Gate = DefaultGate
 	}
