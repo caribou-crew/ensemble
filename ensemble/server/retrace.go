@@ -72,6 +72,30 @@ func (s *server) handleRetraceShot(w http.ResponseWriter, r *http.Request) {
 	serve.WriteShot(w, d, app, flow, r.PathValue("side"), r.PathValue("name"))
 }
 
+func (s *server) handleRetraceEvidence(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteEvidence(w, d, app, flow)
+}
+
+func (s *server) handleRetraceVideo(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteVideo(w, r, d, app, flow, r.PathValue("name"))
+}
+
+func (s *server) handleRetraceReport(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteReport(w, r, d, app, flow)
+}
+
 func (s *server) handleRetraceSync(w http.ResponseWriter, r *http.Request) {
 	if s.Cfg.Retrace == nil {
 		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")

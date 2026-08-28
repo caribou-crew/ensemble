@@ -231,6 +231,111 @@ func TestRetraceShotRoute(t *testing.T) {
 	}
 }
 
+func writeRetraceEvidenceFixture(t *testing.T, p runs.Paths) {
+	t.Helper()
+	videos := filepath.Join(p.RunDir, "videos")
+	if err := os.MkdirAll(videos, 0o755); err != nil {
+		t.Fatalf("mkdir videos: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(videos, "home.webm"), []byte("fake webm"), 0o644); err != nil {
+		t.Fatalf("writing fixture video: %v", err)
+	}
+	report := filepath.Join(p.RunDir, "report")
+	if err := os.MkdirAll(report, 0o755); err != nil {
+		t.Fatalf("mkdir report: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(report, "index.html"), []byte("<html>report</html>"), 0o644); err != nil {
+		t.Fatalf("writing fixture report: %v", err)
+	}
+}
+
+func TestRetraceEvidenceRoute(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{})
+	p, err := runs.PathsFor(runs.RunsRoot(cwd), "web", "home", "20260821T101000Z-bbbbbbb")
+	if err != nil {
+		t.Fatalf("PathsFor: %v", err)
+	}
+	writeRetraceEvidenceFixture(t, p)
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/evidence/web/home")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, got)
+	}
+	videos, ok := got["videos"].([]any)
+	if !ok || len(videos) != 1 || videos[0] != "home.webm" {
+		t.Fatalf("videos = %v", got["videos"])
+	}
+	if got["hasReport"] != true {
+		t.Fatalf("hasReport = %v, want true", got["hasReport"])
+	}
+}
+
+func TestRetraceVideoRoute(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{})
+	p, err := runs.PathsFor(runs.RunsRoot(cwd), "web", "home", "20260821T101000Z-bbbbbbb")
+	if err != nil {
+		t.Fatalf("PathsFor: %v", err)
+	}
+	writeRetraceEvidenceFixture(t, p)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/videos/web/home/home.webm")
+	if err != nil {
+		t.Fatalf("GET video: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if string(body) != "fake webm" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestRetraceReportRoute(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{})
+	p, err := runs.PathsFor(runs.RunsRoot(cwd), "web", "home", "20260821T101000Z-bbbbbbb")
+	if err != nil {
+		t.Fatalf("PathsFor: %v", err)
+	}
+	writeRetraceEvidenceFixture(t, p)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/report/web/home/")
+	if err != nil {
+		t.Fatalf("GET report: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if string(body) != "<html>report</html>" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestRetraceEvidenceRoutesAre501WithoutARetraceBlock(t *testing.T) {
+	cwd := onePassingFlow(t)
+	cfg := &config.Config{Dir: cwd}
+	ts := httptest.NewServer(server.New(server.Deps{Cfg: cfg, Version: "test"}))
+	t.Cleanup(ts.Close)
+
+	for _, path := range []string{
+		"/api/retrace/evidence/web/home",
+		"/api/retrace/videos/web/home/home.webm",
+		"/api/retrace/report/web/home/",
+	} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("GET %s status = %d, want 501", path, resp.StatusCode)
+		}
+	}
+}
+
 func TestRetraceSyncRequiresRepo(t *testing.T) {
 	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{}) // Repo left empty
 
