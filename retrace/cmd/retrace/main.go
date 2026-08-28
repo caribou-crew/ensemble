@@ -27,6 +27,8 @@ Usage:
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
   retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]
+  retrace rekey --old KEY --new KEY [--json]
+  retrace rekey --init [--json]
   retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
@@ -82,6 +84,16 @@ Env:
   RETRACE_STRICT      1/true/yes/on = adapters fail loudly when the handshake env is
                       absent (0/false/no/off/unset = quiet no-op; any other value is
                       a startup error, naming the value and the accepted set)
+  RETRACE_RECORDING_KEY  the team key for an `+"`encrypt`"+`-mode redact rule (hex or
+                      base64, 32 bytes) — required at capture time for any field
+                      configured that way, and read at diff/replay/serve time to
+                      decrypt back to the real value. Falls back to the gitignored
+                      .retrace/recording.key when unset. In CI, set it from a repo
+                      secret of the same name (e.g. GitHub Actions:
+                      RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }})
+                      so replay can assert against real values without ever
+                      committing them in plaintext. See `+"`retrace rekey --help`"+`
+                      to generate or rotate it.
   ENSEMBLE_API        default for --ensemble (http://127.0.0.1:4700)
 `
 
@@ -112,6 +124,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRevalidate(args[1:], stdout, stderr)
 	case "ref":
 		return cmdRef(args[1:], stdout, stderr)
+	case "rekey":
+		return cmdRekey(args[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(args[1:], stdout, stderr)
 	case "export":

@@ -65,6 +65,12 @@ func LoadTeamKey(dir string) (key []byte, source string, err error) {
 	return nil, "", ErrNoTeamKey
 }
 
+// ParseKey decodes a key given directly on a command line (`retrace rekey
+// --old`/`--new`) — the same hex-or-base64 sniffing LoadTeamKey applies to
+// RETRACE_RECORDING_KEY, exposed here because a rotation takes both keys as
+// flags rather than reading either from the environment.
+func ParseKey(v string) ([]byte, error) { return decodeKey(v) }
+
 // decodeKey sniffs hex vs base64 by decoded length, per D5: 32 raw bytes is
 // 64 hex characters or 44 (or 43, unpadded) base64 characters. It never
 // echoes the input back in an error — a malformed key is still a secret.

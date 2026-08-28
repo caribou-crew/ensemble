@@ -159,7 +159,7 @@
 
 ## 8. `retrace rekey` CLI command
 
-- [ ] 8.1 New `retrace/cmd/retrace/cmd_rekey.go`: `retrace rekey --old
+- [x] 8.1 New `retrace/cmd/retrace/cmd_rekey.go`: `retrace rekey --old
       <key> --new <key>` (both accept the same hex/base64 forms
       `LoadTeamKey` does, passed directly rather than read from env, so a
       rotation can run with both keys in hand without exporting either as
@@ -168,15 +168,15 @@
       directory-walking helpers, not a hand-rolled `filepath.Walk`), unwraps
       each with `--old`, rewraps with `--new`, writes back via the
       package's atomic `writeJSONFile` path (through `WriteEncryption`).
-- [ ] 8.2 A file that fails to unwrap with `--old` (wrong key, or already
+- [x] 8.2 A file that fails to unwrap with `--old` (wrong key, or already
       rewrapped by a previous partial run whose new key matches `--new`'s
       `KeyID`) is reported and skipped, not fatal to the whole walk — the
       command's summary lists rewrapped vs. skipped counts.
-- [ ] 8.3 `retrace rekey --init` (documented in `--help`, not the primary
+- [x] 8.3 `retrace rekey --init` (documented in `--help`, not the primary
       path): writes a freshly generated key to `.retrace/recording.key`
       when neither it nor the env var exists yet, for a project's first
       setup.
-- [ ] 8.4 Tests: rekey over a tree with two encrypted runs and one
+- [x] 8.4 Tests: rekey over a tree with two encrypted runs and one
       reference bundle rewraps all three and the fields still decrypt
       under the new key and fail under the old; re-running rekey a second
       time with the same `--old`/`--new` is a no-op that reports "already
