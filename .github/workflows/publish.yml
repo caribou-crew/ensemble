@@ -111,5 +111,8 @@ jobs:
                      npm/ensemble-linux-arm64 npm/ensemble-linux-x64 npm/ensemble \
                      npm/retrace-darwin-arm64 npm/retrace-darwin-x64 \
                      npm/retrace-linux-arm64 npm/retrace-linux-x64 npm/retrace; do
-            npm publish --access public "$pkg"
+            # The leading ./ matters: without it, npm parses "npm/ensemble"
+            # as GitHub owner/repo shorthand instead of a local path, and
+            # tries to git-clone github.com/npm/ensemble.
+            npm publish --access public "./$pkg"
           done
