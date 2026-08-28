@@ -171,6 +171,29 @@ importers:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.2.0)(happy-dom@20.11.6)(vite@8.2.2(@types/node@26.2.0))
 
+  npm/ensemble:
+    optionalDependencies:
+      '@caribou-crew/ensemble-darwin-arm64':
+        specifier: workspace:*
+        version: link:../ensemble-darwin-arm64
+      '@caribou-crew/ensemble-darwin-x64':
+        specifier: workspace:*
+        version: link:../ensemble-darwin-x64
+      '@caribou-crew/ensemble-linux-arm64':
+        specifier: workspace:*
+        version: link:../ensemble-linux-arm64
+      '@caribou-crew/ensemble-linux-x64':
+        specifier: workspace:*
+        version: link:../ensemble-linux-x64
+
+  npm/ensemble-darwin-arm64: {}
+
+  npm/ensemble-darwin-x64: {}
+
+  npm/ensemble-linux-arm64: {}
+
+  npm/ensemble-linux-x64: {}
+
   npm/retrace:
     optionalDependencies:
       '@caribou-crew/retrace-darwin-arm64':
