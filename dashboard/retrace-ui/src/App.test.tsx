@@ -820,6 +820,68 @@ describe('the item screen', () => {
   });
 });
 
+function checkpointFixture(name: string, verdict: 'ok' | 'changed'): NonNullable<Summary['checkpoints']>[number] {
+  return {
+    name,
+    verdict,
+    diffPct: verdict === 'ok' ? 0 : 4.2,
+    diffPctFine: 0,
+    numDiff: verdict === 'ok' ? 0 : 40,
+    images: { a: `${name}.png`, b: `${name}.png`, diff: verdict === 'ok' ? '' : `${name}-diff.png` },
+  };
+}
+
+/**
+ * A flow with many checkpoints renders one full ShotCompare grid PER
+ * checkpoint — for a project whose flows carry a dozen+ screens, most of
+ * which passed, that is a long scroll to reach wire/hops/budgets on every
+ * single review. Passing checkpoints collapse behind a disclosure so the
+ * screens that actually need a look are what's on screen by default.
+ */
+describe('collapsible passing checkpoints', () => {
+  it('shows changed checkpoints and collapses passing ones behind a disclosure', async () => {
+    const calls = stubServer({
+      item: summary({
+        checkpoints: [
+          checkpointFixture('cart', 'changed'),
+          checkpointFixture('login', 'ok'),
+          checkpointFixture('search', 'ok'),
+          checkpointFixture('footer', 'ok'),
+        ],
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+
+    expect(container.textContent).toContain('cart');
+    expect(container.querySelector('.shot-compare')).not.toBeNull();
+    // The three passing checkpoints are not rendered as full compare grids
+    // until expanded.
+    expect(container.querySelectorAll('.shot-compare')).toHaveLength(1);
+
+    const disclosure = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('3 unchanged'),
+    );
+    expect(disclosure).toBeTruthy();
+
+    await act(async () => disclosure!.click());
+    expect(container.querySelectorAll('.shot-compare')).toHaveLength(4);
+  });
+
+  it('shows no disclosure when every checkpoint changed', async () => {
+    const calls = stubServer({
+      item: summary({ checkpoints: [checkpointFixture('cart', 'changed')] }),
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const disclosure = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('unchanged'),
+    );
+    expect(disclosure).toBeUndefined();
+  });
+});
+
 /**
  * Evidence (video/report) is fetched independently of the summary — it
  * attaches to a run AFTER `retrace run`/sync finishes, so it is never part

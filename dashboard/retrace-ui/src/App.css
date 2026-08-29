@@ -141,6 +141,19 @@
   color: var(--text-tertiary);
 }
 
+.item__shots-disclosure {
+  display: block;
+  margin: 0.25rem 0;
+  background: none;
+  border: 1px dashed var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
 .item__none {
   color: var(--text-secondary);
   font-size: 0.82rem;

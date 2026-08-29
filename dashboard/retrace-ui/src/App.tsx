@@ -287,6 +287,14 @@ function ItemScreen({
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
 }) {
+  // Collapsed by default: a flow with a dozen+ checkpoints, most of which
+  // passed, otherwise means a long scroll past every unchanged screen to
+  // reach wire/hops/budgets on every single review — the screens that
+  // actually need a look are what should be on screen. ItemScreen is
+  // remounted per flow (see App's `key` below), so this always starts
+  // collapsed on a freshly opened flow rather than carrying over the
+  // previous flow's expanded state.
+  const [showPassingShots, setShowPassingShots] = useState(false);
   // Four verdicts, not three. "quarantined" is the one where every other
   // field is empty ON PURPOSE — so the planes below are not rendered as
   // "nothing differed", which is what an empty checkpoint list and an empty
@@ -366,15 +374,34 @@ function ItemScreen({
             {summary.checkpoints.length === 0 ? (
               <p className="item__none">This flow captured no checkpoints.</p>
             ) : (
-              summary.checkpoints.map((cp) => (
-                <ShotCompare
-                  key={cp.name}
-                  app={app}
-                  flow={flow}
-                  checkpoint={cp}
-                  resolveShotUrl={resolveShotUrl}
-                />
-              ))
+              (() => {
+                const changed = summary.checkpoints.filter((cp) => cp.verdict !== 'ok');
+                const passing = summary.checkpoints.filter((cp) => cp.verdict === 'ok');
+                return (
+                  <>
+                    {changed.map((cp) => (
+                      <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
+                    ))}
+                    {passing.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          className="item__shots-disclosure"
+                          onClick={() => setShowPassingShots((v) => !v)}
+                        >
+                          {showPassingShots ? '▾' : '▸'} {passing.length} unchanged checkpoint
+                          {passing.length === 1 ? '' : 's'}
+                        </button>
+                        {showPassingShots
+                          ? passing.map((cp) => (
+                              <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
+                            ))
+                          : null}
+                      </>
+                    ) : null}
+                  </>
+                );
+              })()
             )}
           </section>
 
@@ -627,6 +654,7 @@ export default function App() {
             <Problem message={item.error.message} />
           ) : item.data && app && flow ? (
             <ItemScreen
+              key={`${app}/${flow}`}
               app={app}
               flow={flow}
               summary={item.data}
