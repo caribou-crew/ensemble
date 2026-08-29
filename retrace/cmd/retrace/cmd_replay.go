@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/refs"
@@ -79,7 +80,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	var (
 		ref    = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
 		app    = fs.String("app", "", "app name (default: config app, else the directory name)")
-		listen = fs.String("listen", "127.0.0.1:0", "address the replay server binds (loopback only)")
+		listen = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
 		asJSON = fs.Bool("json", false, "emit the replay report as JSON on stdout")
 	)
 	flagArgs, testCmd := splitDoubleDash(args)
@@ -153,6 +154,9 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, rl := range replayLns {
 		go rl.httpSrv.Serve(rl.ln)
+		if rl.companion != nil {
+			go rl.httpSrv.Serve(rl.companion)
+		}
 	}
 
 	markerLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -164,6 +168,9 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	}
 	markerSrv := &http.Server{Handler: capture.NewMarkerDoor(p, time.Now)}
 	go markerSrv.Serve(markerLn)
+	if markerCompanion, _ := proxy.BindLoopbackCompanion(markerLn); markerCompanion != nil {
+		go markerSrv.Serve(markerCompanion)
+	}
 
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), replayShutdownTimeout)
@@ -378,11 +385,18 @@ func printCandidates(w io.Writer, r refs.Reference) {
 // *replay.Bundle (see bindReplayListeners) so two listeners under
 // concurrent load never mutate one Bundle's `used` counters from two
 // unsynchronized goroutines.
+//
+// companion is the best-effort other-family loopback socket
+// (core/proxy.BindLoopbackCompanion) — nil when ln's host was not one of
+// the two well-known loopback literals, or when the companion bind
+// failed. It answers the SAME httpSrv/srv as ln; nothing besides bind
+// and Serve ever needs to treat it differently from ln.
 type replayListener struct {
-	name    string
-	ln      net.Listener
-	httpSrv *http.Server
-	srv     *replay.Server
+	name      string
+	ln        net.Listener
+	companion net.Listener
+	httpSrv   *http.Server
+	srv       *replay.Server
 }
 
 // bindReplayListeners opens one loopback socket per configured listener and
@@ -437,11 +451,18 @@ func bindReplayListeners(entries []config.ListenerEntry, listenFlag, bundleDir, 
 			o.TargetFilter = l.Name
 		}
 		srv := replay.NewServer(b, o, missesPath)
+		// Best-effort: addr is almost always a literal loopback IP (no
+		// host: configured), and until now that meant answering only the
+		// one family it happened to bind — see core/proxy.
+		// BindLoopbackCompanion's doc comment for why this is silent and
+		// never affects the advertised address below.
+		companion, _ := proxy.BindLoopbackCompanion(ln)
 		out = append(out, replayListener{
-			name:    l.Name,
-			ln:      ln,
-			httpSrv: &http.Server{Handler: srv},
-			srv:     srv,
+			name:      l.Name,
+			ln:        ln,
+			companion: companion,
+			httpSrv:   &http.Server{Handler: srv},
+			srv:       srv,
 		})
 	}
 	return out, nil
