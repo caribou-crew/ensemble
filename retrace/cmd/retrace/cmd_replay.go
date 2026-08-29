@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/replay"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -56,7 +58,30 @@ type replayReport struct {
 	Unused    []replay.Key  `json:"unused"`
 	MissCount int           `json:"missCount"`
 	Misses    []replay.Miss `json:"misses"`
-	Test      replayTest    `json:"test"`
+	// Extra and RequestDiff are populated only when --assert-requests was
+	// passed — omitted entirely otherwise, so a plain `retrace replay`
+	// emits byte-identical JSON to before this flag existed. Extra is
+	// present (possibly empty) whenever the flag runs, so a consumer can
+	// tell "ran clean" from "flag absent". See design.md Decision 5.
+	Extra       []diff.Call        `json:"extra,omitempty"`
+	RequestDiff *replayRequestDiff `json:"requestDiff,omitempty"`
+	Test        replayTest         `json:"test"`
+}
+
+// replayRequestDiff is the --assert-requests verdict: how many of the
+// client's requests paired against a recorded exchange, how many of those
+// pairs carried a request-side deviation, the percentage that is, the
+// configured `gates.wire.budget_pct` it was judged against (nil when
+// unconfigured — see design.md Decision 4), and the paired entries that
+// actually carried a finding (never the full paired set: the response side
+// is empty by construction — Decision 3 — so an entry with nothing on the
+// request side either has nothing worth printing).
+type replayRequestDiff struct {
+	Paired    int          `json:"paired"`
+	Changed   int          `json:"changed"`
+	BudgetPct float64      `json:"budgetPct"`
+	Threshold *float64     `json:"threshold,omitempty"`
+	Entries   []diff.Entry `json:"entries,omitempty"`
 }
 
 type replayRef struct {
@@ -78,10 +103,11 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		ref    = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
-		app    = fs.String("app", "", "app name (default: config app, else the directory name)")
-		listen = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
-		asJSON = fs.Bool("json", false, "emit the replay report as JSON on stdout")
+		ref            = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
+		app            = fs.String("app", "", "app name (default: config app, else the directory name)")
+		listen         = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
+		asJSON         = fs.Bool("json", false, "emit the replay report as JSON on stdout")
+		assertRequests = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`")
 	)
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -138,6 +164,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
+	opts.AssertRequests = *assertRequests
 
 	// The replay run directory: where misses.jsonl, the adapter's
 	// screenshots and any flow markers land.
@@ -233,28 +260,61 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		unused = append(unused, rl.srv.UnusedExchanges()...)
 	}
 
+	// --assert-requests: compute BEFORE the report is built, so its
+	// findings can ride in the same document, but it never changes what a
+	// plain `retrace replay` reports — Extra/RequestDiff stay nil (omitted
+	// from JSON) unless the flag was passed. See design.md Decision 5.
+	var extra []diff.Call
+	var reqDiff *replayRequestDiff
+	requestDiffFailed := false
+	if *assertRequests {
+		w, err := assertRequestsWire(cfg, r.Dir, replayLns)
+		if err != nil {
+			return fail(stderr, "replay: --assert-requests: %v", err)
+		}
+		extra = w.Extra
+		if extra == nil {
+			extra = []diff.Call{}
+		}
+		reqDiff, requestDiffFailed = requestDiffVerdict(cfg, flow, w)
+	}
+
 	if *asJSON {
 		if err := writeJSON(stdout, replayReport{
 			App: appName, Flow: flow,
-			Ref:       replayRef{Kind: r.Kind, Dir: r.Dir, RunID: r.RunID},
-			RunDir:    p.RunDir,
-			Exchanges: len(bundle.Exchanges),
-			Served:    served,
-			Unused:    unused,
-			MissCount: len(misses),
-			Misses:    misses,
-			Test:      replayTest{Command: strings.Join(testCmd, " "), ExitCode: testExit},
+			Ref:         replayRef{Kind: r.Kind, Dir: r.Dir, RunID: r.RunID},
+			RunDir:      p.RunDir,
+			Exchanges:   len(bundle.Exchanges),
+			Served:      served,
+			Unused:      unused,
+			MissCount:   len(misses),
+			Misses:      misses,
+			Extra:       extra,
+			RequestDiff: reqDiff,
+			Test:        replayTest{Command: strings.Join(testCmd, " "), ExitCode: testExit},
 		}); err != nil {
 			return fail(stderr, "replay: %v", err)
 		}
 	} else {
 		renderReplay(stdout, appName, flow, r.Kind, len(bundle.Exchanges), served, unused, p.RunDir, misses)
+		if *assertRequests {
+			renderRequestDiff(stdout, extra, reqDiff)
+		}
 	}
 
 	// A miss is a hard gate. It outranks the test command's own code on
 	// purpose: the interesting case is precisely the one where the suite
 	// went green while calling something the recording never saw.
 	if len(misses) > 0 {
+		return exitGate
+	}
+	// A request-side deviation is the SAME hard gate, checked next: a miss
+	// is a stronger, more fundamental problem (the exchange did not match
+	// at all) and its message must never be shadowed by this one, but a
+	// clean match that still deviates on the request side is exactly the
+	// class of regression --assert-requests exists to catch, and a green
+	// test command must not get to override it either.
+	if requestDiffFailed {
 		return exitGate
 	}
 	// Nothing was compared. That is NOT the same verdict as "everything
@@ -496,6 +556,153 @@ func replayOptions(cfg *config.Config) (replay.Options, error) {
 		return replay.Options{}, err
 	}
 	return replay.Options{Rules: rs, Normalize: cfg.NormalizePath, QueryIgnore: cfg.QueryIgnoreKeys()}, nil
+}
+
+// assertRequestsWire computes the --assert-requests comparison: for every
+// bound listener, the requests it actually observed (replay.Server.
+// ObservedHops, populated only because opts.AssertRequests was set on it)
+// against the reference bundle's OWN recorded requests, paired and diffed
+// by the same engine `retrace diff` uses for its wire plane
+// (diff.DiffWire) — never diff.Build, which is built for two fully
+// captured runs and carries pixel/hop/quarantine machinery no replay run
+// has evidence for. See design.md Decisions 1 and 2.
+//
+// bundleDir's wire.jsonl is read a second time here rather than adding a
+// used-mutation-unsafe raw-hop accessor to replay.Bundle — see design.md
+// Decision 2 for why that trade is the right one for "a handful of
+// exchanges".
+//
+// Each listener's reference hops are filtered to its own TargetFilter
+// (replayListener.name, which is "" for the single unfiltered listener and
+// therefore also filters nothing there — see bindReplayListeners) before
+// diffing, so a multi-listener replay never counts one listener's traffic
+// as a deviation against another listener's recording, mirroring
+// replay.Server.UnusedExchanges' own filtering.
+func assertRequestsWire(cfg *config.Config, bundleDir string, listeners []replayListener) (diff.Wire, error) {
+	wirePath := filepath.Join(bundleDir, "wire.jsonl")
+	// skipped is ignored: replay.LoadBundle already read this same file
+	// moments earlier in this process and refuses on any unreadable line,
+	// so a bundle that reached this point has none.
+	refHops, _, err := runs.ReadHops(wirePath)
+	if err != nil {
+		return diff.Wire{}, fmt.Errorf("reading %s: %w", wirePath, err)
+	}
+	rs, err := cfg.Rules()
+	if err != nil {
+		return diff.Wire{}, err
+	}
+	opts := diff.Options{WireIgnore: cfg.WireIgnorePaths(), Rules: rs, Normalize: cfg.NormalizePath}
+
+	var out diff.Wire
+	for _, rl := range listeners {
+		w := diff.DiffWire(filterHopsByTarget(refHops, rl.name), rl.srv.ObservedHops(), opts)
+		out.Paired = append(out.Paired, w.Paired...)
+		out.Extra = append(out.Extra, w.Extra...)
+		// Missing is deliberately never accumulated: a recorded exchange
+		// this listener never served is already `unused` in the ordinary
+		// replay report, and --assert-requests is about requests the
+		// client MADE, not ones it didn't.
+	}
+	return out, nil
+}
+
+// filterHopsByTarget keeps only the hops recorded through one named
+// listener (trace.Hop.To), mirroring replay.Server.UnusedExchanges' own
+// TargetFilter check. An empty target means "no filter" — every hop is
+// eligible — which is what the single unfiltered listener always passes.
+func filterHopsByTarget(hops []trace.Hop, target string) []trace.Hop {
+	if target == "" {
+		return hops
+	}
+	out := make([]trace.Hop, 0, len(hops))
+	for _, h := range hops {
+		if h.To == target {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// requestDiffVerdict turns a computed diff.Wire into the report's
+// replayRequestDiff and the pass/fail gate: an Extra entry (call-count
+// drift, or a brand-new endpoint) fails unconditionally — it has no
+// "percent changed" reading, it either happened or it didn't — and
+// otherwise the changed-paired-entries percentage is judged against
+// `gates.wire.budget_pct` for this flow, nil budget meaning "any deviation
+// at all fails" (the same zero-value-is-strictest rule every other default
+// in this package follows). See design.md Decision 4.
+func requestDiffVerdict(cfg *config.Config, flow string, w diff.Wire) (*replayRequestDiff, bool) {
+	changed := 0
+	for _, e := range w.Paired {
+		for _, c := range e.Classes {
+			if c == "changed" {
+				changed++
+				break
+			}
+		}
+	}
+	paired := len(w.Paired)
+	var budgetPct float64
+	if paired > 0 {
+		budgetPct = 100 * float64(changed) / float64(paired)
+	}
+	var threshold *float64
+	if g, ok := cfg.ResolveGates(flow)["wire"]; ok {
+		threshold = g.BudgetPct
+	}
+
+	failed := len(w.Extra) > 0
+	if !failed && paired > 0 {
+		if threshold != nil {
+			failed = budgetPct > *threshold
+		} else {
+			failed = changed > 0
+		}
+	}
+
+	entries := make([]diff.Entry, 0, len(w.Paired))
+	for _, e := range w.Paired {
+		if len(e.BodyDiff) > 0 || len(e.BodyViolations) > 0 || len(e.HeaderDiff) > 0 || len(e.OrderingChanges) > 0 {
+			entries = append(entries, e)
+		}
+	}
+	return &replayRequestDiff{
+		Paired: paired, Changed: changed, BudgetPct: budgetPct, Threshold: threshold, Entries: entries,
+	}, failed
+}
+
+// renderRequestDiff is --assert-requests' text-mode report, printed after
+// renderReplay's own miss/unused section. It never prints the "every call
+// matched" sentence for a run with a request-side deviation — that
+// sentence belongs to plain `retrace replay`'s response-matching verdict,
+// a different fact from this one.
+func renderRequestDiff(w io.Writer, extra []diff.Call, rd *replayRequestDiff) {
+	if rd == nil {
+		return
+	}
+	if len(extra) == 0 && rd.Changed == 0 {
+		fmt.Fprintf(w, "  --assert-requests: every request matched exactly (%d paired)\n", rd.Paired)
+		return
+	}
+	fmt.Fprintf(w, "\n  --assert-requests found %d request-side deviation(s) the response match did not catch:\n", len(extra)+rd.Changed)
+	for _, c := range extra {
+		fmt.Fprintf(w, "    extra call: %s %s — the client called this more times than the reference recorded, or it is a new call the reference never made\n", c.Method, c.Path)
+	}
+	for _, e := range rd.Entries {
+		fmt.Fprintf(w, "    %s %s:\n", e.Method, e.NormalizedPath)
+		for _, fd := range e.BodyDiff {
+			fmt.Fprintf(w, "      body[%s] %s: recorded %v, client sent %v\n", fd.Scope, fd.Path, fd.A, fd.B)
+		}
+		for _, fd := range e.BodyViolations {
+			fmt.Fprintf(w, "      body[%s] %s: rule violation — recorded %v, client sent %v\n", fd.Scope, fd.Path, fd.A, fd.B)
+		}
+		for _, hd := range e.HeaderDiff {
+			fmt.Fprintf(w, "      header[%s] %s: recorded %q, client sent %q\n", hd.Scope, hd.Name, hd.A, hd.B)
+		}
+	}
+	if rd.Threshold != nil {
+		fmt.Fprintf(w, "  request diff budget: %.1f%% observed vs %.1f%% allowed (gates.wire.budget_pct)\n", rd.BudgetPct, *rd.Threshold)
+	}
 }
 
 // createReplayRun makes the replay's run directory. Run ids are

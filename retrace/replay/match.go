@@ -68,6 +68,13 @@ type Options struct {
 	// DIFFERENT target is not this server's to serve, so it is reported as
 	// an ordinary miss rather than a cross-listener hit.
 	TargetFilter string
+	// AssertRequests turns on request-side observation: every request the
+	// server serves from a hit is additionally recorded (real headers,
+	// real body) for `--assert-requests` to diff against the reference
+	// bundle's recorded requests afterwards. false — the zero value — costs
+	// nothing extra per request, which is what every replay that does not
+	// pass the flag gets.
+	AssertRequests bool
 	// No MissPath here. The misses file has ONE name and ONE owner:
 	// runs.Paths.MissesPath. A second field naming the same file is a
 	// second thing to keep in sync, and the loser of that race writes

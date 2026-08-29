@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/httpguard"
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // ABSENCE IS NEVER AGREEMENT.
@@ -85,6 +86,12 @@ type Server struct {
 	served     int
 	logErr     error
 	now        func() time.Time
+	// observed holds one trace.Hop per served hit, real request side and
+	// mirrored-recorded response side, when opts.AssertRequests is true —
+	// see ObservedHops and the request-side-only comparison it feeds
+	// (`--assert-requests`, cmd_replay.go). Never appended to when
+	// AssertRequests is false, so a plain replay carries zero extra cost.
+	observed []trace.Hop
 }
 
 // NewServer builds the replay handler. missesPath comes from
@@ -150,6 +157,20 @@ func (s *Server) Misses() []Miss {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Miss(nil), s.misses...)
+}
+
+// ObservedHops returns a copy of every hit this server has served, in the
+// shape `--assert-requests` diffs against the reference bundle's own
+// recorded hops (retrace/diff.DiffWire). Always empty when
+// Options.AssertRequests is false — the default — which is what makes
+// plain `retrace replay` unaffected by this package existing at all. A
+// miss contributes nothing here: it is already reported, once, through
+// Misses(); see cmd_replay.go for why it must not be reported twice under
+// two different vocabularies.
+func (s *Server) ObservedHops() []trace.Hop {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]trace.Hop(nil), s.observed...)
 }
 
 // MissLogErr reports the first failure to append to misses.jsonl, if any.
@@ -228,8 +249,54 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.served++
+	if s.opts.AssertRequests {
+		s.observed = append(s.observed, observedHop(r, raw, decrypted, uint64(len(s.observed)+1)))
+	}
 	s.mu.Unlock()
 	writeHit(w, r, decrypted)
+}
+
+// observedHop turns one served hit into the trace.Hop shape
+// `--assert-requests` compares against the reference bundle's own recorded
+// hops. The request side is the REAL incoming request — method, path,
+// query, headers, decoded and raw body — because that is the entire point
+// (design doc Decision 3). The response side is a byte-for-byte copy of
+// the MATCHED exchange's own decrypted recording, never what writeHit is
+// about to send: writeHit unconditionally strips/rewrites the CORS family,
+// Location, and the Set-Cookie Domain attribute, and diffing those
+// deliberate rewrites against the recording would fail every replay that
+// uses cookies or redirects for a difference this feature did not
+// introduce and no project has a tolerance knob for.
+func observedHop(r *http.Request, raw string, hit Exchange, seq uint64) trace.Hop {
+	return trace.Hop{
+		Seq:    seq,
+		To:     hit.Target,
+		Method: r.Method,
+		Path:   r.URL.RequestURI(),
+		Status: hit.Status,
+		Req: trace.Payload{
+			Headers: flattenHeaders(r.Header),
+			Body:    raw,
+		},
+		Resp: trace.Payload{
+			Headers: hit.Headers,
+			Body:    hit.Body,
+		},
+	}
+}
+
+// flattenHeaders lowers a http.Header into the map[string]string shape
+// every recorded trace.Hop uses, joining a repeated header the same way
+// core/proxy's own (unexported) flatHeaders does — one dialect for a
+// repeated header across capture and this observation path, so a
+// two-valued header compares equal to itself rather than reading as a
+// change purely because of how it was flattened.
+func flattenHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vs := range h {
+		out[strings.ToLower(k)] = strings.Join(vs, ", ")
+	}
+	return out
 }
 
 // writeHit replays one recorded exchange. Headers are replayed as

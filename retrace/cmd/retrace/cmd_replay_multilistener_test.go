@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,32 @@ func TestHelperReplaysAuthsPathOnTheEdgePort(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestHelperReplayCallsEdgeThreeTimesAndAuthOnce drifts only the edge
+// listener's call count (3x against a 1x reference) while calling auth
+// exactly as recorded — the scoping case: a surplus on one listener must
+// not be misattributed to, or hidden by, the other listener's clean traffic.
+func TestHelperReplayCallsEdgeThreeTimesAndAuthOnce(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "replay-edge-drift-auth-clean" {
+		return
+	}
+	edgeURL := os.Getenv("RETRACE_PROXY_URL_EDGE")
+	for i := 0; i < 3; i++ {
+		resp, err := http.Get(edgeURL + "/edge-only")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "helper fetch via edge:", err)
+			os.Exit(9)
+		}
+		resp.Body.Close()
+	}
+	resp, err := http.Get(os.Getenv("RETRACE_PROXY_URL_AUTH") + "/auth-only")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "helper fetch via auth:", err)
+		os.Exit(9)
+	}
+	resp.Body.Close()
+	os.Exit(0)
+}
+
 func recordAndAcceptTwoListeners(t *testing.T, bin, cwd string, edge, auth *httptest.Server) {
 	t.Helper()
 	writeConfig(t, cwd, fmt.Sprintf("app: web\nlisteners:\n  - name: edge\n    upstream: %s\n  - name: auth\n    upstream: %s\n", edge.URL, auth.URL))
@@ -137,5 +164,70 @@ func TestReplayMissesACallSentToTheWrongListenersPort(t *testing.T) {
 	out := res.stdout + res.stderr
 	if !strings.Contains(out, "/auth-only") {
 		t.Fatalf("report never names the unmatched call:\n%s", out)
+	}
+}
+
+func TestReplayAssertRequestsPassesWhenBothListenersMatchExactly(t *testing.T) {
+	edge, auth := twoListenerUpstreams()
+	defer edge.Close()
+	defer auth.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	recordAndAcceptTwoListeners(t, bin, cwd, edge, auth)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplaysEdgeAndAuthCorrectly")...)
+	res := runRetrace(t, bin, cwd, "replay-edge-and-auth-correctly", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 — both listeners' traffic matches their own recording exactly\nstdout: %s\nstderr: %s",
+			res.code, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if doc.RequestDiff == nil || doc.RequestDiff.Paired != 2 || doc.RequestDiff.Changed != 0 {
+		t.Fatalf("requestDiff = %+v, want both listeners' one call each paired clean (2 paired, 0 changed)", doc.RequestDiff)
+	}
+}
+
+// TestReplayAssertRequestsScopesCallCountDriftToItsOwnListener proves a
+// surplus on ONE listener is reported against that listener's own traffic
+// and does not spill onto — or get masked by — the other listener's clean
+// recording. See design.md Decision 2 / tasks.md 2.2.
+func TestReplayAssertRequestsScopesCallCountDriftToItsOwnListener(t *testing.T) {
+	edge, auth := twoListenerUpstreams()
+	defer edge.Close()
+	defer auth.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	recordAndAcceptTwoListeners(t, bin, cwd, edge, auth)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplayCallsEdgeThreeTimesAndAuthOnce")...)
+	res := runRetrace(t, bin, cwd, "replay-edge-drift-auth-clean", args...)
+	if res.code != exitGate {
+		t.Fatalf("exit = %d, want %d — the edge listener's 3x-against-1x drift must fail the run\nstdout: %s\nstderr: %s",
+			res.code, exitGate, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if len(doc.Extra) != 2 {
+		t.Fatalf("extra = %+v, want exactly 2 surplus calls (3 made on edge, 1 recorded)", doc.Extra)
+	}
+	for _, c := range doc.Extra {
+		if c.Path != "/edge-only" {
+			t.Fatalf("extra call = %+v, want only the edge listener's /edge-only — the auth listener's clean call must never appear here", c)
+		}
+	}
+	// The auth listener's one, correctly-repeated call is still counted as
+	// paired and clean — its own traffic never became "changed" just
+	// because edge's did.
+	if doc.RequestDiff == nil || doc.RequestDiff.Paired != 2 || doc.RequestDiff.Changed != 0 {
+		t.Fatalf("requestDiff = %+v, want both listeners' matched exchange paired clean (2 paired: 1 edge + 1 auth, 0 changed)", doc.RequestDiff)
 	}
 }

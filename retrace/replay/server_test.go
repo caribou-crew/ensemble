@@ -814,3 +814,61 @@ func TestATargetFilteredServerMissesARequestOnlyAnotherListenerRecorded(t *testi
 		t.Fatalf("MissCount = %d, want 1", s.MissCount())
 	}
 }
+
+func TestAssertRequestsRecordsTheRealRequestNotTheRecordedOne(t *testing.T) {
+	// The recorded exchange carries no ReqHeaders and no ReqBody at all, so
+	// any header or body ObservedHops() reports can only have come from the
+	// actual incoming request — this is the whole point of the flag.
+	b := bundleOf(exch("POST", "/cart", "", nil, 201, `{"ok":true}`, 1))
+	s, url := serve(t, b, Options{AssertRequests: true}, "")
+
+	resp := do(t, "POST", url+"/cart", `{"qty":2}`, map[string]string{"X-Client": "ios"})
+	if got := readBody(t, resp); got != `{"ok":true}` {
+		t.Fatalf("body = %q, want the recorded response replayed as usual", got)
+	}
+
+	hops := s.ObservedHops()
+	if len(hops) != 1 {
+		t.Fatalf("ObservedHops() = %+v, want exactly one hop for the one hit", hops)
+	}
+	h := hops[0]
+	if h.Method != "POST" || h.Path != "/cart" {
+		t.Fatalf("observed hop method/path = %s %s, want POST /cart", h.Method, h.Path)
+	}
+	if h.Req.Body != `{"qty":2}` {
+		t.Fatalf("observed hop request body = %q, want the client's own body, not the recorded (empty) one", h.Req.Body)
+	}
+	if got := h.Req.Headers["x-client"]; got != "ios" {
+		t.Fatalf("observed hop request headers = %+v, want the client's own X-Client header", h.Req.Headers)
+	}
+	// The response side mirrors the RECORDING, not what the wire actually
+	// carried post-rewrite — see the design doc's Decision 3.
+	if h.Status != 201 || h.Resp.Body != `{"ok":true}` {
+		t.Fatalf("observed hop response = %d %q, want the matched exchange's own recorded status and body", h.Status, h.Resp.Body)
+	}
+}
+
+func TestAssertRequestsRecordsNothingForAMiss(t *testing.T) {
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	s, url := serve(t, b, Options{AssertRequests: true}, "")
+
+	do(t, "GET", url+"/nowhere", "", nil).Body.Close()
+	if s.MissCount() != 1 {
+		t.Fatalf("MissCount = %d, want 1", s.MissCount())
+	}
+	if hops := s.ObservedHops(); len(hops) != 0 {
+		t.Fatalf("ObservedHops() = %+v after a miss, want none — a miss is already reported once, through Misses()", hops)
+	}
+}
+
+func TestAssertRequestsOffRecordsNothing(t *testing.T) {
+	// The default: AssertRequests is false unless a caller opts in, so a
+	// plain `retrace replay` pays nothing for this feature existing.
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
+	s, url := serve(t, b, Options{}, "")
+
+	do(t, "GET", url+"/cart", "", nil).Body.Close()
+	if hops := s.ObservedHops(); len(hops) != 0 {
+		t.Fatalf("ObservedHops() = %+v with AssertRequests unset, want none", hops)
+	}
+}

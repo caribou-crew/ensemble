@@ -65,6 +65,49 @@ func TestServerDecryptsAnEncryptedFieldWhenTheTeamKeyResolves(t *testing.T) {
 	}
 }
 
+// TestAssertRequestsObservesTheDecryptedResponseNotTheCiphertextMarker
+// proves the design doc's Risk mitigation for encrypted fields: the
+// observed hop's mirrored response must come from the same decrypted
+// Exchange writeHit already computed, not the raw Exchange straight off
+// the bundle — otherwise every encrypted field would read as a spurious
+// "changed" the moment --assert-requests diffed it against itself.
+func TestAssertRequestsObservesTheDecryptedResponseNotTheCiphertextMarker(t *testing.T) {
+	key := bytes32(t, 'a')
+	marker := mustEncryptField(t, key, `"4111111111111111"`)
+	b := &Bundle{
+		Exchanges: []Exchange{{
+			Key:     Key{Method: "GET", Path: "/checkout"},
+			Status:  200,
+			Headers: map[string]string{"X-Account": mustEncryptField(t, key, "acct-secret")},
+			Body:    `{"account_number":"` + marker + `"}`,
+			Seq:     1,
+		}},
+		dataKey: key,
+	}
+	s, url := serve(t, b, Options{AssertRequests: true}, "")
+
+	resp := do(t, "GET", url+"/checkout", "", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	hops := s.ObservedHops()
+	if len(hops) != 1 {
+		t.Fatalf("ObservedHops() = %+v, want exactly one", hops)
+	}
+	h := hops[0]
+	if strings.Contains(h.Resp.Body, trace.EncryptedPrefix) {
+		t.Fatalf("observed hop response body still carries the ciphertext marker: %s", h.Resp.Body)
+	}
+	if h.Resp.Body != `{"account_number":"4111111111111111"}` {
+		t.Fatalf("observed hop response body = %q, want the decrypted account number", h.Resp.Body)
+	}
+	if got := h.Resp.Headers["X-Account"]; got != "acct-secret" {
+		t.Fatalf("observed hop response header X-Account = %q, want the decrypted value", got)
+	}
+}
+
 // TestServerFailsTheMatchWhenNoTeamKeyResolves is "never leak the marker
 // as data": a matched exchange with an encrypt-mode field and no
 // resolvable key must not serve the client the literal ciphertext marker

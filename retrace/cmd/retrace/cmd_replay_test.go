@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/replay"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -221,6 +222,195 @@ func TestReplayExportsTheSameHandshakeEnvAsRun(t *testing.T) {
 	dir := newestReplayRunDir(t, cwd, "web", "checkout")
 	if _, err := os.Stat(filepath.Join(dir, "groups.jsonl")); err != nil {
 		t.Fatalf("the marker the helper posted never reached the run directory: %v", err)
+	}
+}
+
+// TestHelperReplayCallsCartFiveTimes calls the SAME recorded exchange five
+// times, where the reference (recorded via TestHelperFetchesThroughProxy)
+// called it once. Every call still matches under Match's subset rule (a
+// repeated identical call is served, deliberately, so a poll-until-ready
+// flow does not hang) — so this is invisible to plain `retrace replay`, and
+// is exactly the call-count-drift scenario --assert-requests exists to
+// catch.
+func TestHelperReplayCallsCartFiveTimes(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "replay-callcount" {
+		return
+	}
+	proxy := os.Getenv("RETRACE_PROXY_URL")
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get(proxy + "/cart")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "helper fetch:", err)
+			os.Exit(9)
+		}
+		resp.Body.Close()
+	}
+	os.Exit(0)
+}
+
+// TestHelperReplaySendsAnExtraHeader makes the ONE recorded call, but with a
+// header the reference never carried. The call still matches (Key is
+// method+path+query only, and Match never diffs headers at all) — again
+// invisible to plain `retrace replay`.
+func TestHelperReplaySendsAnExtraHeader(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "replay-extra-header" {
+		return
+	}
+	req, err := http.NewRequest(http.MethodGet, os.Getenv("RETRACE_PROXY_URL")+"/cart", nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "helper request:", err)
+		os.Exit(9)
+	}
+	req.Header.Set("X-New-Client-Attribute", "v2")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "helper fetch:", err)
+		os.Exit(9)
+	}
+	resp.Body.Close()
+	os.Exit(0)
+}
+
+// assertRequestsReport is the subset of replayReport this file's
+// --assert-requests tests decode, mirroring TestReplayJsonReportsEveryMissAndTheTestExitCode's
+// pattern of decoding only the fields under test.
+type assertRequestsReport struct {
+	MissCount   int         `json:"missCount"`
+	Extra       []diff.Call `json:"extra"`
+	RequestDiff *struct {
+		Paired    int     `json:"paired"`
+		Changed   int     `json:"changed"`
+		BudgetPct float64 `json:"budgetPct"`
+	} `json:"requestDiff"`
+}
+
+func TestReplayAssertRequestsCatchesCallCountDrift(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	recordAndAccept(t, bin, cwd, upstream.URL) // records ONE call to /cart
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplayCallsCartFiveTimes")...)
+	res := runRetrace(t, bin, cwd, "replay-callcount", args...)
+	if res.code != exitGate {
+		t.Fatalf("exit = %d, want %d — 5 calls against a 1-call reference is a deviation --assert-requests must catch\nstdout: %s\nstderr: %s",
+			res.code, exitGate, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if doc.MissCount != 0 {
+		t.Fatalf("missCount = %d, want 0 — every call DID match a recorded exchange; this is a surplus, not a miss", doc.MissCount)
+	}
+	if len(doc.Extra) != 4 {
+		t.Fatalf("extra = %+v, want 4 surplus calls (5 made, 1 recorded)", doc.Extra)
+	}
+	for _, c := range doc.Extra {
+		if c.Method != "GET" || c.Path != "/cart" {
+			t.Fatalf("extra call = %+v, want GET /cart", c)
+		}
+	}
+}
+
+func TestReplayAssertRequestsCatchesANewRequestHeader(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	recordAndAccept(t, bin, cwd, upstream.URL)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplaySendsAnExtraHeader")...)
+	res := runRetrace(t, bin, cwd, "replay-extra-header", args...)
+	if res.code != exitGate {
+		t.Fatalf("exit = %d, want %d — a header the reference never recorded is a deviation --assert-requests must catch\nstdout: %s\nstderr: %s",
+			res.code, exitGate, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if doc.MissCount != 0 {
+		t.Fatalf("missCount = %d, want 0 — the call matched; only the header is new", doc.MissCount)
+	}
+	if len(doc.Extra) != 0 {
+		t.Fatalf("extra = %+v, want none — this is a header deviation on a paired call, not a surplus call", doc.Extra)
+	}
+	if doc.RequestDiff == nil || doc.RequestDiff.Changed != 1 || doc.RequestDiff.Paired != 1 {
+		t.Fatalf("requestDiff = %+v, want exactly 1 paired call flagged changed", doc.RequestDiff)
+	}
+	// Lowercase: DiffHeaders compares case-insensitively and reports the
+	// lowered name, the same convention every other header diff in this
+	// repo already follows.
+	if !strings.Contains(res.stdout+res.stderr, "x-new-client-attribute") {
+		t.Fatalf("the report never names the new header:\n%s\n%s", res.stdout, res.stderr)
+	}
+}
+
+func TestReplayAssertRequestsExitsZeroOnACleanMatch(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	recordAndAccept(t, bin, cwd, upstream.URL)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperFetchesThroughProxy")...)
+	res := runRetrace(t, bin, cwd, "fetch", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 — the replayed request matches the reference exactly\nstdout: %s\nstderr: %s",
+			res.code, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if len(doc.Extra) != 0 {
+		t.Fatalf("extra = %+v, want an empty (not absent) array on a clean --assert-requests run", doc.Extra)
+	}
+	if doc.RequestDiff == nil || doc.RequestDiff.Changed != 0 {
+		t.Fatalf("requestDiff = %+v, want changed == 0", doc.RequestDiff)
+	}
+}
+
+// TestReplayWithoutAssertRequestsIsUnaffectedByCallCountDrift is the
+// backward-compat pin: the exact scenario the tests above fail on must
+// still be a clean, exit-0 replay when the flag is not passed.
+func TestReplayWithoutAssertRequestsIsUnaffectedByCallCountDrift(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig)
+	recordAndAccept(t, bin, cwd, upstream.URL)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--json"},
+		selfCmd(t, "TestHelperReplayCallsCartFiveTimes")...)
+	res := runRetrace(t, bin, cwd, "replay-callcount", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 — without --assert-requests, 5 hits on one recorded exchange is a plain pass\nstdout: %s\nstderr: %s",
+			res.code, res.stdout, res.stderr)
+	}
+	if strings.Contains(res.stdout, `"extra"`) || strings.Contains(res.stdout, `"requestDiff"`) {
+		t.Fatalf("--json carries extra/requestDiff without --assert-requests having been passed:\n%s", res.stdout)
 	}
 }
 
