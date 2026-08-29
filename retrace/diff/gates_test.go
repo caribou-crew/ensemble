@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
 // cpGate builds a pixel gate with a plane budget and per-checkpoint overrides.
@@ -226,6 +227,67 @@ func TestANilConfigGatesNothingRatherThanPanicking(t *testing.T) {
 	}
 	if got := unmeasuredGatesOf(shots("cart", 9.0), nil); len(got) != 0 {
 		t.Errorf("unmeasuredGatesOf with no gates = %v, want none", got)
+	}
+}
+
+// A pixel-only replay (ModePixel) has no wire plane by design — see
+// runs.ModePixel — so "wire has no evidence" is not a signal something
+// went wrong with THIS run, it is permanently true of every run this flow
+// will ever produce. Before this fix, a project that gates wire globally
+// (fail_on: [wire]) would fail every pixel-only flow forever, with nothing
+// a maintainer could fix short of carving out a per-flow override for
+// every such flow by hand.
+func TestPixelOnlyModeDoesNotTripAGloballyConfiguredWireGate(t *testing.T) {
+	a := RunRef{Kind: "run", Dir: t.TempDir(), Manifest: manifest("a", nil, nil, okCapture())}
+	b := RunRef{
+		Kind: "run", Dir: t.TempDir(),
+		Manifest: runs.Manifest{
+			Schema: runs.Schema, App: "web", Flow: "card-views", RunID: "b", Mode: runs.ModePixel,
+			Checkpoints: []runs.Checkpoint{{Name: "cart"}},
+			Capture:     okCapture(),
+			Wire:        runs.Counts{Recorded: false, Reason: "pixel-only replay: no wire plane is captured"},
+		},
+	}
+	cfg := baseConfig(t)
+	cfg.Gates["wire"] = gatePct(2)
+	cfg.FailOn = []string{"wire"}
+
+	s := mustBuild(t, BuildInput{App: "web", Flow: "card-views", A: a, B: b, Cfg: cfg})
+	if s.Verdict == "failed" {
+		t.Fatalf("verdict = failed, want a pixel-only run to never fail a wire gate it structurally cannot measure: %+v", s.Gates)
+	}
+	for _, plane := range s.UnmeasuredGates {
+		if plane == "wire" {
+			t.Errorf("UnmeasuredGates = %v, want wire excluded — it is not applicable to a pixel-only run, not merely unmeasured this time", s.UnmeasuredGates)
+		}
+	}
+}
+
+// hop mirrors wire the same way, and a project gating hop project-wide
+// must not fail every pixel-only flow either.
+func TestPixelOnlyModeDoesNotTripAGloballyConfiguredHopGate(t *testing.T) {
+	a := RunRef{Kind: "run", Dir: t.TempDir(), Manifest: manifest("a", nil, nil, okCapture())}
+	b := RunRef{
+		Kind: "run", Dir: t.TempDir(),
+		Manifest: runs.Manifest{
+			Schema: runs.Schema, App: "web", Flow: "card-views", RunID: "b", Mode: runs.ModePixel,
+			Checkpoints: []runs.Checkpoint{{Name: "cart"}},
+			Capture:     okCapture(),
+			Wire:        runs.Counts{Recorded: false},
+		},
+	}
+	cfg := baseConfig(t)
+	cfg.Gates["hop"] = gatePct(2)
+	cfg.FailOn = []string{"hop"}
+
+	s := mustBuild(t, BuildInput{App: "web", Flow: "card-views", A: a, B: b, Cfg: cfg})
+	if s.Verdict == "failed" {
+		t.Fatalf("verdict = failed, want a pixel-only run to never fail a hop gate it structurally cannot measure: %+v", s.Gates)
+	}
+	for _, plane := range s.UnmeasuredGates {
+		if plane == "hop" {
+			t.Errorf("UnmeasuredGates = %v, want hop excluded for a pixel-only run", s.UnmeasuredGates)
+		}
 	}
 }
 

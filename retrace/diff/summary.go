@@ -1120,15 +1120,38 @@ func unmeasuredGatesOf(s Summary, gates map[string]config.Gate) []string {
 	for _, g := range s.Budgets {
 		measured[g.Plane] = true
 	}
+	notApplicable := planesNotApplicable(s.B.Manifest.Mode)
 	var out []string
 	for plane, g := range gates {
-		if g.BudgetPct == nil || measured[plane] {
+		if g.BudgetPct == nil || measured[plane] || notApplicable[plane] {
 			continue
 		}
 		out = append(out, plane)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// planesNotApplicable names the gate planes a run's own capture mode makes
+// structurally impossible to ever measure — as opposed to merely
+// unmeasured on this particular run. A pixel-only replay (runs.ModePixel)
+// has no wire plane by design (see the ModePixel doc comment: "a pixel-only
+// replay never proxies"), so wire and hop are not evidence that happens to
+// be missing this time; they will never exist for any run this flow
+// produces.
+//
+// The distinction matters because unmeasuredGatesOf feeds
+// unevaluatedGateReasons, which turns "gated, unmeasurable, and named in
+// fail_on" into a build failure (exit 2) — see its own doc comment. Without
+// this exclusion, a project that gates wire or hop project-wide
+// (fail_on: [wire]) would fail every pixel-only flow FOREVER, with no run
+// that could ever pass and nothing a maintainer could fix short of a
+// per-flow override for every such flow.
+func planesNotApplicable(mode string) map[string]bool {
+	if mode == runs.ModePixel {
+		return map[string]bool{"wire": true, "hop": true}
+	}
+	return nil
 }
 
 // unevaluatedGateReasons turns "gated, unmeasurable, and named in fail_on"
