@@ -33,7 +33,8 @@ Usage:
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
   retrace check [--url URL] [--app NAME] [--flow NAME] [--json] [--abandoned-after DUR]
-  retrace sync --from github --repo ORG/REPO [--workflow NAME] [--since 7d] [--json]
+  retrace sync --from github --repo ORG/REPO [--repos A,B] [--workflow NAME] [--workflows A,B] [--branch NAME] [--actor USER] [--event EVENT] [--status STATUS] [--since 7d] [--dry-run] [--json]
+  retrace sync list --repo ORG/REPO [--repos A,B] [--workflow NAME] [--workflows A,B] [--branch NAME] [--actor USER] [--event EVENT] [--status STATUS] [--since 7d] [--json]
   retrace --version
 
 Run supervision:

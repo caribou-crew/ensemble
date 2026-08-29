@@ -45,6 +45,18 @@ if [ "$1" = "run" ] && [ "$2" = "download" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "api" ]; then
+  path="$2"
+  case "$path" in
+    */artifacts)
+      echo "0"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+  exit 0
+fi
 echo "fake gh: unhandled invocation: $*" >&2
 exit 1
 `
@@ -108,5 +120,76 @@ func TestSyncJSONRoundTripsThroughSyncResult(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cwd, ".retrace", "runs", "web", "login", "20260827T090000Z-aaa1111", "manifest.json")); err != nil {
 		t.Errorf("synced manifest.json missing under cwd's .retrace/runs: %v", err)
+	}
+}
+
+func TestSyncRepoOrReposRequired(t *testing.T) {
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	res := runRetrace(t, bin, cwd, "", "sync", "--from", "github")
+	if res.code != exitUsage {
+		t.Fatalf("exit = %d, want %d (usage error); stderr: %s", res.code, exitUsage, res.stderr)
+	}
+}
+
+func TestSyncDryRunListsWithoutPulling(t *testing.T) {
+	bin := buildRetrace(t)
+	fakeGHOnPath(t)
+
+	runListPath := filepath.Join(t.TempDir(), "runs.json")
+	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+		t.Fatalf("writing run list fixture: %v", err)
+	}
+	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
+	t.Setenv("GH_FAKE_DOWNLOAD_SRC", t.TempDir())
+
+	cwd := t.TempDir()
+	res := runRetrace(t, bin, cwd, "", "sync", "--repo", "org/repo", "--dry-run", "--json")
+	if res.code != exitOK {
+		t.Fatalf("exit = %d, want %d; stdout: %s stderr: %s", res.code, exitOK, res.stdout, res.stderr)
+	}
+	var got []sync.Candidate
+	if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {
+		t.Fatalf("stdout is not a []sync.Candidate: %v\n%s", err, res.stdout)
+	}
+	if len(got) != 1 || got[0].DatabaseID != 1 {
+		t.Fatalf("candidates = %+v, want the one fixture run", got)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".retrace", "runs")); !os.IsNotExist(err) {
+		t.Fatalf("--dry-run wrote to .retrace/runs (err=%v) — it must not download anything", err)
+	}
+}
+
+func TestSyncListRequiresRepo(t *testing.T) {
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	res := runRetrace(t, bin, cwd, "", "sync", "list")
+	if res.code != exitUsage {
+		t.Fatalf("exit = %d, want %d (usage error); stderr: %s", res.code, exitUsage, res.stderr)
+	}
+}
+
+func TestSyncListPrintsCandidatesAsJSON(t *testing.T) {
+	bin := buildRetrace(t)
+	fakeGHOnPath(t)
+
+	runListPath := filepath.Join(t.TempDir(), "runs.json")
+	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headBranch": "main", "event": "push", "status": "completed", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z"}]`), 0o644); err != nil {
+		t.Fatalf("writing run list fixture: %v", err)
+	}
+	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
+	t.Setenv("GH_FAKE_DOWNLOAD_SRC", t.TempDir())
+
+	cwd := t.TempDir()
+	res := runRetrace(t, bin, cwd, "", "sync", "list", "--repo", "org/repo", "--json")
+	if res.code != exitOK {
+		t.Fatalf("exit = %d, want %d; stdout: %s stderr: %s", res.code, exitOK, res.stdout, res.stderr)
+	}
+	var got []sync.Candidate
+	if err := json.Unmarshal([]byte(res.stdout), &got); err != nil {
+		t.Fatalf("stdout is not a []sync.Candidate: %v\n%s", err, res.stdout)
+	}
+	if len(got) != 1 || got[0].HeadBranch != "main" || got[0].Event != "push" {
+		t.Fatalf("candidates = %+v", got)
 	}
 }
