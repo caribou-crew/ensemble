@@ -9,6 +9,7 @@
     ".": "./primitives.tsx",
     "./tokens.css": "./tokens.css",
     "./useAsync": "./useAsync.ts",
+    "./syncCandidates": "./syncCandidates.ts",
     "./diffTypes": "./diffTypes.ts",
     "./components/ShotCompare": "./components/ShotCompare.tsx",
     "./components/WireDiffTable": "./components/WireDiffTable.tsx",

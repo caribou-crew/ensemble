@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
+import { mergeCandidates, sinceParam } from '@ensemble/design-system/syncCandidates';
 import { api, messageOf } from '../api/client';
 import type { SyncCandidate } from '../api/types';
 
@@ -21,6 +22,7 @@ export default function SyncPanel({
   const [candidates, setCandidates] = useState<SyncCandidate[] | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -41,6 +43,25 @@ export default function SyncPanel({
       setCandidates(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Never clears `candidates` — a refresh that fails, or that simply finds
+  // nothing new, must leave the reviewer's current view (and selection)
+  // exactly as it was. Only sinceParam(candidates) is asked for, so this
+  // costs GitHub only the runs that showed up since the last check.
+  const refresh = async () => {
+    if (!candidates || refreshing) return;
+    setRefreshing(true);
+    setError(null);
+    try {
+      const since = sinceParam(candidates);
+      const res = await api.syncCandidates(repo.trim(), since ? { since } : {});
+      setCandidates((prev) => mergeCandidates(prev ?? [], res.candidates));
+    } catch (err) {
+      setError(messageOf(err, 'refresh failed'));
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -100,6 +121,11 @@ export default function SyncPanel({
           <p className="sync-panel__empty">No matching runs found in {repo.trim()}.</p>
         ) : (
           <>
+            <div className="sync-panel__toolbar">
+              <button type="button" onClick={() => void refresh()} disabled={refreshing || loading}>
+                {refreshing ? <Spinner /> : '↻ refresh'}
+              </button>
+            </div>
             <ul className="sync-panel__candidates">
               {candidates.map((c) => {
                 const pullable = c.hasArtifacts;

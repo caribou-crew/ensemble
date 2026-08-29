@@ -109,6 +109,40 @@ describe('SyncPanel', () => {
     expect(container.textContent).toContain('pulled 1');
   });
 
+  it('refresh keeps the current list on screen, asks only for runs newer than the newest one known, and merges the result in', async () => {
+    const spy = vi
+      .spyOn(api, 'syncCandidates')
+      .mockResolvedValueOnce({
+        candidates: [
+          candidate({ databaseId: 1, createdAt: '2026-08-28T20:00:00Z' }),
+          candidate({ databaseId: 2, createdAt: '2026-08-28T21:00:00Z' }),
+        ],
+      })
+      .mockResolvedValueOnce({
+        candidates: [candidate({ databaseId: 3, createdAt: '2026-08-28T23:00:00Z' })],
+      });
+    renderPanel();
+    await enterRepo('org/repo');
+    expect(container.textContent).toContain('Retrace Web Replay');
+
+    const refreshButton = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('refresh'),
+    );
+    expect(refreshButton).toBeTruthy();
+    await act(async () => refreshButton!.click());
+    await flush();
+
+    // The list was never cleared mid-refresh — all three runs, old and new,
+    // are on screen together.
+    const rows = container.querySelectorAll('.sync-panel__candidate');
+    expect(rows).toHaveLength(3);
+
+    // The second call asked only for runs newer than the newest one already
+    // known (createdAt 21:00), not a full re-list.
+    const secondCallFilters = spy.mock.calls[1][1] as { since?: string } | undefined;
+    expect(secondCallFilters?.since).toBeTruthy();
+  });
+
   it('a pull failure shows inline rather than crashing', async () => {
     vi.spyOn(api, 'syncCandidates').mockResolvedValue({ candidates: [candidate({ databaseId: 1 })] });
     vi.spyOn(api, 'sync').mockRejectedValue(new ApiError(502, 'gh: command not found'));

@@ -3,9 +3,9 @@
 // here get pulled via POST /api/retrace/sync's {selections} body. Replaces
 // the old single "Sync now" button, which pulled everything in the
 // configured window and aborted the whole batch on one bad run.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
-import { useAsync } from '@ensemble/design-system/useAsync';
+import { mergeCandidates, sinceParam } from '@ensemble/design-system/syncCandidates';
 import { api, messageOf } from '../api/client';
 import type { RetraceCandidate, RetraceSyncResult } from '../api/types';
 import './RetraceView.css';
@@ -37,15 +37,59 @@ export default function RetraceSyncPanel({
   onClose: () => void;
   onSynced: () => void;
 }) {
-  const { data, error, loading } = useAsync(() => api.retraceSyncCandidates(), []);
+  const [candidates, setCandidates] = useState<RetraceCandidate[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pulling, setPulling] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
   const [result, setResult] = useState<RetraceSyncResult | null>(null);
 
-  const candidates = data?.candidates ?? [];
-  const visible = useMemo(() => candidates.filter((c) => matchesFilter(c, filter)), [candidates, filter]);
+  // The initial load, once on mount. Unlike useAsync, this state is never
+  // cleared by a later fetch — see refresh below, whose whole point is
+  // that a later fetch must NOT blank what is already on screen.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .retraceSyncCandidates()
+      .then((res) => {
+        if (cancelled) return;
+        setCandidates(res.candidates);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Asks only for runs newer than the newest one already known (see
+  // sinceParam), and merges the result into the list already on screen
+  // rather than replacing it — a refresh that fails, or finds nothing new,
+  // leaves the reviewer's current view and selection exactly as they were.
+  async function refresh() {
+    if (!candidates || refreshing) return;
+    setRefreshing(true);
+    setError(null);
+    try {
+      const since = sinceParam(candidates);
+      const res = await api.retraceSyncCandidates(since ? { since } : {});
+      setCandidates((prev) => mergeCandidates(prev ?? [], res.candidates));
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const list = candidates ?? [];
+  const visible = useMemo(() => list.filter((c) => matchesFilter(c, filter)), [list, filter]);
 
   function toggle(c: RetraceCandidate) {
     const key = candidateKey(c);
@@ -62,7 +106,7 @@ export default function RetraceSyncPanel({
   }
 
   async function pullSelected() {
-    const chosen = candidates.filter((c) => selected.has(candidateKey(c)));
+    const chosen = list.filter((c) => selected.has(candidateKey(c)));
     if (chosen.length === 0) return;
     setPulling(true);
     setPullError(null);
@@ -81,6 +125,11 @@ export default function RetraceSyncPanel({
     <div className="retrace-sync-panel">
       <div className="retrace-sync-panel__header">
         <h3>Browse candidate runs</h3>
+        {candidates && (
+          <button type="button" onClick={() => void refresh()} disabled={refreshing}>
+            {refreshing ? <Spinner /> : '↻ refresh'}
+          </button>
+        )}
         <button type="button" onClick={onClose}>
           Close
         </button>
@@ -95,9 +144,9 @@ export default function RetraceSyncPanel({
       />
 
       {error && <p className="retrace-view__sync-error">{messageOf(error, 'failed to load candidates')}</p>}
-      {loading && !data && <Spinner />}
+      {loading && !candidates && <Spinner />}
 
-      {data && (
+      {candidates && (
         <>
           <table className="retrace-sync-panel__table">
             <thead>
