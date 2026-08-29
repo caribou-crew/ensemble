@@ -205,6 +205,59 @@ func hostAddrs(host, port string) (ln4, ln6 net.Listener, err error) {
 	return ln4, ln6, nil
 }
 
+// loopbackCompanion maps one well-known loopback literal to the other —
+// "127.0.0.1" <-> "::1" — so BindLoopbackCompanion can best-effort bind
+// the family a caller did not ask for, without any DNS resolution. ""
+// means host is not one of these two literals: a hostname already gets
+// both families through hostAddrs, and any other loopback-adjacent
+// literal (127.0.0.2, say) has no defined companion.
+func loopbackCompanion(host string) string {
+	switch host {
+	case "127.0.0.1":
+		return "::1"
+	case "::1":
+		return "127.0.0.1"
+	default:
+		return ""
+	}
+}
+
+// BindLoopbackCompanion best-effort binds the OTHER loopback address
+// family on primary's own port — 127.0.0.1 gets a companion ::1, and
+// vice versa — so a client that resolves "localhost" (or is otherwise
+// pointed at this host) via either family still reaches a working
+// listener. This is what fixes the common default case: a proxy or
+// replay listener configured with a bare literal IP (no explicit
+// hostname) has, until now, only ever answered the one family it happened
+// to bind.
+//
+// Returns (nil, nil) — not an error — when primary's host is not one of
+// the two well-known loopback literals: a hostname target already binds
+// both families via ServeStoppable's own hostAddrs path, and this must
+// not double-bind on top of that. A failed companion bind (no IPv6 stack,
+// a same-port race) is also silent and non-fatal — exactly as
+// hostAddrs' own best-effort ln6 already behaves — since the primary
+// listener working is what every existing caller and advertised address
+// already depends on.
+//
+// Exported for retrace/cmd/retrace's replay listener, which binds its own
+// net.Listener directly rather than going through ServeStoppable/Target.
+func BindLoopbackCompanion(primary net.Listener) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(primary.Addr().String())
+	if err != nil {
+		return nil, err
+	}
+	companionHost := loopbackCompanion(host)
+	if companionHost == "" {
+		return nil, nil
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(companionHost, port))
+	if err != nil {
+		return nil, nil
+	}
+	return ln, nil
+}
+
 // ServeStoppable is Serve with a per-listener stop, used for ephemeral
 // listeners like session client-edge ports.
 //
@@ -246,6 +299,9 @@ func (p *Proxy) ServeStoppable(t Target) (string, func(), error) {
 		}
 		lns = append(lns, ln)
 		advertise = ln.Addr().String()
+		if companion, cerr := BindLoopbackCompanion(ln); cerr == nil && companion != nil {
+			lns = append(lns, companion)
+		}
 	}
 
 	srv := &http.Server{Handler: p.handler(t)}

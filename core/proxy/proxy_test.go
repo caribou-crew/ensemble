@@ -239,8 +239,13 @@ func TestServeStoppableRejectsAHostnameThatResolvesOffLoopback(t *testing.T) {
 }
 
 // A literal IP must behave exactly as before hostname support existed: no
-// resolution, one listener, the advertised address IS the listener's own
-// bound address (not reconstructed from a configured host string).
+// resolution, the advertised address IS the listener's own bound address
+// (not reconstructed from a configured host string). It additionally
+// best-effort binds the OTHER loopback family on the same port (see
+// BindLoopbackCompanion) — a client that reaches this host via ::1 rather
+// than 127.0.0.1 (or vice versa, e.g. an app resolving "localhost" through
+// a different family than retrace happened to bind) still lands on a
+// working listener, with zero change to what gets advertised.
 func TestServeStoppableLiteralIPStillBindsDirectlyNoResolution(t *testing.T) {
 	saved := lookupIP
 	lookupIP = func(host string) ([]net.IP, error) {
@@ -263,6 +268,111 @@ func TestServeStoppableLiteralIPStillBindsDirectlyNoResolution(t *testing.T) {
 	defer stop()
 	if host, _, _ := net.SplitHostPort(addr); host != "127.0.0.1" {
 		t.Errorf("advertised addr = %q, want host 127.0.0.1", addr)
+	}
+}
+
+// The companion bind's whole point: a proxy configured with the literal
+// "127.0.0.1" (today's default, no explicit host:) must still answer a
+// client that resolves "localhost" — or is told to dial ::1 directly — to
+// the OTHER loopback family. Without this, an iOS Simulator or any
+// resolver that prefers IPv6 for "localhost" gets a silent connection
+// refused against an otherwise-correctly-configured proxy.
+func TestServeStoppableLiteralIPv4AlsoAnswersOnIPv6Companion(t *testing.T) {
+	if !v6LoopbackAvailable(t) {
+		t.Skip("no IPv6 loopback on this platform")
+	}
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	addr, stop, err := p.ServeStoppable(Target{Name: "svc", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("ServeStoppable: %v", err)
+	}
+	defer stop()
+
+	_, port, _ := net.SplitHostPort(addr)
+	resp, err := http.Get("http://" + net.JoinHostPort("::1", port) + "/x")
+	if err != nil {
+		t.Fatalf("dial [::1]:%s: %v; want the companion family reachable too", port, err)
+	}
+	defer resp.Body.Close()
+	if b, _ := io.ReadAll(resp.Body); string(b) != "ok" {
+		t.Errorf("body = %q, want ok", b)
+	}
+}
+
+func TestLoopbackCompanion(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1": "::1",
+		"::1":       "127.0.0.1",
+		"localhost": "",
+		"0.0.0.0":   "",
+		"127.0.0.2": "",
+	}
+	for host, want := range cases {
+		if got := loopbackCompanion(host); got != want {
+			t.Errorf("loopbackCompanion(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+// BindLoopbackCompanion is the exported half retrace/cmd/retrace reuses —
+// it does not go through ServeStoppable/Target at all, so this pins the
+// helper's own contract directly: given an already-bound loopback
+// listener, it best-effort binds the OTHER family on the same port, and
+// returns (nil, nil) — not an error — for a host it does not recognize as
+// one of the two well-known loopback literals.
+func TestBindLoopbackCompanion(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	companion, err := BindLoopbackCompanion(ln)
+	if err != nil {
+		t.Fatalf("BindLoopbackCompanion: %v", err)
+	}
+	if !v6LoopbackAvailable(t) {
+		t.Skip("no IPv6 loopback on this platform")
+	}
+	if companion == nil {
+		t.Fatal("companion = nil, want a bound ::1 listener")
+	}
+	defer companion.Close()
+	host, port, _ := net.SplitHostPort(companion.Addr().String())
+	if host != "::1" {
+		t.Errorf("companion host = %q, want ::1", host)
+	}
+	_, primaryPort, _ := net.SplitHostPort(ln.Addr().String())
+	if port != primaryPort {
+		t.Errorf("companion port = %q, want the primary's own port %q", port, primaryPort)
+	}
+}
+
+// A name (not a literal) already gets both families via ServeStoppable's
+// own hostAddrs path — BindLoopbackCompanion must not double-bind on top
+// of that, so it recognizes only the two well-known literals.
+func TestBindLoopbackCompanionIgnoresNonLiteralHosts(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skip("127.0.0.2 not bindable on this platform")
+	}
+	defer ln.Close()
+
+	companion, err := BindLoopbackCompanion(ln)
+	if err != nil {
+		t.Fatalf("BindLoopbackCompanion: %v", err)
+	}
+	if companion != nil {
+		companion.Close()
+		t.Fatal("companion != nil, want no companion bind for a host that is not 127.0.0.1 or ::1")
 	}
 }
 
