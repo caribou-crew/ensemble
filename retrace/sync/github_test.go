@@ -59,12 +59,24 @@ if [ "$1" = "run" ] && [ "$2" = "download" ]; then
 fi
 if [ "$1" = "api" ]; then
   path="$2"
-  runid=$(echo "$path" | sed -E 's#.*/actions/runs/([0-9]+)$#\1#')
-  login=""
-  if [ -n "$GH_FAKE_ACTORS_DIR" ] && [ -f "$GH_FAKE_ACTORS_DIR/$runid" ]; then
-    login=$(cat "$GH_FAKE_ACTORS_DIR/$runid")
-  fi
-  echo "$login"
+  case "$path" in
+    */artifacts)
+      runid=$(echo "$path" | sed -E 's#.*/actions/runs/([0-9]+)/artifacts#\1#')
+      count="0"
+      if [ -n "$GH_FAKE_ARTIFACTS_DIR" ] && [ -f "$GH_FAKE_ARTIFACTS_DIR/$runid" ]; then
+        count=$(cat "$GH_FAKE_ARTIFACTS_DIR/$runid")
+      fi
+      echo "$count"
+      ;;
+    *)
+      runid=$(echo "$path" | sed -E 's#.*/actions/runs/([0-9]+)$#\1#')
+      login=""
+      if [ -n "$GH_FAKE_ACTORS_DIR" ] && [ -f "$GH_FAKE_ACTORS_DIR/$runid" ]; then
+        login=$(cat "$GH_FAKE_ACTORS_DIR/$runid")
+      fi
+      echo "$login"
+      ;;
+  esac
   exit 0
 fi
 echo "fake gh: unhandled invocation: $*" >&2
@@ -405,6 +417,20 @@ func stageActor(t *testing.T, databaseID int64, login string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(databaseID)), []byte(login), 0o644); err != nil {
 		t.Fatalf("staging actor fixture: %v", err)
+	}
+}
+
+// stageArtifactCount makes runHasArtifacts see count for run databaseID
+// via the fake gh's `api .../artifacts` branch.
+func stageArtifactCount(t *testing.T, databaseID int64, count int) {
+	t.Helper()
+	dir := os.Getenv("GH_FAKE_ARTIFACTS_DIR")
+	if dir == "" {
+		dir = t.TempDir()
+		t.Setenv("GH_FAKE_ARTIFACTS_DIR", dir)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(databaseID)), []byte(fmt.Sprint(count)), 0o644); err != nil {
+		t.Fatalf("staging artifact-count fixture: %v", err)
 	}
 }
 
