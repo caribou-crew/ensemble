@@ -85,6 +85,17 @@ export function rejectNotice(app: string, flow: string, res: RejectResult): stri
   return `repro bundle written to ${res.repro.dir}`;
 }
 
+/**
+ * `Gate.observed`/`.threshold` already carry a percent value (`budget_pct:
+ * 0.1` means 0.1%, not a 0-1 fraction), so this only rounds and appends a
+ * unit — it must never multiply by 100. Rounded to 2 decimals with
+ * trailing zeros dropped via the Number round-trip, so a threshold of
+ * exactly `5` reads "5%", not "5.00%".
+ */
+function formatPct(n: number): string {
+  return `${Number(n.toFixed(2))}%`;
+}
+
 function Problem({ message }: { message: string }) {
   return (
     <div className="problem">
@@ -395,8 +406,8 @@ function ItemScreen({
               <ul className="item__budgets">
                 {summary.budgets.map((g) => (
                   <li key={g.plane}>
-                    <Badge tone={g.failed ? 'red' : 'green'}>{g.plane}</Badge> {g.observed} of{' '}
-                    {g.threshold}
+                    <Badge tone={g.failed ? 'red' : 'green'}>{g.plane}</Badge> {formatPct(g.observed)} (budget{' '}
+                    {formatPct(g.threshold)}) {g.failed ? '✗' : '✓'}
                   </li>
                 ))}
                 {summary.unmeasuredGates.map((plane) => (

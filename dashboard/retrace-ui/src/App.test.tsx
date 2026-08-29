@@ -796,6 +796,28 @@ describe('the item screen', () => {
     expect(section?.textContent).toContain('pixel');
     expect(section?.textContent).not.toContain('not evaluated');
   });
+
+  /**
+   * `Gate.observed`/`.threshold` are already on a percent scale (a
+   * `budget_pct: 0.1` means 0.1%, not 0.1) — rendering the raw float gave
+   * "pixel 32.89031692712137 of 0.1", a float precision artifact with no
+   * unit, on the one line whose entire job is telling a reviewer whether a
+   * budget passed and by how much.
+   */
+  it('formats a budget as a rounded percentage against its threshold, not a raw float', async () => {
+    const calls = stubServer({
+      item: summary({
+        budgets: [{ plane: 'pixel', threshold: 0.1, observed: 32.89031692712137, failed: true }],
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const section = container.querySelector('.item__budgets');
+    expect(section?.textContent).toContain('32.89%');
+    expect(section?.textContent).toContain('0.1%');
+    expect(section?.textContent).not.toContain('32.89031692712137');
+  });
 });
 
 /**
