@@ -170,6 +170,26 @@ type RetraceConfig struct {
 	// Workflow optionally narrows sync to one GitHub Actions workflow
 	// name. Empty means every workflow in Repo.
 	Workflow string `yaml:"workflow"`
+	// Repos, when non-empty, syncs every listed "org/repo" — the plural
+	// form of Repo. Setting both Repo and Repos is a validation error.
+	Repos []string `yaml:"repos"`
+	// Workflows, when non-empty, narrows sync to any of these GitHub
+	// Actions workflow names — each entry may be an exact name or a
+	// path.Match glob (e.g. "Retrace *"). Setting both Workflow and
+	// Workflows is a validation error.
+	Workflows []string `yaml:"workflows"`
+	// Branch narrows sync to runs off this branch (gh run list --branch).
+	Branch string `yaml:"branch"`
+	// Actor narrows sync to runs triggered by this GitHub user (gh run
+	// list --user).
+	Actor string `yaml:"actor"`
+	// Event narrows sync to runs triggered by this event, e.g. "push" or
+	// "schedule" (gh run list --event).
+	Event string `yaml:"event"`
+	// Status narrows sync by run status or conclusion, e.g. "completed"
+	// or "failure" (gh run list --status — gh itself accepts either kind
+	// of value through this one flag).
+	Status string `yaml:"status"`
 	// Since bounds how far back sync looks (e.g. "7d", "24h"). Empty
 	// defaults to DefaultRetraceSince — see EffectiveSince.
 	Since string `yaml:"since"`
@@ -194,6 +214,31 @@ func (r RetraceConfig) EffectiveSince() string {
 		return r.Since
 	}
 	return DefaultRetraceSince
+}
+
+// EffectiveRepos returns Repos, or a one-element slice of Repo when Repos
+// is empty, or nil when neither is set.
+func (r RetraceConfig) EffectiveRepos() []string {
+	if len(r.Repos) > 0 {
+		return r.Repos
+	}
+	if r.Repo != "" {
+		return []string{r.Repo}
+	}
+	return nil
+}
+
+// EffectiveWorkflows returns Workflows, or a one-element slice of
+// Workflow when Workflows is empty, or nil (no workflow filter) when
+// neither is set.
+func (r RetraceConfig) EffectiveWorkflows() []string {
+	if len(r.Workflows) > 0 {
+		return r.Workflows
+	}
+	if r.Workflow != "" {
+		return []string{r.Workflow}
+	}
+	return nil
 }
 
 // OnReady runs once `ensemble up` has brought every active service and

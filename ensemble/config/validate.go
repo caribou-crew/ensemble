@@ -59,6 +59,12 @@ func (c *Config) Validate() error {
 	if c.Retrace != nil && c.Retrace.Since != "" && !retraceSincePattern.MatchString(c.Retrace.Since) {
 		errs = append(errs, fmt.Errorf("retrace: since %q is not a duration like \"7d\", \"24h\", or \"30m\"", c.Retrace.Since))
 	}
+	if c.Retrace != nil && c.Retrace.Repo != "" && len(c.Retrace.Repos) > 0 {
+		errs = append(errs, fmt.Errorf("retrace: set repo or repos, not both"))
+	}
+	if c.Retrace != nil && c.Retrace.Workflow != "" && len(c.Retrace.Workflows) > 0 {
+		errs = append(errs, fmt.Errorf("retrace: set workflow or workflows, not both"))
+	}
 
 	for name, db := range c.Databases {
 		if db.Type == "" {

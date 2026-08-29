@@ -78,3 +78,47 @@ func TestRetraceValidSinceUnitsAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestRetraceEffectiveReposDefaultsToRepo(t *testing.T) {
+	r := RetraceConfig{Repo: "org/repo"}
+	got := r.EffectiveRepos()
+	if len(got) != 1 || got[0] != "org/repo" {
+		t.Errorf("EffectiveRepos() = %v, want [org/repo]", got)
+	}
+}
+
+func TestRetraceEffectiveReposPrefersRepos(t *testing.T) {
+	r := RetraceConfig{Repos: []string{"org/a", "org/b"}}
+	got := r.EffectiveRepos()
+	if len(got) != 2 || got[0] != "org/a" || got[1] != "org/b" {
+		t.Errorf("EffectiveRepos() = %v, want [org/a org/b]", got)
+	}
+}
+
+func TestRetraceEffectiveReposEmptyWhenNeitherSet(t *testing.T) {
+	if got := (RetraceConfig{}).EffectiveRepos(); len(got) != 0 {
+		t.Errorf("EffectiveRepos() = %v, want empty", got)
+	}
+}
+
+func TestRetraceBothRepoAndReposRejected(t *testing.T) {
+	c := &Config{Dir: t.TempDir(), Retrace: &RetraceConfig{Repo: "org/a", Repos: []string{"org/b"}}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected an error when both repo and repos are set")
+	}
+}
+
+func TestRetraceEffectiveWorkflowsDefaultsToWorkflow(t *testing.T) {
+	r := RetraceConfig{Workflow: "retrace-ios"}
+	got := r.EffectiveWorkflows()
+	if len(got) != 1 || got[0] != "retrace-ios" {
+		t.Errorf("EffectiveWorkflows() = %v, want [retrace-ios]", got)
+	}
+}
+
+func TestRetraceBothWorkflowAndWorkflowsRejected(t *testing.T) {
+	c := &Config{Dir: t.TempDir(), Retrace: &RetraceConfig{Workflow: "a", Workflows: []string{"b"}}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected an error when both workflow and workflows are set")
+	}
+}
