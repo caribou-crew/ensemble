@@ -156,6 +156,19 @@
   color: var(--text-secondary);
 }
 
+.item__video {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+}
+
+.item__report-link {
+  font-size: 0.78rem;
+  color: var(--accent-strong);
+}
+
 .picker {
   position: fixed;
   right: 1rem;
@@ -251,6 +264,22 @@
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.8rem;
+}
+
+.sync-panel__toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sync-panel__toolbar button {
+  background: var(--bg-raised-2);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
 }
 
 .sync-panel__candidates {

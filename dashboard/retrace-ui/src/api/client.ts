@@ -4,6 +4,7 @@
 // retried accept is a second promotion.
 
 import type {
+  Evidence,
   FieldDiff,
   ItemResponse,
   QueueResponse,
@@ -328,7 +329,27 @@ export const api = {
   sync(repo: string, selections: SyncSelection[]): Promise<SyncResult> {
     return request<SyncResult>('/api/sync', jsonInit('POST', { repo, selections }));
   },
+  /** GET /api/evidence/{app}/{flow} — what video/report is attached to the
+   * candidate run. Fetched independently of `item()`: evidence attaches
+   * after a run finishes and is never part of Summary. */
+  evidence(app: string, flow: string): Promise<Evidence> {
+    return request<Evidence>(`/api/evidence/${seg(app)}/${seg(flow)}`);
+  },
 };
+
+/** Builds `/api/videos/{app}/{flow}/{name}` — passed straight to a
+ * <video> element's src. */
+export function videoUrl(app: string, flow: string, name: string): string {
+  return `/api/videos/${seg(app)}/${seg(flow)}/${seg(name)}`;
+}
+
+/** Builds `/api/report/{app}/{flow}/` — the candidate run's HTML report
+ * root. Opened in a new tab rather than embedded: the report is a
+ * self-routing SPA (Playwright's html reporter), and an iframe would fight
+ * its own routing. */
+export function reportUrl(app: string, flow: string): string {
+  return `/api/report/${seg(app)}/${seg(flow)}/`;
+}
 
 /** Drops empty-string values so URLSearchParams never carries a filter the
  * caller left blank. */

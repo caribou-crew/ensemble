@@ -11,8 +11,10 @@ import {
   messageOf,
   redactBlastRadius,
   redactRequestFor,
+  reportUrl,
   ruleBlastRadius,
   ruleRequestFor,
+  videoUrl,
   type AcceptBundle,
   type RedactRequest,
   type RejectResult,
@@ -238,6 +240,29 @@ function movedSignals(signals: TriageSignals): string[] {
   return (['capture', 'wire', 'hop', 'spec', 'pixel'] as const).filter((k) => signals[k]);
 }
 
+// A self-contained fetch, not a prop threaded down from ItemScreen's own
+// summary useAsync: video/report attach to a run AFTER it finishes, so they
+// are never part of Summary and are worth failing independently of it — a
+// broken evidence fetch must not blank out the pixel/wire/hop planes it sits
+// beside.
+function EvidenceSection({ app, flow }: { app: string; flow: string }) {
+  const { data } = useAsync(() => api.evidence(app, flow), [app, flow]);
+  if (!data || (data.videos.length === 0 && !data.hasReport)) return null;
+  return (
+    <section className="item__plane item__evidence">
+      <h2>evidence</h2>
+      {data.videos.map((name) => (
+        <video key={name} controls className="item__video" src={videoUrl(app, flow, name)} />
+      ))}
+      {data.hasReport ? (
+        <a className="item__report-link" href={reportUrl(app, flow)} target="_blank" rel="noreferrer">
+          View full test report ↗
+        </a>
+      ) : null}
+    </section>
+  );
+}
+
 function ItemScreen({
   app,
   flow,
@@ -276,6 +301,8 @@ function ItemScreen({
       </header>
 
       <CaptureBanner capture={summary.capture} detail />
+
+      <EvidenceSection app={app} flow={flow} />
 
       {/*
         Above the gates and the planes, because "whose problem is this" is the

@@ -418,3 +418,15 @@ export interface SyncResult {
   synced: string[];
   skipped: { artifact: string; reason: string }[];
 }
+
+/**
+ * GET /api/evidence/{app}/{flow}'s body — retrace/serve/evidence.go's
+ * Evidence, what's available to view for the candidate ("b") run, never the
+ * files themselves. `videos` is never null on the wire — always `[]` for
+ * "none attached" — because it attaches to a run AFTER `retrace run`/sync
+ * finishes and is never part of Summary.
+ */
+export interface Evidence {
+  videos: string[];
+  hasReport: boolean;
+}

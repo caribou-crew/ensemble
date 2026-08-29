@@ -131,6 +131,48 @@ func TestWebReplayBundleIsMergedAsPixelOnlyRun(t *testing.T) {
 	}
 }
 
+// The Playwright reporter (adapters/playwright) writes video and its HTML
+// report into the ACTIVE run's videos/ and report/ dirs at capture time,
+// alongside shots/ — so by the time this bundle is a downloaded CI
+// artifact, videos/report are already part of the tree the web-replay path
+// copies. This pins that copyTree(b.runDir, ...) carries them through
+// unchanged, with no separate video-routing step needed in sync itself.
+func TestWebReplayBundleCarriesVideoAndReportThrough(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 28, 23, 45, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "Retrace Web Replay", "headSha": "2bf33e4", "headBranch": "main", "event": "push", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-28T23:00:00Z", "status": "completed"}]`)
+	stageWebReplayDownload(t, 1, "web", "card-views", "20260828T234154Z-2bf33e4")
+	stageActor(t, 1, "octocat")
+
+	root := os.Getenv("GH_FAKE_DOWNLOAD_SRC")
+	runDir := filepath.Join(root, itoa(1), "web", "card-views", "20260828T234154Z-2bf33e4")
+	if err := os.MkdirAll(filepath.Join(runDir, "videos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "videos", "pan.webm"), []byte("fake-video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(runDir, "report"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "report", "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd := t.TempDir()
+	if _, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	dest := filepath.Join(runs.RunsRoot(cwd), "web", "card-views", "20260828T234154Z-2bf33e4")
+	if b, err := os.ReadFile(filepath.Join(dest, "videos", "pan.webm")); err != nil || string(b) != "fake-video" {
+		t.Errorf("videos/pan.webm after merge = %q, %v, want \"fake-video\", nil", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "report", "index.html")); err != nil || string(b) != "<html></html>" {
+		t.Errorf("report/index.html after merge = %q, %v, want \"<html></html>\", nil", b, err)
+	}
+}
+
 // A run whose artifact carries BOTH a manifest.json and a shots/ dir is a
 // native run; the web-replay merge path must never double-merge it.
 func TestNativeRunWithShotsIsNotDoubleMerged(t *testing.T) {

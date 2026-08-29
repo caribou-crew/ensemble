@@ -143,6 +143,7 @@ function stubServer(opts: {
   queue?: Item[];
   empty?: string;
   item?: Summary;
+  evidence?: { videos: string[]; hasReport: boolean };
   posts?: Record<string, unknown>;
 } = {}) {
   const calls: Call[] = [];
@@ -156,6 +157,8 @@ function stubServer(opts: {
       let body: unknown = { ok: true };
       if (url === '/api/queue') {
         body = { items: opts.queue ?? QUEUE, empty: opts.empty ?? '' };
+      } else if (url.startsWith('/api/evidence/')) {
+        body = opts.evidence ?? { videos: [], hasReport: false };
       } else if (method === 'GET') {
         body = { summary: opts.item ?? summary() };
       } else {
@@ -792,5 +795,37 @@ describe('the item screen', () => {
     const section = container.querySelector('.item__budgets');
     expect(section?.textContent).toContain('pixel');
     expect(section?.textContent).not.toContain('not evaluated');
+  });
+});
+
+/**
+ * Evidence (video/report) is fetched independently of the summary — it
+ * attaches to a run AFTER `retrace run`/sync finishes, so it is never part
+ * of Summary and must not blank the pixel/wire/hop planes if its own fetch
+ * fails or comes back empty.
+ */
+describe('evidence (video + report)', () => {
+  it('renders nothing when the candidate run has no evidence', async () => {
+    const calls = stubServer({ evidence: { videos: [], hasReport: false } });
+    await mount();
+    await openAFlow(calls);
+    expect(container.querySelector('.item__evidence')).toBeNull();
+  });
+
+  it('plays a video and links to the full report', async () => {
+    const calls = stubServer({
+      evidence: { videos: ['card-views.webm'], hasReport: true },
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const video = container.querySelector('.item__video') as HTMLVideoElement | null;
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute('src')).toBe('/api/videos/web/search/card-views.webm');
+
+    const link = container.querySelector('.item__report-link') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('/api/report/web/search/');
+    expect(link?.getAttribute('target')).toBe('_blank');
   });
 });
