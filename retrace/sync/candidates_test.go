@@ -1,7 +1,9 @@
 package sync
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +73,51 @@ func TestListAppliesWorkflowGlobFilter(t *testing.T) {
 	}
 	if len(candidates) != 1 || candidates[0].DatabaseID != 2 {
 		t.Fatalf("candidates = %+v, want only run 2", candidates)
+	}
+}
+
+// List fetches each candidate's actor+artifact-count concurrently
+// (candidateFetchConcurrency workers), writing into a result slot reserved
+// by index rather than appended in completion order — this pins that a
+// bounded-parallel fetch never mixes up which actor/artifact-count belongs
+// to which run, with enough runs to exceed the worker pool and force
+// several fetches to actually overlap.
+func TestListParallelFetchDoesNotMisattributeRuns(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+
+	const n = 20
+	var runsJSON strings.Builder
+	runsJSON.WriteString("[")
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			runsJSON.WriteString(",")
+		}
+		createdAt := now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)
+		fmt.Fprintf(&runsJSON, `{"databaseId": %d, "workflowName": "Retrace Replay", "headBranch": "main", "event": "push", "status": "completed", "conclusion": "success", "headSha": "aaa%04d", "url": "https://github.com/org/repo/actions/runs/%d", "createdAt": %q}`, i, i, i, createdAt)
+		stageActor(t, int64(i), fmt.Sprintf("actor-%d", i))
+		stageArtifactCount(t, int64(i), i%2)
+	}
+	runsJSON.WriteString("]")
+	writeRunListJSON(t, runsJSON.String())
+
+	cwd := t.TempDir()
+	candidates, err := List(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(candidates) != n {
+		t.Fatalf("candidates = %d, want %d", len(candidates), n)
+	}
+	for _, c := range candidates {
+		wantActor := fmt.Sprintf("actor-%d", c.DatabaseID)
+		if c.Actor != wantActor {
+			t.Errorf("run %d: Actor = %q, want %q", c.DatabaseID, c.Actor, wantActor)
+		}
+		wantHas := c.DatabaseID%2 == 1
+		if c.HasArtifacts != wantHas {
+			t.Errorf("run %d: HasArtifacts = %v, want %v", c.DatabaseID, c.HasArtifacts, wantHas)
+		}
 	}
 }
 

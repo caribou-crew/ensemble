@@ -11,8 +11,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// candidateFetchConcurrency bounds how many runs' actor+artifact `gh api`
+// calls List issues at once. Each candidate costs two subprocess spawns
+// that only wait on GitHub's API, not local CPU, so a worker count well
+// above GOMAXPROCS still pays off — this is I/O-bound fan-out, not compute.
+// Fixed rather than GOMAXPROCS-scaled for the same reason: more workers cost
+// nothing but a few idle goroutines when there are fewer runs than this.
+const candidateFetchConcurrency = 8
 
 // Candidate is one workflow run List surfaces for browsing. It carries
 // enough to judge a run without downloading anything: HasArtifacts and
@@ -59,7 +68,11 @@ func List(o Options) ([]Candidate, error) {
 	}
 
 	cutoff := o.now().Add(-o.since())
-	candidates := []Candidate{}
+	type matched struct {
+		repo string
+		run  ghRun
+	}
+	var runsToFetch []matched
 	for _, repo := range repos {
 		list, err := listGitHubRuns(o, repo)
 		if err != nil {
@@ -72,22 +85,51 @@ func List(o Options) ([]Candidate, error) {
 			if r.CreatedAt.Before(cutoff) {
 				continue
 			}
-			actor, err := fetchActor(repo, r.DatabaseID)
-			if err != nil {
-				return nil, err
-			}
-			has, err := runHasArtifacts(repo, r.DatabaseID)
-			if err != nil {
-				return nil, err
-			}
-			candidates = append(candidates, Candidate{
-				Repo: repo, DatabaseID: r.DatabaseID, WorkflowName: r.WorkflowName,
-				HeadBranch: r.HeadBranch, Actor: actor, Event: r.Event,
-				Status: r.Status, Conclusion: r.Conclusion, CreatedAt: r.CreatedAt,
-				URL: r.URL, HasArtifacts: has,
-			})
+			runsToFetch = append(runsToFetch, matched{repo: repo, run: r})
 		}
 	}
+
+	// actor and hasArtifacts are each a separate `gh api` subprocess per
+	// run, and both only wait on GitHub's network — fetching them
+	// sequentially made List's latency scale with candidate count. Result
+	// order does not matter here: every candidate lands in the slot its own
+	// index reserved, and the sort below re-orders the whole list by
+	// CreatedAt regardless of fetch completion order.
+	candidates := make([]Candidate, len(runsToFetch))
+	errs := make([]error, len(runsToFetch))
+	sem := make(chan struct{}, candidateFetchConcurrency)
+	var wg sync.WaitGroup
+	for i, m := range runsToFetch {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, m matched) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			actor, err := fetchActor(m.repo, m.run.DatabaseID)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			has, err := runHasArtifacts(m.repo, m.run.DatabaseID)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			candidates[i] = Candidate{
+				Repo: m.repo, DatabaseID: m.run.DatabaseID, WorkflowName: m.run.WorkflowName,
+				HeadBranch: m.run.HeadBranch, Actor: actor, Event: m.run.Event,
+				Status: m.run.Status, Conclusion: m.run.Conclusion, CreatedAt: m.run.CreatedAt,
+				URL: m.run.URL, HasArtifacts: has,
+			}
+		}(i, m)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].CreatedAt.After(candidates[j].CreatedAt) })
 	return candidates, nil
 }
