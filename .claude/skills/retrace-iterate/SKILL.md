@@ -376,6 +376,14 @@ still works exactly as before — it is sugar for a single listener named
 `client-edge`, which is why `RETRACE_PROXY_URL` keeps working unchanged
 for every project that has not adopted `listeners:`.
 
+Every loopback listener — capture or replay, whether or not you configure
+`listeners:` — also best-effort answers on the OTHER loopback address
+family (`127.0.0.1` and `::1`) on the same port, even though only one gets
+advertised in `RETRACE_PROXY_URL`/`RETRACE_PROXY_URL_<NAME>`. This matters
+for clients that resolve `localhost` to a different family than retrace
+happened to bind — an iOS Simulator on some hosts, for example — without
+needing an explicit `host:` on any listener entry.
+
 Full design: `openspec/changes/retrace-multi-listener/design.md`.
 
 ### Field-level encryption (`redact:` with `mode: encrypt`)

@@ -33,6 +33,15 @@ Re-running `retrace sync` is safe and cheap: a run already merged onto
 local disk (by run-id directory) is left untouched, not re-downloaded on
 top of.
 
+A run with no downloadable artifacts (an unrelated workflow, an older run
+whose retention already expired, a run GitHub reports "no valid artifacts
+found to download" for) is **skipped with a reason, not fatal** — it shows
+up in `Skipped`/`--json`'s `"skipped"` array and sync continues to every
+other matching run. Nothing about `--since`, `--workflow`, or any other
+filter changes this: a bulk sync across a repo with many unrelated or
+artifact-less runs completes and reports what it could and couldn't pull,
+rather than aborting on the first one that has nothing to offer.
+
 ## Video and test-report evidence
 
 A run directory may also carry a `videos/` subdirectory (one file per
