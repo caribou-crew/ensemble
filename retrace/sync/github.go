@@ -199,15 +199,29 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(manifests) == 0 {
+	webReplays, err := findWebReplayBundles(tmp)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(manifests) == 0 && len(webReplays) == 0 {
 		return nil, []SkipReason{{
 			Artifact: label,
-			Reason:   "no <app>/<flow>/<run-id>/manifest.json found anywhere in the downloaded artifact(s)",
+			Reason:   "no <app>/<flow>/<run-id>/manifest.json and no pixel-replay shots found anywhere in the downloaded artifact(s)",
 		}}, nil
 	}
 
 	var actor string
 	var actorFetched bool
+	fetchActorOnce := func() error {
+		if actorFetched {
+			return nil
+		}
+		var ferr error
+		actor, ferr = fetchActor(repo, r.DatabaseID)
+		actorFetched = true
+		return ferr
+	}
+
 	for _, m := range manifests {
 		runDir := filepath.Dir(m)
 		runID := filepath.Base(runDir)
@@ -230,12 +244,8 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 		if err := copyTree(runDir, dest); err != nil {
 			return synced, skipped, fmt.Errorf("sync: copying %s/%s/%s: %w", app, flow, runID, err)
 		}
-		if !actorFetched {
-			actor, err = fetchActor(repo, r.DatabaseID)
-			if err != nil {
-				return synced, skipped, err
-			}
-			actorFetched = true
+		if err := fetchActorOnce(); err != nil {
+			return synced, skipped, err
 		}
 		if err := runs.WriteSource(runs.Paths{RunDir: dest}, runs.Source{
 			Kind: runs.SourceKindCI, Workflow: r.WorkflowName, RunURL: r.URL, SHA: r.HeadSHA,
@@ -245,6 +255,49 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 		}
 		synced = append(synced, filepath.Join(app, flow, runID))
 	}
+
+	// Pixel-only replay bundles (e.g. a Playwright `retrace replay`
+	// artifact) never write their own manifest.json — synthesize one here
+	// and finalize the run, so `retrace runs` reports it complete rather
+	// than abandoned.
+	for _, b := range webReplays {
+		paths, perr := runs.PathsFor(runs.RunsRoot(o.Cwd), b.app, b.flow, b.runID)
+		if perr != nil {
+			skipped = append(skipped, SkipReason{
+				Artifact: label,
+				Reason:   fmt.Sprintf("pixel replay at an unusable path (need <app>/<flow>/<run-id>/shots): %v", perr),
+			})
+			continue
+		}
+		if _, statErr := os.Stat(paths.RunDir); statErr == nil {
+			continue // already synced — same idempotency check as the manifest loop
+		}
+
+		manifest, merr := synthesizeReplayManifest(b)
+		if merr != nil {
+			return synced, skipped, fmt.Errorf("sync: reading shots for %s/%s/%s: %w", b.app, b.flow, b.runID, merr)
+		}
+		if err := copyTree(b.runDir, paths.RunDir); err != nil {
+			return synced, skipped, fmt.Errorf("sync: copying %s/%s/%s: %w", b.app, b.flow, b.runID, err)
+		}
+		if err := runs.WriteManifest(paths, &manifest); err != nil {
+			return synced, skipped, fmt.Errorf("sync: writing synthesized manifest for %s/%s/%s: %w", b.app, b.flow, b.runID, err)
+		}
+		if err := fetchActorOnce(); err != nil {
+			return synced, skipped, err
+		}
+		if err := runs.WriteSource(paths, runs.Source{
+			Kind: runs.SourceKindCI, Workflow: r.WorkflowName, RunURL: r.URL, SHA: r.HeadSHA,
+			HeadBranch: r.HeadBranch, Event: r.Event, Actor: actor, SyncedAt: o.now(),
+		}); err != nil {
+			return synced, skipped, fmt.Errorf("sync: writing source.json for %s/%s/%s: %w", b.app, b.flow, b.runID, err)
+		}
+		if err := runs.Finalize(paths, runs.Finalized{RunID: b.runID, FinishedAt: o.now()}); err != nil {
+			return synced, skipped, fmt.Errorf("sync: finalizing %s/%s/%s: %w", b.app, b.flow, b.runID, err)
+		}
+		synced = append(synced, filepath.Join(b.app, b.flow, b.runID))
+	}
+
 	return synced, skipped, nil
 }
 

@@ -18,6 +18,13 @@ import (
 const (
 	ModeEnsemble   = "ensemble"
 	ModeStandalone = "standalone"
+	// ModePixel is a screenshot-only capture: evidence is shots, no wire
+	// plane by design (a pixel-only replay — e.g. a browser-driven web
+	// replay — never proxies). Trust is judged on shots-present, NOT
+	// hops-present — the VerdictOK⇒len(Hops)>0 rule capture.Assess enforces
+	// is about wire captures and does not apply here; retrace/sync assesses
+	// ModePixel runs with its own trust function instead of capture.Assess.
+	ModePixel = "pixel"
 )
 
 // Manifest is the versioned index of one run directory.
