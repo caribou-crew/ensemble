@@ -79,7 +79,7 @@ func TestSyncJSONRoundTripsThroughSyncResult(t *testing.T) {
 	fakeGHOnPath(t)
 
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z"}]`), 0o644); err != nil {
+	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)

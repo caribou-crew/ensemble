@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,9 @@ func fakeGH(t *testing.T) {
 	dir := t.TempDir()
 	script := `#!/bin/sh
 set -e
+if [ -n "$GH_FAKE_INVOCATION_LOG" ]; then
+  echo "$*" >> "$GH_FAKE_INVOCATION_LOG"
+fi
 if [ "$1" = "run" ] && [ "$2" = "list" ]; then
   cat "$GH_FAKE_RUN_LIST_JSON"
   exit 0
@@ -41,6 +45,12 @@ if [ "$1" = "run" ] && [ "$2" = "download" ]; then
     if [ "$1" = "--dir" ]; then dir="$2"; fi
     shift
   done
+  case ",$GH_FAKE_DOWNLOAD_FAIL_IDS," in
+    *",$runid,"*)
+      echo "no valid artifacts found to download" >&2
+      exit 1
+      ;;
+  esac
   src="$GH_FAKE_DOWNLOAD_SRC/$runid"
   if [ -d "$src" ]; then
     cp -R "$src/." "$dir/"
@@ -55,6 +65,12 @@ exit 1
 		t.Fatalf("writing fake gh: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	logPath := filepath.Join(dir, "invocations.log")
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatalf("creating invocation log: %v", err)
+	}
+	t.Setenv("GH_FAKE_INVOCATION_LOG", logPath)
 }
 
 // writeRunListJSON points GH_FAKE_RUN_LIST_JSON at a file containing the
@@ -97,9 +113,9 @@ func TestFirstSyncPullsEverythingInRange(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	writeRunListJSON(t, `[
-		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z"},
-		{"databaseId": 2, "workflowName": "retrace-android", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-26T10:00:00Z"},
-		{"databaseId": 3, "workflowName": "retrace-web", "headSha": "ccc3333", "url": "https://github.com/org/repo/actions/runs/3", "createdAt": "2026-08-25T10:00:00Z"}
+		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"},
+		{"databaseId": 2, "workflowName": "retrace-android", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-26T10:00:00Z", "status": "completed"},
+		{"databaseId": 3, "workflowName": "retrace-web", "headSha": "ccc3333", "url": "https://github.com/org/repo/actions/runs/3", "createdAt": "2026-08-25T10:00:00Z", "status": "completed"}
 	]`)
 	stageDownload(t, 1, "ios", "checkout", "20260827T090000Z-aaa1111")
 	stageDownload(t, 2, "android", "checkout", "20260826T090000Z-bbb2222")
@@ -139,7 +155,7 @@ func TestFirstSyncPullsEverythingInRange(t *testing.T) {
 func TestReSyncingIsIdempotent(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z"}]`)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
 	stageDownload(t, 1, "ios", "checkout", "20260827T090000Z-aaa1111")
 
 	cwd := t.TempDir()
@@ -177,7 +193,7 @@ func TestReSyncingIsIdempotent(t *testing.T) {
 func TestMalformedArtifactIsSkippedNotMerged(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	writeRunListJSON(t, `[{"databaseId": 9, "workflowName": "retrace-ios", "headSha": "zzz9999", "url": "https://github.com/org/repo/actions/runs/9", "createdAt": "2026-08-27T10:00:00Z"}]`)
+	writeRunListJSON(t, `[{"databaseId": 9, "workflowName": "retrace-ios", "headSha": "zzz9999", "url": "https://github.com/org/repo/actions/runs/9", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
 	// No stageDownload call for run 9: the fake gh's `run download` finds
 	// no matching source directory and produces an empty --dir, exactly
 	// as a real artifact containing files but no manifest.json would.
@@ -204,8 +220,8 @@ func TestSinceFilteringExcludesOlderRuns(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	writeRunListJSON(t, `[
-		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T00:00:00Z"},
-		{"databaseId": 2, "workflowName": "retrace-ios", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-01T00:00:00Z"}
+		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T00:00:00Z", "status": "completed"},
+		{"databaseId": 2, "workflowName": "retrace-ios", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-01T00:00:00Z", "status": "completed"}
 	]`)
 	stageDownload(t, 1, "ios", "checkout", "20260827T000000Z-aaa1111")
 	stageDownload(t, 2, "ios", "checkout", "20260801T000000Z-bbb2222")
@@ -217,6 +233,69 @@ func TestSinceFilteringExcludesOlderRuns(t *testing.T) {
 	}
 	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("ios", "checkout", "20260827T000000Z-aaa1111") {
 		t.Fatalf("Synced = %v, want only the run inside the 48h window", res.Synced)
+	}
+}
+
+func TestNonCompletedRunIsSkippedNotDownloaded(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[
+		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "in_progress"},
+		{"databaseId": 2, "workflowName": "retrace-web", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T09:00:00Z", "status": "completed"}
+	]`)
+	// No stageDownload for run 1: if the code tried to download it, the
+	// fake gh's own successful-but-empty response would still mask the
+	// bug this test exists to catch, so it also asserts on the invocation
+	// log below rather than only on the final result.
+	stageDownload(t, 2, "web", "checkout", "20260827T090000Z-bbb2222")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("web", "checkout", "20260827T090000Z-bbb2222") {
+		t.Fatalf("Synced = %v, want only run 2", res.Synced)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Artifact != "run 1 (retrace-ios)" {
+		t.Fatalf("Skipped = %v, want one entry naming run 1", res.Skipped)
+	}
+	if !strings.Contains(res.Skipped[0].Reason, "in_progress") {
+		t.Fatalf("Skipped[0].Reason = %q, want it to name the status", res.Skipped[0].Reason)
+	}
+
+	log, err := os.ReadFile(filepath.Join(os.Getenv("GH_FAKE_INVOCATION_LOG")))
+	if err != nil {
+		t.Fatalf("reading invocation log: %v", err)
+	}
+	if strings.Contains(string(log), "download 1 ") {
+		t.Fatalf("gh run download was invoked for the non-completed run — the pre-check did not avoid it:\n%s", log)
+	}
+}
+
+func TestDownloadFailureIsSkippedNotAborted(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[
+		{"databaseId": 1, "workflowName": "retrace-ios", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"},
+		{"databaseId": 2, "workflowName": "retrace-web", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T09:00:00Z", "status": "completed"}
+	]`)
+	t.Setenv("GH_FAKE_DOWNLOAD_FAIL_IDS", "1")
+	stageDownload(t, 2, "web", "checkout", "20260827T090000Z-bbb2222")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v — a single run's download failure must not abort the batch", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("web", "checkout", "20260827T090000Z-bbb2222") {
+		t.Fatalf("Synced = %v, want only run 2", res.Synced)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Artifact != "run 1 (retrace-ios)" {
+		t.Fatalf("Skipped = %v, want one entry naming run 1", res.Skipped)
+	}
+	if !strings.Contains(res.Skipped[0].Reason, "no valid artifacts") {
+		t.Fatalf("Skipped[0].Reason = %q, want the gh failure text", res.Skipped[0].Reason)
 	}
 }
 

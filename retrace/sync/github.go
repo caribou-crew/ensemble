@@ -10,20 +10,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
 // ghRun is one row of `gh run list --json databaseId,workflowName,headSha,
-// url,createdAt`. Field names are exactly gh's own JSON keys, so this
-// struct decodes gh's output with no field remapping to get wrong.
+// headBranch,event,status,conclusion,url,createdAt`. Field names are
+// exactly gh's own JSON keys, so this struct decodes gh's output with no
+// field remapping to get wrong.
 type ghRun struct {
 	DatabaseID   int64     `json:"databaseId"`
 	WorkflowName string    `json:"workflowName"`
+	HeadBranch   string    `json:"headBranch"`
 	HeadSHA      string    `json:"headSha"`
+	Event        string    `json:"event"`
+	Status       string    `json:"status"`
+	Conclusion   string    `json:"conclusion"`
 	URL          string    `json:"url"`
 	CreatedAt    time.Time `json:"createdAt"`
+}
+
+// runLabel names one run for a SkipReason — "run <id> (<workflow>)".
+func runLabel(r ghRun) string {
+	return fmt.Sprintf("run %d (%s)", r.DatabaseID, r.WorkflowName)
 }
 
 // runGitHub is the "github" backend Run dispatches to.
@@ -51,6 +62,13 @@ func runGitHub(o Options) (Result, error) {
 		if r.CreatedAt.Before(cutoff) {
 			continue
 		}
+		if r.Status != "completed" {
+			result.Skipped = append(result.Skipped, SkipReason{
+				Artifact: runLabel(r),
+				Reason:   fmt.Sprintf("run is %s, not completed — skipping rather than risking a doomed download", r.Status),
+			})
+			continue
+		}
 		synced, skipped, err := syncOneRun(o, r)
 		if err != nil {
 			return Result{}, err
@@ -62,7 +80,7 @@ func runGitHub(o Options) (Result, error) {
 }
 
 func listGitHubRuns(o Options) ([]ghRun, error) {
-	args := []string{"run", "list", "--repo", o.Repo, "--json", "databaseId,workflowName,headSha,url,createdAt", "--limit", "100"}
+	args := []string{"run", "list", "--repo", o.Repo, "--json", "databaseId,workflowName,headSha,headBranch,event,status,conclusion,url,createdAt", "--limit", "100"}
 	if o.Workflow != "" {
 		args = append(args, "--workflow", o.Workflow)
 	}
@@ -101,16 +119,19 @@ func syncOneRun(o Options, r ghRun) (synced []string, skipped []SkipReason, err 
 	}
 	defer os.RemoveAll(tmp)
 
+	label := runLabel(r)
 	dlArgs := []string{"run", "download", strconv.FormatInt(r.DatabaseID, 10), "--repo", o.Repo, "--dir", tmp}
 	if out, err := exec.Command("gh", dlArgs...).CombinedOutput(); err != nil {
-		return nil, nil, fmt.Errorf("sync: gh run download %d: %w: %s", r.DatabaseID, err, string(out))
+		return nil, []SkipReason{{
+			Artifact: label,
+			Reason:   fmt.Sprintf("gh run download failed: %v: %s", err, strings.TrimSpace(string(out))),
+		}}, nil
 	}
 
 	manifests, err := findManifests(tmp)
 	if err != nil {
 		return nil, nil, err
 	}
-	label := fmt.Sprintf("run %d (%s)", r.DatabaseID, r.WorkflowName)
 	if len(manifests) == 0 {
 		return nil, []SkipReason{{
 			Artifact: label,
