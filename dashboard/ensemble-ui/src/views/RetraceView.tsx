@@ -155,7 +155,34 @@ function EvidenceSection({ app, flow }: { app: string; flow: string }) {
   );
 }
 
-function DetailPane({ app, flow, summary }: { app: string; flow: string; summary: RetraceSummary }) {
+/**
+ * Exported for the sync panel's run-detail view (RetraceSyncPanel.tsx),
+ * which embeds this exact rendering to let a reviewer inspect any run in
+ * the CI candidate list, not only the flow currently selected in the main
+ * queue table. DetailPane carries no mutation actions of its own — there
+ * is no accept/reject/rule verb anywhere in this component or in
+ * RetraceView — so embedding it elsewhere is safe with no risk to the
+ * main queue's own state.
+ *
+ * `resolveShotUrl` and `onReveal` default to the "latest" queue's own
+ * routes; the sync panel's run-detail view passes run-scoped versions
+ * (resolveRetraceShotUrlAtRun / api.retraceItemAtRun) instead, so a
+ * non-latest run's generated diff/overlay images are read from their own
+ * cache rather than the "latest" queue's.
+ */
+export function DetailPane({
+  app,
+  flow,
+  summary,
+  resolveShotUrl = resolveRetraceShotUrl,
+  onReveal,
+}: {
+  app: string;
+  flow: string;
+  summary: RetraceSummary;
+  resolveShotUrl?: (app: string, flow: string, side: string, name: string) => string;
+  onReveal?: () => Promise<RetraceSummary['sections']>;
+}) {
   const [selectedField, setSelectedField] = useState<string | null>(null);
 
   function onSelectField(entry: Entry, field: FieldDiff) {
@@ -197,7 +224,7 @@ function DetailPane({ app, flow, summary }: { app: string; flow: string; summary
               <p className="retrace-detail__none">This flow captured no checkpoints.</p>
             ) : (
               summary.checkpoints.map((cp) => (
-                <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveRetraceShotUrl} />
+                <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
               ))
             )}
           </section>
@@ -208,7 +235,7 @@ function DetailPane({ app, flow, summary }: { app: string; flow: string; summary
               sections={summary.sections}
               selectedField={selectedField}
               onSelectField={onSelectField}
-              onReveal={() => api.retraceItem(app, flow).then((s) => s.sections)}
+              onReveal={onReveal ?? (() => api.retraceItem(app, flow).then((s) => s.sections))}
             />
           </section>
 

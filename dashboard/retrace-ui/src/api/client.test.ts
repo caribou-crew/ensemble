@@ -106,3 +106,27 @@ describe('shotUrl', () => {
     expect(() => api.shotUrl('web', 'search', 'diff', '')).toThrow(/no diff-side image/);
   });
 });
+
+describe('itemAtRun', () => {
+  it('hits the run-scoped item route rather than the plain (latest) one', async () => {
+    const calls = captureFetch(fakeResponse({ summary: {} }));
+    await api.itemAtRun('web', 'search', '20260821T101000Z-bbbbbbb');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/queue/web/search/runs/20260821T101000Z-bbbbbbb');
+  });
+});
+
+describe('shotUrlAtRun', () => {
+  it('builds a run-scoped shot URL, distinct from the plain (latest) route', () => {
+    expect(api.shotUrlAtRun('web', 'search', '20260821T101000Z-bbbbbbb', 'diff', 'results')).toBe(
+      '/api/shots/web/search/runs/20260821T101000Z-bbbbbbb/diff/results',
+    );
+  });
+
+  it('throws rather than building a URL for a side the summary never wrote', () => {
+    expect(() => api.shotUrlAtRun('web', 'search', '20260821T101000Z-bbbbbbb', 'diff', '')).toThrow(
+      /no diff-side image/,
+    );
+  });
+});

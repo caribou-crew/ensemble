@@ -1,13 +1,18 @@
-// Discover → filter → select → pull: GET /api/retrace/sync/candidates
-// lists what's out there without downloading anything; only rows checked
-// here get pulled via POST /api/retrace/sync's {selections} body. Replaces
-// the old single "Sync now" button, which pulled everything in the
-// configured window and aborted the whole batch on one bad run.
+// Discover → filter → click-to-pull-and-view: GET /api/retrace/sync/
+// candidates lists what's out there without downloading anything; clicking
+// a row either opens it directly (already pulled — runs.SourcesByURL's
+// localRuns join, no network call) or pulls just that one candidate via
+// POST /api/retrace/sync's {selections} body and opens from the result.
+// Replaces the old checkbox + "Pull N selected" bar, which asked a
+// reviewer to select rows blind and only showed a pulled-count afterwards
+// — this shows the flow itself.
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
+import { useAsync } from '@ensemble/design-system/useAsync';
 import { mergeCandidates, sinceParam } from '@ensemble/design-system/syncCandidates';
-import { api, messageOf } from '../api/client';
-import type { RetraceCandidate, RetraceSyncResult } from '../api/types';
+import { api, messageOf, resolveRetraceShotUrlAtRun } from '../api/client';
+import type { RetraceCandidate } from '../api/types';
+import { DetailPane } from './RetraceView';
 import './RetraceView.css';
 
 function candidateKey(c: RetraceCandidate): string {
@@ -30,6 +35,80 @@ function matchesFilter(c: RetraceCandidate, filter: string): boolean {
   return [c.workflowName, c.headBranch, c.actor, c.event].some((field) => field.toLowerCase().includes(needle));
 }
 
+/** One "app/flow/run-id" — runs.SourcesByURL's / sync.Result's own
+ * encoding — parsed into its three components. app/flow/run-id are each
+ * validated (runs.ValidateComponents) to contain no path separator, so a
+ * plain split on "/" always yields exactly these three parts. */
+interface RunRef {
+  app: string;
+  flow: string;
+  runId: string;
+}
+function parseRunPath(path: string): RunRef {
+  const [app, flow, runId] = path.split('/');
+  return { app, flow, runId };
+}
+function runKey(r: RunRef): string {
+  return `${r.app}/${r.flow}/${r.runId}`;
+}
+
+/** The read-only run-detail view: this panel's click target for one flow.
+ * Reuses DetailPane exactly as RetraceView's own main queue does, pointed
+ * at run-scoped routes (retraceItemAtRun / resolveRetraceShotUrlAtRun) so a
+ * non-latest run's generated diff/overlay images are read from their own
+ * cache instead of the "latest" queue's. DetailPane carries no mutation
+ * actions of its own, so nesting it here risks nothing in the main queue's
+ * own state. */
+function RunDetail({ app, flow, runId, onBack }: RunRef & { onBack: () => void }) {
+  const item = useAsync(() => api.retraceItemAtRun(app, flow, runId), [app, flow, runId]);
+
+  return (
+    <div className="retrace-sync-panel__detail">
+      <button type="button" className="retrace-sync-panel__back" onClick={onBack}>
+        ← back to results
+      </button>
+      {item.loading ? (
+        <p className="retrace-view__hint">
+          <Spinner /> loading {app}/{flow}…
+        </p>
+      ) : item.error ? (
+        <p className="retrace-view__sync-error">{messageOf(item.error, 'failed to load flow detail')}</p>
+      ) : item.data ? (
+        <DetailPane
+          app={app}
+          flow={flow}
+          summary={item.data}
+          resolveShotUrl={resolveRetraceShotUrlAtRun(runId)}
+          onReveal={() => api.retraceItemAtRun(app, flow, runId).then((s) => s.sections)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Shown when a candidate's CI run produced more than one flow — a single
+ * job can record several — so the reviewer picks which one to look at
+ * instead of the panel guessing. */
+function RunChooser({ refs, onPick, onBack }: { refs: RunRef[]; onPick: (r: RunRef) => void; onBack: () => void }) {
+  return (
+    <div className="retrace-sync-panel__chooser" role="dialog" aria-label="choose a flow">
+      <button type="button" className="retrace-sync-panel__back" onClick={onBack}>
+        ← back to results
+      </button>
+      <p>This run produced {refs.length} flows — pick one:</p>
+      <ul>
+        {refs.map((r) => (
+          <li key={runKey(r)}>
+            <button type="button" className="retrace-sync-panel__chooser-option" onClick={() => onPick(r)}>
+              {r.app}/{r.flow}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function RetraceSyncPanel({
   onClose,
   onSynced,
@@ -42,10 +121,10 @@ export default function RetraceSyncPanel({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [filter, setFilter] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [pulling, setPulling] = useState(false);
+  const [pullingKey, setPullingKey] = useState<string | null>(null);
   const [pullError, setPullError] = useState<string | null>(null);
-  const [result, setResult] = useState<RetraceSyncResult | null>(null);
+  const [chooser, setChooser] = useState<RunRef[] | null>(null);
+  const [detail, setDetail] = useState<RunRef | null>(null);
 
   // The initial load, once on mount. Unlike useAsync, this state is never
   // cleared by a later fetch — see refresh below, whose whole point is
@@ -72,7 +151,7 @@ export default function RetraceSyncPanel({
   // Asks only for runs newer than the newest one already known (see
   // sinceParam), and merges the result into the list already on screen
   // rather than replacing it — a refresh that fails, or finds nothing new,
-  // leaves the reviewer's current view and selection exactly as they were.
+  // leaves the reviewer's current view exactly as it was.
   async function refresh() {
     if (!candidates || refreshing) return;
     setRefreshing(true);
@@ -91,34 +170,88 @@ export default function RetraceSyncPanel({
   const list = candidates ?? [];
   const visible = useMemo(() => list.filter((c) => matchesFilter(c, filter)), [list, filter]);
 
-  function toggle(c: RetraceCandidate) {
-    const key = candidateKey(c);
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function openPaths(paths: string[]) {
+    const refs = paths.map(parseRunPath);
+    if (refs.length === 0) {
+      setPullError('the pull completed but produced no flows for this run — it may already be fully synced; try refreshing');
+      return;
+    }
+    if (refs.length === 1) {
+      setChooser(null);
+      setDetail(refs[0]);
+      return;
+    }
+    setChooser(refs);
   }
 
-  function selectAllPullable() {
-    setSelected(new Set(visible.filter(isPullable).map(candidateKey)));
-  }
-
-  async function pullSelected() {
-    const chosen = list.filter((c) => selected.has(candidateKey(c)));
-    if (chosen.length === 0) return;
-    setPulling(true);
+  async function openCandidate(c: RetraceCandidate) {
     setPullError(null);
+    if (c.localRuns.length > 0) {
+      openPaths(c.localRuns);
+      return;
+    }
+    if (!isPullable(c)) return;
+    const key = candidateKey(c);
+    setPullingKey(key);
     try {
-      const res = await api.retraceSync(chosen.map((c) => ({ repo: c.repo, databaseId: c.databaseId })));
-      setResult(res);
+      const res = await api.retraceSync([{ repo: c.repo, databaseId: c.databaseId }]);
+      if (res.synced.length === 0) {
+        const reason = res.skipped[0]?.reason;
+        setPullError(
+          reason
+            ? `could not pull ${c.workflowName}: ${reason}`
+            : `the pull for ${c.workflowName} produced no flows — it may already be fully synced; try refreshing`,
+        );
+        return;
+      }
+      // Reflected locally so a reviewer who backs out to the list sees this
+      // row as already pulled, rather than inviting a second, redundant
+      // pull of the same run.
+      setCandidates((prev) =>
+        prev ? prev.map((x) => (candidateKey(x) === key ? { ...x, localRuns: res.synced } : x)) : prev,
+      );
       onSynced();
+      openPaths(res.synced);
     } catch (err) {
       setPullError(messageOf(err, 'sync failed'));
     } finally {
-      setPulling(false);
+      setPullingKey(null);
     }
+  }
+
+  if (detail) {
+    return (
+      <div className="retrace-sync-panel">
+        <div className="retrace-sync-panel__header">
+          <h3>Browse candidate runs</h3>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <RunDetail {...detail} onBack={() => setDetail(null)} />
+      </div>
+    );
+  }
+
+  if (chooser) {
+    return (
+      <div className="retrace-sync-panel">
+        <div className="retrace-sync-panel__header">
+          <h3>Browse candidate runs</h3>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <RunChooser
+          refs={chooser}
+          onPick={(r) => {
+            setChooser(null);
+            setDetail(r);
+          }}
+          onBack={() => setChooser(null)}
+        />
+      </div>
+    );
   }
 
   return (
@@ -144,69 +277,67 @@ export default function RetraceSyncPanel({
       />
 
       {error && <p className="retrace-view__sync-error">{messageOf(error, 'failed to load candidates')}</p>}
+      {pullError && <p className="retrace-view__sync-error">{pullError}</p>}
       {loading && !candidates && <Spinner />}
 
       {candidates && (
-        <>
-          <table className="retrace-sync-panel__table">
-            <thead>
-              <tr>
-                <th />
-                <th>workflow</th>
-                <th>branch</th>
-                <th>actor</th>
-                <th>event</th>
-                <th>status</th>
-                <th>artifacts</th>
-                <th>when</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((c) => {
-                const pullable = isPullable(c);
-                const key = candidateKey(c);
-                return (
-                  <tr key={key} className={pullable ? undefined : 'retrace-sync-panel__row--unpullable'}>
-                    <td>
-                      <input type="checkbox" checked={selected.has(key)} disabled={!pullable} onChange={() => toggle(c)} />
-                    </td>
-                    <td>{c.workflowName}</td>
-                    <td>{c.headBranch}</td>
-                    <td>{c.actor}</td>
-                    <td>{c.event}</td>
-                    <td title={pullable ? undefined : whyNotPullable(c)}>
-                      <Badge tone={pullable ? 'green' : 'amber'}>{c.status}</Badge>
-                    </td>
-                    <td>{c.hasArtifacts ? 'yes' : 'no'}</td>
-                    <td>{new Date(c.createdAt).toLocaleString()}</td>
-                  </tr>
-                );
-              })}
-              {visible.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="retrace-view__empty">
-                    No candidate runs match.
+        <table className="retrace-sync-panel__table">
+          <thead>
+            <tr>
+              <th>workflow</th>
+              <th>branch</th>
+              <th>actor</th>
+              <th>event</th>
+              <th>status</th>
+              <th>artifacts</th>
+              <th>when</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((c) => {
+              const pulled = c.localRuns.length > 0;
+              const pullable = isPullable(c);
+              const clickable = pulled || pullable;
+              const key = candidateKey(c);
+              const pullingThis = pullingKey === key;
+              return (
+                <tr
+                  key={key}
+                  className={`retrace-sync-panel__row${clickable ? ' retrace-sync-panel__row--clickable' : ' retrace-sync-panel__row--unpullable'}`}
+                  onClick={clickable && !pullingThis ? () => void openCandidate(c) : undefined}
+                  aria-disabled={!clickable || pullingThis}
+                >
+                  <td>{c.workflowName}</td>
+                  <td>{c.headBranch}</td>
+                  <td>{c.actor}</td>
+                  <td>{c.event}</td>
+                  <td title={pullable ? undefined : whyNotPullable(c)}>
+                    <Badge tone={pullable ? 'green' : 'amber'}>{c.status}</Badge>
+                  </td>
+                  <td>{c.hasArtifacts ? 'yes' : 'no'}</td>
+                  <td>{new Date(c.createdAt).toLocaleString()}</td>
+                  <td>
+                    {pullingThis ? (
+                      <Spinner />
+                    ) : pulled ? (
+                      <span className="retrace-sync-panel__pulled">already pulled — view</span>
+                    ) : pullable ? (
+                      <span className="retrace-sync-panel__pull-cta">pull &amp; view</span>
+                    ) : null}
                   </td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-
-          <div className="retrace-sync-panel__footer">
-            <button type="button" onClick={selectAllPullable}>
-              Select all pullable
-            </button>
-            <button type="button" onClick={() => void pullSelected()} disabled={pulling || selected.size === 0}>
-              {pulling ? <Spinner /> : `Pull ${selected.size} selected`}
-            </button>
-            {pullError && <span className="retrace-view__sync-error">{pullError}</span>}
-            {result && (
-              <span className="retrace-view__hint">
-                pulled {result.synced.length}, skipped {result.skipped.length}
-              </span>
+              );
+            })}
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={8} className="retrace-view__empty">
+                  No candidate runs match.
+                </td>
+              </tr>
             )}
-          </div>
-        </>
+          </tbody>
+        </table>
       )}
     </div>
   );

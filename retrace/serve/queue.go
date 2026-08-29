@@ -153,6 +153,19 @@ func diffDir(cwd, app, flow string) string {
 	return filepath.Join(cwd, ".retrace", "diffs", app, flow)
 }
 
+// diffDirForRun is diffDir's counterpart for a comparison pinned to a
+// specific B-side run rather than "latest". Without the runID component, a
+// non-latest run's generated diff/overlay PNGs would land at the exact same
+// path the "latest" queue itself reads and writes — diff.writeCheckpointImages
+// keys a PNG by checkpoint NAME alone, so two different runs sharing a
+// checkpoint name would silently clobber each other's cached image, and a
+// concurrent request for "latest" and for an older run could hand either
+// caller the wrong run's picture. runID is validated by the caller before
+// it gets here — see SummaryForRun, which is the one construction seam.
+func diffDirForRun(cwd, app, flow, runID string) string {
+	return filepath.Join(cwd, ".retrace", "diffs", app, flow, "runs", runID)
+}
+
 // BuildQueue diffs every recorded flow and returns them worst first.
 //
 // A flow that cannot be diffed at all — no reference yet, an unreadable
@@ -393,12 +406,24 @@ func brokenItem(app, flow string, err error) Item {
 // diff.OptionsFor seam, so the queue and the CLI cannot disagree about what
 // a flow's verdict is.
 func SummaryFor(d Deps, app, flow string) (diff.Summary, error) {
-	return summaryFor(d, app, flow, "latest")
+	return summaryFor(d, app, flow, "latest", diffDir(d.Cwd, app, flow))
 }
 
-// summaryFor is SummaryFor with the B-side selector exposed, for the reject
-// verb (which captures a named run, not necessarily the newest one).
-func summaryFor(d Deps, app, flow, selector string) (diff.Summary, error) {
+// SummaryForRun is SummaryFor pinned to one specific run rather than
+// "latest" — the run-detail view's counterpart to SummaryFor, so a reviewer
+// can inspect any run in the CI candidate list, not only the newest. Its
+// generated diff/overlay images are cached under diffDirForRun rather than
+// diffDir, so viewing a non-latest run never clobbers (or is clobbered by)
+// the "latest" queue's own cached images for the same flow.
+func SummaryForRun(d Deps, app, flow, runID string) (diff.Summary, error) {
+	return summaryFor(d, app, flow, runID, diffDirForRun(d.Cwd, app, flow, runID))
+}
+
+// summaryFor is SummaryFor with the B-side selector and image-cache
+// directory exposed. The reject verb is the other caller (it captures a
+// named run, not necessarily the newest one); it now uses diffDirForRun via
+// its own call site, the same isolation SummaryForRun gets.
+func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error) {
 	if err := d.check(); err != nil {
 		return diff.Summary{}, err
 	}
@@ -455,6 +480,6 @@ func summaryFor(d Deps, app, flow, selector string) (diff.Summary, error) {
 	// is reviewing.
 	return diff.Build(diff.BuildInput{
 		App: app, Flow: flow, A: a, B: b, Cfg: d.Cfg, Options: opts,
-		WantImages: true, OutDir: diffDir(d.Cwd, app, flow),
+		WantImages: true, OutDir: outDir,
 	})
 }

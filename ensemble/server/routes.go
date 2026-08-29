@@ -108,7 +108,9 @@ func (s *server) routes(mux *http.ServeMux) {
 	// a route that always exists and answers in JSON.
 	mux.HandleFunc("GET /api/retrace/queue", s.handleRetraceQueue)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}", s.handleRetraceItem)
+	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceItemAtRun)
 	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/{side}/{name}", s.handleRetraceShot)
+	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleRetraceShotAtRun)
 	mux.HandleFunc("GET /api/retrace/evidence/{app}/{flow}", s.handleRetraceEvidence)
 	mux.HandleFunc("GET /api/retrace/videos/{app}/{flow}/{name}", s.handleRetraceVideo)
 	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}", s.handleRetraceReport)

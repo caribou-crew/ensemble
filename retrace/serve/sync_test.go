@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
+
+	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
 // fakeGH puts a minimal `gh` on PATH for the duration of the test — the
@@ -133,6 +136,56 @@ func TestGetSyncCandidatesListsWithoutDownloading(t *testing.T) {
 	}
 	if first["actor"] != "octocat" {
 		t.Errorf("actor = %v, want octocat", first["actor"])
+	}
+}
+
+// TestGetSyncCandidatesReportsLocalRunsForAnAlreadyPulledCandidate is the
+// join a click-to-view sync panel depends on: a candidate already pulled
+// (its RunURL matches a local run's source.json) must say so via
+// localRuns, without gh being asked to download anything again, and a
+// candidate never pulled must report an empty array — never null, so a
+// UI can iterate it with no special case.
+func TestGetSyncCandidatesReportsLocalRunsForAnAlreadyPulledCandidate(t *testing.T) {
+	fakeGH(t)
+	writeRunListJSON(t, `[
+		{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"},
+		{"databaseId": 2, "workflowName": "Retrace Web", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T11:00:00Z", "status": "completed", "conclusion": "success"}
+	]`)
+	ts, cwd := newSyncServer(t)
+
+	p := recordRun(t, cwd, "web", "checkout", "20260827T090000Z-aaa1111", map[string][]byte{"cart": shotPNG(t, white)}, nil)
+	if err := runs.WriteSource(p, runs.Source{
+		Kind: runs.SourceKindCI, RunURL: "https://github.com/org/repo/actions/runs/1", SyncedAt: time.Date(2026, 8, 27, 9, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("runs.WriteSource: %v", err)
+	}
+
+	r := get(t, ts, "/api/sync/candidates?repo=org/repo")
+	body := mustOK(t, r, "GET /api/sync/candidates")
+	candidates, ok := body["candidates"].([]any)
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("candidates = %v, want 2 entries", body["candidates"])
+	}
+
+	byDatabaseID := map[float64]map[string]any{}
+	for _, c := range candidates {
+		row := c.(map[string]any)
+		byDatabaseID[row["databaseId"].(float64)] = row
+	}
+
+	pulled := byDatabaseID[1]
+	local, ok := pulled["localRuns"].([]any)
+	if !ok || len(local) != 1 || local[0] != "web/checkout/20260827T090000Z-aaa1111" {
+		t.Fatalf("pulled candidate's localRuns = %v, want [\"web/checkout/20260827T090000Z-aaa1111\"]", pulled["localRuns"])
+	}
+
+	unpulled := byDatabaseID[2]
+	local, ok = unpulled["localRuns"].([]any)
+	if !ok {
+		t.Fatalf("unpulled candidate's localRuns is not an array: %v", unpulled["localRuns"])
+	}
+	if len(local) != 0 {
+		t.Fatalf("unpulled candidate's localRuns = %v, want empty", local)
 	}
 }
 

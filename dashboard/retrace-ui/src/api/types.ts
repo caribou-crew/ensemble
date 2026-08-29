@@ -403,6 +403,16 @@ export interface SyncCandidate {
   createdAt: string;
   url: string;
   hasArtifacts: boolean;
+  /**
+   * Every "app/flow/run-id" already pulled from this CI run
+   * (runs.SourcesByURL's reverse index, joined on RunURL server-side).
+   * Never null — an empty array means "not pulled yet", the same
+   * never-null contract every other array on this response carries. A
+   * click-to-view sync panel uses this to open a candidate directly
+   * instead of re-pulling it, and to know whether the run produced one
+   * flow or several (multiple entries here means an inline chooser).
+   */
+  localRuns: string[];
 }
 
 export interface SyncCandidatesResponse {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	retraceconfig "github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/runs"
 	"github.com/caribou-crew/ensemble/retrace/serve"
 	"github.com/caribou-crew/ensemble/retrace/sync"
 )
@@ -67,12 +68,28 @@ func (s *server) handleRetraceItem(w http.ResponseWriter, r *http.Request) {
 	serve.WriteItem(w, d, app, flow)
 }
 
+func (s *server) handleRetraceItemAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteItemAtRun(w, d, app, flow, r.PathValue("runId"))
+}
+
 func (s *server) handleRetraceShot(w http.ResponseWriter, r *http.Request) {
 	d, app, flow, ok := s.retraceFlowFrom(w, r)
 	if !ok {
 		return
 	}
 	serve.WriteShot(w, d, app, flow, r.PathValue("side"), r.PathValue("name"))
+}
+
+func (s *server) handleRetraceShotAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteShotAtRun(w, d, app, flow, r.PathValue("runId"), r.PathValue("side"), r.PathValue("name"))
 }
 
 func (s *server) handleRetraceEvidence(w http.ResponseWriter, r *http.Request) {
@@ -99,11 +116,19 @@ func (s *server) handleRetraceReport(w http.ResponseWriter, r *http.Request) {
 	serve.WriteReport(w, r, d, app, flow)
 }
 
+// retraceCandidateWithLocalRuns mirrors retrace/serve's own
+// candidateWithLocalRuns — see that type's doc comment for why the join
+// lives at the HTTP boundary rather than inside the sync package.
+type retraceCandidateWithLocalRuns struct {
+	sync.Candidate
+	LocalRuns []string `json:"localRuns"`
+}
+
 // retraceSyncCandidatesResponse is GET /api/retrace/sync/candidates's
 // body. Candidates is never null (see sync.List's own doc comment),
 // matching sync.Result's Synced/Skipped convention.
 type retraceSyncCandidatesResponse struct {
-	Candidates []sync.Candidate `json:"candidates"`
+	Candidates []retraceCandidateWithLocalRuns `json:"candidates"`
 }
 
 func (s *server) handleRetraceSyncCandidates(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +165,19 @@ func (s *server) handleRetraceSyncCandidates(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, retraceSyncCandidatesResponse{Candidates: candidates})
+	// A traversal failure here is not fatal to the whole response — every
+	// candidate simply comes back with no known local runs, same as if
+	// nothing had ever been synced.
+	byURL, _ := runs.SourcesByURL(runs.RunsRoot(rc.EffectiveDir(s.Cfg.Dir)))
+	out := make([]retraceCandidateWithLocalRuns, len(candidates))
+	for i, c := range candidates {
+		local := byURL[c.URL]
+		if local == nil {
+			local = []string{}
+		}
+		out[i] = retraceCandidateWithLocalRuns{Candidate: c, LocalRuns: local}
+	}
+	writeJSON(w, http.StatusOK, retraceSyncCandidatesResponse{Candidates: out})
 }
 
 // firstNonEmpty returns the first non-empty string among vals — used to

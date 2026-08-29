@@ -322,6 +322,15 @@ export const api = {
     ).then((r) => r.summary);
   },
 
+  /** retraceItem pinned to one specific run rather than "latest" — powers
+   * the sync panel's click-into-a-CI-run detail view, so a reviewer can
+   * inspect any run in the candidate list, not only the newest one. */
+  retraceItemAtRun(app: string, flow: string, runId: string): Promise<RetraceSummary> {
+    return request<{ summary: RetraceSummary }>(
+      `/api/retrace/queue/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/runs/${encodeURIComponent(runId)}`,
+    ).then((r) => r.summary);
+  },
+
   retraceSync(selections?: RetraceSelection[]): Promise<RetraceSyncResult> {
     return request<RetraceSyncResult>(
       "/api/retrace/sync",
@@ -358,6 +367,19 @@ export const resolveRetraceShotUrl = (
   name: string,
 ): string =>
   `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
+
+/** resolveRetraceShotUrl's counterpart for a run-detail view pinned to one
+ * specific run — GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/
+ * {name}. Its own route, not a query param: the server caches "diff"/
+ * "overlay" PNGs under a run-scoped directory precisely so a non-latest
+ * run's generated images can never collide with the "latest" queue's own
+ * cache for the same app/flow — see retrace/serve/queue.go's
+ * diffDirForRun. Curried on runId so it fits ShotCompare's
+ * (app, flow, side, name) => string resolver shape. */
+export const resolveRetraceShotUrlAtRun =
+  (runId: string) =>
+  (app: string, flow: string, side: string, name: string): string =>
+    `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/runs/${encodeURIComponent(runId)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
 
 /** Builds `/api/retrace/videos/{app}/{flow}/{name}` — the candidate run's
  * video, passed straight to a <video> element's src. */

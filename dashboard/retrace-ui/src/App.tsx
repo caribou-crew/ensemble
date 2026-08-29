@@ -34,8 +34,13 @@ import './App.css';
  * @ensemble/design-system and traded its `api/client` import for this prop
  * (design.md D5). `encodeURIComponent` per segment matches `api.ts`'s `seg`
  * helper.
+ *
+ * ItemScreen's own default: the "latest" comparison every queue row opens
+ * to. The sync panel's run-detail view passes a run-scoped resolver instead
+ * (see api.shotUrlAtRun) so a non-latest run's diff/overlay images are read
+ * from their own cache rather than colliding with this one.
  */
-const resolveShotUrl: ResolveShotUrl = (app, flow, side, name) =>
+const defaultResolveShotUrl: ResolveShotUrl = (app, flow, side, name) =>
   `/api/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
 
 /**
@@ -274,18 +279,39 @@ function EvidenceSection({ app, flow }: { app: string; flow: string }) {
   );
 }
 
-function ItemScreen({
+/**
+ * Exported for the sync panel's run-detail view (SyncPanel.tsx), which
+ * embeds this exact rendering to let a reviewer inspect any run in the CI
+ * candidate list, not only the flow currently open in the main queue.
+ * ItemScreen itself carries no accept/reject/rule/redact BUTTONS — every
+ * mutation verb is keyboard-dispatched from App's own onAction handler
+ * against the OUTER app/flow/open state — so embedding it elsewhere is
+ * safe with no risk of a misdirected accept/reject, as long as the keyboard
+ * gate that already covers the sync panel (App's onAction: `showSyncPanel`)
+ * still covers wherever this is nested, which it does here.
+ *
+ * `resolveShotUrl` and `onReveal` default to the "latest" queue's own
+ * routes; the sync panel's run-detail view passes run-scoped versions
+ * (api.shotUrlAtRun / api.itemAtRun) instead, so a non-latest run's
+ * generated diff/overlay images are read from their own cache rather than
+ * the "latest" queue's.
+ */
+export function ItemScreen({
   app,
   flow,
   summary,
   selectedField,
   onSelectField,
+  resolveShotUrl = defaultResolveShotUrl,
+  onReveal,
 }: {
   app: string;
   flow: string;
   summary: Summary;
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
+  resolveShotUrl?: ResolveShotUrl;
+  onReveal?: () => Promise<Summary['sections']>;
 }) {
   // Collapsed by default: a flow with a dozen+ checkpoints, most of which
   // passed, otherwise means a long scroll past every unchanged screen to
@@ -411,7 +437,7 @@ function ItemScreen({
               sections={summary.sections}
               selectedField={selectedField}
               onSelectField={onSelectField}
-              onReveal={() => api.item(app, flow).then((r) => r.summary.sections)}
+              onReveal={onReveal ?? (() => api.item(app, flow).then((r) => r.summary.sections))}
             />
           </section>
 

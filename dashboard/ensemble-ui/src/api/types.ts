@@ -444,6 +444,16 @@ export interface RetraceCandidate {
   createdAt: string;
   url: string;
   hasArtifacts: boolean;
+  /**
+   * Every "app/flow/run-id" already pulled from this CI run
+   * (runs.SourcesByURL's reverse index, joined server-side on RunURL).
+   * Never null — an empty array means "not pulled yet", the same
+   * never-null contract this response's own `candidates` carries. A
+   * click-to-view sync panel uses this to open a candidate directly
+   * instead of re-pulling it, and to know whether the run produced one
+   * flow or several (multiple entries here means an inline chooser).
+   */
+  localRuns: string[];
 }
 
 /** GET /api/retrace/sync/candidates's body. `candidates` is never null on

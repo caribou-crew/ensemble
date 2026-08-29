@@ -13,14 +13,30 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/caribou-crew/ensemble/retrace/runs"
 	"github.com/caribou-crew/ensemble/retrace/sync"
 )
+
+// candidateWithLocalRuns is one Candidate plus the local-runs join a
+// click-to-view sync panel needs: sync.Candidate itself has no notion of
+// what already exists on disk (it is built purely from `gh run list`), so
+// the join lives here at the HTTP boundary, where a caller actually needs
+// the answer, rather than inside the sync package.
+type candidateWithLocalRuns struct {
+	sync.Candidate
+	// LocalRuns is every "app/flow/run-id" already pulled from this CI
+	// run's URL (runs.SourcesByURL's reverse index — see its doc comment
+	// for why RunURL is the join key). Never null: an empty slice means
+	// "not pulled yet", the same never-null contract every other array on
+	// this response already carries.
+	LocalRuns []string `json:"localRuns"`
+}
 
 // syncCandidatesResponse is GET /api/sync/candidates's body. Candidates is
 // never null — sync.List's own doc comment already guarantees this, kept
 // here so the wire shape says so too.
 type syncCandidatesResponse struct {
-	Candidates []sync.Candidate `json:"candidates"`
+	Candidates []candidateWithLocalRuns `json:"candidates"`
 }
 
 func (s *server) handleSyncCandidates(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +65,20 @@ func (s *server) handleSyncCandidates(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, syncCandidatesResponse{Candidates: candidates})
+	// A traversal failure here is not fatal to the whole response — every
+	// candidate simply comes back with no known local runs, same as if
+	// nothing had ever been synced. The candidate list itself (what CI has)
+	// is still useful without the local-runs join (what's already pulled).
+	byURL, _ := runs.SourcesByURL(runs.RunsRoot(s.deps().Cwd))
+	out := make([]candidateWithLocalRuns, len(candidates))
+	for i, c := range candidates {
+		local := byURL[c.URL]
+		if local == nil {
+			local = []string{}
+		}
+		out[i] = candidateWithLocalRuns{Candidate: c, LocalRuns: local}
+	}
+	writeJSON(w, http.StatusOK, syncCandidatesResponse{Candidates: out})
 }
 
 // syncRequest is POST /api/sync's body. Every field List's query params

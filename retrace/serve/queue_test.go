@@ -1038,3 +1038,89 @@ func TestASyncedItemCarriesItsSource(t *testing.T) {
 		t.Fatalf("a synced-but-identical run scored %v/%q, want 0/pass — provenance must never change a verdict", items[0].Score, items[0].Verdict)
 	}
 }
+
+const runC = "20260821T102000Z-ccccccc"
+
+// TestSummaryForRunComparesTheNamedRunNotLatest is SummaryForRun's primary
+// contract: a reviewer picking an older run out of the CI candidate list
+// must see THAT run's comparison, not silently get "latest" back, the way
+// summaryFor's own default already does for SummaryFor.
+func TestSummaryForRunComparesTheNamedRunNotLatest(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	recordRun(t, cwd, "web", "login", runC, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	d := deps(t, cwd)
+
+	latest, err := SummaryFor(d, "web", "login")
+	if err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	if latest.B.RunID != runC {
+		t.Fatalf("SummaryFor's B.RunID = %q, want latest run %q", latest.B.RunID, runC)
+	}
+
+	pinned, err := SummaryForRun(d, "web", "login", runB)
+	if err != nil {
+		t.Fatalf("SummaryForRun: %v", err)
+	}
+	if pinned.B.RunID != runB {
+		t.Fatalf("SummaryForRun(%q)'s B.RunID = %q, want %q — the named run, not latest", runB, pinned.B.RunID, pinned.B.RunID)
+	}
+}
+
+// TestSummaryForRunDoesNotShareItsDiffImageCacheWithLatest is the collision
+// this feature exists to close: diff.writeCheckpointImages keys a
+// generated PNG by checkpoint name alone, so a non-latest run's comparison
+// must write under a run-scoped directory — never diffDir, which the
+// "latest" queue reads and writes for the very same app/flow.
+func TestSummaryForRunDoesNotShareItsDiffImageCacheWithLatest(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	// runB changed (blue); runC (latest) did not (white, identical to the
+	// reference) — so the two comparisons' generated diff images, if they
+	// landed in the same file, would visibly disagree about which one won.
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, blue)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	recordRun(t, cwd, "web", "login", runC, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	d := deps(t, cwd)
+
+	if _, err := SummaryFor(d, "web", "login"); err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	pinned, err := SummaryForRun(d, "web", "login", runB)
+	if err != nil {
+		t.Fatalf("SummaryForRun: %v", err)
+	}
+
+	latestDir := diffDir(cwd, "web", "login")
+	pinnedDir := diffDirForRun(cwd, "web", "login", runB)
+	if latestDir == pinnedDir {
+		t.Fatalf("diffDirForRun(%q) = %s, same as diffDir — a pinned run's cache must not alias the latest queue's own cache", runB, pinnedDir)
+	}
+	// runB actually changed against the reference, so it must have written
+	// a diff image of its own, under its OWN directory.
+	cp, found := checkpointNamed(pinned, "login")
+	if !found || cp.Images.Diff == "" {
+		t.Fatalf("SummaryForRun(%q)'s checkpoint has no diff image: %+v", runB, cp)
+	}
+	if _, err := os.Stat(filepath.Join(pinnedDir, "diff", "shots", "login.png")); err != nil {
+		t.Fatalf("expected a diff image under the run-scoped cache: %v", err)
+	}
+	// And "latest" (runC, identical to the reference) must NOT have a diff
+	// image sitting in ITS cache either — if runB's write had landed in
+	// diffDir by mistake, this file would exist and be wrong (it would show
+	// runB's change under runC's own unrelated, unchanged comparison).
+	if _, err := os.Stat(filepath.Join(latestDir, "diff", "shots", "login.png")); err == nil {
+		t.Fatalf("diffDir has a diff image for a checkpoint that did not change — runB's generated image leaked into the latest queue's cache")
+	}
+}

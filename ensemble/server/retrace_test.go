@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -214,12 +215,61 @@ func TestRetraceItemRouteUnknownFlowIs404(t *testing.T) {
 	}
 }
 
+// TestRetraceItemRouteAtRun mirrors retrace/serve's own
+// TestRunScopedItemRouteComparesTheNamedRunNotLatest, pinning that
+// ensemble/server's mirrored route delegates to the same SummaryForRun,
+// not merely to SummaryFor with the runId silently dropped.
+func TestRetraceItemRouteAtRun(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{})
+	const runC = "20260821T102000Z-ccccccc"
+	recordRetraceRun(t, cwd, "web", "home", runC)
+
+	status, latest := getJSON(t, ts.URL+"/api/retrace/queue/web/home")
+	if status != http.StatusOK {
+		t.Fatalf("GET item status = %d, body = %v", status, latest)
+	}
+	if b := latest["summary"].(map[string]any)["b"].(map[string]any); b["runId"] != runC {
+		t.Fatalf("latest item's b.runId = %v, want %q", b["runId"], runC)
+	}
+
+	const runB = "20260821T101000Z-bbbbbbb"
+	status, pinned := getJSON(t, ts.URL+"/api/retrace/queue/web/home/runs/"+runB)
+	if status != http.StatusOK {
+		t.Fatalf("GET run-scoped item status = %d, body = %v", status, pinned)
+	}
+	if b := pinned["summary"].(map[string]any)["b"].(map[string]any); b["runId"] != runB {
+		t.Fatalf("run-scoped item's b.runId = %v, want %q", b["runId"], runB)
+	}
+}
+
 func TestRetraceShotRoute(t *testing.T) {
 	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{})
 
 	resp, err := http.Get(ts.URL + "/api/retrace/shots/web/home/b/home")
 	if err != nil {
 		t.Fatalf("GET shot: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type = %q, want image/png", ct)
+	}
+}
+
+// TestRetraceShotRouteAtRun pins that ensemble/server's mirrored run-scoped
+// shots route reaches serve.WriteShotAtRun (not WriteShot), the same way
+// TestRetraceItemRouteAtRun pins the item route.
+func TestRetraceShotRouteAtRun(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{})
+	const runC = "20260821T102000Z-ccccccc"
+	recordRetraceRun(t, cwd, "web", "home", runC)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/shots/web/home/runs/20260821T101000Z-bbbbbbb/b/home")
+	if err != nil {
+		t.Fatalf("GET run-scoped shot: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -348,6 +398,73 @@ func TestRetraceSyncCandidatesRequiresRepo(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 400 when retrace.repo/repos is unset; body = %s", resp.StatusCode, body)
+	}
+}
+
+// retraceFakeGH puts a minimal `gh` on PATH, just enough for `gh run
+// list`/`gh api` — retrace/serve/sync_test.go's own fakeGH does the same
+// for that package's suite; it is unexported there, so this is a second,
+// intentionally minimal, copy rather than a cross-package import.
+func retraceFakeGH(t *testing.T, runListJSON string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake gh is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	runListPath := filepath.Join(dir, "runs.json")
+	if err := os.WriteFile(runListPath, []byte(runListJSON), 0o644); err != nil {
+		t.Fatalf("writing run list fixture: %v", err)
+	}
+	script := `#!/bin/sh
+set -e
+if [ "$1" = "run" ] && [ "$2" = "list" ]; then
+  cat "` + runListPath + `"
+  exit 0
+fi
+if [ "$1" = "api" ]; then
+  case "$2" in
+    */artifacts) echo "1" ;;
+    *) echo "octocat" ;;
+  esac
+  exit 0
+fi
+echo "fake gh: unhandled invocation: $*" >&2
+exit 1
+`
+	path := filepath.Join(dir, "gh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing fake gh: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestRetraceSyncCandidatesReportsLocalRuns mirrors retrace/serve's own
+// TestGetSyncCandidatesReportsLocalRunsForAnAlreadyPulledCandidate: the
+// mirrored /api/retrace/sync/candidates route must carry the same
+// localRuns join, not a bare sync.Candidate list.
+func TestRetraceSyncCandidatesReportsLocalRuns(t *testing.T) {
+	ts, cwd := newRetraceTestEnv(t, &config.RetraceConfig{Repo: "org/repo"})
+	retraceFakeGH(t, `[{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"}]`)
+
+	p := recordRetraceRun(t, cwd, "web", "checkout", "20260827T090000Z-aaa1111")
+	if err := runs.WriteSource(p, runs.Source{
+		Kind: runs.SourceKindCI, RunURL: "https://github.com/org/repo/actions/runs/1", SyncedAt: time.Date(2026, 8, 27, 9, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("runs.WriteSource: %v", err)
+	}
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/sync/candidates")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, got)
+	}
+	candidates, ok := got["candidates"].([]any)
+	if !ok || len(candidates) != 1 {
+		t.Fatalf("candidates = %v, want 1 entry", got["candidates"])
+	}
+	row := candidates[0].(map[string]any)
+	local, ok := row["localRuns"].([]any)
+	if !ok || len(local) != 1 || local[0] != "web/checkout/20260827T090000Z-aaa1111" {
+		t.Fatalf("localRuns = %v, want [\"web/checkout/20260827T090000Z-aaa1111\"]", row["localRuns"])
 	}
 }
 

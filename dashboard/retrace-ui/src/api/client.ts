@@ -275,6 +275,13 @@ export const api = {
   item(app: string, flow: string): Promise<ItemResponse> {
     return request<ItemResponse>(`/api/queue/${seg(app)}/${seg(flow)}`);
   },
+  /** GET /api/queue/{app}/{flow}/runs/{runId} — the same detail document as
+   * item(), pinned to one specific run rather than "latest". Powers the
+   * sync panel's click-into-a-CI-run detail view, so a reviewer can inspect
+   * any run in the candidate list, not only the newest one. */
+  itemAtRun(app: string, flow: string, runId: string): Promise<ItemResponse> {
+    return request<ItemResponse>(`/api/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}`);
+  },
   accept(app: string, flow: string): Promise<{ ok: true; bundle: AcceptBundle }> {
     return request(`/api/queue/${seg(app)}/${seg(flow)}/accept`, jsonInit('POST'));
   },
@@ -314,6 +321,19 @@ export const api = {
       throw new Error(`no ${side}-side image for this checkpoint in ${app}/${flow}`);
     }
     return `/api/shots/${seg(app)}/${seg(flow)}/${seg(side)}/${seg(name)}`;
+  },
+  /** shotUrl's counterpart for a run-detail view pinned to one specific run
+   * — GET /api/shots/{app}/{flow}/runs/{runId}/{side}/{name}. Its own
+   * route, not a query param on shotUrl: the server caches "diff"/"overlay"
+   * PNGs under a run-scoped directory precisely so a non-latest run's
+   * generated images can never collide with (or be served instead of) the
+   * "latest" queue's own cache for the same app/flow — see
+   * retrace/serve/queue.go's diffDirForRun. */
+  shotUrlAtRun(app: string, flow: string, runId: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string): string {
+    if (name === '') {
+      throw new Error(`no ${side}-side image for this checkpoint in ${app}/${flow}/${runId}`);
+    }
+    return `/api/shots/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(side)}/${seg(name)}`;
   },
   /** GET /api/sync/candidates?repo=... — discovers what's out there in
    * `repo` without downloading anything. `repo` is required: unlike

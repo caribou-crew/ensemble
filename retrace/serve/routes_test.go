@@ -964,7 +964,7 @@ func registeredRoutes(t *testing.T) [][2]string {
 
 // fill substitutes a real app/flow/side/name for a pattern's wildcards.
 func fill(pattern string) string {
-	r := strings.NewReplacer("{app}", "web", "{flow}", "search", "{side}", "a", "{name}", "results", "{path...}", "index.html")
+	r := strings.NewReplacer("{app}", "web", "{flow}", "search", "{runId}", "20260821T101000Z-bbbbbbb", "{side}", "a", "{name}", "results", "{path...}", "index.html")
 	return r.Replace(pattern)
 }
 
@@ -1454,5 +1454,72 @@ func TestPostRuleCarriesTheWhyIntoTheOverlay(t *testing.T) {
 	}
 	if len(raw) != 1 || raw[0].Why != "stamped by the cart service on every read" {
 		t.Fatalf("the overlay dropped the why: %+v", raw)
+	}
+}
+
+// TestRunScopedItemRouteComparesTheNamedRunNotLatest is the HTTP surface
+// for a run-detail view: a reviewer picking an older CI run out of the
+// candidate list must see THAT run's comparison at GET
+// .../runs/{runId}, exactly as SummaryForRun already guarantees at the Go
+// level — this pins the route wiring on top of it.
+func TestRunScopedItemRouteComparesTheNamedRunNotLatest(t *testing.T) {
+	cwd := threeFlowProject(t)
+	const runC = "20260821T102000Z-ccccccc"
+	recordRun(t, cwd, "web", "search", runC, map[string][]byte{"results": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/search", 200, `{"hits":1}`)})
+	ts := newServer(t, cwd)
+
+	latest := mustOK(t, get(t, ts, "/api/queue/web/search"), "GET item")["summary"].(map[string]any)
+	if b := latest["b"].(map[string]any); b["runId"] != runC {
+		t.Fatalf("GET /api/queue/web/search's b.runId = %v, want latest %q", b["runId"], runC)
+	}
+
+	pinned := mustOK(t, get(t, ts, "/api/queue/web/search/runs/"+runB), "GET run-scoped item")["summary"].(map[string]any)
+	if b := pinned["b"].(map[string]any); b["runId"] != runB {
+		t.Fatalf("GET /api/queue/web/search/runs/%s's b.runId = %v, want %q", runB, b["runId"], runB)
+	}
+
+	// Every SummaryFor/SummaryForRun error maps to 409 (statusForSummaryErr)
+	// — the same status the plain "latest" item route answers when it
+	// cannot diff, e.g. a flow with no accepted reference yet.
+	if r := get(t, ts, "/api/queue/web/search/runs/nosuchrun"); r.status != http.StatusConflict {
+		t.Fatalf("an unknown run id: status = %d, want 409\n%s", r.status, r.body)
+	}
+}
+
+// TestRunScopedShotRouteServesTheNamedRunsOwnDiffImage pins the run-scoped
+// shots route's isolation: two runs of the same flow that generate
+// DIFFERENT diff images for the SAME checkpoint name must each serve their
+// own picture, not whichever one was diffed most recently into the shared
+// "latest" cache.
+func TestRunScopedShotRouteServesTheNamedRunsOwnDiffImage(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	// runB changed; runC (latest) did not.
+	const runC = "20260821T102000Z-ccccccc"
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, blue)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	recordRun(t, cwd, "web", "login", runC, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	ts := newServer(t, cwd)
+
+	// Warm the "latest" cache first, the way a reviewer opening the queue
+	// before drilling into an older run would.
+	mustOK(t, get(t, ts, "/api/queue/web/login"), "GET item")
+
+	r := get(t, ts, "/api/shots/web/login/runs/"+runB+"/diff/login")
+	if r.status != http.StatusOK {
+		t.Fatalf("run-scoped diff shot for the changed run: status = %d\n%s", r.status, r.body)
+	}
+	if px := pixelAt(t, r, "diff", 20, 20); px != ([4]uint32{0xffff, 0, 0, 0xffff}) {
+		t.Fatalf("run-scoped diff pixel = %v, want pure red — runB's own checkpoint changed on every pixel", px)
+	}
+
+	// "latest" (runC) never changed, so it has no diff image at all — the
+	// run-scoped route for THAT run must say so, not fall back to runB's.
+	if r := get(t, ts, "/api/shots/web/login/runs/"+runC+"/diff/login"); r.status != http.StatusNotFound {
+		t.Fatalf("run-scoped diff shot for the unchanged latest run: status = %d, want 404\n%s", r.status, r.body)
 	}
 }

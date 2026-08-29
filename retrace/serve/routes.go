@@ -42,11 +42,13 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/queue", s.handleQueue)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}", s.handleItem)
+	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs/{runId}", s.handleItemAtRun)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/accept", s.handleAccept)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/reject", s.handleReject)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/rule", s.handleRule)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/redact", s.handleRedact)
 	mux.HandleFunc("GET /api/shots/{app}/{flow}/{side}/{name}", s.handleShot)
+	mux.HandleFunc("GET /api/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleShotAtRun)
 	mux.HandleFunc("GET /api/evidence/{app}/{flow}", s.handleEvidence)
 	mux.HandleFunc("GET /api/videos/{app}/{flow}/{name}", s.handleVideo)
 	mux.HandleFunc("GET /api/report/{app}/{flow}", s.handleReport)
@@ -109,6 +111,30 @@ func (s *server) handleItem(w http.ResponseWriter, r *http.Request) {
 // like.
 func WriteItem(w http.ResponseWriter, d Deps, app, flow string) {
 	sum, err := SummaryFor(d, app, flow)
+	if err != nil {
+		writeErr(w, statusForSummaryErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": sum})
+}
+
+func (s *server) handleItemAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	WriteItemAtRun(w, d, app, flow, r.PathValue("runId"))
+}
+
+// WriteItemAtRun is WriteItem pinned to one specific run rather than
+// "latest" — the run-detail view's counterpart, letting a reviewer inspect
+// any run in the CI candidate list. runs.FindRun (inside SummaryForRun)
+// resolves runID the same three ways every other run selector in this
+// package does: an exact run id, a git SHA (full or short prefix), or
+// "latest" itself, so a caller that already knows the run id needs no
+// special-case here.
+func WriteItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string) {
+	sum, err := SummaryForRun(d, app, flow, runID)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return
@@ -314,7 +340,7 @@ func (s *server) handleReject(w http.ResponseWriter, r *http.Request) {
 	// leaving the caller to notice the missing file.
 	var summary *diff.Summary
 	warning := ""
-	if sum, err := summaryFor(d, app, flow, runID); err == nil {
+	if sum, err := summaryFor(d, app, flow, runID, diffDirForRun(d.Cwd, app, flow, runID)); err == nil {
 		summary = &sum
 	} else {
 		warning = "no summary.json in this repro bundle — " + err.Error()
@@ -501,23 +527,64 @@ func (s *server) handleShot(w http.ResponseWriter, r *http.Request) {
 // its own ResolveFlow check, rather than re-deriving checkpoint/side
 // resolution a second time.
 func WriteShot(w http.ResponseWriter, d Deps, app, flow, side, name string) {
-	// The name is validated BEFORE anything is resolved or read, so a
-	// traversal attempt is refused as malformed rather than answered with
-	// whatever the flow's state happens to be.
-	if _, err := safeBase(name); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	if !validShotRequest(w, side, name) {
 		return
 	}
-	if !slices.Contains(shotSides, side) {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown side %q — one of %s", side, strings.Join(shotSides, ", ")))
-		return
-	}
-
 	sum, err := SummaryFor(d, app, flow)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return
 	}
+	writeShotImage(w, sum, diffDir(d.Cwd, app, flow), app, flow, side, name)
+}
+
+func (s *server) handleShotAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	WriteShotAtRun(w, d, app, flow, r.PathValue("runId"), r.PathValue("side"), r.PathValue("name"))
+}
+
+// WriteShotAtRun is WriteShot pinned to one specific run rather than
+// "latest" — the run-detail view's counterpart. It reads from
+// diffDirForRun rather than diffDir so a non-latest run's generated
+// diff/overlay images never collide with the "latest" queue's own cache
+// for the same flow (see diffDirForRun's doc comment).
+func WriteShotAtRun(w http.ResponseWriter, d Deps, app, flow, runID, side, name string) {
+	if !validShotRequest(w, side, name) {
+		return
+	}
+	sum, err := SummaryForRun(d, app, flow, runID)
+	if err != nil {
+		writeErr(w, statusForSummaryErr(err), err.Error())
+		return
+	}
+	writeShotImage(w, sum, diffDirForRun(d.Cwd, app, flow, runID), app, flow, side, name)
+}
+
+// validShotRequest is the pair of checks that must happen BEFORE anything
+// is resolved or read: the name is validated first so a traversal attempt
+// is refused as malformed rather than answered with whatever the flow's
+// state happens to be, and the side is checked against the fixed
+// enumeration both WriteShot and WriteShotAtRun serve.
+func validShotRequest(w http.ResponseWriter, side, name string) bool {
+	if _, err := safeBase(name); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	if !slices.Contains(shotSides, side) {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown side %q — one of %s", side, strings.Join(shotSides, ", ")))
+		return false
+	}
+	return true
+}
+
+// writeShotImage is WriteShot/WriteShotAtRun's shared tail: given an
+// already-resolved Summary and the outDir its generated sides were written
+// under, resolve the checkpoint, refuse a generated side that was never
+// written, and stream the PNG.
+func writeShotImage(w http.ResponseWriter, sum diff.Summary, outDir, app, flow, side, name string) {
 	cp, found := checkpointNamed(sum, name)
 	if !found {
 		writeErr(w, http.StatusNotFound, fmt.Sprintf("no checkpoint %q in %s/%s", name, app, flow))
@@ -539,7 +606,7 @@ func WriteShot(w http.ResponseWriter, d Deps, app, flow, side, name string) {
 		}
 	}
 
-	dir, err := shotDirFor(&sum, diffDir(d.Cwd, app, flow), side)
+	dir, err := shotDirFor(&sum, outDir, side)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
