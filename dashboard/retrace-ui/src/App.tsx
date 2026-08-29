@@ -23,6 +23,7 @@ import { KEY_HELP, actionFor, type Action } from './keys';
 import { verdictTone } from './tone';
 import { useUrlParam } from './urlState';
 import QueueList, { keyOf, visibleRows } from './components/QueueList';
+import SyncPanel from './components/SyncPanel';
 import './App.css';
 
 /**
@@ -409,6 +410,7 @@ export default function App() {
   const [picker, setPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
   const [redactPicker, setRedactPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
+  const [showSyncPanel, setShowSyncPanel] = useState(false);
 
   // Every fetch in this app goes through useAsync — the queue load, the item
   // load, and the post-mutation refetch, which is this same hook with
@@ -457,10 +459,11 @@ export default function App() {
       setShowHelp((v) => !v);
       return;
     }
-    if (picker !== null || redactPicker !== null) {
+    if (picker !== null || redactPicker !== null || showSyncPanel) {
       if (action === 'back') {
         setPicker(null);
         setRedactPicker(null);
+        setShowSyncPanel(false);
       }
       return;
     }
@@ -565,6 +568,9 @@ export default function App() {
           retrace review
         </button>
         {busy ? <Spinner /> : null}
+        <button type="button" className="app-header__sync" onClick={() => setShowSyncPanel(true)}>
+          sync
+        </button>
         <button type="button" className="app-header__help" onClick={() => setShowHelp((v) => !v)}>
           ? help
         </button>
@@ -653,6 +659,13 @@ export default function App() {
               return `wrote a redaction rule for "${fieldName.trim()}" (${mode})`;
             });
           }}
+        />
+      ) : null}
+
+      {showSyncPanel ? (
+        <SyncPanel
+          onClose={() => setShowSyncPanel(false)}
+          onSynced={() => setVersion((v) => v + 1)}
         />
       ) : null}
 

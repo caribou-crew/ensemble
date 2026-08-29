@@ -386,3 +386,35 @@ export interface QueueResponse {
 export interface ItemResponse {
   summary: Summary;
 }
+
+// --- sync (discover -> filter -> select -> pull): retrace/serve/sync.go's
+// GET /api/sync/candidates and POST /api/sync, mirroring sync.Candidate,
+// sync.Selection and sync.Result field-for-field.
+
+export interface SyncCandidate {
+  repo: string;
+  databaseId: number;
+  workflowName: string;
+  headBranch: string;
+  actor: string;
+  event: string;
+  status: string;
+  conclusion: string;
+  createdAt: string;
+  url: string;
+  hasArtifacts: boolean;
+}
+
+export interface SyncCandidatesResponse {
+  candidates: SyncCandidate[];
+}
+
+export interface SyncSelection {
+  repo: string;
+  databaseId: number;
+}
+
+export interface SyncResult {
+  synced: string[];
+  skipped: { artifact: string; reason: string }[];
+}

@@ -3,7 +3,15 @@
 // caching and no retries — the three verbs are filesystem mutations and a
 // retried accept is a second promotion.
 
-import type { FieldDiff, ItemResponse, QueueResponse, Verdict } from './types';
+import type {
+  FieldDiff,
+  ItemResponse,
+  QueueResponse,
+  SyncCandidatesResponse,
+  SyncResult,
+  SyncSelection,
+  Verdict,
+} from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -306,4 +314,28 @@ export const api = {
     }
     return `/api/shots/${seg(app)}/${seg(flow)}/${seg(side)}/${seg(name)}`;
   },
+  /** GET /api/sync/candidates?repo=... — discovers what's out there in
+   * `repo` without downloading anything. `repo` is required: unlike
+   * ensemble.yaml's `retrace:` block, retrace.yaml has no repo default. */
+  syncCandidates(
+    repo: string,
+    filters: { branch?: string; actor?: string; event?: string; status?: string; since?: string } = {},
+  ): Promise<SyncCandidatesResponse> {
+    const params = new URLSearchParams({ repo, ...compact(filters) });
+    return request<SyncCandidatesResponse>(`/api/sync/candidates?${params}`);
+  },
+  /** POST /api/sync — pulls exactly the given selections from `repo`. */
+  sync(repo: string, selections: SyncSelection[]): Promise<SyncResult> {
+    return request<SyncResult>('/api/sync', jsonInit('POST', { repo, selections }));
+  },
 };
+
+/** Drops empty-string values so URLSearchParams never carries a filter the
+ * caller left blank. */
+function compact(o: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (v) out[k] = v;
+  }
+  return out;
+}

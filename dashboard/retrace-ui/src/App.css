@@ -26,8 +26,19 @@
   padding: 0;
 }
 
-.app-header__help {
+.app-header__sync {
   margin-left: auto;
+  background: none;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.app-header__help {
   background: none;
   border: 1px solid var(--border-hairline);
   border-radius: 4px;
@@ -206,6 +217,74 @@
   font-size: 0.78rem;
   padding: 0.25rem 0.6rem;
   cursor: pointer;
+}
+
+.sync-panel {
+  width: 32rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.sync-panel form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.sync-panel form label {
+  flex: 1;
+}
+
+.sync-panel__error {
+  margin: 0;
+  color: var(--status-red);
+  font-size: 0.78rem;
+}
+
+.sync-panel__result {
+  margin: 0;
+  color: var(--status-green);
+  font-size: 0.78rem;
+}
+
+.sync-panel__empty {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.sync-panel__candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.sync-panel__candidate label {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.sync-panel__workflow {
+  font-family: var(--font-mono);
+}
+
+.sync-panel__meta {
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+}
+
+.sync-panel__no-artifacts {
+  color: var(--status-amber);
+  font-size: 0.74rem;
 }
 
 .help {
