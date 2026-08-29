@@ -61,6 +61,7 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/retrace/queue/{app}/{flow}":               {"get": {Summary: "One flow's diff summary (verdict, pixel/wire/hop counts, gates, provenance)"}},
 		"/api/retrace/shots/{app}/{flow}/{side}/{name}": {"get": {Summary: "A reference/candidate screenshot referenced by the diff"}},
 		"/api/retrace/sync":                             {"post": {Summary: "Pull GitHub Actions retrace-runs artifacts per retrace.repo/workflow/since"}},
+		"/api/retrace/sync/candidates":                  {"get": {Summary: "List candidate workflow runs (branch/actor/event/status/workflow filters) without downloading anything"}},
 
 		"/api/openapi.json": {"get": {Summary: "This document"}},
 

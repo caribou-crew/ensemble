@@ -114,6 +114,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}", s.handleRetraceReport)
 	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}/{path...}", s.handleRetraceReport)
 	mux.HandleFunc("POST /api/retrace/sync", s.withAnnotation(s.handleRetraceSync))
+	mux.HandleFunc("GET /api/retrace/sync/candidates", s.handleRetraceSyncCandidates)
 
 	mux.HandleFunc("GET /api/openapi.json", s.handleOpenAPI)
 

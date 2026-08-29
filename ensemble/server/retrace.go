@@ -96,6 +96,62 @@ func (s *server) handleRetraceReport(w http.ResponseWriter, r *http.Request) {
 	serve.WriteReport(w, r, d, app, flow)
 }
 
+// retraceSyncCandidatesResponse is GET /api/retrace/sync/candidates's
+// body. Candidates is never null (see sync.List's own doc comment),
+// matching sync.Result's Synced/Skipped convention.
+type retraceSyncCandidatesResponse struct {
+	Candidates []sync.Candidate `json:"candidates"`
+}
+
+func (s *server) handleRetraceSyncCandidates(w http.ResponseWriter, r *http.Request) {
+	if s.Cfg.Retrace == nil {
+		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+		return
+	}
+	rc := s.Cfg.Retrace
+	repos := rc.EffectiveRepos()
+	if len(repos) == 0 {
+		writeErr(w, http.StatusBadRequest, "retrace sync needs a repo — set retrace.repo or retrace.repos in ensemble.yaml")
+		return
+	}
+	q := r.URL.Query()
+	sinceStr := rc.EffectiveSince()
+	if v := q.Get("since"); v != "" {
+		sinceStr = v
+	}
+	since, err := sync.ParseSince(sinceStr)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	candidates, err := sync.List(sync.Options{
+		Cwd: rc.EffectiveDir(s.Cfg.Dir), From: "github",
+		Repos: repos, Workflows: rc.EffectiveWorkflows(),
+		Branch: firstNonEmpty(q.Get("branch"), rc.Branch),
+		Actor:  firstNonEmpty(q.Get("actor"), rc.Actor),
+		Event:  firstNonEmpty(q.Get("event"), rc.Event),
+		Status: firstNonEmpty(q.Get("status"), rc.Status),
+		Since:  since,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, retraceSyncCandidatesResponse{Candidates: candidates})
+}
+
+// firstNonEmpty returns the first non-empty string among vals — used to
+// let a query param override a config default without a chain of
+// if-not-empty checks at every call site.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (s *server) handleRetraceSync(w http.ResponseWriter, r *http.Request) {
 	if s.Cfg.Retrace == nil {
 		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")

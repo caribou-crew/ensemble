@@ -324,6 +324,7 @@ func TestRetraceEvidenceRoutesAre501WithoutARetraceBlock(t *testing.T) {
 		"/api/retrace/evidence/web/home",
 		"/api/retrace/videos/web/home/home.webm",
 		"/api/retrace/report/web/home/",
+		"/api/retrace/sync/candidates",
 	} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {
@@ -333,6 +334,38 @@ func TestRetraceEvidenceRoutesAre501WithoutARetraceBlock(t *testing.T) {
 		if resp.StatusCode != http.StatusNotImplemented {
 			t.Fatalf("GET %s status = %d, want 501", path, resp.StatusCode)
 		}
+	}
+}
+
+func TestRetraceSyncCandidatesRequiresRepo(t *testing.T) {
+	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{}) // Repo left empty
+
+	resp, err := http.Get(ts.URL + "/api/retrace/sync/candidates")
+	if err != nil {
+		t.Fatalf("GET /api/retrace/sync/candidates: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 when retrace.repo/repos is unset; body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestRetraceSyncCandidatesFailsFastWithoutGh(t *testing.T) {
+	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{Repo: "org/repo"})
+	t.Setenv("PATH", t.TempDir()) // no gh anywhere on it
+
+	resp, err := http.Get(ts.URL + "/api/retrace/sync/candidates")
+	if err != nil {
+		t.Fatalf("GET /api/retrace/sync/candidates: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("candidates succeeded with no gh on PATH: %s", body)
+	}
+	if !strings.Contains(string(body), "gh auth login") {
+		t.Fatalf("error body does not name the CLI's own remedy (gh auth login): %s", body)
 	}
 }
 
