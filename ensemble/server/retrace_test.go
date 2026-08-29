@@ -369,6 +369,38 @@ func TestRetraceSyncCandidatesFailsFastWithoutGh(t *testing.T) {
 	}
 }
 
+func TestRetraceSyncWithEmptyBodyStillWorks(t *testing.T) {
+	// Guards against a regression where decoding a JSON body starts
+	// requiring one — the CLI and any pre-existing client post no body
+	// at all (see TestRetraceSyncRequiresRepo's own http.Post(..., nil)).
+	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{Repo: "org/repo"})
+	t.Setenv("PATH", t.TempDir()) // no gh: proves the request was parsed and reached sync.Run, not rejected as bad JSON
+
+	resp, err := http.Post(ts.URL+"/api/retrace/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/retrace/sync: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("an empty body was rejected as bad JSON: %s", body)
+	}
+}
+
+func TestRetraceSyncRejectsMalformedBody(t *testing.T) {
+	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{Repo: "org/repo"})
+
+	resp, err := http.Post(ts.URL+"/api/retrace/sync", "application/json", strings.NewReader("not json"))
+	if err != nil {
+		t.Fatalf("POST /api/retrace/sync: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 for a malformed JSON body; body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestRetraceSyncRequiresRepo(t *testing.T) {
 	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{}) // Repo left empty
 

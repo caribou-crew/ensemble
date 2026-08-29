@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	retraceconfig "github.com/caribou-crew/ensemble/retrace/config"
@@ -158,8 +161,9 @@ func (s *server) handleRetraceSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rc := s.Cfg.Retrace
-	if rc.Repo == "" {
-		writeErr(w, http.StatusBadRequest, "retrace sync needs a repo — set retrace.repo in ensemble.yaml")
+	repos := rc.EffectiveRepos()
+	if len(repos) == 0 {
+		writeErr(w, http.StatusBadRequest, "retrace sync needs a repo — set retrace.repo or retrace.repos in ensemble.yaml")
 		return
 	}
 	since, err := sync.ParseSince(rc.EffectiveSince())
@@ -167,12 +171,21 @@ func (s *server) handleRetraceSync(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	var body struct {
+		Selections []sync.Selection `json:"selections"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "retrace sync: invalid JSON body: "+err.Error())
+		return
+	}
+
 	res, err := sync.Run(sync.Options{
-		Cwd:      rc.EffectiveDir(s.Cfg.Dir),
-		From:     "github",
-		Repo:     rc.Repo,
-		Workflow: rc.Workflow,
-		Since:    since,
+		Cwd: rc.EffectiveDir(s.Cfg.Dir), From: "github",
+		Repos: repos, Workflows: rc.EffectiveWorkflows(),
+		Branch: rc.Branch, Actor: rc.Actor, Event: rc.Event, Status: rc.Status,
+		Since:      since,
+		Selections: body.Selections,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
