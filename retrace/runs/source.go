@@ -111,3 +111,49 @@ func ReadSource(p Paths) (*Source, error) {
 	}
 	return &s, nil
 }
+
+// SourcesByURL scans every local run under root and groups "app/flow/
+// run-id" triples by the source.json RunURL they were synced from — the
+// reverse index a CI-run-centric UI needs to answer "is this GitHub
+// Actions run already pulled locally, and as what" without a network call
+// (sync.Candidate.URL and Source.RunURL are both `gh run list`'s own
+// "url", so they join directly).
+//
+// A run with no source.json (recorded locally, never synced) or an
+// unreadable/mismatched-schema one is simply absent from every entry —
+// "not from CI" and "can't tell" answer the same question the same way
+// here, and neither should abort the scan for every other run. The
+// traversal itself (a missing or unreadable apps/flows/runs listing) DOES
+// propagate, the same "loud failure, not a guess" standard ListRunsErr
+// already holds its own callers to.
+func SourcesByURL(root string) (map[string][]string, error) {
+	out := map[string][]string{}
+	apps, err := ListAppsErr(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, app := range apps {
+		flows, err := ListFlowsErr(root, app)
+		if err != nil {
+			return nil, err
+		}
+		for _, flow := range flows {
+			ids, err := ListRunsErr(root, app, flow)
+			if err != nil {
+				return nil, err
+			}
+			for _, id := range ids {
+				p, err := PathsFor(root, app, flow, id)
+				if err != nil {
+					continue
+				}
+				src, err := ReadSource(p)
+				if err != nil || src == nil || src.RunURL == "" {
+					continue
+				}
+				out[src.RunURL] = append(out[src.RunURL], filepath.Join(app, flow, id))
+			}
+		}
+	}
+	return out, nil
+}
