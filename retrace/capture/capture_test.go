@@ -19,6 +19,47 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
+// v6LoopbackAvailable probes for a working ::1, so a companion-bind
+// assertion can tell "this platform genuinely has no IPv6 loopback" apart
+// from "the companion bind is broken".
+func v6LoopbackAvailable(t *testing.T) bool {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
+// The marker door binds the literal "127.0.0.1:0" — no host: to
+// configure here, it is retrace's own internal supervision channel — so
+// it needs the same companion-bind treatment as any other literal-IP
+// listener (core/proxy.BindLoopbackCompanion): a client that reaches this
+// host via ::1 must still find a working door.
+func TestMarkerDoorAlsoAnswersOnIPv6Companion(t *testing.T) {
+	if !v6LoopbackAvailable(t) {
+		t.Skip("no IPv6 loopback on this platform")
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	s, err := StartStandalone(Options{Cwd: t.TempDir(), App: "web", Flow: "checkout", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatalf("StartStandalone: %v", err)
+	}
+	defer s.Close()
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(s.MarkerURL, "http://"))
+	if err != nil {
+		t.Fatalf("MarkerURL %q: %v", s.MarkerURL, err)
+	}
+	resp, err := http.Post("http://"+net.JoinHostPort("::1", port)+"/group", "application/json", strings.NewReader(`{"name":"checkout"}`))
+	if err != nil {
+		t.Fatalf("marker via [::1]:%s: %v; want the companion family reachable too", port, err)
+	}
+	resp.Body.Close()
+}
+
 func TestStandaloneCaptureRecordsClientEdgeHopsAndWritesWireJsonl(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

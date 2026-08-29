@@ -286,6 +286,9 @@ func (s *Session) startMarkerDoor(now func() time.Time) error {
 	door := NewMarkerDoorCounted(s.Paths, now, func() { s.requests.Add(1) })
 	s.markerSrv = &http.Server{Handler: door}
 	go s.markerSrv.Serve(ln)
+	if companion, cerr := proxy.BindLoopbackCompanion(ln); cerr == nil && companion != nil {
+		go s.markerSrv.Serve(companion)
+	}
 	s.MarkerURL = "http://" + ln.Addr().String()
 
 	// A run that cannot record its owner is a run nothing can supervise, so
