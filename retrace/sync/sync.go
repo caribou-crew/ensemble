@@ -38,6 +38,28 @@ type Options struct {
 	// Workflow optionally narrows sync to one GitHub Actions workflow
 	// name. Empty means every workflow in Repo.
 	Workflow string
+	// Repos, when non-empty, syncs every listed "org/repo" in turn — the
+	// plural form of Repo. Repo remains the single-value alias; use
+	// effectiveRepos to read either uniformly.
+	Repos []string
+	// Workflows, when non-empty, narrows sync to any GitHub Actions
+	// workflow name matching one of these entries — each may be an exact
+	// name or a path.Match glob (e.g. "Retrace *"). Workflow remains the
+	// single-value alias; use effectiveWorkflows to read either
+	// uniformly.
+	Workflows []string
+	// Branch narrows sync to runs off this branch (gh run list --branch).
+	Branch string
+	// Actor narrows sync to runs triggered by this GitHub user (gh run
+	// list --user).
+	Actor string
+	// Event narrows sync to runs triggered by this event, e.g. "push" or
+	// "schedule" (gh run list --event).
+	Event string
+	// Status narrows sync by run status or conclusion, e.g. "completed"
+	// or "failure" (gh run list --status — gh itself accepts either kind
+	// of value through this one flag).
+	Status string
 	// Since bounds how far back to look for qualifying workflow runs.
 	// Zero means DefaultSince.
 	Since time.Duration
@@ -45,6 +67,11 @@ type Options struct {
 	// stamped into each synced run's source.json. Nil means time.Now —
 	// injectable so a test's window doesn't race the wall clock.
 	Now func() time.Time
+	// Selections, when non-empty, restricts Run to exactly these
+	// (repo, databaseId) pairs — see List and Selection's own doc
+	// comments. Added by Task 5; declared here so Task 5 is a pure
+	// addition, not a struct-shape change other tasks must chase.
+	Selections []Selection
 }
 
 func (o Options) now() time.Time {
@@ -59,6 +86,52 @@ func (o Options) since() time.Duration {
 		return o.Since
 	}
 	return DefaultSince
+}
+
+// effectiveRepos returns Repos, or a one-element slice of Repo when Repos
+// is empty, or nil when neither is set.
+func (o Options) effectiveRepos() []string {
+	if len(o.Repos) > 0 {
+		return o.Repos
+	}
+	if o.Repo != "" {
+		return []string{o.Repo}
+	}
+	return nil
+}
+
+// effectiveWorkflows returns Workflows, or a one-element slice of
+// Workflow when Workflows is empty, or nil (meaning "no workflow filter")
+// when neither is set.
+func (o Options) effectiveWorkflows() []string {
+	if len(o.Workflows) > 0 {
+		return o.Workflows
+	}
+	if o.Workflow != "" {
+		return []string{o.Workflow}
+	}
+	return nil
+}
+
+func (o Options) hasSelections() bool { return len(o.Selections) > 0 }
+
+func (o Options) isSelected(repo string, databaseID int64) bool {
+	for _, s := range o.Selections {
+		if s.Repo == repo && s.DatabaseID == databaseID {
+			return true
+		}
+	}
+	return false
+}
+
+// Selection names one candidate run a caller already picked from a prior
+// List call — (Repo, DatabaseID) rather than a bare ID, because GitHub
+// Actions run IDs are unique platform-wide but Run still needs to know
+// which repo to call `gh run download --repo` against without
+// re-deriving it from a window search.
+type Selection struct {
+	Repo       string `json:"repo"`
+	DatabaseID int64  `json:"databaseId"`
 }
 
 // SkipReason names one artifact sync declined to merge, and why. Reported

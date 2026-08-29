@@ -299,6 +299,91 @@ func TestDownloadFailureIsSkippedNotAborted(t *testing.T) {
 	}
 }
 
+func TestBranchActorEventStatusFlagsArePassedToGh(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[]`)
+
+	cwd := t.TempDir()
+	_, err := Run(Options{
+		Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now),
+		Branch: "main", Actor: "octocat", Event: "schedule", Status: "completed",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	log, err := os.ReadFile(os.Getenv("GH_FAKE_INVOCATION_LOG"))
+	if err != nil {
+		t.Fatalf("reading invocation log: %v", err)
+	}
+	for _, want := range []string{"--branch main", "--user octocat", "--event schedule", "--status completed"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("invocation log missing %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestMultipleReposAreAllSynced(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/a/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
+	stageDownload(t, 1, "web", "checkout", "20260827T100000Z-aaa1111")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repos: []string{"org/a", "org/b"}, Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The same fixture is returned for every repo the fake gh sees (it
+	// doesn't branch on --repo), so this proves BOTH repos were listed:
+	// the single staged run gets merged twice under the same dest path,
+	// which is idempotent — the second is a no-op — so Synced still has
+	// exactly one entry, but the invocation log proves both repos were
+	// queried.
+	if len(res.Synced) != 1 {
+		t.Fatalf("Synced = %v, want 1", res.Synced)
+	}
+	log, err := os.ReadFile(os.Getenv("GH_FAKE_INVOCATION_LOG"))
+	if err != nil {
+		t.Fatalf("reading invocation log: %v", err)
+	}
+	for _, want := range []string{"--repo org/a", "--repo org/b"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("invocation log missing %q:\n%s", want, log)
+		}
+	}
+}
+
+func TestWorkflowGlobFiltersByPattern(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[
+		{"databaseId": 1, "workflowName": "Retrace Replay (Visual + Wire Regression)", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"},
+		{"databaseId": 2, "workflowName": "Maestro iOS (Card Views)", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T09:00:00Z", "status": "completed"}
+	]`)
+	stageDownload(t, 1, "web", "checkout", "20260827T100000Z-aaa1111")
+	stageDownload(t, 2, "web", "other", "20260827T090000Z-bbb2222")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now), Workflows: []string{"Retrace *"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("web", "checkout", "20260827T100000Z-aaa1111") {
+		t.Fatalf("Synced = %v, want only the Retrace-prefixed run", res.Synced)
+	}
+}
+
+func TestInvalidWorkflowGlobIsRejected(t *testing.T) {
+	fakeGH(t)
+	cwd := t.TempDir()
+	_, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Workflows: []string{"["}})
+	if err == nil {
+		t.Fatal("expected an error for a malformed workflow glob")
+	}
+}
+
 func TestGhMissingFailsFastWithoutNetworkCall(t *testing.T) {
 	// Deliberately NOT calling fakeGH: PATH has no "gh" at all (assuming
 	// the test host doesn't have one either — CI runners for this repo's

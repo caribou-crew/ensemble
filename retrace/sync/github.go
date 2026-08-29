@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -44,45 +45,67 @@ func runLabel(r ghRun) string {
 // is exercised whether the fixture behind `gh` is real or a test double,
 // and a test can inject Now without gh's own clock getting a vote.
 func runGitHub(o Options) (Result, error) {
-	if o.Repo == "" {
+	repos := o.effectiveRepos()
+	if len(repos) == 0 {
 		return Result{}, errors.New("sync: --repo is required for --from github")
 	}
 	if _, err := exec.LookPath("gh"); err != nil {
 		return Result{}, errors.New("sync: the \"gh\" CLI is not on PATH — install it (https://cli.github.com) and run `gh auth login`, or set GH_TOKEN/GITHUB_TOKEN, before retrying")
 	}
-
-	list, err := listGitHubRuns(o)
-	if err != nil {
+	workflows := o.effectiveWorkflows()
+	if err := validateWorkflowPatterns(workflows); err != nil {
 		return Result{}, err
 	}
 
 	result := Result{Synced: []string{}, Skipped: []SkipReason{}}
 	cutoff := o.now().Add(-o.since())
-	for _, r := range list {
-		if r.CreatedAt.Before(cutoff) {
-			continue
-		}
-		if r.Status != "completed" {
-			result.Skipped = append(result.Skipped, SkipReason{
-				Artifact: runLabel(r),
-				Reason:   fmt.Sprintf("run is %s, not completed — skipping rather than risking a doomed download", r.Status),
-			})
-			continue
-		}
-		synced, skipped, err := syncOneRun(o, r)
+	for _, repo := range repos {
+		list, err := listGitHubRuns(o, repo)
 		if err != nil {
 			return Result{}, err
 		}
-		result.Synced = append(result.Synced, synced...)
-		result.Skipped = append(result.Skipped, skipped...)
+		for _, r := range list {
+			if !matchesWorkflow(r.WorkflowName, workflows) {
+				continue
+			}
+			if o.hasSelections() {
+				if !o.isSelected(repo, r.DatabaseID) {
+					continue
+				}
+			} else if r.CreatedAt.Before(cutoff) {
+				continue
+			}
+			if r.Status != "completed" {
+				result.Skipped = append(result.Skipped, SkipReason{
+					Artifact: runLabel(r),
+					Reason:   fmt.Sprintf("run is %s, not completed — skipping rather than risking a doomed download", r.Status),
+				})
+				continue
+			}
+			synced, skipped, err := syncOneRun(o, repo, r)
+			if err != nil {
+				return Result{}, err
+			}
+			result.Synced = append(result.Synced, synced...)
+			result.Skipped = append(result.Skipped, skipped...)
+		}
 	}
 	return result, nil
 }
 
-func listGitHubRuns(o Options) ([]ghRun, error) {
-	args := []string{"run", "list", "--repo", o.Repo, "--json", "databaseId,workflowName,headSha,headBranch,event,status,conclusion,url,createdAt", "--limit", "100"}
-	if o.Workflow != "" {
-		args = append(args, "--workflow", o.Workflow)
+func listGitHubRuns(o Options, repo string) ([]ghRun, error) {
+	args := []string{"run", "list", "--repo", repo, "--json", "databaseId,workflowName,headSha,headBranch,event,status,conclusion,url,createdAt", "--limit", "100"}
+	if o.Branch != "" {
+		args = append(args, "--branch", o.Branch)
+	}
+	if o.Actor != "" {
+		args = append(args, "--user", o.Actor)
+	}
+	if o.Event != "" {
+		args = append(args, "--event", o.Event)
+	}
+	if o.Status != "" {
+		args = append(args, "--status", o.Status)
 	}
 	out, err := exec.Command("gh", args...).Output()
 	if err != nil {
@@ -93,6 +116,34 @@ func listGitHubRuns(o Options) ([]ghRun, error) {
 		return nil, fmt.Errorf("sync: parsing gh run list output: %w", err)
 	}
 	return list, nil
+}
+
+// matchesWorkflow reports whether name satisfies patterns — every pattern
+// is tried as a path.Match glob (so an exact name with no glob
+// metacharacter just matches itself), and an empty patterns list means
+// "no workflow filter", matching everything.
+func matchesWorkflow(name string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, p := range patterns {
+		if ok, _ := path.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// validateWorkflowPatterns rejects a malformed glob up front, so a
+// typo'd pattern fails the sync loudly instead of silently matching
+// nothing.
+func validateWorkflowPatterns(patterns []string) error {
+	for _, p := range patterns {
+		if _, err := path.Match(p, ""); err != nil {
+			return fmt.Errorf("sync: invalid workflow pattern %q: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // stderrOf formats an *exec.ExitError's captured stderr, when there is
@@ -112,7 +163,7 @@ func stderrOf(err error) string {
 // contain no manifest.json at all becomes a SkipReason, never an error
 // that aborts the rest of the sync (mirrors retrace/serve's own rule that
 // one broken flow must not take a whole queue down).
-func syncOneRun(o Options, r ghRun) (synced []string, skipped []SkipReason, err error) {
+func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []SkipReason, err error) {
 	tmp, err := os.MkdirTemp("", "retrace-sync-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("sync: creating a scratch directory: %w", err)
@@ -120,7 +171,7 @@ func syncOneRun(o Options, r ghRun) (synced []string, skipped []SkipReason, err 
 	defer os.RemoveAll(tmp)
 
 	label := runLabel(r)
-	dlArgs := []string{"run", "download", strconv.FormatInt(r.DatabaseID, 10), "--repo", o.Repo, "--dir", tmp}
+	dlArgs := []string{"run", "download", strconv.FormatInt(r.DatabaseID, 10), "--repo", repo, "--dir", tmp}
 	if out, err := exec.Command("gh", dlArgs...).CombinedOutput(); err != nil {
 		return nil, []SkipReason{{
 			Artifact: label,
