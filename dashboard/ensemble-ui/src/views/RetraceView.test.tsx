@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import RetraceView from './RetraceView';
-import { api, ApiError } from '../api/client';
+import { api } from '../api/client';
 import type { RetraceItem, RetraceQueueResponse, RetraceSummary } from '../api/types';
 
 async function flush(turns = 8) {
@@ -182,9 +182,25 @@ describe('RetraceView', () => {
     expect(container.querySelector('.retrace-detail__evidence')).toBeNull();
   });
 
-  it('a sync failure shows inline rather than crashing', async () => {
+  it('opens the sync panel and loads candidates', async () => {
     vi.spyOn(api, 'retraceQueue').mockResolvedValue({ items: [], empty: 'no-runs' });
-    vi.spyOn(api, 'retraceSync').mockRejectedValue(new ApiError(502, 'gh: command not found'));
+    vi.spyOn(api, 'retraceSyncCandidates').mockResolvedValue({
+      candidates: [
+        {
+          repo: 'org/repo',
+          databaseId: 1,
+          workflowName: 'Retrace Replay',
+          headBranch: 'main',
+          actor: 'octocat',
+          event: 'push',
+          status: 'completed',
+          conclusion: 'success',
+          createdAt: '2026-08-27T10:00:00Z',
+          url: 'https://github.com/org/repo/actions/runs/1',
+          hasArtifacts: true,
+        },
+      ],
+    });
 
     root = createRoot(container);
     await act(async () => {
@@ -192,13 +208,13 @@ describe('RetraceView', () => {
     });
     await flush();
 
-    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Sync now');
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Browse & sync…');
     expect(button).toBeTruthy();
     await act(async () => {
       button!.click();
     });
     await flush();
 
-    expect(container.textContent).toContain('gh: command not found');
+    expect(container.textContent).toContain('Retrace Replay');
   });
 });

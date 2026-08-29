@@ -12,6 +12,7 @@ import WireDiffTable, { entryKey } from '@ensemble/design-system/components/Wire
 import type { Entry, FieldDiff } from '@ensemble/design-system/diffTypes';
 import { api, messageOf, resolveRetraceShotUrl, resolveRetraceVideoUrl, retraceReportUrl } from '../api/client';
 import type { RetraceItem, RetraceSummary } from '../api/types';
+import RetraceSyncPanel from './RetraceSyncPanel';
 import './RetraceView.css';
 
 // Same four-way tone mapping retrace-ui's tone.ts uses — quarantined reads
@@ -231,23 +232,7 @@ export default function RetraceView() {
     return api.retraceItem(selected.app, selected.flow);
   }, [selected]);
 
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [lastSynced, setLastSynced] = useState<Date | null>(null);
-
-  async function syncNow() {
-    setSyncing(true);
-    setSyncError(null);
-    try {
-      await api.retraceSync();
-      setLastSynced(new Date());
-      setTick((t) => t + 1);
-    } catch (err) {
-      setSyncError(messageOf(err, 'sync failed'));
-    } finally {
-      setSyncing(false);
-    }
-  }
+  const [showSyncPanel, setShowSyncPanel] = useState(false);
 
   if (error) {
     return (
@@ -272,14 +257,18 @@ export default function RetraceView() {
   return (
     <div className="retrace-view">
       <div className="retrace-view__toolbar">
-        <button type="button" onClick={() => void syncNow()} disabled={syncing}>
-          {syncing ? <Spinner /> : 'Sync now'}
+        <button type="button" onClick={() => setShowSyncPanel(true)}>
+          Browse &amp; sync…
         </button>
-        {lastSynced && <span className="retrace-view__hint">last synced {lastSynced.toLocaleTimeString()}</span>}
-        {syncError && <span className="retrace-view__sync-error">{syncError}</span>}
         {data?.empty === 'no-runs' && <span className="retrace-view__hint">no runs recorded yet</span>}
         {data?.empty === 'all-clear' && <span className="retrace-view__hint">all clear</span>}
       </div>
+      {showSyncPanel && (
+        <RetraceSyncPanel
+          onClose={() => setShowSyncPanel(false)}
+          onSynced={() => setTick((t) => t + 1)}
+        />
+      )}
       <div className="retrace-view__body">
         <QueueTable items={items} selected={selected} onSelect={(app, flow) => setSelected({ app, flow })} />
         {selected && summary && <DetailPane app={selected.app} flow={selected.flow} summary={summary} />}
