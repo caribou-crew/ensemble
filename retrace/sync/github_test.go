@@ -460,6 +460,69 @@ func TestSyncedRunRecordsBranchEventActorInSource(t *testing.T) {
 	}
 }
 
+func TestRunWithSelectionsPullsOnlyThose(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[
+		{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"},
+		{"databaseId": 2, "workflowName": "retrace-ios", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T09:00:00Z", "status": "completed"}
+	]`)
+	stageDownload(t, 1, "web", "checkout", "20260827T100000Z-aaa1111")
+	stageDownload(t, 2, "ios", "checkout", "20260827T090000Z-bbb2222")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{
+		Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now),
+		Selections: []Selection{{Repo: "org/repo", DatabaseID: 2}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("ios", "checkout", "20260827T090000Z-bbb2222") {
+		t.Fatalf("Synced = %v, want only the selected run", res.Synced)
+	}
+}
+
+func TestRunWithSelectionsIgnoresSinceWindow(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-01-01T10:00:00Z", "status": "completed"}]`)
+	stageDownload(t, 1, "web", "checkout", "20260101T100000Z-aaa1111")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{
+		Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now), Since: time.Hour,
+		Selections: []Selection{{Repo: "org/repo", DatabaseID: 1}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 {
+		t.Fatalf("Synced = %v, want the selected run pulled even though it's outside the 1h window", res.Synced)
+	}
+}
+
+func TestRunWithSelectionsStillSkipsNonCompleted(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "queued"}]`)
+
+	cwd := t.TempDir()
+	res, err := Run(Options{
+		Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now),
+		Selections: []Selection{{Repo: "org/repo", DatabaseID: 1}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 0 {
+		t.Fatalf("Synced = %v, want none — a selected but non-completed run must still be skipped", res.Synced)
+	}
+	if len(res.Skipped) != 1 {
+		t.Fatalf("Skipped = %v, want one entry", res.Skipped)
+	}
+}
+
 func TestGhMissingFailsFastWithoutNetworkCall(t *testing.T) {
 	// Deliberately NOT calling fakeGH: PATH has no "gh" at all (assuming
 	// the test host doesn't have one either — CI runners for this repo's
