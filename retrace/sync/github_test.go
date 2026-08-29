@@ -57,6 +57,16 @@ if [ "$1" = "run" ] && [ "$2" = "download" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "api" ]; then
+  path="$2"
+  runid=$(echo "$path" | sed -E 's#.*/actions/runs/([0-9]+)$#\1#')
+  login=""
+  if [ -n "$GH_FAKE_ACTORS_DIR" ] && [ -f "$GH_FAKE_ACTORS_DIR/$runid" ]; then
+    login=$(cat "$GH_FAKE_ACTORS_DIR/$runid")
+  fi
+  echo "$login"
+  exit 0
+fi
 echo "fake gh: unhandled invocation: $*" >&2
 exit 1
 `
@@ -381,6 +391,46 @@ func TestInvalidWorkflowGlobIsRejected(t *testing.T) {
 	_, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Workflows: []string{"["}})
 	if err == nil {
 		t.Fatal("expected an error for a malformed workflow glob")
+	}
+}
+
+// stageActor makes fetchActor return login for run databaseID via the
+// fake gh's `api repos/.../actions/runs/<id>` branch.
+func stageActor(t *testing.T, databaseID int64, login string) {
+	t.Helper()
+	dir := os.Getenv("GH_FAKE_ACTORS_DIR")
+	if dir == "" {
+		dir = t.TempDir()
+		t.Setenv("GH_FAKE_ACTORS_DIR", dir)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(databaseID)), []byte(login), 0o644); err != nil {
+		t.Fatalf("staging actor fixture: %v", err)
+	}
+}
+
+func TestSyncedRunRecordsBranchEventActorInSource(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-web", "headBranch": "main", "event": "push", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
+	stageDownload(t, 1, "web", "checkout", "20260827T100000Z-aaa1111")
+	stageActor(t, 1, "octocat")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 {
+		t.Fatalf("Synced = %v, want 1", res.Synced)
+	}
+
+	dest := filepath.Join(runs.RunsRoot(cwd), "web", "checkout", "20260827T100000Z-aaa1111")
+	src, err := runs.ReadSource(runs.Paths{RunDir: dest})
+	if err != nil || src == nil {
+		t.Fatalf("ReadSource: %v, %+v", err, src)
+	}
+	if src.HeadBranch != "main" || src.Event != "push" || src.Actor != "octocat" {
+		t.Fatalf("source.json provenance = %+v, want branch=main event=push actor=octocat", src)
 	}
 }
 

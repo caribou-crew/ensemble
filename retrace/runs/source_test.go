@@ -21,11 +21,14 @@ func TestReadSourceOnLocalRunIsNilNil(t *testing.T) {
 func TestWriteSourceThenReadRoundTrips(t *testing.T) {
 	p := newRun(t, runIDAt(fixedNow))
 	want := Source{
-		Kind:     SourceKindCI,
-		Workflow: "retrace-ios",
-		RunURL:   "https://github.com/org/repo/actions/runs/123",
-		SHA:      "abc123",
-		SyncedAt: fixedNow,
+		Kind:       SourceKindCI,
+		Workflow:   "retrace-ios",
+		RunURL:     "https://github.com/org/repo/actions/runs/123",
+		SHA:        "abc123",
+		HeadBranch: "main",
+		Event:      "push",
+		Actor:      "octocat",
+		SyncedAt:   fixedNow,
 	}
 	if err := WriteSource(p, want); err != nil {
 		t.Fatalf("WriteSource: %v", err)
@@ -42,6 +45,9 @@ func TestWriteSourceThenReadRoundTrips(t *testing.T) {
 	}
 	if got.Kind != want.Kind || got.Workflow != want.Workflow || got.RunURL != want.RunURL || got.SHA != want.SHA {
 		t.Errorf("round-trip mismatch: got %+v, want %+v", *got, want)
+	}
+	if got.HeadBranch != want.HeadBranch || got.Event != want.Event || got.Actor != want.Actor {
+		t.Errorf("provenance round-trip mismatch: got %+v, want %+v", *got, want)
 	}
 	if !got.SyncedAt.Equal(want.SyncedAt) {
 		t.Errorf("syncedAt = %v, want %v", got.SyncedAt, want.SyncedAt)

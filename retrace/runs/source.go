@@ -58,6 +58,16 @@ type Source struct {
 	// the CI runner, and it should agree with this one, but this is the
 	// value `gh run list` reported for the workflow run itself.
 	SHA string `json:"sha"`
+	// HeadBranch is the branch the run's workflow was triggered against
+	// (gh run list's own "headBranch"), e.g. "main".
+	HeadBranch string `json:"headBranch,omitempty"`
+	// Event is what triggered the run, e.g. "push" or "schedule".
+	Event string `json:"event,omitempty"`
+	// Actor is the GitHub login who triggered the run. gh run list's own
+	// JSON output has no actor field (retrace/sync fetches it separately
+	// via `gh api`), so this may be empty for a run synced before this
+	// field existed.
+	Actor string `json:"actor,omitempty"`
 	// SyncedAt is when `retrace sync` merged this run onto local disk —
 	// not when CI recorded it, which is CaptureTrust/Manifest territory.
 	SyncedAt time.Time `json:"syncedAt"`

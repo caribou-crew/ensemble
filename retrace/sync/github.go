@@ -158,6 +158,22 @@ func stderrOf(err error) string {
 	return ""
 }
 
+// fetchActor returns the GitHub login of the user who triggered run
+// databaseID in repo. gh run list's own --json output has no actor field
+// (verified against gh 2.87.3's --json field list), so this costs one
+// extra `gh api` call — used by List (browsing) and syncOneRun
+// (provenance), never by the window-based pull's hot loop for a run it
+// isn't actually about to merge.
+func fetchActor(repo string, databaseID int64) (string, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/actions/runs/%d", repo, databaseID),
+		"--jq", ".actor.login").Output()
+	if err != nil {
+		return "", fmt.Errorf("sync: gh api (actor for run %d): %w%s", databaseID, err, stderrOf(err))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // syncOneRun downloads one workflow run's artifacts into a scratch
 // directory, then merges every run bundle it finds. A run whose artifacts
 // contain no manifest.json at all becomes a SkipReason, never an error
@@ -190,6 +206,8 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 		}}, nil
 	}
 
+	var actor string
+	var actorFetched bool
 	for _, m := range manifests {
 		runDir := filepath.Dir(m)
 		runID := filepath.Base(runDir)
@@ -212,8 +230,16 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 		if err := copyTree(runDir, dest); err != nil {
 			return synced, skipped, fmt.Errorf("sync: copying %s/%s/%s: %w", app, flow, runID, err)
 		}
+		if !actorFetched {
+			actor, err = fetchActor(repo, r.DatabaseID)
+			if err != nil {
+				return synced, skipped, err
+			}
+			actorFetched = true
+		}
 		if err := runs.WriteSource(runs.Paths{RunDir: dest}, runs.Source{
-			Kind: runs.SourceKindCI, Workflow: r.WorkflowName, RunURL: r.URL, SHA: r.HeadSHA, SyncedAt: o.now(),
+			Kind: runs.SourceKindCI, Workflow: r.WorkflowName, RunURL: r.URL, SHA: r.HeadSHA,
+			HeadBranch: r.HeadBranch, Event: r.Event, Actor: actor, SyncedAt: o.now(),
 		}); err != nil {
 			return synced, skipped, fmt.Errorf("sync: writing source.json for %s/%s/%s: %w", app, flow, runID, err)
 		}
