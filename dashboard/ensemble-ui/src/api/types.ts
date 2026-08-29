@@ -263,6 +263,10 @@ export interface RetraceSource {
   workflow: string;
   runUrl: string;
   sha: string;
+  /** Absent for a run synced before provenance fields existed. */
+  headBranch?: string;
+  event?: string;
+  actor?: string;
   syncedAt: string;
 }
 
@@ -422,6 +426,37 @@ export interface RetraceItemResponse {
 export interface RetraceSyncResult {
   synced: string[];
   skipped: { artifact: string; reason: string }[];
+}
+
+/** `sync.Candidate` — one row of GET /api/retrace/sync/candidates's
+ * `candidates` array. `hasArtifacts`/`actor` both cost the server one
+ * extra `gh api` call each (gh's own listing has neither), so this
+ * endpoint is not meant to be polled. */
+export interface RetraceCandidate {
+  repo: string;
+  databaseId: number;
+  workflowName: string;
+  headBranch: string;
+  actor: string;
+  event: string;
+  status: string;
+  conclusion: string;
+  createdAt: string;
+  url: string;
+  hasArtifacts: boolean;
+}
+
+/** GET /api/retrace/sync/candidates's body. `candidates` is never null on
+ * the wire, only ever `[]` for "nothing in range". */
+export interface RetraceCandidatesResponse {
+  candidates: RetraceCandidate[];
+}
+
+/** One candidate a caller picked from RetraceCandidatesResponse — the
+ * POST /api/retrace/sync request body's `selections` array shape. */
+export interface RetraceSelection {
+  repo: string;
+  databaseId: number;
 }
 
 /** GET /api/retrace/evidence/{app}/{flow}'s body — what's available to

@@ -13,7 +13,14 @@ import type {
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
-import type { RetraceEvidence, RetraceQueueResponse, RetraceSummary, RetraceSyncResult } from "./types";
+import type {
+  RetraceEvidence,
+  RetraceQueueResponse,
+  RetraceSummary,
+  RetraceSyncResult,
+  RetraceCandidatesResponse,
+  RetraceSelection,
+} from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -315,8 +322,23 @@ export const api = {
     ).then((r) => r.summary);
   },
 
-  retraceSync(): Promise<RetraceSyncResult> {
-    return request<RetraceSyncResult>("/api/retrace/sync", jsonInit("POST"));
+  retraceSync(selections?: RetraceSelection[]): Promise<RetraceSyncResult> {
+    return request<RetraceSyncResult>(
+      "/api/retrace/sync",
+      jsonInit("POST", selections ? { selections } : undefined),
+    );
+  },
+
+  retraceSyncCandidates(filters: {
+    branch?: string;
+    actor?: string;
+    event?: string;
+    status?: string;
+    since?: string;
+  } = {}): Promise<RetraceCandidatesResponse> {
+    return request<RetraceCandidatesResponse>(
+      `/api/retrace/sync/candidates${query(filters)}`,
+    );
   },
 
   retraceEvidence(app: string, flow: string): Promise<RetraceEvidence> {
