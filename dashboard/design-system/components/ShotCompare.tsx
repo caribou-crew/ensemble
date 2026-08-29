@@ -74,42 +74,29 @@ export default function ShotCompare({
       <div className="shot-compare__grid">
         <ShotCompareCell label="original">
           {images.a ? (
-            <img
-              className="shot-compare__img"
-              src={resolveShotUrl(app, flow, 'a', checkpoint.name)}
-              alt={`reference shot of ${checkpoint.name}`}
-            />
+            <ShotLink href={resolveShotUrl(app, flow, 'a', checkpoint.name)} alt={`reference shot of ${checkpoint.name}`} />
           ) : (
             <p className="shot-compare__explanation">{noShotCopy(checkpoint)}</p>
           )}
         </ShotCompareCell>
         <ShotCompareCell label="current">
           {images.b ? (
-            <img
-              className="shot-compare__img"
-              src={resolveShotUrl(app, flow, 'b', checkpoint.name)}
-              alt={`this run's shot of ${checkpoint.name}`}
-            />
+            <ShotLink href={resolveShotUrl(app, flow, 'b', checkpoint.name)} alt={`this run's shot of ${checkpoint.name}`} />
           ) : (
             <p className="shot-compare__explanation">{noShotCopy(checkpoint)}</p>
           )}
         </ShotCompareCell>
         <ShotCompareCell label="diff">
           {images.diff ? (
-            <img
-              className="shot-compare__img"
-              src={resolveShotUrl(app, flow, 'diff', checkpoint.name)}
-              alt={`diff image for ${checkpoint.name}`}
-            />
+            <ShotLink href={resolveShotUrl(app, flow, 'diff', checkpoint.name)} alt={`diff image for ${checkpoint.name}`} />
           ) : (
             <p className="shot-compare__explanation">{NO_IMAGE}</p>
           )}
         </ShotCompareCell>
         {showOverlay ? (
           <ShotCompareCell label="overlay">
-            <img
-              className="shot-compare__img"
-              src={resolveShotUrl(app, flow, 'overlay', checkpoint.name)}
+            <ShotLink
+              href={resolveShotUrl(app, flow, 'overlay', checkpoint.name)}
               alt={`overlay of differences for ${checkpoint.name}`}
             />
           </ShotCompareCell>
@@ -126,6 +113,23 @@ function ShotCompareBar({ checkpoint }: { checkpoint: CheckpointVerdict }) {
       <span className="shot-compare__verdict">{checkpoint.verdict}</span>
       <span className="shot-compare__pct">{checkpoint.diffPct.toFixed(2)}% differing</span>
     </div>
+  );
+}
+
+/**
+ * A shot, constrained to a sane inline height (see ShotCompare.css's
+ * `max-height`) and wrapped in a link to its own unconstrained URL — a
+ * full-page capture otherwise renders at its native height, which can run
+ * to several thousand pixels and push wire/hops/budgets far below the
+ * fold. `target="_blank"` opens the ACTUAL image (not a lightbox), so the
+ * browser's own zoom/pan handles arbitrarily large shots without this
+ * component needing any zoom state of its own.
+ */
+function ShotLink({ href, alt }: { href: string; alt: string }) {
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      <img className="shot-compare__img" src={href} alt={alt} />
+    </a>
   );
 }
 

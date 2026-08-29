@@ -44,6 +44,13 @@
 .shot-compare__img {
   display: block;
   max-width: 100%;
+  /* A full-page capture can be several thousand pixels tall; without this
+     it renders at native height inline and pushes wire/hops/budgets far
+     below the fold. `object-fit: contain` keeps a wide-but-short shot
+     (most checkpoints) from being cropped by the cap. */
+  max-height: 420px;
+  object-fit: contain;
+  cursor: zoom-in;
 }
 
 .shot-compare__cell .shot-compare__explanation {

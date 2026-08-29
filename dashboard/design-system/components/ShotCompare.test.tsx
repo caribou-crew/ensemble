@@ -66,6 +66,16 @@ describe('ShotCompare', () => {
     )).toBe('/api/shots/web/search/overlay/results');
   });
 
+  it('links each shot to its own full-size URL, so a tall capture (constrained inline) can be opened at full size', () => {
+    render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} resolveShotUrl={resolveShotUrl} />);
+
+    const links = Array.from(container.querySelectorAll('.shot-compare__cell a')) as HTMLAnchorElement[];
+    expect(links).toHaveLength(4);
+    expect(links[0].getAttribute('href')).toBe('/api/shots/web/search/a/results');
+    expect(links[0].getAttribute('target')).toBe('_blank');
+    expect(links[0].querySelector('img')).not.toBeNull();
+  });
+
   it('omits the overlay pane when the checkpoint did not differ, even if an overlay image exists', () => {
     render(
       <ShotCompare
