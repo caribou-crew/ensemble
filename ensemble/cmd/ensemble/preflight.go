@@ -129,13 +129,43 @@ func checkPortsFree(cfg *config.Config, activeProfiles []string) error {
 	return fmt.Errorf("port conflict, refusing to start:\n  %s", strings.Join(conflicts, "\n  "))
 }
 
+// preflightLsofTimeout bounds identifyPort's shell-out, for the same reason
+// preflightDockerTimeout bounds the container lookup. lsof walks every open
+// file on the machine, which means stat()ing every mounted filesystem: with an
+// unresponsive network mount (an SMB share whose server stopped answering) it
+// blocks indefinitely and never returns. identifyPort runs inside
+// checkPortsFree, the first thing `ensemble up` does, so an unbounded call
+// hangs the command before it prints anything — while producing nothing more
+// than a diagnostic string the caller is explicitly fine without.
+const preflightLsofTimeout = 2 * time.Second
+
+// runLsof is indirected through a var so identifyPort's give-up behavior is
+// testable without needing a genuinely wedged mount on the host running the
+// tests.
+var runLsof = func(ctx context.Context, port int) ([]byte, error) {
+	// -b avoids the kernel calls that block on an unresponsive mount, and -w
+	// suppresses the warnings -b then emits; -n and -P keep lsof from doing
+	// DNS and /etc/services lookups. -b is the fix for the common case, but
+	// it is not a guarantee, which is what the context and WaitDelay are for.
+	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-b", "-w",
+		fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN")
+	// A process wedged in uninterruptible I/O does not die on the context's
+	// SIGKILL, and Output would then block in Wait on a pipe that never
+	// closes — the very hang the context was meant to bound. WaitDelay caps
+	// that second wait too.
+	cmd.WaitDelay = time.Second
+	return cmd.Output()
+}
+
 // identifyPort best-effort names the process listening on port, via lsof
 // (present on macOS and most Linux dev boxes). Empty string on any
-// failure — not installed, nothing found, unexpected output — this is a
-// diagnostic nicety only, never load-bearing: checkPortsFree still reports
-// the conflict either way.
+// failure — not installed, nothing found, unexpected output, or lsof taking
+// longer than preflightLsofTimeout — this is a diagnostic nicety only, never
+// load-bearing: checkPortsFree still reports the conflict either way.
 func identifyPort(port int) string {
-	out, err := exec.Command("lsof", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), preflightLsofTimeout)
+	defer cancel()
+	out, err := runLsof(ctx, port)
 	if err != nil {
 		return ""
 	}

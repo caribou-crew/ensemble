@@ -149,3 +149,67 @@ func TestCheckPortsFreeIsNotHungByAWedgedDaemon(t *testing.T) {
 		t.Fatal("checkPortsFree hung on an unresponsive docker daemon")
 	}
 }
+
+// identifyPort is documented as "a diagnostic nicety only, never
+// load-bearing". It was load-bearing: lsof stats every mounted filesystem, so
+// an unresponsive network mount made it block forever, and since it runs
+// inside checkPortsFree that hung `ensemble up` before it printed anything.
+// (Observed for real on a dev Mac with two SMB mounts, where it also wedged
+// this package's own tests for the full 10-minute go test timeout.)
+//
+// These pin the promise the comment makes: the conflict is still reported,
+// promptly, when lsof never answers.
+
+// hangLsof replaces the lsof shell-out with one that never returns on its
+// own — only when the context identifyPort gave it expires.
+func hangLsof(t *testing.T) {
+	t.Helper()
+	prev := runLsof
+	runLsof = func(ctx context.Context, _ int) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	t.Cleanup(func() { runLsof = prev })
+}
+
+func TestIdentifyPortGivesUpWhenLsofNeverAnswers(t *testing.T) {
+	hangLsof(t)
+
+	done := make(chan string, 1)
+	go func() { done <- identifyPort(freePort(t)) }()
+
+	select {
+	case who := <-done:
+		if who != "" {
+			t.Errorf("identifyPort = %q, want empty when lsof never answered", who)
+		}
+	case <-time.After(preflightLsofTimeout + 10*time.Second):
+		t.Fatal("identifyPort never gave up — an unbounded lsof hangs `ensemble up` at preflight")
+	}
+}
+
+func TestCheckPortsFreeStillReportsConflictWhenLsofHangs(t *testing.T) {
+	port := occupyPort(t)
+	stubDBContainerRunning(t, false, nil)
+	hangLsof(t)
+
+	type result struct {
+		err error
+	}
+	done := make(chan result, 1)
+	go func() { done <- result{checkPortsFree(dbOnPort(port), nil)} }()
+
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatal("expected the conflict to be reported even though lsof could not name the occupant")
+		}
+		// The occupant's name is the part lsof would have supplied; losing it
+		// is acceptable, losing the conflict itself is not.
+		if !strings.Contains(got.err.Error(), fmt.Sprintf("port %d", port)) {
+			t.Errorf("error %q does not name the conflicting port", got.err)
+		}
+	case <-time.After(preflightLsofTimeout + 10*time.Second):
+		t.Fatal("checkPortsFree hung waiting on lsof instead of reporting the conflict")
+	}
+}
