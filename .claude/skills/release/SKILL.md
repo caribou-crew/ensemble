@@ -92,13 +92,27 @@ gh workflow run publish.yml -f version=X.Y.Z
 
 ```sh
 gh run list --workflow=publish.yml --limit 3
-npm view @caribou-crew/ensemble version
-npm view @caribou-crew/retrace version
+curl -s https://registry.npmjs.org/@caribou-crew%2Fensemble | jq -r '."dist-tags".latest'
+curl -s https://registry.npmjs.org/@caribou-crew%2Fretrace  | jq -r '."dist-tags".latest'
 ```
 
-Both `npm view` calls should print the version you just released. The publish
-job's npm-publish loop is idempotent (skips a package/version already on the
-registry), so re-running it after a partial failure is safe.
+Both should print the version you just released. The publish job's npm-publish
+loop is idempotent (skips a package/version already on the registry), so
+re-running it after a partial failure is safe.
+
+Query the registry rather than `npm view`: a plain `npm view <pkg> version`
+answers from the local metadata cache and will happily report the *previous*
+version for minutes after a successful publish. That looks exactly like a
+half-failed publish — one package at the new version, another still at the
+old — and the tempting response, re-dispatching `publish`, is the one thing
+you don't want to do on a release that already worked. (Seen on v0.0.10:
+`npm view` said ensemble was still 0.0.9 while the run log showed
+`+ @caribou-crew/ensemble@0.0.10` published cleanly.) `npm view --prefer-online`
+also works if you'd rather stay in npm.
+
+To confirm a specific version exists, check the `versions` list —
+`npm view <pkg>@<version>` 404s in a way that reads as "publish failed" even
+when the package is fine.
 
 ## If something fails partway
 
