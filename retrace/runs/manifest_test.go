@@ -57,6 +57,55 @@ func TestManifestRoundTripsAndStampsSchema(t *testing.T) {
 	}
 }
 
+// TestManifestRoundTripsFixtureSourceAndOmitsWhenNil covers
+// retrace-run-fixtures-design.md's D5: Fixtures carries provenance for a
+// `retrace run --fixtures` capture and must round-trip through
+// WriteManifest/ReadManifest, while an ordinary run's nil Fixtures must
+// not serialize a "fixtures" key at all — the same "absent vs present"
+// distinction Capture.Status already protects.
+func TestManifestRoundTripsFixtureSourceAndOmitsWhenNil(t *testing.T) {
+	p, err := Create(RunsRoot(t.TempDir()), "web", "checkout", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m := Manifest{
+		App: "web", Flow: "checkout", RunID: "r1", Mode: ModeStandalone,
+		Capture:  CaptureTrust{Status: trace.VerdictOK},
+		Wire:     Counts{Recorded: true},
+		Fixtures: &FixtureSource{Ref: "checkout", RefKind: "run", RunID: "r0", Served: 3, UnusedCount: 1, MissCount: 0},
+	}
+	if err := WriteManifest(p, &m); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	got, err := ReadManifest(p.ManifestPath)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if got.Fixtures == nil || got.Fixtures.Served != 3 || got.Fixtures.RunID != "r0" || got.Fixtures.Ref != "checkout" {
+		t.Fatalf("round trip lost Fixtures: %+v", got.Fixtures)
+	}
+
+	p2, err := Create(RunsRoot(t.TempDir()), "web", "login", "r1")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m2 := Manifest{App: "web", Flow: "login", RunID: "r1", Mode: ModeStandalone, Capture: CaptureTrust{Status: trace.VerdictOK}, Wire: Counts{Recorded: true}}
+	if err := WriteManifest(p2, &m2); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	raw, err := os.ReadFile(p2.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var any map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &any); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	if _, present := any["fixtures"]; present {
+		t.Fatalf(`"fixtures" key present for an ordinary (non-fixtures) run: %s`, raw)
+	}
+}
+
 // TestWriteManifestRejectsZeroValueCaptureStatus — review finding 1
 // (Critical). trace.Verdict("").Worse or .Worse("") ranks equal to
 // trace.VerdictOK (verdictRank has no entry for "", so the map lookup

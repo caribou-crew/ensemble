@@ -17,6 +17,7 @@ import (
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -69,6 +70,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 		// `declared and not used`, a compile error.
 		ensembleURL = fs.String("ensemble", envOr("ENSEMBLE_API", "http://127.0.0.1:4700"), "ensemble control-plane URL")
 		noEnsemble  = fs.Bool("no-ensemble", false, "force standalone capture even if ensemble is up")
+		fixtures    = fs.Bool("fixtures", false, "serve each selected flow's own accepted reference bundle as the upstream while recording, instead of a live --upstream — offline capture for CI with no live backend (e.g. mobile/Maestro); implies --no-ensemble")
 	)
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -164,6 +166,20 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "retrace: --upstream/--proxy-host/--proxy-port are ignored — retrace.yaml configures %d listeners\n", len(listeners))
 		}
 	}
+	// --fixtures replaces every listener's Upstream with a local fixture
+	// server (captureOneFlow, per flow) regardless of where that Upstream
+	// came from, so a bare config with neither --upstream nor a
+	// retrace.yaml upstream/listeners: entry still gets one synthesized
+	// listener to serve fixtures through — --fixtures is itself a
+	// substitute for needing one configured.
+	if *fixtures {
+		if len(listeners) == 0 {
+			listeners = []config.ListenerEntry{{Name: "client-edge", Host: host, Port: port}}
+		}
+		if *upstream != "" {
+			fmt.Fprintf(stderr, "retrace: --fixtures serves each flow's own reference bundle as the upstream — --upstream is ignored\n")
+		}
+	}
 
 	names, multi, err := selectFlows(*flow, *flows, cfg)
 	if err != nil {
@@ -208,7 +224,7 @@ func cmdRun(args []string, stdout, stderr io.Writer) int {
 	p := flowRunParams{
 		cfg: cfg, cwd: cwd, app: appName,
 		upstream: up, host: host, port: port, listeners: listeners,
-		asJSON: *asJSON, noEnsemble: *noEnsemble, ensembleURL: *ensembleURL,
+		asJSON: *asJSON, noEnsemble: *noEnsemble, fixtures: *fixtures, ensembleURL: *ensembleURL,
 		stdout: stdout, stderr: stderr,
 	}
 
@@ -265,10 +281,10 @@ type flowRunParams struct {
 	// synthesis or an explicit listeners: list) with --upstream/
 	// --proxy-host/--proxy-port folded in when exactly one listener is
 	// configured — see the flag-override comment where this is built.
-	listeners          []config.ListenerEntry
-	asJSON, noEnsemble bool
-	ensembleURL        string
-	stdout, stderr     io.Writer
+	listeners                    []config.ListenerEntry
+	asJSON, noEnsemble, fixtures bool
+	ensembleURL                  string
+	stdout, stderr               io.Writer
 }
 
 // captureOneFlow records a single flow end to end: its own preconditions, a
@@ -307,6 +323,33 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		}()
 	}
 
+	// --fixtures: resolve this flow's own accepted reference bundle and
+	// start one local fixture server per listener BEFORE capture.Options is
+	// built, so their addresses can be wired in as each listener's
+	// Upstream. Refused the same way `retrace replay` refuses a flow with
+	// no reference — see docs/superpowers/specs/
+	// 2026-08-30-retrace-run-fixtures-design.md D1.
+	listeners := p.listeners
+	var fixtureRef refs.Reference
+	var fixtureUps []*fixtureUpstream
+	if p.fixtures {
+		fixtureRef = refs.Resolve(p.cwd, runs.RunsRoot(p.cwd), p.app, name)
+		if fixtureRef.Kind == "none" {
+			fmt.Fprintf(stderr, "retrace: refusing to capture %s — no reference bundle for %s/%s: %s\n", name, p.app, name, fixtureRef.Reason)
+			printCandidates(stderr, fixtureRef)
+			fmt.Fprintf(stderr, "  run `retrace ref accept --flow %s` once this flow has a good run\n", name)
+			return runs.Manifest{}, exitUsage, false
+		}
+		ups, ferr := startFixtureUpstreams(fixtureRef, p.cfg, p.listeners)
+		if ferr != nil {
+			fmt.Fprintf(stderr, "retrace: refusing to capture %s — %v\n", name, ferr)
+			return runs.Manifest{}, exitUsage, false
+		}
+		fixtureUps = ups
+		defer shutdownFixtureUpstreams(fixtureUps)
+		listeners = overrideUpstreams(p.listeners, fixtureUps)
+	}
+
 	opts := capture.Options{
 		Cwd:  p.cwd,
 		App:  p.app,
@@ -317,7 +360,7 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		Upstream:  p.upstream,
 		Host:      p.host,
 		Port:      p.port,
-		Listeners: p.listeners,
+		Listeners: listeners,
 		Redact:    p.cfg.Redact,
 		Now:       time.Now,
 	}
@@ -335,8 +378,13 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 	// trap the zero-value constraint is about.
 	var sess *capture.Session
 	switch {
-	case p.noEnsemble:
+	case p.noEnsemble, p.fixtures:
 		// Explicit escape hatch — the user asked for standalone, so no note.
+		// --fixtures takes this same branch: fixture-serving only makes
+		// sense against StartStandalone's listener model (a concrete
+		// Upstream to forward to per listener), and its motivating case —
+		// mobile CI with no live backend — has no control plane to attach
+		// to anyway.
 	case p.cfg.Hops.Source.External():
 		// The config already said where the chain comes from, and attaching
 		// would produce a second answer: ensemble's session records BOTH the
@@ -409,7 +457,9 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		// config" branch would have anything to do. They get the session
 		// environment, which is how an export script finds the run it is
 		// exporting for.
-		HopSource: capture.HopSourceFrom(p.cfg.Hops.Source, p.cwd, sess.Env(), stderr),
+		HopSource:  capture.HopSourceFrom(p.cfg.Hops.Source, p.cwd, sess.Env(), stderr),
+		Fixtures:   fixtureUps,
+		FixtureRef: fixtureRef,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "retrace: run: %v\n", err)
@@ -419,12 +469,15 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		// entirely intact. The manifest is returned rather than a zero one
 		// for the same reason: a multi-flow run must be able to report this
 		// flow, not a blank.
-		if errors.Is(err, errCanonicalRefused) {
+		if errors.Is(err, errCanonicalRefused) || errors.Is(err, errFixtureMiss) {
 			// ok=true: the manifest JOINS the --json document. A refused run
 			// still recorded something, and the geometry it recorded is the
 			// single fact an agent needs in order to act — dropping it would
 			// hand back exit 2 and an empty array, which says a flow failed
-			// without saying anything about it.
+			// without saying anything about it. errFixtureMiss is the same
+			// shape for the same reason: a fixture miss is a hard gate (D4
+			// in the design), not a "could not evaluate" — the recording is
+			// real and worth keeping.
 			return m, exitGate, true
 		}
 		return runs.Manifest{}, exitUsage, false
@@ -471,6 +524,15 @@ type runOptions struct {
 	// HopSource is where this run's hop chain comes from. Its zero Kind is
 	// "ensemble", which is what every config that does not mention hops means.
 	HopSource capture.HopSource
+	// Fixtures is set when this flow is recording against fixtureUpstreams
+	// instead of a live upstream (retrace run --fixtures) — nil for every
+	// ordinary run. runFlow aggregates their served/unused/miss counts
+	// into Manifest.Fixtures and gates on any miss (D4 in the design); the
+	// upstreams themselves are started (so their addresses could be wired
+	// into capture.Options.Listeners) and stopped by captureOneFlow, which
+	// owns their lifetime.
+	Fixtures   []*fixtureUpstream
+	FixtureRef refs.Reference
 }
 
 // runFlow executes the test command against an already-started session and
@@ -636,6 +698,33 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	hops := s.Hops()
 	trust := assessTrust(s, hops, checkpoints, groups, exitCode, o.HopSource.Kind)
 
+	// --fixtures: aggregate every listener's fixture server, durably flush
+	// their misses into THIS run's misses.jsonl (only known now that s.Paths
+	// exists — see startFixtureUpstreams' doc comment), and turn any miss
+	// into a hard gate. Deliberately NOT folded into capture.Assess/trust:
+	// see design.md D4 — a miss demoted into a trust reason would land the
+	// run back in diff's quarantine, defeating the point of this mode.
+	var fixtureSrc *runs.FixtureSource
+	var fixtureMissErr error
+	if len(o.Fixtures) > 0 {
+		served, unusedCount, missCount, misses := aggregateFixtureStats(o.Fixtures)
+		if ferr := flushMisses(s.Paths.MissesPath, misses); ferr != nil {
+			fmt.Fprintf(o.Stderr, "retrace: could not write %s (%v) — the miss count below is still correct\n", s.Paths.MissesPath, ferr)
+		}
+		fixtureSrc = &runs.FixtureSource{
+			// Ref names the FLOW whose bundle served this run (design.md
+			// D1 — today always this same flow), distinct from RunID,
+			// which names the specific reference run.
+			Ref: o.Flow, RefKind: o.FixtureRef.Kind, RunID: o.FixtureRef.RunID,
+			Served: served, UnusedCount: unusedCount, MissCount: missCount,
+		}
+		if missCount > 0 {
+			fmt.Fprintf(o.Stderr, "retrace: %d call(s) had no matching fixture in %s/%s's reference bundle (%d served) — see %s\n",
+				missCount, o.App, o.Flow, served, s.Paths.MissesPath)
+			fixtureMissErr = fmt.Errorf("%w: %d call(s) had no matching fixture", errFixtureMiss, missCount)
+		}
+	}
+
 	m := runs.Manifest{
 		Schema:      runs.Schema,
 		App:         o.App,
@@ -650,6 +739,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Stack:       s.Stack(),
 		Groups:      groups,
 		Capture:     trust,
+		Fixtures:    fixtureSrc,
 		Wire:        runs.Counts{Calls: len(wireHops), Recorded: true},
 		Test:        runs.Test{Command: strings.Join(o.TestCmd, " "), ExitCode: exitCode, DurationMs: float64(elapsed.Milliseconds())},
 		// Retrace is the recording binary's own version, from main.version
@@ -697,10 +787,11 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 	}
 	// Reported LAST, after the manifest and the finalized sentinel. The run
 	// itself completed and its results are on disk and readable; what failed
-	// is the flow's own precondition about the screen it must be captured on.
-	// Returning before finalize would leave the directory looking abandoned,
-	// which is a different and misleading fact.
-	return m, canonicalErr
+	// is the flow's own precondition about the screen it must be captured on
+	// (or, for fixtureMissErr, about the reference bundle it was captured
+	// against). Returning before finalize would leave the directory looking
+	// abandoned, which is a different and misleading fact.
+	return m, errors.Join(canonicalErr, fixtureMissErr)
 }
 
 // checkCanonical enforces a flow's `canonical:` geometry against the screen

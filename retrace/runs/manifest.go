@@ -91,6 +91,40 @@ type Manifest struct {
 	// reason: a zero Stack is an empty service map, which compares equal to
 	// every other run that failed to record one.
 	Stack *Stack `json:"stack,omitempty"`
+	// Fixtures is set only when this run was captured with `retrace run
+	// --fixtures`: a flow's own accepted reference bundle served as the
+	// upstream while recording, instead of a live one. Nil for every
+	// ordinary recording — a pointer, the same absence-is-not-evidence
+	// encoding Device/Stack use, so a dashboard can tell "ran against a
+	// live stack" from "ran against fixtures" even on an otherwise
+	// identical, clean `ok` run.
+	Fixtures *FixtureSource `json:"fixtures,omitempty"`
+}
+
+// FixtureSource records which reference bundle served a `retrace run
+// --fixtures` capture, and how well the app's calls matched it. Full
+// per-call detail (which exchanges went unused, what each miss looked
+// like) lives in misses.jsonl (Paths.MissesPath) — this carries only the
+// counts, so a manifest reader gets the summary without a second file.
+type FixtureSource struct {
+	// Ref is the flow name whose reference bundle served this run — today
+	// always the SAME flow this manifest itself records (see
+	// retrace-run-fixtures-design.md D1), kept as its own field rather
+	// than implied by Manifest.Flow so a future caller that serves a
+	// different flow's bundle needs no schema change.
+	Ref string `json:"ref"`
+	// RefKind is refs.Reference.Kind at resolve time ("bundle" | "run").
+	RefKind string `json:"refKind"`
+	RunID   string `json:"runId"`
+	Served  int    `json:"served"`
+	// UnusedCount is how many of the bundle's recorded exchanges the app
+	// never called — informational, never a gate.
+	UnusedCount int `json:"unusedCount"`
+	// MissCount is how many calls the bundle could not answer at all. Any
+	// value above zero already failed this run at exit 2 (see D4) before
+	// its manifest was read; the count travels with the manifest anyway so
+	// a reader is never left inferring "no misses" from an absent gate.
+	MissCount int `json:"missCount"`
 }
 
 // Device describes the screen a run's shots were taken on, read from a

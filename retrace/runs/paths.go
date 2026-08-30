@@ -55,7 +55,7 @@ type Paths struct {
 	WirePath     string // client-edge hops, NDJSON of trace.Hop
 	HopsPath     string // full provider chain, NDJSON of trace.Hop
 	GroupsPath   string
-	MissesPath   string // replay only
+	MissesPath   string // retrace replay, and `retrace run --fixtures`
 }
 
 // validComponent matches one path-safe app/flow/runID component: no
