@@ -367,6 +367,24 @@ Every recorded hop is tagged with the listener it went through, and
 never answers another's request, even when both listeners happen to record
 the same path.
 
+Give each entry a fixed `port:` when the client needs a stable address
+(`- name: oauth` / `upstream: …` / `port: 4850`); without one, that
+listener binds an OS-chosen ephemeral port and you must read its
+`RETRACE_PROXY_URL_<NAME>` to find it.
+
+One gotcha when replaying such a config: on `retrace replay`, `--listen`
+sets the address of the **first** listener only — every later listener
+binds its own configured `host:port` (`cmd_replay.go`'s
+`bindReplayListeners`). Since `--listen` defaults to `127.0.0.1:0`,
+omitting it puts the first listener on a random ephemeral port while the
+fixed-`port:` ones land exactly where you configured them. That presents as
+"only the non-first listeners bound" and is easy to misread as retrace
+supporting just one listener. Pass the first listener's port explicitly:
+
+```
+retrace replay --ref card-views --app <app> --listen 127.0.0.1:4800
+```
+
 `listeners:` is **standalone-only** — it is a way of describing more than
 one backend a bare `upstream:` cannot name. It is mutually exclusive with
 `entry:`, which already gets multi-service capture for free from
@@ -383,6 +401,12 @@ advertised in `RETRACE_PROXY_URL`/`RETRACE_PROXY_URL_<NAME>`. This matters
 for clients that resolve `localhost` to a different family than retrace
 happened to bind — an iOS Simulator on some hosts, for example — without
 needing an explicit `host:` on any listener entry.
+
+If an iOS Simulator still can't reach a listener specifically on a CI
+runner (works locally, zero requests served in CI), address family isn't
+the cause, and neither is a missing host<->sim network path — see
+`docs/retrace-ci-ios-simulator.md`, which starts with a two-command check
+that separates an app-level privacy gate from a job/step-ordering problem.
 
 Full design: `openspec/changes/retrace-multi-listener/design.md`.
 

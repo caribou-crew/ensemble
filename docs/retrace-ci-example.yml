@@ -44,6 +44,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # ... set up your app's build + test toolchain here ...
+      # If the app under test can't reach retrace's 127.0.0.1 listener on
+      # this runner even though the identical setup works locally: it is not
+      # a missing host<->sim network path (there is no `adb reverse` for the
+      # Simulator, and none is needed). See docs/retrace-ci-ios-simulator.md
+      # — start with the two-command check at the top, which tells you
+      # whether this is app-level privacy or a job/step-ordering problem
+      # before you change anything.
       - run: retrace run --app ios -- <your iOS test command>
       - run: retrace export --out ./report --app ios --json
       - uses: actions/upload-artifact@v4
