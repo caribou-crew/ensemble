@@ -24,7 +24,17 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/stub"
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/config"
+)
+
+// Service log rotation budget: at most serviceLogKeep+1 files of
+// serviceLogMaxBytes each per service log (<name>.log, on-ready.log, ...),
+// mirroring the hop log's rotation in cmd/ensemble's cmd_up.go so a chatty
+// or long-running service can't fill the disk.
+const (
+	serviceLogMaxBytes = 20 << 20 // 20 MiB per file
+	serviceLogKeep     = 3        // <name>.log.1 .. <name>.log.3
 )
 
 // Status is a ServiceState's lifecycle stage.
@@ -1371,10 +1381,7 @@ const shellStepTailBytes = 4 * 1024
 // "on_healthy hook", "on_ready hook". A failure's error carries the last
 // shellStepTailBytes of output, so ServiceState.LastErr still says why.
 func runShellStep(label, command, workDir, logPath string) error {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return fmt.Errorf("create log dir: %w", err)
-	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	logFile, err := trace.OpenRotatingFile(logPath, serviceLogMaxBytes, serviceLogKeep)
 	if err != nil {
 		return fmt.Errorf("open log %s: %w", logPath, err)
 	}

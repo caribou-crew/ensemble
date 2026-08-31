@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 // The process-control primitives startNativeProcess builds on —
@@ -63,15 +65,14 @@ func envSlice(env map[string]string) []string {
 // startNativeProcess launches run through the platform's shell
 // (shellCommand) in workDir, in its own process group (so killProcessGroup
 // can take down shell children too), with stdout/stderr appended to
-// logPath.
+// logPath. logPath is a rotating file (see serviceLogMaxBytes) rather than
+// a plain append: a long-running dev server, left up for days or stuck in a
+// noisy retry loop, would otherwise grow it without bound.
 func startNativeProcess(run, workDir string, env map[string]string, logPath string) (*exec.Cmd, error) {
-	// 0700/0600: a service's stdout/stderr routinely carries connection
-	// strings, tokens, and request payloads — same reasoning as the hop
-	// log's permissions in cmd/ensemble's runUp.
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return nil, fmt.Errorf("create log dir: %w", err)
-	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	// 0700/0600 (set by OpenRotatingFile): a service's stdout/stderr
+	// routinely carries connection strings, tokens, and request payloads —
+	// same reasoning as the hop log's permissions in cmd/ensemble's runUp.
+	logFile, err := trace.OpenRotatingFile(logPath, serviceLogMaxBytes, serviceLogKeep)
 	if err != nil {
 		return nil, fmt.Errorf("open log %s: %w", logPath, err)
 	}

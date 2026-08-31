@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -60,6 +61,28 @@ func TestRunBuildFailureCarriesOutputTail(t *testing.T) {
 	err = runShellStep("build", "head -c 10240 /dev/zero | tr '\\0' x; exit 1", dir, filepath.Join(dir, "svc.log"))
 	if err == nil || len(err.Error()) > shellStepTailBytes+200 {
 		t.Fatalf("tail not bounded: %d bytes", len(err.Error()))
+	}
+}
+
+// A step whose output exceeds serviceLogMaxBytes rotates the log rather
+// than growing it without bound — this is what stops an overnight run, or
+// a service stuck in a noisy retry loop, from filling the disk.
+func TestRunBuildRotatesLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+	cmd := fmt.Sprintf("head -c %d /dev/zero | tr '\\0' x", serviceLogMaxBytes+1024)
+	if err := runShellStep("build", cmd, dir, logPath); err != nil {
+		t.Fatalf("runShellStep: %v", err)
+	}
+	if _, err := os.Stat(logPath + ".1"); err != nil {
+		t.Fatalf("expected a rotated generation %s.1, got: %v", logPath, err)
+	}
+	fi, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat current log: %v", err)
+	}
+	if fi.Size() > serviceLogMaxBytes {
+		t.Errorf("current log is %d bytes, want <= %d after rotation", fi.Size(), serviceLogMaxBytes)
 	}
 }
 
