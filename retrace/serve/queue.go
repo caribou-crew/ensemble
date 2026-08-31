@@ -67,6 +67,12 @@ type Deps struct {
 	// single-project CLI use, and every existing caller of this package —
 	// means "every app uses Cfg", unchanged from before this field
 	// existed. See configFor.
+	//
+	// Deps.Cwd stays single-valued even when CfgFor resolves per-app config
+	// for reads: config WRITES (AppendWireRule, the redact overlay) still
+	// target Deps.Cwd/the dashboard-wide directory, never the per-app one —
+	// not a bug today, since the dashboard registers no write routes, but a
+	// landmine for whoever adds one next.
 	CfgFor func(app string) (*config.Config, error)
 }
 

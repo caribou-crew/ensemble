@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,6 +66,19 @@ func (c *Config) Validate() error {
 	}
 	if c.Retrace != nil && c.Retrace.Workflow != "" && len(c.Retrace.Workflows) > 0 {
 		errs = append(errs, fmt.Errorf("retrace: set workflow or workflows, not both"))
+	}
+	if c.Retrace != nil && len(c.Retrace.Apps) > 0 {
+		apps := make([]string, 0, len(c.Retrace.Apps))
+		for app := range c.Retrace.Apps {
+			apps = append(apps, app)
+		}
+		slices.Sort(apps)
+		for _, app := range apps {
+			dir := c.Retrace.EffectiveAppDir(c.Dir, app)
+			if _, err := os.Stat(filepath.Join(dir, "retrace.yaml")); err != nil {
+				errs = append(errs, fmt.Errorf("retrace: apps[%q] = %q resolves to %s, which has no retrace.yaml", app, c.Retrace.Apps[app], dir))
+			}
+		}
 	}
 
 	for name, db := range c.Databases {

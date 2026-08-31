@@ -63,6 +63,12 @@ type Rect struct {
 	// A Rect that TrimRects (see Result.TrimA/TrimB below) constructs is
 	// never Pct — it describes a crop the tool computed in absolute
 	// pixels, and the zero value (false) is exactly right for it.
+	//
+	// A fraction smaller than one pixel of the target image's real
+	// dimension rounds away to nothing — e.g. `height: 0.001` against a
+	// 100px-tall image resolves to 0.1px, which truncates to zero rows
+	// painted (see ResolveRects/ApplyMasks) — consistent with how a
+	// zero-height absolute rect has always behaved, not a regression.
 	Pct bool `json:"pct,omitempty"`
 }
 

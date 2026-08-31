@@ -231,11 +231,13 @@ func (r RetraceConfig) EffectiveDir(configDir string) string {
 // EffectiveDir(configDir) — the single dashboard-wide config every app
 // used before Apps existed, and what every app with no entry still gets.
 func (r RetraceConfig) EffectiveAppDir(configDir, app string) string {
-	if dir, ok := r.Apps[app]; ok && strings.TrimSpace(dir) != "" {
-		if filepath.IsAbs(dir) {
-			return dir
+	if dir, ok := r.Apps[app]; ok {
+		if dir = strings.TrimSpace(dir); dir != "" {
+			if filepath.IsAbs(dir) {
+				return dir
+			}
+			return filepath.Join(configDir, dir)
 		}
-		return filepath.Join(configDir, dir)
 	}
 	return r.EffectiveDir(configDir)
 }
