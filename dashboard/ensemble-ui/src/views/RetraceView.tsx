@@ -2,7 +2,7 @@
 // separate `retrace serve` process — see openspec/changes/retrace-ci-sync).
 // Manual "Sync now" only, no auto-poll (design.md D3: a developer-triggered
 // GitHub Actions pull, not something to run silently every few seconds).
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
@@ -10,6 +10,7 @@ import HopDeltaList from '@ensemble/design-system/components/HopDeltaList';
 import ShotCompare from '@ensemble/design-system/components/ShotCompare';
 import WireDiffTable, { entryKey } from '@ensemble/design-system/components/WireDiffTable';
 import type { Entry, FieldDiff } from '@ensemble/design-system/diffTypes';
+import { checkpointVideoOffsetSeconds } from '@ensemble/design-system/videoSeek';
 import { api, messageOf, resolveRetraceShotUrl, resolveRetraceVideoUrl, retraceReportUrl } from '../api/client';
 import type { RetraceItem, RetraceSummary } from '../api/types';
 import RetraceSyncPanel from './RetraceSyncPanel';
@@ -127,8 +128,26 @@ function QueueTable({
 // RetraceSummary and are worth failing independently of it — a broken
 // evidence fetch must not blank out the pixel/wire/hop planes it sits
 // beside.
-function EvidenceSection({ app, flow }: { app: string; flow: string }) {
+function EvidenceSection({
+  app,
+  flow,
+  registerVideo,
+  onVideoCountChange,
+}: {
+  app: string;
+  flow: string;
+  registerVideo: (el: HTMLVideoElement | null) => void;
+  onVideoCountChange: (count: number) => void;
+}) {
   const { data } = useAsync(() => api.retraceEvidence(app, flow), [app, flow]);
+  // Reports "how many videos" to DetailPane, without lifting the fetch
+  // itself out of this component — see the file-level comment on why this
+  // fetch stays self-contained. DetailPane only needs the count, to decide
+  // whether a checkpoint's "jump to video" control has anywhere to jump to.
+  useEffect(() => {
+    onVideoCountChange(data?.videos.length ?? 0);
+    return () => onVideoCountChange(0);
+  }, [data, onVideoCountChange]);
   if (!data || (data.videos.length === 0 && !data.hasReport)) return null;
   return (
     <section className="retrace-detail__plane retrace-detail__evidence">
@@ -136,6 +155,7 @@ function EvidenceSection({ app, flow }: { app: string; flow: string }) {
       {data.videos.map((name) => (
         <video
           key={name}
+          ref={registerVideo}
           controls
           src={resolveRetraceVideoUrl(app, flow, name)}
           className="retrace-detail__video"
@@ -184,6 +204,25 @@ export function DetailPane({
   onReveal?: () => Promise<RetraceSummary['sections']>;
 }) {
   const [selectedField, setSelectedField] = useState<string | null>(null);
+  const [videoCount, setVideoCount] = useState(0);
+  const videoRefs = useRef<HTMLVideoElement[]>([]);
+
+  const registerVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRefs.current = videoRefs.current.filter((v) => v !== el);
+    if (el) videoRefs.current.push(el);
+  }, []);
+
+  // Video isn't associated with any one checkpoint — it's one recording of
+  // the whole run — so "jump to video" seeks every rendered video to the
+  // same offset rather than picking one. ShotCompare already withholds its
+  // seek control unless checkpoint.at is a real (non-zero-value) timestamp,
+  // so atIso here is always parseable.
+  function seekToCheckpoint(atIso: string) {
+    const offset = checkpointVideoOffsetSeconds(atIso, summary.b.manifest.startedAt);
+    if (offset === null) return;
+    for (const v of videoRefs.current) v.currentTime = offset;
+    videoRefs.current[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 
   function onSelectField(entry: Entry, field: FieldDiff) {
     setSelectedField(`${entryKey(entry)}|${field.scope}:${field.path}`);
@@ -203,7 +242,7 @@ export function DetailPane({
 
       <CaptureBanner capture={summary.capture} detail />
 
-      <EvidenceSection app={app} flow={flow} />
+      <EvidenceSection app={app} flow={flow} registerVideo={registerVideo} onVideoCountChange={setVideoCount} />
 
       {summary.verdict === 'quarantined' ? (
         <div className="retrace-detail__quarantine">
@@ -224,7 +263,14 @@ export function DetailPane({
               <p className="retrace-detail__none">This flow captured no checkpoints.</p>
             ) : (
               summary.checkpoints.map((cp) => (
-                <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
+                <ShotCompare
+                  key={cp.name}
+                  app={app}
+                  flow={flow}
+                  checkpoint={cp}
+                  resolveShotUrl={resolveShotUrl}
+                  onSeek={videoCount > 0 ? seekToCheckpoint : undefined}
+                />
               ))
             )}
           </section>

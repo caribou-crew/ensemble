@@ -189,6 +189,16 @@ type Checkpoint struct {
 	// `capture` from importing `pixel`: capture records a fact, compare
 	// acts on it.
 	Trim bool `json:"trim,omitempty"`
+	// At is the shot file's own mtime — the best available approximation of
+	// when this checkpoint was captured. A checkpoint is written directly to
+	// disk by the adapter (JS/Maestro), never proxied through this process,
+	// so the file's mtime is the only capture-time signal available; there
+	// is no separate "checkpoint taken" event to timestamp instead. Viewers
+	// use it to seek a run's video evidence (if any) to the moment a
+	// checkpoint was taken, relative to Manifest.StartedAt. Zero for
+	// manifests written before this field existed — viewers must treat a
+	// zero value as "no seek target," never as the run's start time.
+	At time.Time `json:"at"`
 }
 
 // Counts reports how many calls were recorded on one plane (currently

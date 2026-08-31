@@ -232,13 +232,28 @@ func TestCheckpointsReadsShotGeometryFromPngHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	shotInfo, err := os.Stat(filepath.Join(s.Paths.ShotsDir, "cart.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	cps, err := s.Checkpoints()
 	if err != nil {
 		t.Fatalf("Checkpoints: %v", err)
 	}
-	want := []runs.Checkpoint{{Name: "cart", File: "shots/cart.png", Width: 40, Height: 40, Trim: true}}
-	if !reflect.DeepEqual(cps, want) {
-		t.Fatalf("checkpoints = %+v, want %+v", cps, want)
+	if len(cps) != 1 {
+		t.Fatalf("checkpoints = %+v, want exactly one", cps)
+	}
+	// At is the shot file's own mtime, checked separately since it is not a
+	// literal a test can write in advance.
+	if !cps[0].At.Equal(shotInfo.ModTime()) {
+		t.Fatalf("checkpoints[0].At = %v, want the shot file's mtime %v", cps[0].At, shotInfo.ModTime())
+	}
+	got := cps[0]
+	got.At = time.Time{}
+	want := runs.Checkpoint{Name: "cart", File: "shots/cart.png", Width: 40, Height: 40, Trim: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkpoints = %+v, want %+v", got, want)
 	}
 }
 

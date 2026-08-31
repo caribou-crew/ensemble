@@ -75,6 +75,15 @@ export interface CheckpointVerdict {
   };
   trimmed?: { a?: Rect; b?: Rect };
   images: { a?: string; b?: string; diff?: string; overlay?: string };
+  /**
+   * The candidate ("b") side's capture moment — an ISO timestamp, or Go's
+   * zero-time string ("0001-01-01T00:00:00Z") when this run predates
+   * runs.Checkpoint.At or this checkpoint has no candidate shot at all
+   * (verdict "missing"). Never omitted on the wire (retrace/diff/summary.go's
+   * `At` has no `omitempty`), so callers check for the zero value rather
+   * than for absence — see ShotCompare's hasTimestamp.
+   */
+  at: string;
 }
 
 export interface FieldDiff {

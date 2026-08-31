@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
 import HopDeltaList from '@ensemble/design-system/components/HopDeltaList';
 import ShotCompare, { type ResolveShotUrl } from '@ensemble/design-system/components/ShotCompare';
 import WireDiffTable, { entryKey } from '@ensemble/design-system/components/WireDiffTable';
+import { checkpointVideoOffsetSeconds } from '@ensemble/design-system/videoSeek';
 import {
   api,
   leafFieldName,
@@ -261,14 +262,32 @@ function movedSignals(signals: TriageSignals): string[] {
 // are never part of Summary and are worth failing independently of it — a
 // broken evidence fetch must not blank out the pixel/wire/hop planes it sits
 // beside.
-function EvidenceSection({ app, flow }: { app: string; flow: string }) {
+function EvidenceSection({
+  app,
+  flow,
+  registerVideo,
+  onVideoCountChange,
+}: {
+  app: string;
+  flow: string;
+  registerVideo: (el: HTMLVideoElement | null) => void;
+  onVideoCountChange: (count: number) => void;
+}) {
   const { data } = useAsync(() => api.evidence(app, flow), [app, flow]);
+  // Reports "how many videos" to ItemScreen, without lifting the fetch
+  // itself out of this component — see the comment above on why this fetch
+  // stays self-contained. ItemScreen only needs the count, to decide
+  // whether a checkpoint's "jump to video" control has anywhere to jump to.
+  useEffect(() => {
+    onVideoCountChange(data?.videos.length ?? 0);
+    return () => onVideoCountChange(0);
+  }, [data, onVideoCountChange]);
   if (!data || (data.videos.length === 0 && !data.hasReport)) return null;
   return (
     <section className="item__plane item__evidence">
       <h2>evidence</h2>
       {data.videos.map((name) => (
-        <video key={name} controls className="item__video" src={videoUrl(app, flow, name)} />
+        <video key={name} ref={registerVideo} controls className="item__video" src={videoUrl(app, flow, name)} />
       ))}
       {data.hasReport ? (
         <a className="item__report-link" href={reportUrl(app, flow)} target="_blank" rel="noreferrer">
@@ -321,6 +340,38 @@ export function ItemScreen({
   // collapsed on a freshly opened flow rather than carrying over the
   // previous flow's expanded state.
   const [showPassingShots, setShowPassingShots] = useState(false);
+  const [videoCount, setVideoCount] = useState(0);
+  const videoRefs = useRef<HTMLVideoElement[]>([]);
+
+  const registerVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRefs.current = videoRefs.current.filter((v) => v !== el);
+    if (el) videoRefs.current.push(el);
+  }, []);
+
+  // Video isn't associated with any one checkpoint — it's one recording of
+  // the whole run — so "jump to video" seeks every rendered video to the
+  // same offset rather than picking one. ShotCompare already withholds its
+  // seek control unless checkpoint.at is a real (non-zero-value) timestamp,
+  // so atIso here is always parseable.
+  function seekToCheckpoint(atIso: string) {
+    const offset = checkpointVideoOffsetSeconds(atIso, summary.b.manifest.startedAt);
+    if (offset === null) return;
+    for (const v of videoRefs.current) v.currentTime = offset;
+    videoRefs.current[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function renderShot(cp: Summary['checkpoints'][number]) {
+    return (
+      <ShotCompare
+        key={cp.name}
+        app={app}
+        flow={flow}
+        checkpoint={cp}
+        resolveShotUrl={resolveShotUrl}
+        onSeek={videoCount > 0 ? seekToCheckpoint : undefined}
+      />
+    );
+  }
   // Four verdicts, not three. "quarantined" is the one where every other
   // field is empty ON PURPOSE — so the planes below are not rendered as
   // "nothing differed", which is what an empty checkpoint list and an empty
@@ -347,7 +398,7 @@ export function ItemScreen({
 
       <CaptureBanner capture={summary.capture} detail />
 
-      <EvidenceSection app={app} flow={flow} />
+      <EvidenceSection app={app} flow={flow} registerVideo={registerVideo} onVideoCountChange={setVideoCount} />
 
       {/*
         Above the gates and the planes, because "whose problem is this" is the
@@ -405,9 +456,7 @@ export function ItemScreen({
                 const passing = summary.checkpoints.filter((cp) => cp.verdict === 'ok');
                 return (
                   <>
-                    {changed.map((cp) => (
-                      <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
-                    ))}
+                    {changed.map(renderShot)}
                     {passing.length > 0 ? (
                       <>
                         <button
@@ -418,11 +467,7 @@ export function ItemScreen({
                           {showPassingShots ? '▾' : '▸'} {passing.length} unchanged checkpoint
                           {passing.length === 1 ? '' : 's'}
                         </button>
-                        {showPassingShots
-                          ? passing.map((cp) => (
-                              <ShotCompare key={cp.name} app={app} flow={flow} checkpoint={cp} resolveShotUrl={resolveShotUrl} />
-                            ))
-                          : null}
+                        {showPassingShots ? passing.map(renderShot) : null}
                       </>
                     ) : null}
                   </>

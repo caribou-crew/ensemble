@@ -36,16 +36,41 @@ function noShotCopy(checkpoint: CheckpointVerdict): string {
   return `No shot of "${checkpoint.name}" was recorded for this run (verdict: ${checkpoint.verdict}), so there is nothing to compare against the reference. A blank pane here would read as "identical", which is the one thing this checkpoint is not.`;
 }
 
+/**
+ * summary.go's zero-value CheckpointVerdict.At — Go's zero time.Time,
+ * serialized. `at` carries no omitempty (retrace/diff/summary.go), so it is
+ * always present on the wire; this is the one value that means "the
+ * candidate side has no capture timestamp," not a real moment in 1 AD.
+ */
+const NO_TIMESTAMP = '0001-01-01T00:00:00Z';
+
+/** True when `checkpoint.at` is a real capture moment, not the zero value. */
+function hasTimestamp(checkpoint: CheckpointVerdict): boolean {
+  return Boolean(checkpoint.at) && checkpoint.at !== NO_TIMESTAMP;
+}
+
 export default function ShotCompare({
   app,
   flow,
   checkpoint,
   resolveShotUrl,
+  onSeek,
 }: {
   app: string;
   flow: string;
   checkpoint: CheckpointVerdict;
   resolveShotUrl: ResolveShotUrl;
+  /**
+   * Called with `checkpoint.at` when the reviewer asks to jump the run's
+   * video evidence to this checkpoint's moment. Passed in, not resolved
+   * here, the same reason resolveShotUrl is: this component has no idea
+   * whether video evidence exists for this run, let alone where the
+   * `<video>` element lives — the caller (which already fetches evidence
+   * and holds the manifest's startedAt for the offset math) owns that.
+   * Omit it, or omit it whenever no video is mounted, and no seek
+   * affordance renders.
+   */
+  onSeek?: (atIso: string) => void;
 }) {
   const images = checkpoint.images;
 
@@ -56,7 +81,7 @@ export default function ShotCompare({
   if (!images.a && !images.b) {
     return (
       <div className="shot-compare">
-        <ShotCompareBar checkpoint={checkpoint} />
+        <ShotCompareBar checkpoint={checkpoint} onSeek={onSeek} />
         <p className="shot-compare__explanation">{noShotCopy(checkpoint)}</p>
       </div>
     );
@@ -70,7 +95,7 @@ export default function ShotCompare({
 
   return (
     <div className="shot-compare">
-      <ShotCompareBar checkpoint={checkpoint} />
+      <ShotCompareBar checkpoint={checkpoint} onSeek={onSeek} />
       <div className="shot-compare__grid">
         <ShotCompareCell label="original">
           {images.a ? (
@@ -106,12 +131,28 @@ export default function ShotCompare({
   );
 }
 
-function ShotCompareBar({ checkpoint }: { checkpoint: CheckpointVerdict }) {
+function ShotCompareBar({
+  checkpoint,
+  onSeek,
+}: {
+  checkpoint: CheckpointVerdict;
+  onSeek?: (atIso: string) => void;
+}) {
   return (
     <div className="shot-compare__bar">
       <strong className="shot-compare__name">{checkpoint.name}</strong>
       <span className="shot-compare__verdict">{checkpoint.verdict}</span>
       <span className="shot-compare__pct">{checkpoint.diffPct.toFixed(2)}% differing</span>
+      {onSeek && hasTimestamp(checkpoint) ? (
+        <button
+          type="button"
+          className="shot-compare__seek"
+          onClick={() => onSeek(checkpoint.at)}
+          title={`Jump the video to when "${checkpoint.name}" was captured`}
+        >
+          ▶ jump to video
+        </button>
+      ) : null}
     </div>
   );
 }

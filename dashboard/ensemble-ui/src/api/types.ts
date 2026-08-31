@@ -306,7 +306,7 @@ export interface RetraceManifest {
   git: { sha: string; branch: string; dirty: boolean };
   startedAt: string;
   finishedAt: string;
-  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
+  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean; at: string }[];
   groups: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
   capture: CaptureTrust;
   wire: RetraceRunCounts;

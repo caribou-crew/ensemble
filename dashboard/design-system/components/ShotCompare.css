@@ -18,6 +18,22 @@
   color: var(--text-primary);
 }
 
+.shot-compare__seek {
+  margin-left: auto;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.shot-compare__seek:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
 .shot-compare__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

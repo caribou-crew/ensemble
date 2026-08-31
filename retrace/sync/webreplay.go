@@ -96,6 +96,15 @@ func checkpointsFromShots(shotsDir string) ([]runs.Checkpoint, error) {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".png") {
 			continue
 		}
+		// e.Info() rather than a second os.Stat, mirroring
+		// capture.Session.Checkpoints — see runs.Checkpoint.At's doc comment.
+		// Here the mtime is the artifact's extraction time, not the original
+		// capture time, but it is still the best available per-checkpoint
+		// ordering signal a downloaded bundle carries.
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
 		f, err := os.Open(filepath.Join(shotsDir, e.Name()))
 		if err != nil {
 			return nil, err
@@ -111,6 +120,7 @@ func checkpointsFromShots(shotsDir string) ([]runs.Checkpoint, error) {
 			File:   filepath.ToSlash(filepath.Join("shots", e.Name())),
 			Width:  cfg.Width,
 			Height: cfg.Height,
+			At:     info.ModTime(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

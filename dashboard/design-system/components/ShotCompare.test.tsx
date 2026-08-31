@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CheckpointVerdict } from '../diffTypes';
 import ShotCompare, { type ResolveShotUrl } from './ShotCompare';
 
@@ -23,6 +23,7 @@ const checkpoint = (over: Partial<CheckpointVerdict> = {}): CheckpointVerdict =>
     diff: 'diff/shots/results.png',
     overlay: 'overlay/shots/results.png',
   },
+  at: '0001-01-01T00:00:00Z',
   ...over,
 });
 
@@ -130,7 +131,7 @@ describe('ShotCompare', () => {
   // The fixture is parsed from that JSON rather than spread over the
   // checkpoint() helper on purpose: the helper hardcodes all four images.
   const MISSING_CHECKPOINT_JSON =
-    '{"name":"receipt","verdict":"missing","diffPct":0,"diffPctFine":0,"numDiff":0,"images":{}}';
+    '{"name":"receipt","verdict":"missing","diffPct":0,"diffPctFine":0,"numDiff":0,"images":{},"at":"0001-01-01T00:00:00Z"}';
 
   it('explains a checkpoint whose candidate shot was never captured, instead of throwing out of render', () => {
     const missing = JSON.parse(MISSING_CHECKPOINT_JSON) as CheckpointVerdict;
@@ -156,5 +157,50 @@ describe('ShotCompare', () => {
       expect(container.querySelector('.shot-compare__explanation')).not.toBeNull();
       expect(container.querySelector('.shot-compare__grid')).toBeNull();
     }
+  });
+
+  it('offers to jump the video to this checkpoint\'s moment when a real timestamp and an onSeek both exist', () => {
+    const onSeek = vi.fn();
+    render(
+      <ShotCompare
+        app="web"
+        flow="search"
+        checkpoint={checkpoint({ at: '2026-08-31T12:00:03Z' })}
+        resolveShotUrl={resolveShotUrl}
+        onSeek={onSeek}
+      />,
+    );
+
+    const button = container.querySelector('.shot-compare__seek') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+    act(() => button!.click());
+    expect(onSeek).toHaveBeenCalledWith('2026-08-31T12:00:03Z');
+  });
+
+  it('omits the seek affordance without an onSeek, even with a real timestamp', () => {
+    render(
+      <ShotCompare
+        app="web"
+        flow="search"
+        checkpoint={checkpoint({ at: '2026-08-31T12:00:03Z' })}
+        resolveShotUrl={resolveShotUrl}
+      />,
+    );
+
+    expect(container.querySelector('.shot-compare__seek')).toBeNull();
+  });
+
+  it('omits the seek affordance for Go\'s zero-time value, even with an onSeek — this checkpoint has no capture moment to jump to', () => {
+    render(
+      <ShotCompare
+        app="web"
+        flow="search"
+        checkpoint={checkpoint({ at: '0001-01-01T00:00:00Z' })}
+        resolveShotUrl={resolveShotUrl}
+        onSeek={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('.shot-compare__seek')).toBeNull();
   });
 });

@@ -451,6 +451,15 @@ func (s *Session) Checkpoints() ([]runs.Checkpoint, error) {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".png") {
 			continue
 		}
+		// e.Info() rather than a second os.Stat after opening: the shot's
+		// mtime is the only capture-time signal available (the adapter
+		// writes checkpoints straight to disk, never through this
+		// process), and a DirEntry's Info is cheaper than re-statting the
+		// open file.
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
 		f, err := os.Open(filepath.Join(s.Paths.ShotsDir, e.Name()))
 		if err != nil {
 			return nil, err
@@ -475,6 +484,7 @@ func (s *Session) Checkpoints() ([]runs.Checkpoint, error) {
 			Width:  cfg.Width,
 			Height: cfg.Height,
 			Trim:   trimErr == nil,
+			At:     info.ModTime(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -188,7 +188,7 @@ export interface Manifest {
   git: { sha: string; branch: string; dirty: boolean };
   startedAt: string;
   finishedAt: string;
-  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean }[];
+  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean; at: string }[];
   // Never absent: `runs.Manifest.Groups` carries a bare tag and WriteManifest
   // defaults a nil slice to `[]Group{}`, exactly as Checkpoints does.
   groups: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];

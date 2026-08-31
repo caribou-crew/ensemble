@@ -63,6 +63,15 @@ type CheckpointVerdict struct {
 	// trim requested, or trim refused.
 	Trimmed *TrimRects       `json:"trimmed,omitempty"`
 	Images  CheckpointImages `json:"images"` // "" for any side not written
+	// At is the CANDIDATE ("b") side's runs.Checkpoint.At — the shot's own
+	// mtime — so a viewer can seek a run's video evidence to the moment this
+	// checkpoint was captured, relative to RunRef.Manifest.StartedAt. There
+	// is no A-side equivalent: evidence is scoped to the candidate run only
+	// (retrace/serve/evidence.go), so a reference-side timestamp would have
+	// nothing to seek. Zero for "missing" (no candidate checkpoint exists at
+	// all) and for any run captured before Checkpoint.At existed — a viewer
+	// must treat zero as "no seek target," never as the run's start time.
+	At time.Time `json:"at"`
 }
 
 type TrimRects struct {
@@ -614,7 +623,7 @@ func Build(in BuildInput) (Summary, error) {
 		cpB, okB := findCheckpoint(in.B.Manifest, name)
 		switch {
 		case !okA:
-			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "added"})
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "added", At: cpB.At})
 			continue
 		case !okB:
 			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "missing"})
@@ -623,7 +632,7 @@ func Build(in BuildInput) (Summary, error) {
 		aPNG, errA := os.ReadFile(filepath.Join(in.A.Dir, cpA.File))
 		bPNG, errB := os.ReadFile(filepath.Join(in.B.Dir, cpB.File))
 		if errA != nil || errB != nil {
-			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable"})
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable", At: cpB.At})
 			continue
 		}
 		masks := pixel.RectsFrom(in.Cfg.MasksFor(in.Flow, name))
@@ -639,13 +648,13 @@ func Build(in BuildInput) (Summary, error) {
 			Trim: cpA.Trim || cpB.Trim,
 		})
 		if err != nil {
-			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable"})
+			s.Checkpoints = append(s.Checkpoints, CheckpointVerdict{Name: name, Verdict: "unreadable", At: cpB.At})
 			continue
 		}
 		v := CheckpointVerdict{
 			Name: name, DiffPct: res.DiffPct, DiffPctFine: res.DiffPctFine,
 			NumDiff: res.NumDiff, Mismatch: res.Mismatch, Overlap: res.Overlap,
-			Verdict: "ok",
+			Verdict: "ok", At: cpB.At,
 		}
 		if res.TrimA != nil || res.TrimB != nil {
 			v.Trimmed = &TrimRects{A: res.TrimA, B: res.TrimB}

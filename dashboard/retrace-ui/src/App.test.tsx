@@ -828,6 +828,7 @@ function checkpointFixture(name: string, verdict: 'ok' | 'changed'): NonNullable
     diffPctFine: 0,
     numDiff: verdict === 'ok' ? 0 : 40,
     images: { a: `${name}.png`, b: `${name}.png`, diff: verdict === 'ok' ? '' : `${name}-diff.png` },
+    at: '0001-01-01T00:00:00Z',
   };
 }
 

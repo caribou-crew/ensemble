@@ -84,7 +84,7 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 		"checkpoints", "groups", "capture", "wire", "hops", "test", "env",
 	})
 	assertJSONKeys(t, full.Git, []string{"sha", "branch", "dirty"})
-	assertJSONKeys(t, full.Checkpoints[0], []string{"name", "file", "width", "height", "trim"})
+	assertJSONKeys(t, full.Checkpoints[0], []string{"name", "file", "width", "height", "trim", "at"})
 	assertJSONKeys(t, full.Groups[0], []string{"name", "startedAt", "endedAt", "quiet"})
 	assertJSONKeys(t, full.Capture, []string{"status", "reasons", "gaps", "summary", "hint"})
 	assertJSONKeys(t, full.Capture.Reasons[0], []string{"code", "status", "detail", "hint"})
