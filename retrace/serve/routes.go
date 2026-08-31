@@ -242,6 +242,12 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg, err := d.configFor(app)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	// refs.Accept, with the SAME three mask inputs `retrace ref accept`
 	// passes. Dropping MaskedCheckpoints here would make the REST verb the
 	// permissive one: a mask entry naming a checkpoint that does not exist
@@ -249,9 +255,9 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	// UI, which is the same operation reaching two different answers.
 	res, err := refs.Accept(refs.AcceptOptions{
 		Cwd: d.Cwd, RunsRoot: runs.RunsRoot(d.Cwd), App: app, Flow: flow, RunID: runID,
-		MasksFor: masksFor(d.Cfg, flow), Force: req.Force,
-		MaskedCheckpoints:        d.Cfg.FlowMaskEntryCheckpoints(flow),
-		ProjectMaskedCheckpoints: d.Cfg.ProjectMaskEntryCheckpoints(),
+		MasksFor: masksFor(cfg, flow), Force: req.Force,
+		MaskedCheckpoints:        cfg.FlowMaskEntryCheckpoints(flow),
+		ProjectMaskedCheckpoints: cfg.ProjectMaskEntryCheckpoints(),
 	})
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())

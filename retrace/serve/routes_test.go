@@ -3,6 +3,7 @@ package serve
 import (
 	"bytes"
 	"encoding/json"
+	"image/color"
 	"image/png"
 	"io"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
+	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -1521,5 +1524,56 @@ func TestRunScopedShotRouteServesTheNamedRunsOwnDiffImage(t *testing.T) {
 	// run-scoped route for THAT run must say so, not fall back to runB's.
 	if r := get(t, ts, "/api/shots/web/login/runs/"+runC+"/diff/login"); r.status != http.StatusNotFound {
 		t.Fatalf("run-scoped diff shot for the unchanged latest run: status = %d, want 404\n%s", r.status, r.body)
+	}
+}
+
+// TestAcceptUsesCfgForWhenSet pins that promoting a reference through the
+// REST verb masks with the SAME per-app config the diff routes now use
+// (Task 6) — not the dashboard-wide default. Without the app-specific
+// config's mask, the promoted shot would carry the unredacted region.
+func TestAcceptUsesCfgForWhenSet(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "home", runA,
+		map[string][]byte{"home": patchedPNG(t, color.RGBA{A: 255}, color.RGBA{R: 255}, 10)}, nil)
+
+	appDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(appDir, "retrace.yaml"),
+		[]byte("masks:\n  home:\n    - { x: 0, y: 0, width: 10, height: 10, why: \"test\" }\n"), 0o644); err != nil {
+		t.Fatalf("writing app retrace.yaml: %v", err)
+	}
+	appCfg, err := config.Discover(appDir)
+	if err != nil {
+		t.Fatalf("config.Discover(appDir): %v", err)
+	}
+
+	d := deps(t, cwd)
+	d.CfgFor = func(app string) (*config.Config, error) { return appCfg, nil }
+	ts := httptest.NewServer(New(d))
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/api/queue/web/home/accept", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST accept: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	bundleDir, err := refs.BundleDir(cwd, "web", "home")
+	if err != nil {
+		t.Fatalf("refs.BundleDir: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(bundleDir, "shots", "home.png"))
+	if err != nil {
+		t.Fatalf("reading promoted shot: %v", err)
+	}
+	img, err := pixel.Decode(b)
+	if err != nil {
+		t.Fatalf("decoding promoted shot: %v", err)
+	}
+	if got := img.RGBAAt(5, 5); got != (color.RGBA{A: 255}) {
+		t.Fatalf("(5,5) = %+v, want masked black — accept should have used the CfgFor app config's mask", got)
 	}
 }
