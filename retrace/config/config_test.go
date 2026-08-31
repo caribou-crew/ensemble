@@ -1058,3 +1058,64 @@ func TestQueryIgnoreIsATopLevelKeyAndBlankEntriesAreDropped(t *testing.T) {
 		t.Fatalf("QueryIgnoreKeys() on a config with no query_ignore = %q, want none", empty.QueryIgnoreKeys())
 	}
 }
+
+func TestRectPctFieldRoundTripsThroughYaml(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `
+masks:
+  "*": [{ height: 0.06, width: 1, x: 0, y: 0, pct: true, why: "status bar" }]
+`
+	path := filepath.Join(dir, "retrace.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("writing retrace.yaml: %v", err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := c.MasksFor("cart", "anything")
+	if len(got) != 1 {
+		t.Fatalf("MasksFor(...) = %+v, want one rect", got)
+	}
+	want := Rect{X: 0, Y: 0, Width: 1, Height: 0.06, Pct: true, Why: "status bar"}
+	if got[0] != want {
+		t.Fatalf("MasksFor(...)[0] = %+v, want %+v", got[0], want)
+	}
+}
+
+func TestLoadRejectsAnOutOfRangePctRect(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `
+masks:
+  "*": [{ height: 1.5, width: 1, x: 0, y: 0, pct: true }]
+`
+	path := filepath.Join(dir, "retrace.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("writing retrace.yaml: %v", err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load accepted a pct rect with height 1.5 — a fraction cannot exceed 1")
+	}
+	if !strings.Contains(err.Error(), "height") || !strings.Contains(err.Error(), "[0,1]") {
+		t.Fatalf("error = %q, want it to name the field and the [0,1] bound", err.Error())
+	}
+}
+
+func TestLoadAcceptsAbsolutePctFalseRectsUnbounded(t *testing.T) {
+	// A non-pct rect is still allowed to name pixel coordinates far past 1
+	// — that is the overwhelmingly common case (e.g. width: 300) and this
+	// pins that the new [0,1] bound applies ONLY to pct: true rects.
+	dir := t.TempDir()
+	yaml := `
+masks:
+  "*": [{ x: 10, y: 20, width: 300, height: 40 }]
+`
+	path := filepath.Join(dir, "retrace.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("writing retrace.yaml: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load rejected an ordinary absolute-pixel mask: %v", err)
+	}
+}

@@ -82,7 +82,7 @@ func missingMaskWhys(prefix string, masks map[string][]Rect) []string {
 	for _, cp := range sortedMaskCheckpoints(masks) {
 		for i, r := range masks[cp] {
 			if blank(r.Why) {
-				out = append(out, fmt.Sprintf("%s.%s[%d] (%dx%d at %d,%d)", prefix, cp, i, r.Width, r.Height, r.X, r.Y))
+				out = append(out, fmt.Sprintf("%s.%s[%d] (%gx%g at %g,%g)", prefix, cp, i, r.Width, r.Height, r.X, r.Y))
 			}
 		}
 	}

@@ -316,11 +316,35 @@ type RequiredRoute struct {
 // package reads). Task 10 and Task 11 convert at the call site; the
 // conversion is one function, pixel.RectsFrom, and it lives in the pixel
 // package for the same reason.
+//
+// X/Y/Width/Height are float64, not int, so the SAME field can hold either
+// an absolute pixel coordinate (the overwhelming majority of existing
+// masks: entries, still written as plain integers in YAML) or, when Pct is
+// true, a fraction of the image's own dimensions. There is no third field
+// shape for the fractional case: introducing XPct/YPct/... alongside
+// X/Y/... would double every reader's mental model of this type for a
+// distinction Pct already draws cleanly.
 type Rect struct {
-	X      int `json:"x" yaml:"x"`
-	Y      int `json:"y" yaml:"y"`
-	Width  int `json:"width" yaml:"width"`
-	Height int `json:"height" yaml:"height"`
+	X      float64 `json:"x" yaml:"x"`
+	Y      float64 `json:"y" yaml:"y"`
+	Width  float64 `json:"width" yaml:"width"`
+	Height float64 `json:"height" yaml:"height"`
+	// Pct switches X/Y/Width/Height from absolute pixels to fractions
+	// (0..1) of the checkpoint's own real width/height — e.g. `height:
+	// 0.06, pct: true` masks the top 6% of whatever image this rect is
+	// applied to, regardless of its resolution. This is what lets ONE
+	// flow-keyed masks: entry (config.Config.MasksFor has no app
+	// dimension — see its own doc comment) cover a status bar correctly
+	// on both a 2556px-tall iOS shot and a 640px-tall Android shot: each
+	// resolves the same 0.06 against its own real height.
+	//
+	// Resolution happens lazily, in retrace/diff/pixel.ApplyMasks (via
+	// ResolveRects), the first point at which the real image dimensions
+	// are known — never here in config, which has no image to measure
+	// against. validateMasks (below) only bounds-checks that a pct
+	// rect's fields are within [0,1]; a non-pct rect is unconstrained,
+	// exactly as it always was.
+	Pct bool `json:"pct,omitempty" yaml:"pct"`
 	// Why explains what this mask is hiding and why. A mask hides pixels
 	// from the diff; an un-explained mask is indistinguishable from one
 	// added to silence a real regression, and masks outlive the person who
@@ -727,6 +751,9 @@ func Load(path string) (*Config, error) {
 	if err := validateWireIgnore(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if err := validateMasks(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := validateCanonical(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -749,6 +776,52 @@ func validateWireIgnore(c *Config) error {
 		if strings.HasPrefix(e.Path, "/") {
 			return fmt.Errorf("wire_ignore[%d]: %q looks like a URL path, not a body field-path glob (e.g. %q) — wire_ignore matches JSON body fields, not request paths",
 				i, e.Path, "items[*].requestId")
+		}
+	}
+	return nil
+}
+
+// validateMasks rejects a `pct: true` rect whose x/y/width/height falls
+// outside [0,1]. A pct rect is a FRACTION of the checkpoint's own
+// dimensions — pixel.ResolveRects multiplies it straight through with no
+// clamp of its own — so `height: 1.5, pct: true` would silently mask 150%
+// of the image's height (in practice: everything, past whatever the
+// author intended) with no error to say the number cannot mean what it
+// looks like it means. A non-pct rect is unconstrained here, exactly as it
+// always was: a mask authored for a taller device is allowed to fall
+// (partially) outside a shorter one — see pixel.ApplyMasks's own clamp.
+func validateMasks(c *Config) error {
+	check := func(scope string, m map[string][]Rect) error {
+		names := make([]string, 0, len(m))
+		for name := range m {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for i, r := range m[name] {
+				if !r.Pct {
+					continue
+				}
+				fields := []struct {
+					name string
+					val  float64
+				}{{"x", r.X}, {"y", r.Y}, {"width", r.Width}, {"height", r.Height}}
+				for _, f := range fields {
+					if f.val < 0 || f.val > 1 {
+						return fmt.Errorf("%s.%s[%d].%s: %v is outside [0,1] — a `pct: true` rect's x/y/width/height is a FRACTION of the checkpoint's own dimensions, not a pixel count or a percentage (write 0.06 for \"6%%\", not 6)",
+							scope, name, i, f.name, f.val)
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := check("masks", c.Masks); err != nil {
+		return err
+	}
+	for _, name := range sortedFlowNames(c.Flows) {
+		if err := check(fmt.Sprintf("flows.%s.masks", name), c.Flows[name].Masks); err != nil {
+			return err
 		}
 	}
 	return nil
