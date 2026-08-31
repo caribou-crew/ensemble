@@ -93,3 +93,48 @@ An agent walks this loop:
 
 Nothing above requires a new tool surface — it's the same CLI a human
 runs, read as JSON instead of a table.
+
+## Multiple apps, one dashboard
+
+By default the ensemble dashboard diffs every synced app against ONE
+retrace.yaml — the one next to `.retrace/` (`retrace.dir` in
+`ensemble.yaml`, or the same directory as `ensemble.yaml` itself). That is
+correct when every app's runs were recorded against that same file.
+
+When an app's runs come from a DIFFERENT repository's CI (or a monorepo
+client living in its own subdirectory with its own retrace.yaml), point
+the dashboard at it explicitly:
+
+```yaml
+retrace:
+  dir: .retrace
+  apps:
+    mobile-ios: ../mobile-app
+    mobile-android: ../mobile-app
+```
+
+`apps` maps an app key (the same name under `.retrace/runs/<app>/`) to the
+directory holding that app's own retrace.yaml. An app with no entry keeps
+using the dashboard-wide default, so this is opt-in per app. Two apps may
+point at the same directory — `--app` at record time is what tells two
+clients apart, not the config file.
+
+## Resolution-independent masks
+
+`masks:` rects are normally absolute pixels. Add `pct: true` to make
+x/y/width/height fractions (0–1) of the checkpoint's own dimensions
+instead — the same entry then covers, say, "the top 6% of the screen" on
+every device it's applied to, at whatever resolution that device really
+shot:
+
+```yaml
+flows:
+  card-views:
+    masks:
+      "*":
+        - { x: 0, y: 0, width: 1, height: 0.06, pct: true, why: "status bar (clock/battery/wifi)" }
+```
+
+This is what makes ONE flow-keyed masks: entry work for two apps recorded
+at very different resolutions sharing the same flow name and the same
+`apps:` directory above.
