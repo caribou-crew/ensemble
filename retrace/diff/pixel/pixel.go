@@ -324,11 +324,14 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 //
 // RectsFrom converts config.Rect (which has float64 coordinates to support
 // both absolute pixels and fractional pct: true masks) to pixel.Rect (which
-// uses int). For non-pct rects, the float64 values are integers (10.0,
-// 20.0, etc.) and are cast directly. For pct: true rects, resolution against
-// real image dimensions happens lazily in ResolveRects (not here in config),
-// the first point at which the real image size is known — see ResolveRects
-// and ApplyMasks for that conversion.
+// uses int) via a direct int cast. For absolute (non-pct) rects, the float64
+// values are whole numbers (10.0, 20.0, etc.) and this cast preserves them
+// exactly. For pct: true rects, this cast would truncate fractions (0.06 → 0),
+// but that is not a problem today: pct rects are not yet meaningfully handled
+// by this function. A later task (not Task 1) will add ResolveRects, which
+// multiplies pct rects against real image dimensions to produce absolute pixel
+// coordinates before RectsFrom ever sees them — at that point, the cast is
+// correct and safe.
 func RectsFrom(rs []config.Rect) []Rect {
 	out := make([]Rect, len(rs))
 	for i, r := range rs {

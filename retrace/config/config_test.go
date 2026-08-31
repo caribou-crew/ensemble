@@ -1119,3 +1119,31 @@ masks:
 		t.Fatalf("Load rejected an ordinary absolute-pixel mask: %v", err)
 	}
 }
+
+func TestLoadRejectsOutOfRangePctRectInFlowMasks(t *testing.T) {
+	// validateMasks must check not only the global masks: map but also
+	// masks inside each flow (flows.<name>.masks). This test exercises that
+	// flow-scoped validation path.
+	dir := t.TempDir()
+	yaml := `
+flows:
+  checkout:
+    command: npm test
+    masks:
+      "*": [{ x: 0, y: 0, width: 1, height: 1.5, pct: true }]
+`
+	path := filepath.Join(dir, "retrace.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("writing retrace.yaml: %v", err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load accepted a pct rect with height 1.5 in a flow's masks — a fraction cannot exceed 1")
+	}
+	if !strings.Contains(err.Error(), "flows.checkout.masks") {
+		t.Fatalf("error = %q, want it to name the flow scope (flows.checkout.masks)", err.Error())
+	}
+	if !strings.Contains(err.Error(), "height") || !strings.Contains(err.Error(), "[0,1]") {
+		t.Fatalf("error = %q, want it to name the field and the [0,1] bound", err.Error())
+	}
+}
