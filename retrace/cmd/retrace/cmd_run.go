@@ -327,8 +327,7 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 	// start one local fixture server per listener BEFORE capture.Options is
 	// built, so their addresses can be wired in as each listener's
 	// Upstream. Refused the same way `retrace replay` refuses a flow with
-	// no reference — see docs/superpowers/specs/
-	// 2026-08-30-retrace-run-fixtures-design.md D1.
+	// no reference.
 	listeners := p.listeners
 	var fixtureRef refs.Reference
 	var fixtureUps []*fixtureUpstream

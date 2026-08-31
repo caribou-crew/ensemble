@@ -167,7 +167,7 @@ func TestGatewayCORSPreflightAndHeaders(t *testing.T) {
 // emits its own CORS headers and must be left alone; another route's
 // backend (e.g. widget) has none and still needs the gateway's cors:
 // block. CORSPassthrough on the first route's Route is how that's told
-// apart — see docs/superpowers/specs (gateway-cors-passthrough proposal).
+// apart.
 func TestGatewayCORSPassthroughRoute(t *testing.T) {
 	rec := NewRecorder(RecorderOpts{Ring: 64})
 	p := New(rec)

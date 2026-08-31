@@ -1,7 +1,5 @@
-// TS mirrors of ensemble/server's JSON types. Copied verbatim from the
-// plan's "Exact API contract the UI consumes" block
-// (docs/superpowers/plans/2026-08-20-phase-3-dashboard.md) — do not drift
-// from the Go shapes without updating both.
+// TS mirrors of ensemble/server's JSON types — do not drift from the Go
+// shapes without updating both.
 
 export interface Timings {
   start: string;

@@ -2,8 +2,7 @@ package main
 
 // cmd_run_fixtures.go implements `retrace run --fixtures`: a flow's own
 // accepted reference bundle serves as the upstream while `run` records,
-// instead of a live one — see docs/superpowers/specs/
-// 2026-08-30-retrace-run-fixtures-design.md. capture.StartStandalone's own
+// instead of a live one. capture.StartStandalone's own
 // recording proxy sits in front exactly as it always does; a
 // fixtureUpstream is only ever wired in as one listener's Upstream, and
 // everything downstream (wire.jsonl, redaction, RETRACE_PROXY_URL...) is

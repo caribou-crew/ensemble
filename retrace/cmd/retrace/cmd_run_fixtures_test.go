@@ -4,8 +4,7 @@ package main
 // BUILT binary (see cmd_replay_test.go's header comment for why never `go
 // run`), against a bundle produced by `retrace run` + `retrace ref accept`
 // — the same fixture-setup path cmd_replay_test.go's recordAndAccept
-// already established. See docs/superpowers/specs/
-// 2026-08-30-retrace-run-fixtures-design.md for the design.
+// already established.
 
 import (
 	"encoding/json"
