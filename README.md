@@ -26,7 +26,8 @@ actual recorded dataflow instead of hand-maintained fixtures.
 | dashboard — topology, traffic, latency, inspector, entities | working |
 | `retrace` record/replay/diff/review | working |
 | sample stack, test-runner adapters | working |
-| published npm / brew packages | not yet released |
+| published npm packages | released — `@caribou-crew/ensemble`, `@caribou-crew/retrace` |
+| brew package | not yet released |
 
 Specs live in [`openspec/`](openspec/) — start with
 `openspec/changes/init-ensemble-retrace/design.md`. The roadmap and its current
@@ -651,6 +652,9 @@ ensemble up [-c ensemble.yaml] [--profile p1,p2] [--api 127.0.0.1:4700] [--tui]
 ensemble dashboard [--no-open]
 ensemble tui
 ensemble status | freshness | ready [--timeout DURATION] | down | seed <name>
+ensemble restart <service>
+ensemble variant <service> <name>
+ensemble profiles
 ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
 ensemble traffic [--since N] [--errors-only] [--follow]
 ensemble trace <traceId> [--export har|curl|raw]
@@ -664,13 +668,48 @@ Every command takes `--json`, and every one is a thin client over the REST API,
 so anything the CLI does an agent or script can do over HTTP. `ENSEMBLE_API`
 sets the default endpoint. The control plane binds loopback only.
 
+### retrace CLI
+
+```
+retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--upstream URL] [--json] [-- <test command>]
+retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--out DIR] [--no-fail]
+retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] -- <test command>
+retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
+retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
+retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]
+retrace rekey --old KEY --new KEY | --init [--json]
+retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
+retrace export --out DIR [--flow NAME] [--app NAME] [--json]
+retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
+retrace check [--url URL] [--app NAME] [--flow NAME] [--json] [--abandoned-after DUR]
+retrace sync --from github --repo ORG/REPO [--repos A,B] [--workflow NAME] [--since 7d] [--dry-run] [--json]
+```
+
+`run` records a flow (or, with neither `--flow` nor `--flows`, every flow in
+`retrace.yaml`) against a live stack; `diff` compares two runs pixel/wire/hop
+and exits 0/1/2/3 (no diff / differences to review / hard gate failed / could
+not evaluate — see `retrace --help` for the full exit-code table); `replay`
+serves a blessed recording as strict mocks with no stack running at all, for
+CI; `ref` promotes or rejects a run as the reference to diff future runs
+against. `runs`/`check` are the supervision half — `runs` lists every
+recording and whether it's complete, still running, or abandoned (a capture
+that died without finalizing); `check` answers "who owns this port" the way
+`lsof` can't, and is the gate to run before binding a marker door yourself.
+`export` writes a run's HAR/screenshots out for sharing; `rekey` rotates the
+key used by `encrypt`-mode redact rules; `sync` pulls run metadata from a
+CI provider (currently GitHub Actions) for `runs`/`check` to reason about
+recordings captured in CI rather than locally.
+
+Like `ensemble`, every command takes `--json`; `ENSEMBLE_API` is read for the
+`--ensemble` default.
+
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `core/` | Go shared module: trace model, proxy, stub engine |
 | `ensemble/` | the runner: orchestrator, REST/SSE server, inspector, CLI |
-| `retrace/` | record/replay/diff: engines, review server, CLI (not yet built) |
+| `retrace/` | record/replay/diff: engines, review server, CLI |
 | `dashboard/` | React UIs, embedded into the binaries |
 | `openspec/` | specs and roadmap |
 
