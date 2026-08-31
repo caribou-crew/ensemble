@@ -190,6 +190,107 @@ func TestRetraceQueueMatchesDirectServeQueue(t *testing.T) {
 	}
 }
 
+// recordRetraceRunWithBody is recordRetraceRun's variant that lets the
+// hop's response body vary between calls, so two runs of the same flow can
+// differ on one field — needed to exercise wire_ignore, which
+// recordRetraceRun's fixed `{"ok":true}` body never does.
+func recordRetraceRunWithBody(t *testing.T, cwd, app, flow, runID, body string) runs.Paths {
+	t.Helper()
+	p, err := runs.Create(runs.RunsRoot(cwd), app, flow, runID)
+	if err != nil {
+		t.Fatalf("runs.Create(%s/%s/%s): %v", app, flow, runID, err)
+	}
+	shot := retraceShotPNG(t, color.RGBA{255, 255, 255, 255})
+	if err := os.WriteFile(filepath.Join(p.RunDir, "shots", "home.png"), shot, 0o644); err != nil {
+		t.Fatalf("writing fixture shot: %v", err)
+	}
+	h := trace.Hop{
+		Schema: trace.SchemaVersion, Seq: 1, From: "web", To: "api",
+		Method: "GET", Path: "/home", Status: 200,
+		T:    trace.Timings{Start: time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC), DoneMs: 10},
+		Resp: trace.Payload{Headers: map[string]string{"content-type": "application/json"}, Body: body},
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatalf("marshalling fixture hop: %v", err)
+	}
+	if err := os.WriteFile(p.WirePath, append(b, '\n'), 0o644); err != nil {
+		t.Fatalf("writing wire.jsonl: %v", err)
+	}
+	m := runs.Manifest{
+		App: app, Flow: flow, RunID: runID, Mode: runs.ModeStandalone,
+		Git:         runs.Git{SHA: "deadbee", Branch: "main"},
+		StartedAt:   time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC),
+		FinishedAt:  time.Date(2026, 8, 21, 10, 0, 5, 0, time.UTC),
+		Capture:     runs.CaptureTrust{Status: trace.VerdictOK, Summary: "capture looks complete"},
+		Wire:        runs.Counts{Calls: 1, Recorded: true},
+		Checkpoints: []runs.Checkpoint{{Name: "home", File: "shots/home.png", Width: 10, Height: 10}},
+	}
+	if err := runs.WriteManifest(p, &m); err != nil {
+		t.Fatalf("WriteManifest(%s): %v", runID, err)
+	}
+	return p
+}
+
+// TestRetraceQueueAppliesPerAppConfigWhenAppsMapped is the end-to-end pin
+// for the mobile-app feature request's Ask 1: the ensemble dashboard, with
+// retrace.apps pointing "uxt" at a directory carrying its OWN
+// retrace.yaml (not the stack dir's, which has none), must diff using
+// that app's wire_ignore — the same suppression `retrace diff` run from
+// the app's own directory already gets.
+func TestRetraceQueueAppliesPerAppConfigWhenAppsMapped(t *testing.T) {
+	cwd := t.TempDir() // the stack dir — no retrace.yaml here
+	recordRetraceRunWithBody(t, cwd, "uxt", "card-views", "20260821T100000Z-aaaaaaa", `{"ok":true,"nonce":"a"}`)
+	acceptRetraceRef(t, cwd, "uxt", "card-views", "20260821T100000Z-aaaaaaa")
+	recordRetraceRunWithBody(t, cwd, "uxt", "card-views", "20260821T101000Z-bbbbbbb", `{"ok":true,"nonce":"b"}`)
+
+	appDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(appDir, "retrace.yaml"),
+		[]byte("wire_ignore:\n  - path: \"nonce\"\n    why: \"test\"\n"), 0o644); err != nil {
+		t.Fatalf("writing app retrace.yaml: %v", err)
+	}
+
+	cfg := &config.Config{Dir: cwd, Retrace: &config.RetraceConfig{
+		Apps: map[string]string{"uxt": appDir},
+	}}
+	ts := httptest.NewServer(server.New(server.Deps{Cfg: cfg, Version: "test"}))
+	t.Cleanup(ts.Close)
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/queue/uxt/card-views")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, got)
+	}
+	sum := got["summary"].(map[string]any)
+	if sum["verdict"] != "pass" {
+		t.Fatalf("verdict = %v, want pass — the app dir's own retrace.yaml (wire_ignore: nonce) should have suppressed the field diff; summary = %v", sum["verdict"], got)
+	}
+}
+
+// TestRetraceQueueWithoutAppsMappingSeesTheUnsuppressedChange is the
+// control for the test above: with the SAME diverging fixture and NO
+// retrace.apps entry, the dashboard-wide default config (no wire_ignore)
+// must still see the change — proving the "pass" above really comes from
+// the app config, not from a fixture that never diverges.
+func TestRetraceQueueWithoutAppsMappingSeesTheUnsuppressedChange(t *testing.T) {
+	cwd := t.TempDir()
+	recordRetraceRunWithBody(t, cwd, "uxt", "card-views", "20260821T100000Z-aaaaaaa", `{"ok":true,"nonce":"a"}`)
+	acceptRetraceRef(t, cwd, "uxt", "card-views", "20260821T100000Z-aaaaaaa")
+	recordRetraceRunWithBody(t, cwd, "uxt", "card-views", "20260821T101000Z-bbbbbbb", `{"ok":true,"nonce":"b"}`)
+
+	cfg := &config.Config{Dir: cwd, Retrace: &config.RetraceConfig{}}
+	ts := httptest.NewServer(server.New(server.Deps{Cfg: cfg, Version: "test"}))
+	t.Cleanup(ts.Close)
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/queue/uxt/card-views")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, got)
+	}
+	sum := got["summary"].(map[string]any)
+	if sum["verdict"] == "pass" {
+		t.Fatalf("verdict = pass, want a reported change — with no retrace.apps mapping there is no wire_ignore for nonce, so this is the control proving the fixture actually diverges: %v", got)
+	}
+}
+
 func TestRetraceItemRoute(t *testing.T) {
 	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{})
 

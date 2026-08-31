@@ -20,18 +20,38 @@ import (
 // writes the 501 itself and returns ok=false, mirroring the Insp
 // nil-disables-with-501 pattern this package already uses (routes.go
 // registers these handlers unconditionally, same as the Insp-gated ones).
+//
+// CfgFor resolves each app against retrace.apps (RetraceConfig.Apps),
+// re-discovering retrace/config.Config from that app's own directory —
+// see EffectiveAppDir's own doc comment for why this exists: a run synced
+// from a different repository's CI was recorded against a retrace.yaml
+// the stack dir never has. An app with no Apps entry resolves to the SAME
+// directory the un-mapped Cfg above was already discovered from, so the
+// closure returns cfg directly rather than re-discovering it — every
+// stack with no apps: map pays no extra Discover call and behaves
+// byte-for-byte as before this field existed.
 func (s *server) retraceDeps(w http.ResponseWriter) (serve.Deps, bool) {
 	if s.Cfg.Retrace == nil {
 		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
 		return serve.Deps{}, false
 	}
-	dir := s.Cfg.Retrace.EffectiveDir(s.Cfg.Dir)
+	rc := s.Cfg.Retrace
+	dir := rc.EffectiveDir(s.Cfg.Dir)
 	cfg, err := retraceconfig.Discover(dir)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return serve.Deps{}, false
 	}
-	return serve.Deps{Cwd: dir, Cfg: cfg, Version: s.Version}, true
+	return serve.Deps{
+		Cwd: dir, Cfg: cfg, Version: s.Version,
+		CfgFor: func(app string) (*retraceconfig.Config, error) {
+			appDir := rc.EffectiveAppDir(s.Cfg.Dir, app)
+			if appDir == dir {
+				return cfg, nil
+			}
+			return retraceconfig.Discover(appDir)
+		},
+	}, true
 }
 
 func (s *server) handleRetraceQueue(w http.ResponseWriter, r *http.Request) {
