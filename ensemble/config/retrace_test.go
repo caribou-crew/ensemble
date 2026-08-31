@@ -122,3 +122,33 @@ func TestRetraceBothWorkflowAndWorkflowsRejected(t *testing.T) {
 		t.Fatal("expected an error when both workflow and workflows are set")
 	}
 }
+
+func TestRetraceEffectiveAppDirFallsBackToEffectiveDirWhenAppIsNotMapped(t *testing.T) {
+	r := RetraceConfig{}
+	configDir := "/stack"
+	if got := r.EffectiveAppDir(configDir, "web"); got != configDir {
+		t.Errorf("EffectiveAppDir() = %q, want %q (falls back to EffectiveDir)", got, configDir)
+	}
+}
+
+func TestRetraceEffectiveAppDirUsesTheAppsMapWhenPresent(t *testing.T) {
+	r := RetraceConfig{Apps: map[string]string{"mobile-ios": "../mobile-app"}}
+	configDir := "/stack"
+	want := filepath.Join(configDir, "../mobile-app")
+	if got := r.EffectiveAppDir(configDir, "mobile-ios"); got != want {
+		t.Errorf("EffectiveAppDir() = %q, want %q", got, want)
+	}
+	// An app absent from Apps still falls back, even when Apps itself is
+	// non-empty for OTHER apps.
+	if got := r.EffectiveAppDir(configDir, "mobile-android"); got != configDir {
+		t.Errorf("EffectiveAppDir() for an unmapped app = %q, want %q", got, configDir)
+	}
+}
+
+func TestRetraceEffectiveAppDirHonoursAnAbsolutePath(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "elsewhere")
+	r := RetraceConfig{Apps: map[string]string{"web": abs}}
+	if got := r.EffectiveAppDir("/stack", "web"); got != abs {
+		t.Errorf("EffectiveAppDir() = %q, want the absolute path %q unchanged", got, abs)
+	}
+}

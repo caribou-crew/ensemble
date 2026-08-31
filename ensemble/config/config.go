@@ -193,6 +193,25 @@ type RetraceConfig struct {
 	// Since bounds how far back sync looks (e.g. "7d", "24h"). Empty
 	// defaults to DefaultRetraceSince — see EffectiveSince.
 	Since string `yaml:"since"`
+	// Apps maps an app key — the same name recorded under
+	// .retrace/runs/<app>/ and .retrace-ref/<app>/ — to the directory
+	// holding THAT APP'S OWN retrace.yaml, for a dashboard whose synced
+	// apps were recorded against a retrace.yaml that is not Dir's (a run
+	// synced from a different repository's CI, or a monorepo client
+	// living in its own subdirectory). Resolved the same way Dir is:
+	// relative to the directory containing ensemble.yaml unless absolute.
+	// An app key absent from this map keeps the behavior every stack has
+	// always had — its config comes from Dir's own retrace.yaml
+	// (EffectiveDir). Empty (the default) means every app uses that one
+	// config, exactly as before this field existed.
+	//
+	// masks: and wire_ignore: apply per FLOW, not per app
+	// (retrace/config.Config has no app dimension of its own — see
+	// Config.MasksFor's own doc comment), so two apps that share both a
+	// flow name and an Apps entry share that flow's masks too. A `pct:
+	// true` mask (retrace/diff/pixel.ResolveRects) is what makes that safe
+	// across two different device resolutions sharing one retrace.yaml.
+	Apps map[string]string `yaml:"apps"`
 }
 
 // EffectiveDir returns Dir resolved against configDir (Config.Dir), or
@@ -205,6 +224,20 @@ func (r RetraceConfig) EffectiveDir(configDir string) string {
 		return r.Dir
 	}
 	return filepath.Join(configDir, r.Dir)
+}
+
+// EffectiveAppDir returns the directory holding app's own retrace.yaml:
+// Apps[app] resolved against configDir when app is a key in Apps, else
+// EffectiveDir(configDir) — the single dashboard-wide config every app
+// used before Apps existed, and what every app with no entry still gets.
+func (r RetraceConfig) EffectiveAppDir(configDir, app string) string {
+	if dir, ok := r.Apps[app]; ok && strings.TrimSpace(dir) != "" {
+		if filepath.IsAbs(dir) {
+			return dir
+		}
+		return filepath.Join(configDir, dir)
+	}
+	return r.EffectiveDir(configDir)
 }
 
 // EffectiveSince returns Since, or DefaultRetraceSince when it's left
