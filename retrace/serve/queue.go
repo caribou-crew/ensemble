@@ -59,6 +59,15 @@ type Deps struct {
 	AllowedHosts []string
 	Version      string
 	Now          func() time.Time
+	// CfgFor resolves the config governing ONE app, for a dashboard that
+	// diffs runs recorded against more than one retrace.yaml (synced from
+	// different repositories, or from a monorepo client in its own
+	// subdirectory — see ensemble/config.RetraceConfig.Apps, which is what
+	// builds this closure for ensemble/server). nil — retrace serve's own
+	// single-project CLI use, and every existing caller of this package —
+	// means "every app uses Cfg", unchanged from before this field
+	// existed. See configFor.
+	CfgFor func(app string) (*config.Config, error)
 }
 
 // now is Deps.Now with its zero value resolved. A nil Now means "the caller
@@ -70,6 +79,16 @@ func (d Deps) now() time.Time {
 		return d.Now()
 	}
 	return time.Now()
+}
+
+// configFor resolves the config that governs one app: d.CfgFor(app) when
+// set, else d.Cfg. See CfgFor's own doc comment for why nil means "every
+// app uses Cfg".
+func (d Deps) configFor(app string) (*config.Config, error) {
+	if d.CfgFor == nil {
+		return d.Cfg, nil
+	}
+	return d.CfgFor(app)
 }
 
 // check refuses a Deps that cannot answer honestly. Both fields are
@@ -434,6 +453,10 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 	if err := runs.ValidateComponents(app, flow); err != nil {
 		return diff.Summary{}, err
 	}
+	cfg, err := d.configFor(app)
+	if err != nil {
+		return diff.Summary{}, fmt.Errorf("resolving the retrace config for app %q: %w", app, err)
+	}
 	root := runs.RunsRoot(d.Cwd)
 
 	ref := refs.Resolve(d.Cwd, root, app, flow)
@@ -468,7 +491,7 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 	}
 	b := diff.RunRef{RunID: id, Kind: "run", Dir: p.RunDir, Manifest: m}
 
-	opts, err := diff.OptionsFor(d.Cfg, a.Manifest, b.Manifest)
+	opts, err := diff.OptionsFor(cfg, a.Manifest, b.Manifest)
 	if err != nil {
 		return diff.Summary{}, err
 	}
@@ -479,7 +502,7 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 	// diff` uses) — a review server must not write into the recording it
 	// is reviewing.
 	return diff.Build(diff.BuildInput{
-		App: app, Flow: flow, A: a, B: b, Cfg: d.Cfg, Options: opts,
+		App: app, Flow: flow, A: a, B: b, Cfg: cfg, Options: opts,
 		WantImages: true, OutDir: outDir,
 	})
 }

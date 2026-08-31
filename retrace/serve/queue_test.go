@@ -1124,3 +1124,69 @@ func TestSummaryForRunDoesNotShareItsDiffImageCacheWithLatest(t *testing.T) {
 		t.Fatalf("diffDir has a diff image for a checkpoint that did not change — runB's generated image leaked into the latest queue's cache")
 	}
 }
+
+// TestSummaryForUsesCfgForWhenSet pins that a per-app config resolver, when
+// present on Deps, is what actually governs the diff — not Deps.Cfg. Two
+// runs of the same flow differ only in a "nonce" body field; Deps.Cfg (the
+// dashboard-wide default) has no wire_ignore for it, but the CfgFor
+// resolver returns a config that does, so the diff must come back "pass".
+func TestSummaryForUsesCfgForWhenSet(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "home", runA,
+		map[string][]byte{"home": shotPNG(t, color.RGBA{A: 255})},
+		[]trace.Hop{hop(1, "GET", "/home", 200, `{"nonce":"a"}`)})
+	acceptRef(t, cwd, "web", "home", runA)
+	recordRun(t, cwd, "web", "home", runB,
+		map[string][]byte{"home": shotPNG(t, color.RGBA{A: 255})},
+		[]trace.Hop{hop(1, "GET", "/home", 200, `{"nonce":"b"}`)})
+
+	dashboardCfg, err := config.Discover(cwd) // no retrace.yaml here: bare defaults
+	if err != nil {
+		t.Fatalf("config.Discover: %v", err)
+	}
+
+	appDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(appDir, "retrace.yaml"),
+		[]byte("wire_ignore:\n  - path: \"nonce\"\n    why: \"test\"\n"), 0o644); err != nil {
+		t.Fatalf("writing app retrace.yaml: %v", err)
+	}
+	appCfg, err := config.Discover(appDir)
+	if err != nil {
+		t.Fatalf("config.Discover(appDir): %v", err)
+	}
+
+	d := Deps{
+		Cwd: cwd, Cfg: dashboardCfg, Version: "test",
+		CfgFor: func(app string) (*config.Config, error) { return appCfg, nil },
+	}
+	s, err := SummaryFor(d, "web", "home")
+	if err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	if s.Verdict != "pass" {
+		t.Fatalf("verdict = %q, want pass — CfgFor's wire_ignore should have suppressed the nonce field diff; wire=%+v", s.Verdict, s.Wire)
+	}
+}
+
+// TestSummaryForFallsBackToCfgWhenCfgForIsNil pins the zero-value contract:
+// a Deps with no CfgFor set behaves exactly as it always has, using Cfg for
+// every app.
+func TestSummaryForFallsBackToCfgWhenCfgForIsNil(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "home", runA,
+		map[string][]byte{"home": shotPNG(t, color.RGBA{A: 255})},
+		[]trace.Hop{hop(1, "GET", "/home", 200, `{"nonce":"a"}`)})
+	acceptRef(t, cwd, "web", "home", runA)
+	recordRun(t, cwd, "web", "home", runB,
+		map[string][]byte{"home": shotPNG(t, color.RGBA{A: 255})},
+		[]trace.Hop{hop(1, "GET", "/home", 200, `{"nonce":"b"}`)})
+
+	d := deps(t, cwd) // no CfgFor
+	s, err := SummaryFor(d, "web", "home")
+	if err != nil {
+		t.Fatalf("SummaryFor: %v", err)
+	}
+	if s.Verdict != "changed" {
+		t.Fatalf("verdict = %q, want changed — with no CfgFor, the nonce field has no wire_ignore and must be reported", s.Verdict)
+	}
+}
