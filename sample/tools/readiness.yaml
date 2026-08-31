@@ -1,11 +1,11 @@
 # Post-on_ready readiness checks for the "brew" sample stack — see
 # ensemble.yaml's top-level `readiness:` key, which points here.
 #
-# `ensemble up` brings every service up healthy, then on_ready would seed
-# baseline data (see seeds.baseline) if this stack wired one. Neither step
-# proves the stack is actually queryable end-to-end the way a client would
-# see it — these checks do: real HTTP requests against each service's own
-# health endpoint, gated the same way `ensemble ready` gates CI.
+# `ensemble up` brings every service up healthy, then on_ready seeds
+# baseline data (see seeds.baseline). Neither step proves the stack is
+# actually queryable end-to-end the way a client would see it — these
+# checks do: real HTTP requests against each service's own health
+# endpoint, gated the same way `ensemble ready` gates CI.
 checks:
   - name: catalog-healthy
     service: catalog

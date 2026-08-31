@@ -192,6 +192,41 @@ ensemble up --variant monolith=real     # one-off override of `default`
 column, and build stamps are kept per variant so switching never skips a
 stale build.
 
+### Caller attribution: `called_by`
+
+The traffic view's caller for each hop normally comes from real trace-context
+propagation, with a fallback: ensemble looks at who lists this service in
+their own `depends_on`. That fallback has nothing to go on for a service
+nothing else needs to *start* (it can come up in any order relative to its
+callers) but that other services still call directly at runtime — exactly
+`real`, above, if the monolith it replaces predates distributed tracing.
+`called_by:` fills the gap explicitly:
+
+```yaml
+services:
+  monolith:
+    called_by: [edge, ops]   # edge and ops call this service directly
+```
+
+Each name is a service or gateway (validated the same way `depends_on` is).
+A hop attributed this way is flagged **inferred** in the traffic view —
+best-effort, never presented as ground truth the way a hop with real trace
+context is.
+
+### `kind:` is a badge, not a type
+
+`kind:` (on a service, or a `variants:` entry to override just that one) is
+a free-form label the dashboard's Services tab renders as a badge —
+`kind: stub`, `kind: mock`, `kind: wip`, whatever's useful to you. Ensemble
+never interprets the value; left unset, the badge just reads "service".
+Whether something *behaves* as a service, stub, gateway, or database is
+decided entirely by which top-level block it's declared under
+(`services:`/`stubs:`/`gateways:`/`databases:`) — `kind:` never changes
+that, and it exists as a field only on `services:`/`variants:` entries.
+`ensemble.yaml` parsing doesn't reject unknown keys, so a stray `kind:` (or
+`type:`) under a `stubs:` or `gateways:` entry parses without error and
+silently does nothing — there's no field there to receive it.
+
 ### Databases
 
 ```yaml
@@ -233,6 +268,33 @@ reference implementation: it mounts the contract at `/ensemble-inspect/*`,
 guarded by the same Basic auth its other routes already require, and serves
 `users`/`accounts`/`cards`/`cardProducts`/`digitalWalletTokens`/
 `transactions` as JSON round-trips of the structs its own REST API returns.
+
+### `on_healthy`: a per-service seed
+
+`health:` proves a process is listening. Some services need one more step
+once they are — creating a record only that service can create, provisioning
+a queue, priming a cache — before they're actually useful to whatever
+depends on them. `on_healthy:` runs once, every time this service's health
+gate passes, in the service's own `dir`:
+
+```yaml
+services:
+  catalog:
+    dir: ./services/catalog-svc
+    run: ./catalog-svc
+    health: /healthz
+    on_healthy: >-
+      curl -sf -X POST localhost:8081/products
+      -H 'content-type: application/json'
+      -d '{"name":"seasonal-blend","price_cents":425}'
+```
+
+A failing `on_healthy` command fails the service's start the same way a
+`build:` failure does — a step that only makes sense once its own
+preconditions hold shouldn't leave the service reporting healthy anyway.
+It's per-service and fires as soon as *that* service is up; contrast with
+`on_ready` (below), which waits for the *whole* stack and runs once per `up`,
+not once per service.
 
 ### Entities
 
@@ -373,6 +435,32 @@ matching no route gets a `404` and is still recorded as a hop so the
 mis-route is visible in `ensemble traffic`. `strip_prefix: true` drops the
 matched prefix before forwarding (`/cart/items?limit=5` → `/items?limit=5`).
 
+Sometimes the edge's own path doesn't line up with the backend's — a
+client-facing `/v1/orders` the backend actually serves at
+`/internal/v1/orders` — or a route needs to carve one specific suffix out of
+a broader prefix rather than just stripping it. `regex:` and `rewrite:`
+cover both, and are tried after every `prefix:` route, in declaration order,
+first match wins — write your own `^`/`$` anchors, since matching isn't
+implicitly anchored (e.g. `\.json$` for a suffix match):
+
+```yaml
+gateways:
+  public:
+    port: 9000
+    routes:
+      - { prefix: /orders, service: order, rewrite: /internal/orders }
+      - { regex: '^/v1(/.*checkout)$', rewrite: '/internal/v1$1', service: order }
+```
+
+`rewrite:` replaces the matched portion of the path instead of just removing
+it. On a `prefix:` route it swaps the matched prefix for `rewrite:`'s value
+(the remainder of the path is appended after `/orders/5` → `/internal/orders/5`
+above) and is mutually exclusive with `strip_prefix:`. On a `regex:` route
+it's a `regexp.ReplaceAllString` template — `$1`, `$2`, … reference the
+regex's own capture groups — applied to the whole path, so only the matched
+substring changes and the rest is untouched; an empty `rewrite:` on a
+`regex:` route leaves the path unmodified, same as no `rewrite:` at all.
+
 A `cors:` block makes the gateway add cross-origin response headers and
 answer preflight `OPTIONS` requests directly, instead of every backend
 needing its own CORS support:
@@ -384,10 +472,12 @@ gateways:
     cors:
       allow_origins: ["http://localhost:3000"]
       allow_methods: ["GET", "POST", "PUT", "DELETE"]
+      allow_headers: ["content-type", "authorization"]
       allow_credentials: false     # a wildcard allow_origins forbids true
+      max_age_seconds: 600         # browser caches the preflight result this long
     routes:
       - { prefix: /products, service: catalog }
-      - { prefix: /cui,      service: cui,     cors_passthrough: true }
+      - { prefix: /cart,     service: cart,    cors_passthrough: true }
 ```
 
 `cors:` applies to every route on the gateway except one with
@@ -442,6 +532,41 @@ inspection — those stay browser-only.
 Send your app's traffic at the **proxy** ports (`9080` above) rather than the
 service ports, and every hop between your services is captured with its trace
 id, correlation id, and timings.
+
+### Trace and caller headers
+
+Three top-level keys control different parts of how a hop gets attributed —
+neighbors, not alternatives, so pick each deliberately:
+
+- **`trace_header:`** (e.g. `x-local-trace-id`) is read as a *fallback trace
+  id* whenever a request carries no W3C `traceparent` — for a stack whose
+  services don't propagate trace context themselves, so hops still land in
+  one trace instead of scattering across synthetic ones. Empty (the
+  default) disables the fallback entirely.
+- **`source_header:`** (one or more header names, checked in order,
+  case-insensitive) lets a caller ensemble doesn't manage — a dev-only
+  client, another team's tool — self-declare which service it is, on the
+  request itself. Left empty, only the built-in `X-Ensemble-Caller` header is
+  checked; set this only if your org already has its own convention (e.g.
+  `x-source-client`) to check instead or first.
+- **`client_identity_headers:`** (same checked-in-order shape) names the
+  header carrying the *client application* that started the request —
+  `web`, `ios`, `admin` — shown as a hop's Client in the traffic view.
+  Checked on every request regardless of trace context, unlike the two
+  above; left empty, `x-source-client` then `x-local-client` are checked. A
+  value that fails identifier validation is recorded as `"client"` and never
+  stored, so nothing a browser puts in the header reaches disk.
+
+```yaml
+trace_header: x-local-trace-id
+source_header: [x-source-client]
+client_identity_headers: [x-source-client, x-local-client]
+```
+
+`source_header` answers "which **service** called this hop" and is a
+fallback for missing trace context; `client_identity_headers` answers "which
+of our **front-ends** started this" and is always read. A stack commonly
+wants one and not the other.
 
 ### Injecting latency
 
@@ -569,6 +694,41 @@ Each check runs `run` under `/bin/sh -c`; a non-zero exit fails the whole
 command with `message` (if set) or the command's own output. Checks run in
 order and stop at the first failure — nothing is started, no port is bound,
 until every check passes.
+
+### `on_ready`: seeding once the whole stack is healthy
+
+Some setup only makes sense once *every* service and database in the stack
+is up — data that spans several services, warming a shared cache,
+announcing readiness to something outside ensemble entirely. A top-level
+`on_ready:` key runs once, after `ensemble up` has confirmed every active
+node clean:
+
+```yaml
+on_ready:
+  seeds: [baseline]                # names from seeds: below, run in declared order
+  run: ./tools/announce-ready.sh   # then a plain shell command, in Config.Dir
+
+seeds:
+  baseline:
+    sql:
+      - database: shared-pg
+        file: ./seeds/products.sql
+      - database: shared-pg
+        file: ./seeds/users.sql
+        target_db: users            # a second logical database on the same
+                                     # postgres instance — target_db overrides
+                                     # shared-pg's own default (its POSTGRES_DB)
+                                     # for just this one step
+```
+
+`seeds:` runs each named seed through the same mechanism `ensemble seed
+<name>` uses by hand — every SQL step, then every HTTP step, in the order
+they're declared — before `run:` (if set) executes. Both are optional and
+may be combined. `on_ready` stops at its first failure, and never runs at
+all if any service or database failed to come up — a seed or postinstall
+step that assumes the stack it's given shouldn't run against one that
+isn't. See `sample/ensemble.yaml`'s own `on_ready:` for a complete, working
+example.
 
 ### Readiness checks
 

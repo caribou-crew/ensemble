@@ -41,6 +41,15 @@ services:
       DATABASE_URL: "postgres://catalog:catalog@127.0.0.1:55432/catalog?sslmode=disable"
       PAYMENTS_URL: "http://127.0.0.1:9099"
     health: /healthz
+    # Exercises on_healthy: a single-service seed that only makes sense
+    # once catalog itself (not the whole stack) is reachable — unlike
+    # on_ready below, which waits for every service. Hits catalog's real
+    # port, not its proxy: this is catalog seeding itself, not simulated
+    # client traffic.
+    on_healthy: >-
+      curl -sf -X POST localhost:8081/products
+      -H 'content-type: application/json'
+      -d '{"name":"seasonal-blend","price_cents":425}'
     depends_on: [postgres]
 
   user:
@@ -74,6 +83,13 @@ services:
     proxy: 9083
     health: /actuator/health
     depends_on: [mysql, redis, catalog, user]
+    # storefront and ops-bff both call order directly (see their ORDER_URL
+    # env below) without depending_on it — order isn't a startup
+    # dependency of either, so the depends_on-derived caller inference
+    # (Config.CalledBy) has nothing to go on for it. called_by: fills that
+    # gap explicitly for the traffic view; hops attributed this way are
+    # flagged "inferred".
+    called_by: [storefront, ops]
     default: stub
     variants:
       stub:
@@ -172,7 +188,6 @@ databases:
       POSTGRES_USER: catalog
       POSTGRES_PASSWORD: catalog
       POSTGRES_DB: catalog
-    seed: baseline
 
   mysql:
     image: mysql:8.0
@@ -250,6 +265,13 @@ gateways:
     port: 9100
     routes:
       - { prefix: /bff, service: storefront, strip_prefix: true }
+      # Exercises regex: + rewrite: (tried only after every prefix: route
+      # misses, in declaration order, first match wins) — the `^...$`
+      # anchors match ONLY /console/orders or /console/products, not any
+      # deeper path a prefix: route would also catch, and rewrite's $1
+      # backreference renames the segment to what ops-bff actually serves
+      # (/admin/orders, /admin/products).
+      - { regex: '^/console/(orders|products)$', rewrite: '/admin/$1', service: ops }
 
 # Turns on the dashboard's Retrace tab (openspec/changes/retrace-ci-sync).
 # `dir` is omitted: .retrace/ sits right next to this file, populated by
@@ -259,6 +281,13 @@ gateways:
 # authenticated locally, same as the CLI's own `retrace sync` would.
 retrace:
   repo: caribou-crew/ensemble
+
+# Self-seeding: once every active service and database reports healthy,
+# on_ready seeds baseline data (products + users — see seeds.baseline
+# below) through the same mechanism `ensemble seed baseline` uses by hand.
+# Never runs at all if any node failed to come up.
+on_ready:
+  seeds: [baseline]
 
 # See tools/readiness.yaml: checks that run once, after on_ready, asserting
 # the seeded stack is actually queryable end-to-end — not just that every
