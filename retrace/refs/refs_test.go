@@ -1175,6 +1175,80 @@ func TestAManifestCheckpointThatEscapesTheRunDirectoryIsRefused(t *testing.T) {
 	}
 }
 
+// solidPNG encodes a flat-color image, the smallest fixture for a mask test
+// that only cares about which rows end up painted black. Mirrors
+// retrace/diff/summary_test.go's helper of the same name.
+func solidPNG(t *testing.T, w, h int, c color.RGBA) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	b, err := pixel.Encode(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestAcceptAppliesAPctMaskAtTheRunsRealResolution pins that a `pct: true`
+// mask, threaded through Accept's MasksFor closure exactly as a flow-scoped
+// absolute mask is, ends up painted at the CORRECT absolute region for the
+// run's actual screenshot size — not at whatever a naive int() truncation
+// of the raw fraction would give.
+func TestAcceptAppliesAPctMaskAtTheRunsRealResolution(t *testing.T) {
+	cwd := t.TempDir()
+	runsRoot := runs.RunsRoot(cwd)
+	// A 100x200 shot; a top-10% pct mask should paint rows [0,20).
+	shot := solidPNG(t, 100, 200, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	runID := "20260821T100000Z-aaaaaaa"
+	p, err := runs.Create(runsRoot, "app", "flow", runID)
+	if err != nil {
+		t.Fatalf("runs.Create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p.RunDir, "shots", "cart.png"), shot, 0o644); err != nil {
+		t.Fatalf("writing fixture shot: %v", err)
+	}
+	m := runs.Manifest{
+		App: "app", Flow: "flow", RunID: runID,
+		Capture:     runs.CaptureTrust{Status: trace.VerdictOK},
+		Wire:        runs.Counts{Recorded: true},
+		Checkpoints: []runs.Checkpoint{{Name: "cart", File: "shots/cart.png"}},
+	}
+	if err := runs.WriteManifest(p, &m); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+
+	pctMask := []pixel.Rect{{X: 0, Y: 0, Width: 1, Height: 0.1, Pct: true}}
+	res, err := Accept(AcceptOptions{
+		Cwd: cwd, RunsRoot: runsRoot, App: "app", Flow: "flow", RunID: runID,
+		MasksFor:          func(string) []pixel.Rect { return pctMask },
+		MaskedCheckpoints: []string{"cart"},
+	})
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	bundleShot := filepath.Join(res.Dir, "shots", "cart.png")
+	b, err := os.ReadFile(bundleShot)
+	if err != nil {
+		t.Fatalf("reading promoted shot: %v", err)
+	}
+	img, err := pixel.Decode(b)
+	if err != nil {
+		t.Fatalf("decoding promoted shot: %v", err)
+	}
+	black := color.RGBA{A: 255}
+	if got := img.RGBAAt(0, 19); got != black {
+		t.Fatalf("(0,19) = %+v, want masked black (10%% of 200 = row 20 is the boundary)", got)
+	}
+	if got := img.RGBAAt(0, 20); got == black {
+		t.Fatal("(0,20) is masked black, want untouched — the pct mask overshot its own boundary")
+	}
+}
+
 // treeOf lists every path under root, so "nothing was written outside the
 // bundle" is asserted over the whole tree rather than over the handful of
 // destinations the test author thought of.

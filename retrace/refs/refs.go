@@ -554,7 +554,7 @@ func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Re
 	}
 	if r, ok := coversNothing(img, masks); ok {
 		return bundleFile{}, fmt.Errorf("checkpoint %q has a mask at x=%d y=%d %dx%d, which covers none of its %dx%d image — applying it would redact nothing while reporting success, so this is a mask that is not protecting anything, exactly like one that cannot be decoded; fix the rectangle (a mask authored against a different device is the usual cause), because a reference bundle is committed and an unredacted promotion cannot be taken back",
-			cp.Name, r.X, r.Y, r.Width, r.Height, img.Rect.Dx(), img.Rect.Dy())
+			cp.Name, int(r.X), int(r.Y), int(r.Width), int(r.Height), img.Rect.Dx(), img.Rect.Dy())
 	}
 	pixel.ApplyMasks(img, masks)
 	out, err := pixel.Encode(img)
@@ -570,6 +570,13 @@ func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Re
 // paints zero pixels, so shotFor would store a shot it had "redacted" and
 // return success.
 //
+// masks is resolved against img's real dimensions (pixel.ResolveRects)
+// BEFORE the emptiness check, the same resolution ApplyMasks itself
+// performs — checking the raw, possibly-fractional rect here would compare
+// (say) 0.06 against a 900px image and always find it non-empty, which
+// defeats the whole point of this guard for a pct mask authored with the
+// wrong sign or a typo'd 6 instead of 0.06.
+//
 // This lives here and NOT in pixel.ApplyMasks. The clamp is right for the
 // other caller: in COMPARISON a mask authored on a taller device must
 // degrade to a partial mask rather than panicking, and diff depends on
@@ -584,8 +591,11 @@ func shotFor(runDir string, cp runs.Checkpoint, masksFor func(string) []pixel.Re
 // pixels. Nothing else.
 func coversNothing(img *image.RGBA, masks []pixel.Rect) (pixel.Rect, bool) {
 	w, h := img.Rect.Dx(), img.Rect.Dy()
-	for _, r := range masks {
-		if min(r.X+r.Width, w) <= max(r.X, 0) || min(r.Y+r.Height, h) <= max(r.Y, 0) {
+	resolved := pixel.ResolveRects(masks, w, h)
+	for _, r := range resolved {
+		x0, y0 := int(r.X), int(r.Y)
+		x1, y1 := int(r.X+r.Width), int(r.Y+r.Height)
+		if min(x1, w) <= max(x0, 0) || min(y1, h) <= max(y0, 0) {
 			return r, true
 		}
 	}
