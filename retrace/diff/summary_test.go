@@ -271,6 +271,35 @@ func TestAMaskedRegionDoesNotAffectTheCheckpointVerdict(t *testing.T) {
 	}
 }
 
+// TestAPctMaskedRegionDoesNotAffectTheCheckpointVerdict is
+// TestAMaskedRegionDoesNotAffectTheCheckpointVerdict's fractional-mask
+// counterpart: the only difference between A and B sits inside a `pct:
+// true` mask instead of an absolute one, resolved against this 40x40
+// checkpoint's real size (top-left quadrant: width 0.5, height 0.5 = the
+// same [0,20)x[0,20) region the absolute test above covers with Width:20,
+// Height:20 — proving the two forms agree at one concrete resolution).
+func TestAPctMaskedRegionDoesNotAffectTheCheckpointVerdict(t *testing.T) {
+	dirA, dirB := t.TempDir(), t.TempDir()
+	base := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+	red := color.RGBA{R: 250, G: 0, B: 0, A: 255}
+
+	cpA := writeShot(t, dirA, "cart", solidPNG(t, 40, 40, base))
+	cpB := writeShot(t, dirB, "cart", rectPNG(t, 40, 40, base, 5, 5, 10, 10, red))
+
+	aRef := RunRef{Kind: "run", Dir: dirA, Manifest: manifest("a", []runs.Checkpoint{cpA}, nil, okCapture())}
+	bRef := RunRef{Kind: "run", Dir: dirB, Manifest: manifest("b", []runs.Checkpoint{cpB}, nil, okCapture())}
+	cfg := baseConfig(t)
+	cfg.Masks = map[string][]config.Rect{"cart": {{X: 0, Y: 0, Width: 0.5, Height: 0.5, Pct: true}}}
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg})
+	if s.Verdict != "pass" {
+		t.Fatalf("verdict = %q, want pass (pct-masked region must not move the verdict); checkpoints=%+v", s.Verdict, s.Checkpoints)
+	}
+	if len(s.Checkpoints) != 1 || s.Checkpoints[0].Verdict != "ok" {
+		t.Fatalf("checkpoint verdict = %+v, want ok", s.Checkpoints)
+	}
+}
+
 func TestAnAddedDownstreamCallMarksTheFlowChanged(t *testing.T) {
 	dirA, dirB := t.TempDir(), t.TempDir()
 	edge := hop(1, "GET", "/cart", 200, "", `{}`)
