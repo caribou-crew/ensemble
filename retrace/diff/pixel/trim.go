@@ -53,7 +53,7 @@ func TrimUniformBorder(img *image.RGBA) (cropped *image.RGBA, kept Rect, ok bool
 		return nil, Rect{}, false // too small to carry any comparison signal
 	}
 
-	kept = Rect{X: left - b.Min.X, Y: top - b.Min.Y, Width: kw, Height: kh}
+	kept = Rect{X: float64(left - b.Min.X), Y: float64(top - b.Min.Y), Width: float64(kw), Height: float64(kh)}
 	if kept.X == 0 && kept.Y == 0 && kw == w && kh == h {
 		return img, kept, true // already tight: no border found, left untouched
 	}

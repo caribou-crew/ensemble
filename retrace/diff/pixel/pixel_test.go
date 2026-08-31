@@ -396,6 +396,79 @@ func TestExplicitThresholdsRouteToTheCorrectField(t *testing.T) {
 	}
 }
 
+// TestResolveRectsConvertsPctRectsToAbsolutePixels pins the core promise of
+// pct masks: the SAME rect resolves to a DIFFERENT absolute rectangle
+// against two different image sizes, proportionally.
+//
+// Height is checked with an epsilon, not exact equality: Go's untyped
+// constant arithmetic (e.g. `2556 * 0.06` written directly in a `want`
+// struct literal) folds at compile time using exact rational arithmetic,
+// then rounds ONCE to float64 — a different rounding path than the
+// runtime float64*float64 multiplication ResolveRects performs, and the
+// two can differ by 1 ULP (verified: 2556*0.06 constant-folded = the
+// float64 above 153.36000000000001..., while 0.06*2556.0 computed at
+// runtime = 153.35999999999998...). X/Y/Width need no epsilon: they are 0
+// or a multiplication by 1, both exact in float64.
+func TestResolveRectsConvertsPctRectsToAbsolutePixels(t *testing.T) {
+	rects := []Rect{{X: 0, Y: 0, Width: 1, Height: 0.06, Pct: true}}
+	const epsilon = 0.0001
+	closeEnough := func(got, want float64) bool {
+		d := got - want
+		return d > -epsilon && d < epsilon
+	}
+
+	iosResolved := ResolveRects(rects, 1178, 2556)
+	r := iosResolved[0]
+	if r.X != 0 || r.Y != 0 || r.Width != 1178 || !closeEnough(r.Height, 153.36) {
+		t.Fatalf("ResolveRects for a 1178x2556 image = %+v, want X:0 Y:0 Width:1178 Height:~153.36", r)
+	}
+
+	androidResolved := ResolveRects(rects, 320, 640)
+	r = androidResolved[0]
+	if r.X != 0 || r.Y != 0 || r.Width != 320 || !closeEnough(r.Height, 38.4) {
+		t.Fatalf("ResolveRects for a 320x640 image = %+v, want X:0 Y:0 Width:320 Height:~38.4", r)
+	}
+}
+
+// TestResolveRectsLeavesAbsoluteRectsUntouched pins that a non-pct rect
+// (the overwhelmingly common case) is passed through byte-for-byte,
+// regardless of the image size it is resolved against.
+func TestResolveRectsLeavesAbsoluteRectsUntouched(t *testing.T) {
+	rects := []Rect{{X: 10, Y: 20, Width: 100, Height: 40}}
+	got := ResolveRects(rects, 9999, 9999)
+	if got[0] != rects[0] {
+		t.Fatalf("ResolveRects(...) = %+v, want the absolute rect unchanged: %+v", got[0], rects[0])
+	}
+}
+
+// TestApplyMasksResolvesPctPerImageSize is the ApplyMasks-level version of
+// the promise above: the SAME masks list, applied to two DIFFERENT sized
+// images (standing in for an iOS shot and an Android shot sharing one
+// flow-keyed masks: entry), paints a proportionally correct band on each.
+func TestApplyMasksResolvesPctPerImageSize(t *testing.T) {
+	base := color.RGBA{R: 1, G: 2, B: 3, A: 255}
+	tall := newRGBA(100, 200, base) // "iOS": mask should cover rows [0,20)
+	short := newRGBA(100, 50, base) // "Android": mask should cover rows [0,5)
+	masks := []Rect{{X: 0, Y: 0, Width: 1, Height: 0.1, Pct: true}}
+
+	ApplyMasks(tall, masks)
+	ApplyMasks(short, masks)
+
+	black := color.RGBA{A: 255}
+	if got := tall.RGBAAt(0, 19); got != black {
+		t.Fatalf("tall(0,19) = %+v, want masked black (10%% of 200 = row 20 is the boundary)", got)
+	}
+	if got := tall.RGBAAt(0, 20); got != base {
+		t.Fatalf("tall(0,20) = %+v, want untouched — the pct mask must not overshoot its own boundary", got)
+	}
+	if got := short.RGBAAt(0, 4); got != black {
+		t.Fatalf("short(0,4) = %+v, want masked black (10%% of 50 = row 5 is the boundary)", got)
+	}
+	if got := short.RGBAAt(0, 5); got != base {
+		t.Fatalf("short(0,5) = %+v, want untouched — the pct mask must not overshoot its own boundary", got)
+	}
+}
+
 // TestRectsFromConvertsEveryField pins F7: RectsFrom is the ONLY conversion
 // between config.Rect and pixel.Rect, so a mutation that drops or
 // misroutes one field (e.g. zeroing Y) silently relocates every mask.
@@ -403,10 +476,12 @@ func TestRectsFromConvertsEveryField(t *testing.T) {
 	in := []config.Rect{
 		{X: 1, Y: 2, Width: 3, Height: 4, Why: "ignored by RectsFrom"},
 		{X: 5, Y: 6, Width: 7, Height: 8},
+		{X: 0, Y: 0, Width: 1, Height: 0.06, Pct: true},
 	}
 	want := []Rect{
 		{X: 1, Y: 2, Width: 3, Height: 4},
 		{X: 5, Y: 6, Width: 7, Height: 8},
+		{X: 0, Y: 0, Width: 1, Height: 0.06, Pct: true},
 	}
 	got := RectsFrom(in)
 	if len(got) != len(want) {

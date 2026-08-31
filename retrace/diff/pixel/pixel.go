@@ -41,11 +41,29 @@ const (
 // distinct from config.Rect (which carries a Why explaining the mask) —
 // the diff engine has no use for that explanation, only for where to hide
 // pixels. RectsFrom is the one conversion between the two.
+//
+// X/Y/Width/Height are float64 (not int) and Pct mirrors config.Rect.Pct
+// exactly, carried straight through by RectsFrom: this type is the
+// UNRESOLVED mask spec, not necessarily absolute pixels yet. ResolveRects
+// is what turns a Pct rect into one; ApplyMasks calls it, once, against
+// the real image it is about to paint.
 type Rect struct {
-	X      int `json:"x"`
-	Y      int `json:"y"`
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+	// Pct marks X/Y/Width/Height as fractions (0..1) of the image
+	// ApplyMasks paints onto, rather than absolute pixels. Two images of
+	// different real sizes — an iOS shot and an Android shot masked by the
+	// SAME flow-keyed config — each resolve the same Pct rect against
+	// their own actual dimensions, which is the whole point: a `height:
+	// 0.06, pct: true` mask covers "the top 6% of the screen" on both, at
+	// whatever resolution each really is.
+	//
+	// A Rect that TrimRects (see Result.TrimA/TrimB below) constructs is
+	// never Pct — it describes a crop the tool computed in absolute
+	// pixels, and the zero value (false) is exactly right for it.
+	Pct bool `json:"pct,omitempty"`
 }
 
 // Options configures one Compare call.
@@ -298,6 +316,35 @@ func setPix(img *image.RGBA, pos int, r, g, b, a uint8) {
 	img.Pix[pos], img.Pix[pos+1], img.Pix[pos+2], img.Pix[pos+3] = r, g, b, a
 }
 
+// ResolveRects converts every Pct rect in rects into absolute pixels
+// against a w x h image, leaving every non-Pct rect untouched. It is the
+// ONE place a fraction becomes a pixel count — deliberately not in config
+// (which has no image to measure against) and not in RectsFrom (which
+// runs before the real image size is known, for every caller: cmd_ref.go's
+// masksFor closure, retrace/serve's own masksFor, and diff/summary.go's
+// per-checkpoint loop all build a []Rect long before decoding the PNG it
+// will be checked against).
+//
+// Idempotent: a rect this has already resolved has Pct: false, so a second
+// call is a no-op on it. Callers only ever need to call it once, though —
+// ApplyMasks does, right before painting, which is the only correct place:
+// resolving any earlier would be guessing at a dimension nobody has read
+// off the actual file yet.
+func ResolveRects(rects []Rect, w, h int) []Rect {
+	out := make([]Rect, len(rects))
+	for i, r := range rects {
+		if !r.Pct {
+			out[i] = r
+			continue
+		}
+		out[i] = Rect{
+			X: r.X * float64(w), Y: r.Y * float64(h),
+			Width: r.Width * float64(w), Height: r.Height * float64(h),
+		}
+	}
+	return out
+}
+
 // ApplyMasks paints rectangles opaque black in BOTH images before
 // comparison, so a clock widget or an avatar cannot fail a checkpoint. The
 // rects are clamped to the image, so a mask authored for a taller device
@@ -305,11 +352,20 @@ func setPix(img *image.RGBA, pos int, r, g, b, a uint8) {
 // empty rects slice) paints nothing — that is the correct reading of "no
 // mask here", not a trap: unlike a threshold, there is no meaning of
 // "unset rect" that Compare needs to distinguish from "empty rect".
+//
+// rects is resolved against THIS image's own real w/h before painting
+// (ResolveRects) — the point at which a Pct rect finally becomes an
+// absolute one. Compare calls ApplyMasks once per side (aImg, then bImg),
+// so two images of different real sizes sharing one masks list each
+// resolve it correctly against their own dimensions.
 func ApplyMasks(img *image.RGBA, rects []Rect) {
 	w, h := img.Rect.Dx(), img.Rect.Dy()
+	rects = ResolveRects(rects, w, h)
 	for _, r := range rects {
-		for y := max(r.Y, 0); y < min(r.Y+r.Height, h); y++ {
-			for x := max(r.X, 0); x < min(r.X+r.Width, w); x++ {
+		x0, y0 := int(r.X), int(r.Y)
+		x1, y1 := int(r.X+r.Width), int(r.Y+r.Height)
+		for y := max(y0, 0); y < min(y1, h); y++ {
+			for x := max(x0, 0); x < min(x1, w); x++ {
 				setPix(img, y*img.Stride+x*4, 0, 0, 0, 255)
 			}
 		}
@@ -318,24 +374,15 @@ func ApplyMasks(img *image.RGBA, rects []Rect) {
 
 // RectsFrom converts the config package's YAML rectangles into pixel
 // rectangles. It lives HERE, not in config, because config is the leaf
-// package everything reads and must not import an engine. Tasks 10 and 11
-// both call it — it is the ONLY conversion between the two Rect types, so
-// there is no second one to drift.
-//
-// RectsFrom converts config.Rect (which has float64 coordinates to support
-// both absolute pixels and fractional pct: true masks) to pixel.Rect (which
-// uses int) via a direct int cast. For absolute (non-pct) rects, the float64
-// values are whole numbers (10.0, 20.0, etc.) and this cast preserves them
-// exactly. For pct: true rects, this cast would truncate fractions (0.06 → 0),
-// but that is not a problem today: pct rects are not yet meaningfully handled
-// by this function. A later task (not Task 1) will add ResolveRects, which
-// multiplies pct rects against real image dimensions to produce absolute pixel
-// coordinates before RectsFrom ever sees them — at that point, the cast is
-// correct and safe.
+// package everything reads and must not import an engine. It is the ONLY
+// conversion between the two Rect types, so there is no second one to
+// drift. Pct rides straight through, UNRESOLVED — see Rect's own doc
+// comment for why resolving here (before any of RectsFrom's three
+// callers has decoded an image) would be guessing.
 func RectsFrom(rs []config.Rect) []Rect {
 	out := make([]Rect, len(rs))
 	for i, r := range rs {
-		out[i] = Rect{X: int(r.X), Y: int(r.Y), Width: int(r.Width), Height: int(r.Height)}
+		out[i] = Rect{X: r.X, Y: r.Y, Width: r.Width, Height: r.Height, Pct: r.Pct}
 	}
 	return out
 }
