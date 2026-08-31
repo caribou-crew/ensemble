@@ -119,6 +119,13 @@ using the dashboard-wide default, so this is opt-in per app. Two apps may
 point at the same directory — `--app` at record time is what tells two
 clients apart, not the config file.
 
+This `retrace:`/`Apps` block is machine-global and cross-repo — one
+`ensemble.yaml`, spanning however many client repos a machine runs. For a
+single repo's own standalone dashboard, with no ensemble involved and no
+risk of an app key colliding with another repo's, see
+`docs/retrace-repo-config.md`'s `retrace.repo.yaml` and `retrace serve
+--watch` instead.
+
 ## Resolution-independent masks
 
 `masks:` rects are normally absolute pixels. Add `pct: true` to make

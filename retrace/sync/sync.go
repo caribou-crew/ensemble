@@ -13,6 +13,7 @@ package sync
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,31 @@ type Options struct {
 	// comments. Added by Task 5; declared here so Task 5 is a pure
 	// addition, not a struct-shape change other tasks must chase.
 	Selections []Selection
+	// Apps, when non-empty, restricts the merge step to run directories
+	// for these app keys: a downloaded artifact's <app>/<flow>/<run-id>/
+	// directory is merged only when <app> is in this list, and reported
+	// in Result.Skipped (with a reason distinct from a malformed
+	// artifact) otherwise. Empty — every caller before this field
+	// existed — means no filter: every run directory an artifact
+	// contains is merged, unchanged.
+	//
+	// This exists for `retrace serve --watch` (retrace/repoconfig): a
+	// repo whose apps are recorded across more than one root must sync
+	// each root separately, and without this an artifact containing
+	// several apps' run directories would get ALL of them merged into
+	// every root that happens to sync it — see
+	// openspec/changes/retrace-repo-config/design.md decision D4.
+	Apps []string
+}
+
+// appAllowed reports whether app may be merged: true when Apps is empty
+// (no filter — the default for every caller that doesn't set it), or when
+// app is one of the names Apps lists.
+func (o Options) appAllowed(app string) bool {
+	if len(o.Apps) == 0 {
+		return true
+	}
+	return slices.Contains(o.Apps, app)
 }
 
 func (o Options) now() time.Time {

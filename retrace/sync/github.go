@@ -235,6 +235,13 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 			})
 			continue
 		}
+		if !o.appAllowed(app) {
+			skipped = append(skipped, SkipReason{
+				Artifact: label,
+				Reason:   fmt.Sprintf("%s: not in this sync's app allowlist", app),
+			})
+			continue
+		}
 
 		dest := filepath.Join(runs.RunsRoot(o.Cwd), app, flow, runID)
 		if _, statErr := os.Stat(dest); statErr == nil {
@@ -261,6 +268,13 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 	// and finalize the run, so `retrace runs` reports it complete rather
 	// than abandoned.
 	for _, b := range webReplays {
+		if !o.appAllowed(b.app) {
+			skipped = append(skipped, SkipReason{
+				Artifact: label,
+				Reason:   fmt.Sprintf("%s: not in this sync's app allowlist", b.app),
+			})
+			continue
+		}
 		paths, perr := runs.PathsFor(runs.RunsRoot(o.Cwd), b.app, b.flow, b.runID)
 		if perr != nil {
 			skipped = append(skipped, SkipReason{

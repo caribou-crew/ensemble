@@ -230,9 +230,21 @@ func BuildQueue(d Deps) ([]Item, error) {
 			items = append(items, itemOf(s))
 		}
 	}
-	// Worst first; ties broken by app/flow so two flows that scored the
-	// same appear in the same order on every reload. SliceStable keeps the
-	// listing order for anything the comparison still calls equal.
+	sortItems(items)
+	return items, nil
+}
+
+// sortItems is the ONE worst-first comparator, shared by single-root
+// BuildQueue and Sources.BuildQueue (retrace/serve/sources.go) — a
+// Sources built from exactly one root must produce a byte-identical
+// ordering to calling BuildQueue on that root directly, which requires
+// both to sort with the same function rather than two copies that could
+// drift.
+//
+// Worst first; ties broken by app/flow so two flows that scored the same
+// appear in the same order on every reload. SliceStable keeps the
+// listing order for anything the comparison still calls equal.
+func sortItems(items []Item) {
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
 		if a.Score != b.Score {
@@ -243,7 +255,6 @@ func BuildQueue(d Deps) ([]Item, error) {
 		}
 		return a.Flow < b.Flow
 	})
-	return items, nil
 }
 
 // The two reasons a review queue can have nothing in it for a human to act

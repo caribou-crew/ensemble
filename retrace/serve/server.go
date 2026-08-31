@@ -19,6 +19,14 @@ import (
 type server struct {
 	mu sync.RWMutex
 	d  Deps
+	// sources is nil for every server built by New — today's single-root
+	// behavior, unchanged. NewWithSources sets it: an app present in its
+	// map is served from that app's own root; an app absent from it (or
+	// every request, when sources is nil) falls back to d, exactly as an
+	// app absent from ensemble's RetraceConfig.Apps falls back to that
+	// stack's one Cfg. See depsForApp and Sources' own doc comment for why
+	// this is swapped as a whole *Sources rather than mutated in place.
+	sources *Sources
 }
 
 // New builds the review server's HTTP surface: the /api control plane plus
@@ -34,7 +42,23 @@ type server struct {
 // the SAFE zero value there — loopback-only, never "no allow-list, so allow
 // anything".
 func New(d Deps) http.Handler {
-	s := &server{d: d}
+	return buildServer(d, nil)
+}
+
+// NewWithSources is New, plus a Sources aggregating one or more additional
+// project roots — what `retrace serve` builds when it finds a
+// retrace.repo.yaml (retrace/repoconfig). d remains the server's default:
+// every route not naming an {app} (health) or naming one absent from
+// sources resolves against d, unchanged from New's own behavior. Every
+// existing caller of New (including ensemble/server, which never has a
+// repo-scoped config) is completely unaffected by this function's
+// existence.
+func NewWithSources(d Deps, sources *Sources) http.Handler {
+	return buildServer(d, sources)
+}
+
+func buildServer(d Deps, sources *Sources) http.Handler {
+	s := &server{d: d, sources: sources}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	// /api/* goes to the mux and NOTHING else does. Mounting the UI inside
@@ -54,27 +78,62 @@ func New(d Deps) http.Handler {
 	return httpguard.Handler(d.AllowedHosts, root)
 }
 
-// deps returns the current Deps by value. Handlers work from this copy, so
-// a concurrent reload cannot change the Config out from under a diff that
-// is already running.
+// deps returns the current default Deps by value. Handlers work from this
+// copy, so a concurrent reload cannot change the Config out from under a
+// diff that is already running.
 func (s *server) deps() Deps {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.d
 }
 
+// depsForApp resolves the Deps that governs app: its own root's Deps when
+// sources is set and maps app, else the server's default Deps — the same
+// fallback DepsFor's own doc comment names. Read under one lock so a
+// concurrent reloadConfig cannot hand back a d paired with a sources (or
+// vice versa) from two different points in time.
+func (s *server) depsForApp(app string) Deps {
+	s.mu.RLock()
+	sources, d := s.sources, s.d
+	s.mu.RUnlock()
+	if sources != nil {
+		if resolved, ok := sources.DepsFor(app); ok {
+			return resolved
+		}
+	}
+	return d
+}
+
+// currentSources returns the server's current *Sources (nil for a
+// single-root server), copied out under lock for the same reason deps()
+// is: a concurrent reload must not change what an in-flight request reads.
+func (s *server) currentSources() *Sources {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sources
+}
+
 // reloadConfig re-discovers the project config (retrace.yaml plus the
-// machine-owned wire-rule overlay) and swaps it in. Called after a rule is
-// appended, which is the only thing this server does that changes what a
-// diff means.
-func (s *server) reloadConfig() error {
-	cfg, err := config.Discover(s.deps().Cwd)
+// machine-owned wire-rule overlay) at cwd and swaps it in — for the
+// server's default Deps when cwd is its Cwd, and/or for that root's entry
+// in sources when one is set (see Sources.withConfig's own doc comment for
+// why that is a whole-value swap rather than an in-place mutation). Called
+// after a rule is appended, which is the only thing this server does that
+// changes what a diff means.
+func (s *server) reloadConfig(cwd string) error {
+	cfg, err := config.Discover(cwd)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.d.Cfg = cfg
+	if s.sources != nil {
+		next := s.sources.withConfig(cwd, cfg)
+		s.sources = &next
+	}
+	if cwd == s.d.Cwd {
+		s.d.Cfg = cfg
+	}
 	return nil
 }
 

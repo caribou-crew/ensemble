@@ -71,6 +71,15 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // --- queue --------------------------------------------------------------
 
 func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if sources := s.currentSources(); sources != nil {
+		items, err := sources.BuildQueue()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeQueueItems(w, items)
+		return
+	}
 	WriteQueue(w, s.deps())
 }
 
@@ -84,6 +93,14 @@ func WriteQueue(w http.ResponseWriter, d Deps) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeQueueItems(w, items)
+}
+
+// writeQueueItems is WriteQueue's response body, factored out so
+// handleQueue's multi-root path (Sources.BuildQueue) and WriteQueue's
+// single-root path answer with the exact same shape rather than two
+// copies of this map literal that could drift.
+func writeQueueItems(w http.ResponseWriter, items []Item) {
 	// items is never nil (BuildQueue starts from an empty slice), so this
 	// encodes as [] and never as null: a client that renders null as "no
 	// data yet" and [] as "nothing to review" must not have to guess which
@@ -147,8 +164,8 @@ func WriteItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string) {
 // HTTP wrapper over ResolveFlow — see that function for the three-way
 // status split.
 func (s *server) flowFrom(w http.ResponseWriter, r *http.Request) (Deps, string, string, bool) {
-	d := s.deps()
 	app, flow := r.PathValue("app"), r.PathValue("flow")
+	d := s.depsForApp(app)
 	status, msg, ok := ResolveFlow(d, app, flow)
 	if !ok {
 		writeErr(w, status, msg)
@@ -446,7 +463,7 @@ func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
 	// Reloaded before responding, so the very next GET /api/queue is
 	// evaluated WITH the rule. A server that kept its startup config would
 	// tell the reviewer the rule had no effect.
-	if err := s.reloadConfig(); err != nil {
+	if err := s.reloadConfig(d.Cwd); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -500,7 +517,7 @@ func (s *server) handleRedact(w http.ResponseWriter, r *http.Request) {
 	// Reloaded before responding, same reason handleRule reloads: the very
 	// next GET /api/queue/{app}/{flow} must see the new rule, or a reviewer
 	// who just added it would watch it appear to have no effect.
-	if err := s.reloadConfig(); err != nil {
+	if err := s.reloadConfig(d.Cwd); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

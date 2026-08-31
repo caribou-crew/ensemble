@@ -238,6 +238,67 @@ func TestMalformedArtifactIsSkippedNotMerged(t *testing.T) {
 	}
 }
 
+// TestAppAllowlistAdmitsOnlyTheNamedApps is retrace-repo-config's addition
+// to retrace-sync: one artifact (one databaseId) staged with run
+// directories for two apps, synced with an allowlist naming only one of
+// them.
+func TestAppAllowlistAdmitsOnlyTheNamedApps(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-mobile", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
+	stageDownload(t, 1, "uxt-rn-ios", "checkout", "20260827T090000Z-aaa1111")
+	stageDownload(t, 1, "uxt-web", "checkout", "20260827T090000Z-aaa1111")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{
+		Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now),
+		Apps: []string{"uxt-rn-ios"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != filepath.Join("uxt-rn-ios", "checkout", "20260827T090000Z-aaa1111") {
+		t.Fatalf("Synced = %v, want exactly the uxt-rn-ios run", res.Synced)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Artifact == "" {
+		t.Fatalf("Skipped = %v, want exactly one reason naming the excluded app", res.Skipped)
+	}
+	if !strings.Contains(res.Skipped[0].Reason, "uxt-web") || !strings.Contains(res.Skipped[0].Reason, "allowlist") {
+		t.Fatalf("Skipped[0].Reason = %q, want it to name uxt-web and the allowlist", res.Skipped[0].Reason)
+	}
+
+	if _, err := os.Stat(filepath.Join(runs.RunsRoot(cwd), "uxt-rn-ios", "checkout", "20260827T090000Z-aaa1111", "manifest.json")); err != nil {
+		t.Fatalf("uxt-rn-ios run was not merged: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runs.RunsRoot(cwd), "uxt-web")); err == nil {
+		t.Fatal("uxt-web was merged despite not being in the allowlist")
+	}
+}
+
+// TestNoAppAllowlistMergesEverythingUnchanged is the compatibility half of
+// TestAppAllowlistAdmitsOnlyTheNamedApps: Options.Apps unset (every caller
+// before this field existed) merges every app an artifact contains,
+// exactly as retrace-ci-sync already specifies.
+func TestNoAppAllowlistMergesEverythingUnchanged(t *testing.T) {
+	fakeGH(t)
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "retrace-mobile", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
+	stageDownload(t, 1, "uxt-rn-ios", "checkout", "20260827T090000Z-aaa1111")
+	stageDownload(t, 1, "uxt-web", "checkout", "20260827T090000Z-aaa1111")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 2 {
+		t.Fatalf("Synced = %v, want both apps merged with no allowlist set", res.Synced)
+	}
+	if len(res.Skipped) != 0 {
+		t.Fatalf("Skipped = %v, want none", res.Skipped)
+	}
+}
+
 func TestSinceFilteringExcludesOlderRuns(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)

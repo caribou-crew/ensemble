@@ -18,7 +18,9 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/buildinfo"
 	"github.com/caribou-crew/ensemble/retrace/config"
+	"github.com/caribou-crew/ensemble/retrace/repoconfig"
 	"github.com/caribou-crew/ensemble/retrace/serve"
+	"github.com/caribou-crew/ensemble/retrace/sync"
 )
 
 // defaultServeAddr is loopback, and that is the product's default posture:
@@ -30,6 +32,35 @@ const defaultServeAddr = "127.0.0.1:4800"
 // requests once Ctrl-C arrives. A diff of a large flow can be mid-flight,
 // so this is not as short as replay's.
 const serveShutdownGrace = 5 * time.Second
+
+// serveUsage is printed by -h/--help, matching cmd_sync.go's syncUsage —
+// the flag package's auto-generated per-flag lines document each flag, but
+// not the two things a first-time reader needs before any of them: that a
+// retrace.repo.yaml anywhere above cwd changes what gets served at all, and
+// what --watch actually requires to run.
+const serveUsage = `retrace serve — serve the review queue (and UI) over HTTP
+
+Usage:
+  retrace serve [--addr HOST:PORT] [--allow-host HOST ...] [--open]
+  retrace serve --watch [--interval 5m] [--repo ORG/REPO] [--workflow NAME] [--workflows PATTERN,PATTERN] [--branch NAME] [--actor USER] [--event EVENT] [--status STATUS] [--since 7d]
+
+Serves the review queue for the current directory. If a retrace.repo.yaml
+is found in the current directory or an ancestor of it (search stops at
+the first retrace.repo.yaml found, or at a directory containing .git),
+every app it maps is aggregated into one dashboard, regardless of which
+root each app's runs live under — not only the apps recorded under the
+current directory. With no retrace.repo.yaml anywhere above cwd, this
+behaves exactly as it always has: one dashboard for the current
+directory's own .retrace/runs.
+
+--watch periodically runs the same GitHub Actions sync "retrace sync"
+does — once per retrace.repo.yaml root (or once for the current directory
+when no repo config is found), each sync scoped to only that root's own
+apps — so the dashboard stays current with no manual "retrace sync" call.
+It requires a repo: either retrace.repo.yaml's repo: key, or --repo
+ORG/REPO on the command line, which takes precedence when both are set.
+Auth is whatever "gh" resolves, exactly as "retrace sync" already works.
+`
 
 // hostList collects a repeatable --allow-host flag.
 type hostList []string
@@ -71,6 +102,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	addr := fs.String("addr", defaultServeAddr, "address the review server binds; a non-loopback address requires --allow-host")
 	openUI := fs.Bool("open", false, "open the review UI in a browser once the server is listening")
 	fs.Var(&allow, "allow-host", "hostname this server may be reached as (repeatable). Required for a non-loopback --addr; on a loopback bind it is optional, and \"*\" is only accepted there")
+	watch := fs.Bool("watch", false, "periodically sync GitHub Actions runs while serving (requires --repo, or a repo: key in retrace.repo.yaml)")
+	interval := fs.String("interval", defaultWatchInterval.String(), "how often --watch re-syncs")
+	repoFlag := fs.String("repo", "", "GitHub repo as ORG/REPO for --watch (overrides retrace.repo.yaml's repo:)")
+	workflowFlag := fs.String("workflow", "", "limit --watch sync to one GitHub Actions workflow name")
+	workflowsFlag := fs.String("workflows", "", "comma-separated workflow names/globs for --watch")
+	branchFlag := fs.String("branch", "", "limit --watch sync to runs off this branch")
+	actorFlag := fs.String("actor", "", "limit --watch sync to runs triggered by this GitHub user")
+	eventFlag := fs.String("event", "", "limit --watch sync to runs triggered by this event")
+	statusFlag := fs.String("status", "", "limit --watch sync by run status or conclusion")
+	sinceFlag := fs.String("since", "", "how far back --watch looks for qualifying workflow runs (default 7d)")
+	fs.Usage = func() { fmt.Fprint(stderr, serveUsage) }
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -118,9 +160,91 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "serve: cannot determine the working directory: %v", err)
 	}
-	cfg, err := config.Discover(cwd)
+
+	// Found here — before anything binds — so a bad retrace.repo.yaml
+	// (a root that doesn't exist, a malformed file) is refused with
+	// everything else this command validates up front, not after the
+	// server is already listening. A repo with no retrace.repo.yaml
+	// anywhere above cwd gets repoCfg == nil and every line below behaves
+	// exactly as it always has (repoconfig.Discover's own contract).
+	repoCfg, _, err := repoconfig.Discover(cwd)
 	if err != nil {
 		return fail(stderr, "%v", err)
+	}
+	resolvedVersion := buildinfo.Resolve(version)
+
+	var h http.Handler
+	var watchTargets []watchTarget
+	var effectiveRepo string
+	var syncDefaults repoconfig.SyncDefaults
+
+	if repoCfg != nil {
+		defaultDeps, err := serve.NewDepsForRoot(cwd, allow, resolvedVersion)
+		if err != nil {
+			return fail(stderr, "%v", err)
+		}
+		byRoot := make(map[string]serve.Deps, len(repoCfg.Apps))
+		for _, root := range repoCfg.Roots() {
+			d, err := serve.NewDepsForRoot(root, allow, resolvedVersion)
+			if err != nil {
+				return fail(stderr, "%v", err)
+			}
+			byRoot[root] = d
+			watchTargets = append(watchTargets, watchTarget{cwd: root, apps: repoCfg.AppsIn(root)})
+		}
+		appRoot := make(map[string]string, len(repoCfg.Apps))
+		for app, entry := range repoCfg.Apps {
+			appRoot[app] = entry.Root
+		}
+		sources, err := serve.NewSources(byRoot, appRoot)
+		if err != nil {
+			return fail(stderr, "%v", err)
+		}
+		h = serve.NewWithSources(defaultDeps, &sources)
+		effectiveRepo = repoCfg.Repo
+		syncDefaults = repoCfg.Sync
+		fmt.Fprintf(stderr, "retrace serve: found %s at %s — aggregating %d app(s) across %d root(s)\n",
+			repoconfig.FileName, repoCfg.Dir, len(repoCfg.Apps), len(byRoot))
+	} else {
+		cfg, err := config.Discover(cwd)
+		if err != nil {
+			return fail(stderr, "%v", err)
+		}
+		h = serve.New(serve.Deps{Cwd: cwd, Cfg: cfg, AllowedHosts: allow, Version: resolvedVersion})
+		watchTargets = []watchTarget{{cwd: cwd}}
+	}
+
+	syncRepo := pick(*repoFlag, effectiveRepo)
+	if *watch && strings.TrimSpace(syncRepo) == "" {
+		return fail(stderr, "serve: --watch requires a repo — pass --repo ORG/REPO, or set repo: in retrace.repo.yaml")
+	}
+	var watchInterval time.Duration
+	var syncBase sync.Options
+	if *watch {
+		watchInterval, err = time.ParseDuration(*interval)
+		if err != nil || watchInterval <= 0 {
+			return fail(stderr, "serve: --interval %q is not a valid positive duration", *interval)
+		}
+		workflows := splitCSV(*workflowsFlag)
+		if len(workflows) == 0 {
+			workflows = syncDefaults.Workflows
+		}
+		syncBase = sync.Options{
+			From: "github", Repo: syncRepo,
+			Workflow:  *workflowFlag,
+			Workflows: workflows,
+			Branch:    pick(*branchFlag, syncDefaults.Branch),
+			Actor:     pick(*actorFlag, syncDefaults.Actor),
+			Event:     pick(*eventFlag, syncDefaults.Event),
+			Status:    pick(*statusFlag, syncDefaults.Status),
+		}
+		if sinceStr := pick(*sinceFlag, syncDefaults.Since); sinceStr != "" {
+			d, err := sync.ParseSince(sinceStr)
+			if err != nil {
+				return fail(stderr, "serve: %v", err)
+			}
+			syncBase.Since = d
+		}
 	}
 
 	// Bound explicitly rather than through ListenAndServe, so the address
@@ -152,12 +276,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		openBrowser(stderr, url)
 	}
 
-	// AllowedHosts is passed straight through: nil (no --allow-host) is the
-	// SAFE zero value in core/httpguard — loopback only, never "no
-	// allow-list, so allow anything".
-	h := serve.New(serve.Deps{
-		Cwd: cwd, Cfg: cfg, AllowedHosts: allow, Version: buildinfo.Resolve(version),
-	})
+	if *watch {
+		startWatch(ctx, stderr, watchTargets, syncBase, watchInterval)
+	}
+
 	srv := &http.Server{
 		Handler: h,
 		// BaseContext ties every accepted connection — and therefore every
