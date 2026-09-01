@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,6 +159,81 @@ func TestNonPassthroughTargetAllowsWritesUnaffected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("a plain local target must never be write-guarded: got %d", resp.StatusCode)
+	}
+}
+
+func TestPassthroughRewritesHostToUpstream(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	var gotHost string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+
+	addr, err := p.Serve(Target{Name: "edge", Listen: "127.0.0.1:0", Upstream: upstream.URL, Passthrough: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/cards", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a caller that sent the gateway's own address as Host, the
+	// way a browser or curl naturally would — the bug this test guards
+	// against is ensemble forwarding that verbatim instead of rewriting it
+	// to the real upstream host.
+	req.Host = "caller-does-not-know-the-real-host.example"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if gotHost != upstreamHost {
+		t.Fatalf("want upstream to see Host %q (rewritten to match Upstream), got %q", upstreamHost, gotHost)
+	}
+}
+
+func TestNonPassthroughTargetForwardsCallerHost(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8})
+	p := New(rec)
+	defer p.Close()
+
+	var gotHost string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	addr, err := p.Serve(Target{Name: "svc", Listen: "127.0.0.1:0", Upstream: upstream.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/cards", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "caller-chosen-host.example"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	if gotHost != "caller-chosen-host.example" {
+		t.Fatalf("a plain (non-passthrough) target must keep forwarding the caller's Host unchanged, got %q", gotHost)
 	}
 }
 

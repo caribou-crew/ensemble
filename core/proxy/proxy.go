@@ -48,9 +48,11 @@ type Target struct {
 	CalledBy []string
 	// Passthrough marks Upstream as a real remote environment rather than a
 	// local process — it arms the read-only-by-default safety rail (see
-	// AllowWrites) below. It does not change how the request is forwarded;
-	// TLS (below) is what handles a passthrough target that happens to need
-	// mTLS.
+	// AllowWrites) below, and rewrites the outbound Host header to match
+	// Upstream (see handler) so a passthrough target behaves exactly like a
+	// client pointed at that host directly, without the caller having to
+	// know or send it. TLS (below) is what handles a passthrough target
+	// that happens to need mTLS.
 	Passthrough bool
 	// AllowWrites opts a Passthrough target out of the read-only default.
 	// Ignored when Passthrough is false.
@@ -611,6 +613,15 @@ func (p *Proxy) handler(t Target) http.Handler {
 		}
 		upReq.ContentLength = r.ContentLength
 		upReq.Host = r.Host
+		if t.Passthrough {
+			// Standard reverse-proxy behavior: the Host header sent
+			// upstream matches the configured upstream, not whatever the
+			// caller happened to send — a passthrough target has a real
+			// remote host of its own that the caller shouldn't need to
+			// know. upReq.URL.Host (not a re-parse of upstream) since
+			// NewRequestWithContext above already parsed it.
+			upReq.Host = upReq.URL.Host
+		}
 
 		resp, err := transport.RoundTrip(upReq)
 		if err != nil {
