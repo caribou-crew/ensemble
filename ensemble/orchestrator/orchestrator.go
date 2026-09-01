@@ -1111,16 +1111,20 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 	// Passthrough has no local backing to build, spawn, or health-gate
 	// against a local port — startServiceAs's whole remaining shape is
 	// "start a real backing," which this placement has none of (see
-	// design.md). gateHealth still runs: it's a no-op given no Health/Port,
-	// but honors an explicit svc.Health someone configured to check the
-	// remote target's own liveness instead.
+	// design.md). gateHealth is deliberately called with no Health/Port so
+	// it's always a no-op: svc.Health/svc.Port describe the LOCAL
+	// placement (and, for a flippable service, are still set while
+	// passthrough is active — see sample/ensemble.yaml's `ops`), so
+	// reusing them here would gate startup on a local port nothing is
+	// listening on anymore. Checking the real upstream's own liveness
+	// instead of skipping the gate is a reasonable follow-up, not built.
 	if placement == "passthrough" {
 		if svc.Upstream == "" {
 			err := fmt.Errorf("no upstream configured for passthrough placement")
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)
 		}
-		if err := o.gateHealth(ctx, name, svc.Health, svc.Port, false, svc.StartupTimeoutS); err != nil {
+		if err := o.gateHealth(ctx, name, "", 0, false, svc.StartupTimeoutS); err != nil {
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)
 		}

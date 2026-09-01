@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,6 +148,70 @@ func TestFlipToPassthroughRewiresProxyThenBackToNative(t *testing.T) {
 	after, ok := o.Service("edge")
 	if !ok || after.Status != StatusHealthy || after.Placement != "native" || after.PID == 0 {
 		t.Fatalf("state after flip back = %+v (ok=%v), want healthy/native w/ PID", after, ok)
+	}
+}
+
+// TestFlipToPassthroughWithLocalHealthPortDoesNotHealthCheckDeadLocalPort: a
+// flippable service that ALSO declares Health/Port for its local placement
+// (the realistic shape — see sample/ensemble.yaml's `ops`, which already
+// had `health:`/`port:` before it gained passthrough fields) must still
+// flip to passthrough successfully. Regression test: startServiceAs's
+// passthrough branch used to pass svc.Health/svc.Port straight to
+// gateHealth, which polled the now-dead local port (the native process was
+// just stopped) and failed FlipTo outright — reproduced by hand against the
+// sample stack's dashboard before this fix.
+func TestFlipToPassthroughWithLocalHealthPortDoesNotHealthCheckDeadLocalPort(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	// A fake local server standing in for what the native process (`Run:
+	// "sleep 30"` below doesn't actually serve anything) would answer on
+	// its health port — bound to a fixed port so config.Service.Port can
+	// name it. gateHealth only cares whether the port answers, not which
+	// process opened it.
+	localPort := freePort(t)
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+	if err != nil {
+		t.Fatalf("listen on local health port: %v", err)
+	}
+	localSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	localSrv.Listener.Close()
+	localSrv.Listener = ln
+	localSrv.Start()
+
+	proxyPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"ops": {
+				Run: "sleep 30", Port: localPort, Health: "/healthz", Proxy: proxyPort,
+				Upstream: upstream.URL, Passthrough: "qa",
+			},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	// flipTo stops the real native process before starting the new
+	// placement, so the local health port goes dead as part of a real
+	// flip — close the fake server by hand to reproduce that here, since
+	// it's a separate process (this test) from the "sleep 30" orchestrator
+	// actually spawned.
+	localSrv.Close()
+
+	if err := o.FlipTo(context.Background(), "ops", "passthrough"); err != nil {
+		t.Fatalf("FlipTo passthrough: %v", err)
+	}
+	st, ok := o.Service("ops")
+	if !ok || st.Placement != "passthrough" || st.Status != StatusHealthy {
+		t.Fatalf("expected passthrough/healthy, got %+v (ok=%v)", st, ok)
 	}
 }
 
