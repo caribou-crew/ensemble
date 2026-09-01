@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo.svg" alt="ensemble" height="64">
+</p>
+
 # ensemble
 
 Run your entire backend stack locally — observed. Two products, one core:
@@ -32,6 +36,42 @@ actual recorded dataflow instead of hand-maintained fixtures.
 Specs live in [`openspec/`](openspec/) — start with
 `openspec/changes/init-ensemble-retrace/design.md`. The roadmap and its current
 state are in `openspec/changes/init-ensemble-retrace/tasks.md`.
+
+## Dashboard
+
+`ensemble up` serves a live dashboard — topology, traffic, latency injection,
+a DB inspector, and CRUD over your seeded entities, all reading the same
+captured trace data. Screenshots below are from the [sample "brew"
+stack](sample/) mid-checkout.
+
+**Topology** — the stack's services, databases, and stubs, grouped by role,
+with live health and traffic-hot highlighting.
+
+![Topology view](docs/images/dashboard/topology.png)
+
+**Traffic** — every captured hop across the stack, in order, with the
+injected-latency annotation visible on `catalog` requests.
+
+![Traffic view](docs/images/dashboard/traffic.png)
+
+**Latency** — arm per-target delay rules (fixed or percentile-shaped) without
+touching service code.
+
+![Latency view](docs/images/dashboard/latency.png)
+
+**Inspector** — browse the databases behind your services directly.
+
+![Inspector view](docs/images/dashboard/inspector.png)
+
+**Entities** — CRUD over rows `entities:` maps in `ensemble.yaml`, without a
+DB client.
+
+![Entities view](docs/images/dashboard/entities.png)
+
+**Services** — start/stop/restart, flip native ↔ docker, or swap variants,
+per service.
+
+![Services view](docs/images/dashboard/services.png)
 
 ## Try it
 
