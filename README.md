@@ -264,6 +264,15 @@ unless the service also sets `allow_writes: true`. Fault/latency injection
 rules are skipped against a passthrough target by default too, so a
 stack-wide rule can't accidentally reach a real remote.
 
+Standard reverse-proxy behavior: the outbound `Host` header is rewritten
+to match `upstream:`, not forwarded from whatever the caller sent. A
+passthrough target has a real remote host of its own — the caller
+shouldn't need to know it, and forwarding the caller's own `Host`
+verbatim (ensemble's own listen address, typically) is exactly what
+makes a real edge reject the request or route it wrong. A plain local
+target (no `upstream:`) is unaffected — it keeps forwarding the caller's
+`Host` unchanged, same as always.
+
 Flip a flippable service from the dashboard's Services tab (a button for
 two declared placements, a target-picking select once a service declares
 three) or the REST endpoint directly:
@@ -326,9 +335,13 @@ Flipping `public` to `qa` makes it forward every request verbatim to
 CORS handling, no fault/latency injection. It's a pure pass-through, not
 a second router layered on top of the real one; capturing/diffing this
 traffic reflects exactly what the remote edge does, nothing ensemble
-added. Flipping back to `local` restores the gateway's configured routing
-exactly as before. Like service passthrough, this is a runtime action,
-not a config edit — it resets to `local` on the next `ensemble up`.
+added. The outbound `Host` header is rewritten to match the upstream URL
+too, same as service-level passthrough above — a caller talking to the
+gateway's local port doesn't need to know or send `qa.example.com`
+itself. Flipping back to `local` restores the gateway's configured
+routing exactly as before. Like service passthrough, this is a runtime
+action, not a config edit — it resets to `local` on the next `ensemble
+up`.
 
 The same read-only-by-default safety rail and mTLS fields
 (`allow_writes`, `client_cert_file`, `client_key_env`,
