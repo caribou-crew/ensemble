@@ -166,6 +166,11 @@ type Orchestrator struct {
 	// gateway whose config changed — unlike wired, gateways have no
 	// ServiceState and no process to restart, just a listener.
 	gatewayStop map[string]func()
+	// gatewayActive records each gateway's current flip target: "local"
+	// (the default — an absent/empty key reads as "local" too) or the
+	// name of one of its declared config.Gateway.Upstreams. See
+	// FlipGateway.
+	gatewayActive map[string]string
 	// stubs holds each running config-defined stub, owned the same way
 	// procs/dockerNodes are — started by Up, torn down by Down, and
 	// individually add/remove/restart-able by Reconcile.
@@ -307,6 +312,7 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		wiredUpstream:         map[string]string{},
 		wiredStop:             map[string]func(){},
 		gatewayStop:           map[string]func(){},
+		gatewayActive:         map[string]string{},
 		stubs:                 map[string]*stub.Stub{},
 		serviceLocks:          map[string]*sync.Mutex{},
 		stopping:              map[string]bool{},
@@ -1347,68 +1353,185 @@ func (o *Orchestrator) wireGateways() error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := o.wireOneGateway(name, o.cfg.Gateways[name]); err != nil {
+		if err := o.wireOneGateway(name, o.cfg.Gateways[name], "local"); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// wireOneGateway binds gw's routing listener under name, recording its stop
-// func in gatewayStop so Reconcile can later close and rebind it — the same
-// per-gateway unit wireGateways loops over and Reconcile calls directly for
-// a single added/changed gateway.
-func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway) error {
-	routes := make([]proxy.Route, 0, len(gw.Routes))
-	for _, r := range gw.Routes {
-		port, _, ok := o.cfg.RoutablePort(r.Service)
-		if !ok {
-			// Validate rejects this; guard anyway so a hand-built
-			// Config can't produce a route to port 0.
-			return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
-		}
-		route := proxy.Route{
-			Prefix:          r.Prefix,
-			Upstream:        fmt.Sprintf("http://127.0.0.1:%d", port),
-			StripPrefix:     r.StripPrefix,
-			Rewrite:         r.Rewrite,
-			CORSPassthrough: r.CORSPassthrough,
-		}
-		if r.Regex != "" {
-			// Validate already confirmed this compiles; guard anyway
-			// so a hand-built Config can't panic the orchestrator.
-			re, err := regexp.Compile(r.Regex)
-			if err != nil {
-				return fmt.Errorf("orchestrator: gateway %s: route %q: invalid regex: %w", name, r.Regex, err)
+// wireOneGateway binds gw's listener under name in the given target mode:
+// "local" builds the routed proxy.Target from gw.Routes exactly as
+// before; the name of one of gw.Upstreams instead builds a pure
+// single-upstream proxy.Target with Passthrough set — no route matching,
+// no local CORS, forwarding everything verbatim to that upstream. Records
+// the bound listener's stop func in gatewayStop and the resolved target in
+// gatewayActive so Reconcile/FlipGateway can rebind or report it later —
+// the same per-gateway unit wireGateways loops over at Up and FlipGateway
+// calls directly for a runtime flip.
+func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target string) error {
+	if target == "" {
+		target = "local"
+	}
+
+	var pt proxy.Target
+	if target == "local" {
+		routes := make([]proxy.Route, 0, len(gw.Routes))
+		for _, r := range gw.Routes {
+			port, _, ok := o.cfg.RoutablePort(r.Service)
+			if !ok {
+				// Validate rejects this; guard anyway so a hand-built
+				// Config can't produce a route to port 0.
+				return fmt.Errorf("orchestrator: gateway %s: route %q: %q has no routable port", name, r.Prefix, r.Service)
 			}
-			route.Regex = re
+			route := proxy.Route{
+				Prefix:          r.Prefix,
+				Upstream:        fmt.Sprintf("http://127.0.0.1:%d", port),
+				StripPrefix:     r.StripPrefix,
+				Rewrite:         r.Rewrite,
+				CORSPassthrough: r.CORSPassthrough,
+			}
+			if r.Regex != "" {
+				// Validate already confirmed this compiles; guard anyway
+				// so a hand-built Config can't panic the orchestrator.
+				re, err := regexp.Compile(r.Regex)
+				if err != nil {
+					return fmt.Errorf("orchestrator: gateway %s: route %q: invalid regex: %w", name, r.Regex, err)
+				}
+				route.Regex = re
+			}
+			routes = append(routes, route)
 		}
-		routes = append(routes, route)
-	}
-	var cors *proxy.CORSPolicy
-	if gw.CORS != nil {
-		cors = &proxy.CORSPolicy{
-			AllowOrigins:     gw.CORS.AllowOrigins,
-			AllowCredentials: gw.CORS.AllowCredentials,
-			AllowMethods:     gw.CORS.AllowMethods,
-			AllowHeaders:     gw.CORS.AllowHeaders,
-			MaxAgeSeconds:    gw.CORS.MaxAgeSeconds,
+		var cors *proxy.CORSPolicy
+		if gw.CORS != nil {
+			cors = &proxy.CORSPolicy{
+				AllowOrigins:     gw.CORS.AllowOrigins,
+				AllowCredentials: gw.CORS.AllowCredentials,
+				AllowMethods:     gw.CORS.AllowMethods,
+				AllowHeaders:     gw.CORS.AllowHeaders,
+				MaxAgeSeconds:    gw.CORS.MaxAgeSeconds,
+			}
+		}
+		pt = proxy.Target{
+			Name:   name,
+			Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
+			Routes: routes,
+			CORS:   cors,
+		}
+	} else {
+		gu, ok := gatewayUpstreamByName(gw, target)
+		if !ok {
+			return fmt.Errorf("orchestrator: gateway %s: no upstream %q declared", name, target)
+		}
+		var cert *tls.Certificate
+		if c, ok := o.cfg.GatewayUpstreamClientCert(name, target); ok {
+			cert = &c
+		}
+		pt = proxy.Target{
+			Name:        name,
+			Listen:      fmt.Sprintf("127.0.0.1:%d", gw.Port),
+			Upstream:    gu.URL,
+			Passthrough: true,
+			AllowWrites: gu.AllowWrites,
+			TLS:         cert,
 		}
 	}
-	_, stop, err := o.px.ServeStoppable(proxy.Target{
-		Name:   name,
-		Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
-		Routes: routes,
-		CORS:   cors,
+
+	// A rebind immediately after a FlipGateway-triggered unwireGateway can
+	// transiently race the OS releasing the just-closed socket — retry
+	// briefly rather than fail a flip over a few milliseconds of teardown
+	// lag. Mirrors wireProxy's own use of retryOnBindConflict for the
+	// exact same reason on the service side.
+	var stop func()
+	err := retryOnBindConflict(func() error {
+		_, s, serr := o.px.ServeStoppable(pt)
+		stop = s
+		return serr
 	})
 	if err != nil {
 		return fmt.Errorf("orchestrator: gateway %s: wiring: %w", name, err)
 	}
 	o.mu.Lock()
 	o.gatewayStop[name] = stop
+	o.gatewayActive[name] = target
 	o.mu.Unlock()
-	o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (%d routes)", name, gw.Port, len(routes))
+	o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (target=%s)", name, gw.Port, target)
 	return nil
+}
+
+// gatewayUpstreamByName finds gw's declared upstream named target, if any.
+func gatewayUpstreamByName(gw config.Gateway, target string) (config.GatewayUpstream, bool) {
+	for _, gu := range gw.Upstreams {
+		if gu.Name == target {
+			return gu, true
+		}
+	}
+	return config.GatewayUpstream{}, false
+}
+
+// FlipGateway switches name between routing locally ("local") and
+// forwarding its entire path space to one of its declared upstreams — the
+// gateway analog of Flip/FlipTo, but for a router's routing mode rather
+// than a service's placement (gateways have no placement; see
+// wireOneGateway). Runtime-only: resets to "local" on the next `ensemble
+// up`, same as a service's Flip state resets.
+func (o *Orchestrator) FlipGateway(ctx context.Context, name, target string) error {
+	gw, ok := o.cfg.Gateways[name]
+	if !ok {
+		return fmt.Errorf("orchestrator: flip gateway %q: not found", name)
+	}
+	if target != "local" {
+		if _, ok := gatewayUpstreamByName(gw, target); !ok {
+			return fmt.Errorf("orchestrator: flip gateway %q: no upstream %q declared", name, target)
+		}
+	}
+
+	// Serialize against a concurrent FlipGateway on this same gateway.
+	// Namespaced ("gateway:" prefix) so a gateway and a service that
+	// happen to share a name never contend on the same lock — see
+	// serviceLocks' own doc comment for why per-name locking exists here
+	// at all.
+	unlock := o.lockService("gateway:" + name)
+	defer unlock()
+
+	o.unwireGateway(name)
+	if err := o.wireOneGateway(name, gw, target); err != nil {
+		return fmt.Errorf("orchestrator: flip gateway %q: %w", name, err)
+	}
+	return nil
+}
+
+// GatewayStatus reports one gateway's current flip target. Exposed via GET
+// /api/status alongside per-service ServiceState, mirroring how a
+// service's current placement is reported (ServiceState.Placement) —
+// which upstreams a gateway declares comes from the topology endpoint's
+// TopologyNode.Upstreams instead, the same declared-vs-current split
+// Placements/Placement already draws for services.
+type GatewayStatus struct {
+	Name         string `json:"name"`
+	ActiveTarget string `json:"activeTarget"`
+}
+
+// Gateways reports every configured gateway's current flip target, sorted
+// by name. A gateway never explicitly flipped (or flipped back) reports
+// "local".
+func (o *Orchestrator) Gateways() []GatewayStatus {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	names := make([]string, 0, len(o.cfg.Gateways))
+	for name := range o.cfg.Gateways {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]GatewayStatus, 0, len(names))
+	for _, name := range names {
+		target := o.gatewayActive[name]
+		if target == "" {
+			target = "local"
+		}
+		out = append(out, GatewayStatus{Name: name, ActiveTarget: target})
+	}
+	return out
 }
 
 // unwireGateway closes name's bound listener, if any, and forgets it — used

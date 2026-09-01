@@ -123,14 +123,14 @@ func (o *Orchestrator) reconcileGateways(old, newCfg config.Config, result *Reco
 	var errs []error
 	for _, name := range changed {
 		o.unwireGateway(name)
-		if err := o.wireOneGateway(name, newCfg.Gateways[name]); err != nil {
+		if err := o.wireOneGateway(name, newCfg.Gateways[name], "local"); err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		result.add("gateway", name, "rebound")
 	}
 	for _, name := range added {
-		if err := o.wireOneGateway(name, newCfg.Gateways[name]); err != nil {
+		if err := o.wireOneGateway(name, newCfg.Gateways[name], "local"); err != nil {
 			errs = append(errs, err)
 			continue
 		}
