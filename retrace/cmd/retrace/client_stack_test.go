@@ -110,6 +110,31 @@ func TestStackRecordsPassthroughServices(t *testing.T) {
 	}
 }
 
+// TestStackRecordsPassthroughGateways: a gateway ensemble reports as
+// currently flipped away from "local" must be named in Stack.Passthrough
+// too, the same reduced-scope signal a passthrough service already
+// contributes — a run through either kind of passthrough boundary is
+// equally "recorded, but incomplete past this point."
+func TestStackRecordsPassthroughGateways(t *testing.T) {
+	c := statusServer(t, `{"services":[
+		{"name":"api","version":"abc123","placement":"native"}
+	],"gateways":[
+		{"name":"public","activeTarget":"qa"},
+		{"name":"internal","activeTarget":"local"}
+	]}`)
+
+	got, err := c.Stack(context.Background())
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Stack returned nothing for a control plane reporting a passthrough gateway")
+	}
+	if len(got.Passthrough) != 1 || got.Passthrough[0] != "public" {
+		t.Errorf("passthrough = %v, want [public]", got.Passthrough)
+	}
+}
+
 func TestAControlPlaneThatRefusesIsAnErrorNotAnEmptyStack(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

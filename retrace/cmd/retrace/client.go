@@ -239,6 +239,10 @@ type statusResponse struct {
 		Version   string `json:"version"`
 		Placement string `json:"placement"`
 	} `json:"services"`
+	Gateways []struct {
+		Name         string `json:"name"`
+		ActiveTarget string `json:"activeTarget"`
+	} `json:"gateways"`
 	Seed *runs.SeedRef `json:"seed"`
 }
 
@@ -269,6 +273,11 @@ func (c *Client) Stack(ctx context.Context) (*runs.Stack, error) {
 		}
 		if svc.Name != "" && svc.Placement == "passthrough" {
 			stack.Passthrough = append(stack.Passthrough, svc.Name)
+		}
+	}
+	for _, gw := range out.Gateways {
+		if gw.Name != "" && gw.ActiveTarget != "" && gw.ActiveTarget != "local" {
+			stack.Passthrough = append(stack.Passthrough, gw.Name)
 		}
 	}
 	sort.Strings(stack.Passthrough)
