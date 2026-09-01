@@ -152,6 +152,18 @@ func (c *Client) Flip(ctx context.Context, name string) (orchestrator.ServiceSta
 	return out, err
 }
 
+// FlipTo switches a service to an explicit placement ("native", "docker",
+// or "passthrough") instead of toggling to "the other one" — see
+// orchestrator.FlipTo.
+func (c *Client) FlipTo(ctx context.Context, name, target string) (orchestrator.ServiceState, error) {
+	var out orchestrator.ServiceState
+	body := struct {
+		Target string `json:"target"`
+	}{Target: target}
+	err := c.do(ctx, http.MethodPost, "/api/services/"+url.PathEscape(name)+"/flip", body, &out)
+	return out, err
+}
+
 // --- seed ---
 
 // SeedResponse mirrors POST /api/seed/{name}'s body, decoded regardless of

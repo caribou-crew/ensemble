@@ -29,6 +29,15 @@ type Stack struct {
 	// runs primed from different data are not comparable as behaviour, and
 	// that difference is invisible in every other plane.
 	Seed *SeedRef `json:"seed,omitempty"`
+	// Passthrough names every service that was in "passthrough" placement
+	// during this run — forwarding to a real remote environment instead of
+	// a local process. Independent of Services: a passthrough target may
+	// have no version fingerprint at all, and answers a different question
+	// (is the chain downstream of this service witnessed, not which
+	// backend answered). A reader uses it to annotate a run as reduced
+	// scope past these specific services, rather than only being able to
+	// say "reduced" or "not" for an entire run the way Mode/Hops do.
+	Passthrough []string `json:"passthrough,omitempty"`
 }
 
 // SeedRef names one applied seed and when it was applied. The timestamp is
@@ -56,6 +65,11 @@ func validateStack(s *Stack) error {
 	}
 	if s.Seed != nil && s.Seed.Name == "" {
 		return fmt.Errorf("runs: manifest stack seed has no name — omit the seed instead, so \"never seeded\" stays distinguishable from \"seeded by something nameless\"")
+	}
+	for _, name := range s.Passthrough {
+		if name == "" {
+			return fmt.Errorf("runs: manifest stack has an empty passthrough service name")
+		}
 	}
 	return nil
 }

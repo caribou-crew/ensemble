@@ -114,8 +114,18 @@ func TestAnEmptyFingerprintIsRefusedRatherThanRecorded(t *testing.T) {
 	if err := validateStack(&Stack{Seed: &SeedRef{}}); err == nil {
 		t.Error("a nameless seed was accepted — omitting it is how \"never seeded\" is spelled")
 	}
+	if err := validateStack(&Stack{Passthrough: []string{""}}); err == nil {
+		t.Error("a nameless passthrough service was accepted")
+	}
 	if err := validateStack(nil); err != nil {
 		t.Errorf("a nil stack is the normal standalone case, not an error: %v", err)
+	}
+}
+
+func TestPassthroughSurvivesValidationAlongsideFingerprints(t *testing.T) {
+	s := &Stack{Services: map[string]string{"api": "abc"}, Passthrough: []string{"edge"}}
+	if err := validateStack(s); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

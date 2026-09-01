@@ -206,6 +206,15 @@ type Summary struct {
 	// which is the common case for a standalone run or a recording made
 	// before ensemble reported fingerprints at all.
 	Stack *StackDiff `json:"stack,omitempty"`
+	// ReducedScope names every service that was in passthrough placement on
+	// EITHER side — informational, not a verdict input, and not a diff (it
+	// can be non-empty even when both sides agree). A reader should not
+	// read an otherwise-clean comparison past one of these names as
+	// "nothing happened downstream," only as "nothing was witnessed
+	// downstream" — the same honesty ModeStandalone/nil Hops give a whole
+	// run, made specific to one boundary within an otherwise fully
+	// recorded run. Sorted, de-duplicated across both sides.
+	ReducedScope []string `json:"reducedScope,omitempty"`
 }
 
 // StackDiff is the evidence that the two runs were not recorded against the
@@ -243,6 +252,32 @@ func stackDiffOf(a, b RunRef) *StackDiff {
 		out.SeedA = describeSeed(a.Manifest.Stack.Seed)
 		out.SeedB = describeSeed(b.Manifest.Stack.Seed)
 	}
+	return out
+}
+
+// reducedScopeOf merges both sides' Stack.Passthrough into one sorted,
+// de-duplicated list, or nil when neither side recorded any — see
+// Summary.ReducedScope.
+func reducedScopeOf(a, b RunRef) []string {
+	set := map[string]bool{}
+	if a.Manifest.Stack != nil {
+		for _, name := range a.Manifest.Stack.Passthrough {
+			set[name] = true
+		}
+	}
+	if b.Manifest.Stack != nil {
+		for _, name := range b.Manifest.Stack.Passthrough {
+			set[name] = true
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -564,6 +599,7 @@ func Build(in BuildInput) (Summary, error) {
 	// refused comparison whose two stacks disagree should say so — that is
 	// often the first thing worth knowing about it.
 	s.Stack = stackDiffOf(in.A, in.B)
+	s.ReducedScope = reducedScopeOf(in.A, in.B)
 
 	// --- incomplete, checked first and unconditionally (not even
 	// --allow-degraded gets past it — see incompleteCheck's doc comment). A

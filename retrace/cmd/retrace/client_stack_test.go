@@ -85,6 +85,31 @@ func TestASeedWithNoVersionedServicesIsStillWorthRecording(t *testing.T) {
 	}
 }
 
+// TestStackRecordsPassthroughServices: a service ensemble reports as
+// currently in "passthrough" placement must be named in Stack.Passthrough —
+// the signal retrace/diff uses to annotate a run as reduced-scope past that
+// service, distinct from the whole-run standalone-mode encoding. Recorded
+// even with no version fingerprint: a passthrough target may have nothing
+// to fingerprint locally at all, and the two signals answer different
+// questions (which backend answered vs. is its downstream chain witnessed).
+func TestStackRecordsPassthroughServices(t *testing.T) {
+	c := statusServer(t, `{"services":[
+		{"name":"api","version":"abc123","placement":"native"},
+		{"name":"edge","placement":"passthrough"}
+	]}`)
+
+	got, err := c.Stack(context.Background())
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Stack returned nothing for a control plane reporting a passthrough service")
+	}
+	if len(got.Passthrough) != 1 || got.Passthrough[0] != "edge" {
+		t.Errorf("passthrough = %v, want [edge]", got.Passthrough)
+	}
+}
+
 func TestAControlPlaneThatRefusesIsAnErrorNotAnEmptyStack(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

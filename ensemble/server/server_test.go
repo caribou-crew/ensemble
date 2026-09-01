@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -250,6 +251,60 @@ func TestTopologyShape(t *testing.T) {
 	}
 	if got.Nodes[0].Status != string(orchestrator.StatusHealthy) {
 		t.Errorf("node status = %q, want %q", got.Nodes[0].Status, orchestrator.StatusHealthy)
+	}
+}
+
+// TestTopologyPlacementsReflectDeclaredModes: a service's declared
+// placements (not its current one) are what the dashboard needs to decide
+// which Flip targets to offer — see TopologyNode.Placements.
+func TestTopologyPlacementsReflectDeclaredModes(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"native-only":  {Run: "sleep 30"},
+			"docker-only":  {Docker: &config.DockerPlacement{Image: "x:local"}},
+			"flippable":    {Run: "sleep 30", Docker: &config.DockerPlacement{Image: "x:local"}},
+			"passthrough":  {Upstream: "https://qa.example.com", Proxy: 1},
+			"flip-through": {Run: "sleep 30", Upstream: "https://qa.example.com", Passthrough: "qa"},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 16})
+	px := proxy.New(rec)
+	orch := orchestrator.New(cfg, px, orchestrator.Opts{LogDir: t.TempDir()})
+	lat := proxy.NewLatencyStore(nil)
+	sessions := proxy.NewSessionManager(px, rec, nil)
+	t.Cleanup(sessions.Close)
+
+	handler := server.New(server.Deps{Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: "test"})
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/topology")
+	if err != nil {
+		t.Fatalf("GET topology: %v", err)
+	}
+	defer resp.Body.Close()
+	var got server.TopologyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byName := map[string][]string{}
+	for _, n := range got.Nodes {
+		byName[n.Name] = n.Placements
+	}
+	want := map[string][]string{
+		"native-only":  {"native"},
+		"docker-only":  {"docker"},
+		"flippable":    {"native", "docker"},
+		"passthrough":  {"passthrough"},
+		"flip-through": {"native", "passthrough"},
+	}
+	for name, wantPlacements := range want {
+		got := byName[name]
+		if !slices.Equal(got, wantPlacements) {
+			t.Errorf("%s: placements = %v, want %v", name, got, wantPlacements)
+		}
 	}
 }
 
@@ -990,6 +1045,54 @@ func TestServiceFlip(t *testing.T) {
 	}
 	if st.Placement != "docker" {
 		t.Fatalf("placement = %q, want docker", st.Placement)
+	}
+}
+
+// TestServiceFlipToPassthroughViaTargetBody: passing {"target": "passthrough"}
+// selects an explicit placement instead of the legacy binary toggle — the
+// seam a flippable (local + passthrough) service needs.
+func TestServiceFlipToPassthroughViaTargetBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"edge": {Run: "sleep 30", Proxy: 0, Upstream: upstream.URL, Passthrough: "qa"},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 16})
+	px := proxy.New(rec)
+	orch := orchestrator.New(cfg, px, orchestrator.Opts{LogDir: t.TempDir()})
+	if err := orch.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	t.Cleanup(func() { orch.Down() })
+	lat := proxy.NewLatencyStore(nil)
+	sessions := proxy.NewSessionManager(px, rec, nil)
+	t.Cleanup(sessions.Close)
+
+	handler := server.New(server.Deps{Cfg: cfg, Orch: orch, Rec: rec, Lat: lat, Sessions: sessions, Version: "test"})
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Post(ts.URL+"/api/services/edge/flip", "application/json", strings.NewReader(`{"target":"passthrough"}`))
+	if err != nil {
+		t.Fatalf("POST flip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var st orchestrator.ServiceState
+	if err := json.Unmarshal(body, &st); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if st.Placement != "passthrough" {
+		t.Fatalf("placement = %q, want passthrough", st.Placement)
 	}
 }
 

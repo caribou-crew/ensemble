@@ -256,14 +256,62 @@ function LogPane({ name }: { name: string }) {
   );
 }
 
+/** Flip's control shape depends on how many placements a service declares: nothing to flip
+    to (0 or 1), a single "Flip to X" button (exactly 2 — the original native/docker case,
+    generalized to whichever two placements are declared), or a target-picking select (3,
+    once passthrough joins native/docker) since "the other one" stops being well-defined. */
+function FlipControl({
+  placement,
+  placements,
+  busy,
+  disabled,
+  onFlip,
+}: {
+  placement: string;
+  placements: string[];
+  busy: boolean;
+  disabled: boolean;
+  onFlip: (target: string) => void;
+}) {
+  const others = placements.filter((p) => p !== placement);
+  if (others.length === 0) {
+    return <span className="services-table__dash">—</span>;
+  }
+  if (others.length === 1) {
+    return (
+      <button type="button" disabled={disabled} onClick={() => onFlip(others[0])}>
+        {busy ? <Spinner /> : `Flip to ${others[0]}`}
+      </button>
+    );
+  }
+  return (
+    <select
+      value=""
+      disabled={disabled}
+      onChange={(e) => {
+        if (e.target.value) onFlip(e.target.value);
+      }}
+    >
+      <option value="">{busy ? 'Flipping…' : 'Flip to…'}</option>
+      {others.map((p) => (
+        <option key={p} value={p}>
+          {p}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function ServiceRow({
   state,
   variants,
+  placements,
   warnings,
   onAction,
 }: {
   state: ServiceState;
   variants: string[];
+  placements: string[];
   warnings: WiringWarning[];
   onAction: (action: Action, extra?: string) => Promise<void>;
 }) {
@@ -353,9 +401,13 @@ function ServiceRow({
             </button>
           </>
         )}
-        <button type="button" disabled={busy !== null} onClick={() => void run('flip')}>
-          {busy === 'flip' ? <Spinner /> : `Flip to ${state.placement === 'docker' ? 'native' : 'docker'}`}
-        </button>
+        <FlipControl
+          placement={state.placement}
+          placements={placements}
+          busy={busy === 'flip'}
+          disabled={busy !== null}
+          onFlip={(target) => void run('flip', target)}
+        />
         <button type="button" onClick={() => setLogsOpen((v) => !v)}>
           {logsOpen ? 'Hide logs' : 'Logs'}
         </button>
@@ -470,7 +522,7 @@ export default function ServicesView() {
         await api.stop(name);
         break;
       case 'flip':
-        await api.flip(name);
+        await api.flip(name, extra as 'native' | 'docker' | 'passthrough' | undefined);
         break;
       case 'variant':
         if (extra !== undefined) await api.setVariant(name, extra);
@@ -499,6 +551,9 @@ export default function ServicesView() {
 
   const variantsByName = new Map(
     (topology?.nodes ?? []).map((n) => [n.name, n.variants ?? []]),
+  );
+  const placementsByName = new Map(
+    (topology?.nodes ?? []).map((n) => [n.name, n.placements ?? []]),
   );
   const warningsByService = new Map<string, WiringWarning[]>();
   for (const w of warnings) {
@@ -556,6 +611,7 @@ export default function ServicesView() {
               key={s.name}
               state={s}
               variants={variantsByName.get(s.name) ?? []}
+              placements={placementsByName.get(s.name) ?? []}
               warnings={warningsByService.get(s.name) ?? []}
               onAction={(action, extra) => handleAction(s.name, action, extra)}
             />

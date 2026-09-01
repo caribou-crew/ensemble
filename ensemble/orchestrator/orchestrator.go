@@ -9,6 +9,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ const (
 type ServiceState struct {
 	Name      string `json:"name"`
 	Status    Status `json:"status"`
-	Placement string `json:"placement"`     // "native" | "docker"
+	Placement string `json:"placement"`     // "native" | "docker" | "passthrough"
 	PID       int    `json:"pid,omitempty"` // native only; 0 for docker
 	ProxyPort int    `json:"proxyPort,omitempty"`
 	Port      int    `json:"port,omitempty"`
@@ -152,6 +153,14 @@ type Orchestrator struct {
 	// wired records services whose intercept listener is bound, so
 	// UpProfiles re-adding a lane never tries to rebind it.
 	wired map[string]bool
+	// wiredUpstream records the upstream address each wired listener
+	// currently forwards to — the "has the resolved target actually
+	// changed" half of wireProxy's re-wire check (see wireProxy).
+	wiredUpstream map[string]string
+	// wiredStop holds each wired listener's stop func (from
+	// proxy.ServeStoppable), so wireProxy can tear one down and rebind it
+	// when a service's resolved upstream changes (e.g. FlipTo passthrough).
+	wiredStop map[string]func()
 	// gatewayStop holds each bound gateway's listener-stop func (see
 	// proxy.Proxy.ServeStoppable), so Reconcile can close and rebind a
 	// gateway whose config changed — unlike wired, gateways have no
@@ -295,6 +304,8 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		variants:              variantsFrom(cfg, opts.Variants),
 		active:                profileSet(opts.Profiles),
 		wired:                 map[string]bool{},
+		wiredUpstream:         map[string]string{},
+		wiredStop:             map[string]func(){},
 		gatewayStop:           map[string]func(){},
 		stubs:                 map[string]*stub.Stub{},
 		serviceLocks:          map[string]*sync.Mutex{},
@@ -1062,15 +1073,21 @@ func (o *Orchestrator) startService(ctx context.Context, name string, svc config
 }
 
 // defaultPlacement is the placement a service starts in until explicitly
-// flipped (Flip): native whenever `run` is configured — matching the spec
-// scenario "flips a native service to container placement" — and docker
-// only when `run` is absent (docker-only services, unchanged from before
-// Flip existed).
+// flipped (Flip/FlipTo): native whenever `run` is configured — matching the
+// spec scenario "flips a native service to container placement" — docker
+// when `run` is absent but `docker` is set (unchanged from before Flip
+// existed), and passthrough only when neither local placement is declared
+// (a pure passthrough service — Validate guarantees at least one of
+// run/docker/upstream is set, so this is the only remaining case).
 func defaultPlacement(svc config.Service) string {
-	if svc.Run != "" {
+	switch {
+	case svc.Run != "":
 		return "native"
+	case svc.Docker != nil:
+		return "docker"
+	default:
+		return "passthrough"
 	}
-	return "docker"
 }
 
 // startServiceAs starts svc under the given placement ("native" or
@@ -1090,6 +1107,30 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		s.Signal = ""
 		s.ExitedAt = time.Time{}
 	})
+
+	// Passthrough has no local backing to build, spawn, or health-gate
+	// against a local port — startServiceAs's whole remaining shape is
+	// "start a real backing," which this placement has none of (see
+	// design.md). gateHealth still runs: it's a no-op given no Health/Port,
+	// but honors an explicit svc.Health someone configured to check the
+	// remote target's own liveness instead.
+	if placement == "passthrough" {
+		if svc.Upstream == "" {
+			err := fmt.Errorf("no upstream configured for passthrough placement")
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
+		if err := o.gateHealth(ctx, name, svc.Health, svc.Port, false, svc.StartupTimeoutS); err != nil {
+			o.fail(name, err)
+			return fmt.Errorf("orchestrator: %s: %w", name, err)
+		}
+		o.setState(name, func(s *ServiceState) {
+			s.Status = StatusHealthy
+			s.StartedAt = time.Now()
+			s.LastErr = ""
+		})
+		return nil
+	}
 
 	workDir := resolveDir(o.cfg.Dir, svc.Dir)
 
@@ -1194,31 +1235,101 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 }
 
 // wireProxy fronts svc with the intercepting proxy when it wants one
-// (Proxy > 0). Called once per service, from Up only — see the call site.
+// (Proxy > 0). Re-entrant: a service already wired is left alone UNLESS its
+// resolved upstream has changed since the last time this ran (e.g. FlipTo
+// switching a service into or out of passthrough placement), in which case
+// the existing listener is torn down and rebound — see resolveProxyUpstream.
+// Called from Up, UpProfiles, Reconcile, and FlipTo.
 func (o *Orchestrator) wireProxy(name string, svc config.Service) error {
 	if svc.Proxy <= 0 {
 		return nil
 	}
+	upstream, tlsCert := o.resolveProxyUpstream(name, svc)
+
 	o.mu.Lock()
 	already := o.wired[name]
+	unchanged := already && o.wiredUpstream[name] == upstream
+	stop := o.wiredStop[name]
 	o.mu.Unlock()
-	if already {
+	if unchanged {
 		return nil
 	}
-	upstream := fmt.Sprintf("http://127.0.0.1:%d", svc.Port)
-	if _, err := o.px.Serve(proxy.Target{
-		Name:     name,
-		Listen:   fmt.Sprintf("127.0.0.1:%d", svc.Proxy),
-		Upstream: upstream,
-		CalledBy: o.cfg.CalledBy(name),
-	}); err != nil {
+	if already && stop != nil {
+		stop()
+	}
+
+	target := proxy.Target{
+		Name:        name,
+		Listen:      fmt.Sprintf("127.0.0.1:%d", svc.Proxy),
+		Upstream:    upstream,
+		CalledBy:    o.cfg.CalledBy(name),
+		Passthrough: svc.Passthrough != "",
+		AllowWrites: svc.AllowWrites,
+		TLS:         tlsCert,
+	}
+	// A rebind immediately after stop() (re-wiring an already-wired
+	// listener) can transiently race the OS releasing the just-closed
+	// socket — retry briefly rather than fail a flip over a few
+	// milliseconds of teardown lag. A first-time wire (nothing just
+	// stopped) doesn't need this, but retrying unconditionally is harmless
+	// since it only ever fires on a real bind failure.
+	var newStop func()
+	err := retryOnBindConflict(func() error {
+		_, stop, serr := o.px.ServeStoppable(target)
+		newStop = stop
+		return serr
+	})
+	if err != nil {
 		o.fail(name, err)
 		return fmt.Errorf("orchestrator: %s: proxy wiring: %w", name, err)
 	}
 	o.mu.Lock()
 	o.wired[name] = true
+	o.wiredUpstream[name] = upstream
+	o.wiredStop[name] = newStop
 	o.mu.Unlock()
 	return nil
+}
+
+// resolveProxyUpstream picks what a service's proxy listener forwards to:
+// the resolved local port for a native/docker placement (unchanged from
+// before passthrough existed), or the configured remote Upstream — with its
+// mTLS client cert, if any — when the service's CURRENT placement is
+// passthrough. Reads the live placement rather than inferring from config
+// alone, since a flippable service (both a local and a passthrough
+// placement declared) must resolve to whichever one is actually active.
+func (o *Orchestrator) resolveProxyUpstream(name string, svc config.Service) (string, *tls.Certificate) {
+	if st, ok := o.Service(name); ok && st.Placement == "passthrough" {
+		var cert *tls.Certificate
+		if c, ok := o.cfg.ClientCert(name); ok {
+			cert = &c
+		}
+		return svc.Upstream, cert
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", svc.Port), nil
+}
+
+// retryOnBindConflict runs bind up to 5 times, 20ms apart, as long as it
+// keeps failing with "address already in use" — absorbs the brief window
+// between closing a listener and the OS releasing its port, which a
+// re-wire (stop then immediately rebind the same address) can hit. Any
+// other error returns immediately; the last bind error is what's returned
+// if every attempt hits the same conflict.
+func retryOnBindConflict(bind func() error) error {
+	const attempts = 5
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = bind(); err == nil {
+			return nil
+		}
+		if !strings.Contains(err.Error(), "address already in use") {
+			return err
+		}
+		if i < attempts-1 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return err
 }
 
 // wireGateways binds one routing listener per configured gateway, each

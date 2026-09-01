@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -232,6 +233,12 @@ type TopologyNode struct {
 	// client can offer the switch exactly where it applies.
 	Variant  string   `json:"variant,omitempty"`
 	Variants []string `json:"variants,omitempty"`
+	// Placements lists every placement a "service" category node declares
+	// ("native", "docker", "passthrough", in that order, never empty for a
+	// service) — what the dashboard needs to decide which Flip targets to
+	// offer, since ServiceState.Placement alone only says which one is
+	// CURRENTLY active. Unset for every other category.
+	Placements []string `json:"placements,omitempty"`
 	// ExposeInTraffic mirrors config.Gateway.ExposeInTraffic; set only for
 	// "gateway" category nodes. The dashboard's Traffic tab uses it to
 	// decide whether to collapse this gateway's hops into its target's, or
@@ -253,6 +260,22 @@ type TopologyResponse struct {
 
 func (s *server) handleTopology(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.buildTopology())
+}
+
+// servicePlacements lists every placement svc declares, in the order Flip
+// tries them — never empty for a valid (Validate-passed) service.
+func servicePlacements(svc config.Service) []string {
+	var out []string
+	if svc.Run != "" {
+		out = append(out, "native")
+	}
+	if svc.Docker != nil {
+		out = append(out, "docker")
+	}
+	if svc.Upstream != "" {
+		out = append(out, "passthrough")
+	}
+	return out
 }
 
 func (s *server) buildTopology() TopologyResponse {
@@ -288,7 +311,7 @@ func (s *server) buildTopology() TopologyResponse {
 	for _, name := range svcNames {
 		svc := cfg.Services[name]
 		cur, avail := s.Orch.Variant(name)
-		nodes = append(nodes, TopologyNode{Name: name, Category: "service", Status: statusFor(name), Entry: svc.Entry, Variant: cur, Variants: avail})
+		nodes = append(nodes, TopologyNode{Name: name, Category: "service", Status: statusFor(name), Entry: svc.Entry, Variant: cur, Variants: avail, Placements: servicePlacements(svc)})
 	}
 	for _, name := range dbNames {
 		nodes = append(nodes, TopologyNode{Name: name, Category: "database", Status: statusFor(name)})
@@ -400,13 +423,35 @@ func (s *server) handleServiceStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// handleServiceFlip toggles a service between its two declared placements
+// (legacy binary behavior, no body needed — see orchestrator.Flip) or, when
+// the request body names an explicit `target` ("native"/"docker"/
+// "passthrough"), switches to exactly that one (orchestrator.FlipTo) — the
+// seam a 3-placement (flippable local + passthrough) service needs, since
+// "the other one" is ambiguous once there are three.
 func (s *server) handleServiceFlip(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if _, ok := s.Cfg.Services[name]; !ok {
 		writeErr(w, http.StatusNotFound, fmt.Sprintf("service %q not found", name))
 		return
 	}
-	if err := s.Orch.Flip(r.Context(), name); err != nil {
+	var req struct {
+		Target string `json:"target"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+
+	var err error
+	if req.Target != "" {
+		err = s.Orch.FlipTo(r.Context(), name, req.Target)
+	} else {
+		err = s.Orch.Flip(r.Context(), name)
+	}
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -45,6 +46,21 @@ type Target struct {
 	// is marked Hop.Attribution = "inferred" so the UI never presents a
 	// guess as ground truth.
 	CalledBy []string
+	// Passthrough marks Upstream as a real remote environment rather than a
+	// local process — it arms the read-only-by-default safety rail (see
+	// AllowWrites) below. It does not change how the request is forwarded;
+	// TLS (below) is what handles a passthrough target that happens to need
+	// mTLS.
+	Passthrough bool
+	// AllowWrites opts a Passthrough target out of the read-only default.
+	// Ignored when Passthrough is false.
+	AllowWrites bool
+	// TLS, when set, is the client certificate presented while dialing
+	// Upstream — for a remote edge that requires mTLS. nil (the default)
+	// uses Proxy's shared transport, which presents no client certificate
+	// and otherwise behaves exactly like ordinary Go stdlib TLS (default
+	// verification, default SNI from the upstream URL's host).
+	TLS *tls.Certificate
 }
 
 // CallerHeader is the default request header letting a caller ensemble
@@ -151,6 +167,24 @@ func New(rec *Recorder) *Proxy {
 			// Local dev: no proxies, no TLS between local services.
 		},
 	}
+}
+
+// transportFor returns the transport a target's requests should dial
+// through: the shared no-TLS transport for every ordinary target, or a
+// dedicated transport presenting t.TLS's client certificate when set. Built
+// once per Serve call (see handler), never per request.
+func (p *Proxy) transportFor(t Target) *http.Transport {
+	if t.TLS == nil {
+		return p.transport
+	}
+	clone := p.transport.Clone()
+	tlsCfg := &tls.Config{}
+	if clone.TLSClientConfig != nil {
+		tlsCfg = clone.TLSClientConfig.Clone()
+	}
+	tlsCfg.Certificates = []tls.Certificate{*t.TLS}
+	clone.TLSClientConfig = tlsCfg
+	return clone
 }
 
 // Serve opens the target's listener and starts intercepting immediately.
@@ -409,6 +443,10 @@ func flatHeaders(h http.Header) map[string]string {
 }
 
 func (p *Proxy) handler(t Target) http.Handler {
+	// Resolved once per Serve call, not per request — matches Target's own
+	// "wired once" lifecycle. A target with no TLS material keeps sharing
+	// Proxy's one transport, unchanged from before passthrough existed.
+	transport := p.transportFor(t)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		corsPassthrough := false
 		if len(t.Routes) > 0 {
@@ -502,10 +540,28 @@ func (p *Proxy) handler(t Target) http.Handler {
 			return
 		}
 
+		// Read-only-by-default safety rail: a passthrough target refuses
+		// any write unless explicitly opted in. Refused HERE, same as an
+		// unsupported protocol above — recorded as a hop, not silently
+		// dropped, so a refusal is as visible as a forwarded call.
+		if t.Passthrough && !t.AllowWrites && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			hop.Status = http.StatusBadGateway
+			hop.Err = fmt.Sprintf("passthrough target %q is read-only by default; refused %s (set allow_writes: true to permit)", t.Name, r.Method)
+			hop.Req.Headers = flatHeaders(r.Header)
+			hop.T.DoneMs = msSince(start)
+			p.rec.Record(hop)
+			http.Error(w, hop.Err, http.StatusBadGateway)
+			return
+		}
+
 		// Artificial latency runs before the upstream clock starts.
 		forwardStart := start
 		if p.Latency != nil {
-			if delay := p.Latency.DelayFor(t.Name, r.URL.Path); delay > 0 {
+			delayFn := p.Latency.DelayFor
+			if t.Passthrough {
+				delayFn = p.Latency.DelayForExact
+			}
+			if delay := delayFn(t.Name, r.URL.Path); delay > 0 {
 				hop.InjectedDelayMs = float64(delay) / float64(time.Millisecond)
 				select {
 				case <-time.After(delay):
@@ -556,7 +612,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		upReq.ContentLength = r.ContentLength
 		upReq.Host = r.Host
 
-		resp, err := p.transport.RoundTrip(upReq)
+		resp, err := transport.RoundTrip(upReq)
 		if err != nil {
 			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
 			hop.Req.Headers = flatHeaders(r.Header)

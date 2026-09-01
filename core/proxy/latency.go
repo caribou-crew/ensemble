@@ -133,6 +133,18 @@ func (s *LatencyStore) ArmAll(enabled bool) {
 // DelayFor picks the winning rule for a request: an exact-target rule beats
 // a wildcard, and within a target the longest matching path prefix wins.
 func (s *LatencyStore) DelayFor(target, path string) time.Duration {
+	return s.delayFor(target, path, true)
+}
+
+// DelayForExact is DelayFor without the "*" wildcard fallback — only a rule
+// naming target exactly can inject delay. Used for a passthrough target: a
+// stack-wide latency rule must not silently reach a real remote environment
+// just because it happened to match everything else.
+func (s *LatencyStore) DelayForExact(target, path string) time.Duration {
+	return s.delayFor(target, path, false)
+}
+
+func (s *LatencyStore) delayFor(target, path string, allowWildcard bool) time.Duration {
 	s.mu.Lock()
 	var best *LatencyRule
 	bestLen, bestExact := -1, false
@@ -142,8 +154,10 @@ func (s *LatencyStore) DelayFor(target, path string) time.Duration {
 			continue
 		}
 		exact := r.Target == target
-		if !exact && r.Target != "*" {
-			continue
+		if !exact {
+			if !allowWildcard || r.Target != "*" {
+				continue
+			}
 		}
 		if !strings.HasPrefix(path, r.Path) {
 			continue

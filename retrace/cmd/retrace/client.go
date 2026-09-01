@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -234,8 +235,9 @@ func (c *Client) EndSession(ctx context.Context, id string) (capture.EndReport, 
 // a shared struct would make every field ensemble adds a retrace rebuild.
 type statusResponse struct {
 	Services []struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
+		Name      string `json:"name"`
+		Version   string `json:"version"`
+		Placement string `json:"placement"`
 	} `json:"services"`
 	Seed *runs.SeedRef `json:"seed"`
 }
@@ -259,15 +261,18 @@ func (c *Client) Stack(ctx context.Context) (*runs.Stack, error) {
 	}
 	stack := &runs.Stack{Seed: out.Seed}
 	for _, svc := range out.Services {
-		if svc.Name == "" || svc.Version == "" {
-			continue
+		if svc.Name != "" && svc.Version != "" {
+			if stack.Services == nil {
+				stack.Services = map[string]string{}
+			}
+			stack.Services[svc.Name] = svc.Version
 		}
-		if stack.Services == nil {
-			stack.Services = map[string]string{}
+		if svc.Name != "" && svc.Placement == "passthrough" {
+			stack.Passthrough = append(stack.Passthrough, svc.Name)
 		}
-		stack.Services[svc.Name] = svc.Version
 	}
-	if len(stack.Services) == 0 && stack.Seed == nil {
+	sort.Strings(stack.Passthrough)
+	if len(stack.Services) == 0 && stack.Seed == nil && len(stack.Passthrough) == 0 {
 		return nil, nil
 	}
 	return stack, nil

@@ -84,6 +84,48 @@ func TestAnUnchangedStackReportsNothingAtAll(t *testing.T) {
 	}
 }
 
+func TestReducedScopeNamesAPassthroughServiceOnEitherSide(t *testing.T) {
+	withPassthrough := &runs.Stack{Passthrough: []string{"edge"}}
+	s, err := Build(BuildInput{
+		App: "shop", Flow: "checkout",
+		A: sideWithStack(withPassthrough), B: sideWithStack(nil),
+		Cfg: &config.Config{},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(s.ReducedScope) != 1 || s.ReducedScope[0] != "edge" {
+		t.Errorf("reducedScope = %v, want [edge] even though only side A recorded it", s.ReducedScope)
+	}
+}
+
+func TestReducedScopeMergesAndDedupesBothSides(t *testing.T) {
+	s, err := Build(BuildInput{
+		App: "shop", Flow: "checkout",
+		A:   sideWithStack(&runs.Stack{Passthrough: []string{"edge", "billing"}}),
+		B:   sideWithStack(&runs.Stack{Passthrough: []string{"billing", "search"}}),
+		Cfg: &config.Config{},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(s.ReducedScope) != 3 {
+		t.Fatalf("reducedScope = %v, want 3 unique names", s.ReducedScope)
+	}
+	want := map[string]bool{"edge": true, "billing": true, "search": true}
+	for _, name := range s.ReducedScope {
+		if !want[name] {
+			t.Errorf("unexpected name %q in reducedScope", name)
+		}
+	}
+}
+
+func TestReducedScopeIsNilWhenNeitherSideHasAPassthroughService(t *testing.T) {
+	if s := buildStackDiff(t, services("api", "abc"), services("api", "abc")); s.ReducedScope != nil {
+		t.Errorf("reducedScope = %v, want nil", s.ReducedScope)
+	}
+}
+
 func TestAChangedStackOutranksTheClientOnTriage(t *testing.T) {
 	// The whole reason this section exists. With the client's calls identical
 	// and only the backend moved, the report must not send anyone to the

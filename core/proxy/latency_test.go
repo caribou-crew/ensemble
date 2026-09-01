@@ -30,6 +30,19 @@ func TestLongestPrefixWinsAndTargetBeatsWildcard(t *testing.T) {
 	}
 }
 
+func TestDelayForExactSkipsWildcardButHonorsNamedRule(t *testing.T) {
+	s := NewLatencyStore(nil)
+	s.Set(LatencyRule{Target: "*", Path: "/", FixedMs: 1, Enabled: true})
+	s.Set(LatencyRule{Target: "edge", Path: "/", FixedMs: 50, Enabled: true})
+
+	if got := s.DelayForExact("edge", "/cards"); got != 50*time.Millisecond {
+		t.Fatalf("named rule: want 50ms, got %v", got)
+	}
+	if got := s.DelayForExact("other-service", "/cards"); got != 0 {
+		t.Fatalf("wildcard should not apply via DelayForExact: got %v", got)
+	}
+}
+
 func TestDisarmedRuleInjectsNothing(t *testing.T) {
 	s := NewLatencyStore(nil)
 	s.Set(LatencyRule{Target: "bff", Path: "/", FixedMs: 50, Enabled: false})
