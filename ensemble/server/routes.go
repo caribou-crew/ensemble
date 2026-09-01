@@ -16,6 +16,7 @@ import (
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/ensemble/config"
+	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 )
 
 // routes registers every /api endpoint on mux. Mutating endpoints (POST/
@@ -30,6 +31,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/services/{name}/restart", s.withAnnotation(s.handleServiceRestart))
 	mux.HandleFunc("POST /api/services/{name}/stop", s.withAnnotation(s.handleServiceStop))
 	mux.HandleFunc("POST /api/services/{name}/flip", s.withAnnotation(s.handleServiceFlip))
+	mux.HandleFunc("POST /api/gateways/{name}/flip", s.withAnnotation(s.handleGatewayFlip))
 	mux.HandleFunc("POST /api/services/{name}/variant", s.withAnnotation(s.handleServiceVariant))
 
 	// Service log reads (see logs.go) — plain GETs over files the
@@ -200,7 +202,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mem") == "1" {
 		states = s.Orch.WithMemory(r.Context(), states)
 	}
-	body := map[string]any{"services": states, "readiness": s.Orch.Readiness(), "warnings": s.Orch.WiringWarnings()}
+	body := map[string]any{"services": states, "gateways": s.Orch.Gateways(), "readiness": s.Orch.Readiness(), "warnings": s.Orch.WiringWarnings()}
 	// Recorder write-pipeline counters: non-zero means hops.jsonl is
 	// missing hops (queue overflow) or writes failed (disk) — the capture
 	// plane owning up to its own losses rather than swallowing them.
@@ -244,6 +246,12 @@ type TopologyNode struct {
 	// decide whether to collapse this gateway's hops into its target's, or
 	// show them as their own row.
 	ExposeInTraffic bool `json:"exposeInTraffic,omitempty"`
+	// Upstreams lists every upstream a "gateway" category node declares
+	// (its Name field only, in declaration order) — what the dashboard
+	// needs to decide which FlipGateway targets to offer, mirroring
+	// Placements for services. Unset for every other category and for a
+	// gateway with none declared.
+	Upstreams []string `json:"upstreams,omitempty"`
 }
 
 // TopologyEdge is a directed dependency: From calls/depends on To.
@@ -326,7 +334,12 @@ func (s *server) buildTopology() TopologyResponse {
 		// A gateway is a static listener the proxy binds at Up, not a
 		// supervised node — same lifecycle story as a stub. Clients call
 		// it directly by definition, so it is always an entry.
-		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true, ExposeInTraffic: cfg.Gateways[name].ExposeInTraffic})
+		gw := cfg.Gateways[name]
+		var upstreams []string
+		for _, gu := range gw.Upstreams {
+			upstreams = append(upstreams, gu.Name)
+		}
+		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true, ExposeInTraffic: gw.ExposeInTraffic, Upstreams: upstreams})
 	}
 
 	// portToService resolves an env-wired "127.0.0.1:<port>" reference back
@@ -457,6 +470,43 @@ func (s *server) handleServiceFlip(w http.ResponseWriter, r *http.Request) {
 	}
 	st, _ := s.Orch.Service(name)
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleGatewayFlip switches a gateway between routing locally and
+// forwarding its whole path space to one of its declared upstreams — the
+// gateway analog of handleServiceFlip, but target is always required
+// (there's no legacy binary toggle to fall back to the way service flip
+// has).
+func (s *server) handleGatewayFlip(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, ok := s.Cfg.Gateways[name]; !ok {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("gateway %q not found", name))
+		return
+	}
+	var req struct {
+		Target string `json:"target"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+	if req.Target == "" {
+		writeErr(w, http.StatusBadRequest, `target is required ("local" or a declared upstream name)`)
+		return
+	}
+	if err := s.Orch.FlipGateway(r.Context(), name, req.Target); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var statuses []orchestrator.GatewayStatus
+	for _, gs := range s.Orch.Gateways() {
+		if gs.Name == name {
+			statuses = append(statuses, gs)
+		}
+	}
+	writeJSON(w, http.StatusOK, statuses)
 }
 
 // handleServiceVariant switches a service to one of its declared variants

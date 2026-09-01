@@ -23,6 +23,7 @@ func buildOpenAPI(version string) map[string]any {
 
 		"/api/services/{name}/restart": {"post": {Summary: "Restart a service, preserving its current placement"}},
 		"/api/services/{name}/flip":    {"post": {Summary: "Flip a service between native and container placement"}},
+		"/api/gateways/{name}/flip":    {"post": {Summary: "Flip a gateway between routing locally and forwarding to a declared upstream"}},
 
 		"/api/services/{name}/logs":        {"get": {Summary: "Plain-text tail of the service's log file (?tail=, default 200, cap 5000)"}},
 		"/api/services/{name}/logs/stream": {"get": {Summary: "Server-Sent Events follow of the service's log: an initial tail, then appended lines"}},
