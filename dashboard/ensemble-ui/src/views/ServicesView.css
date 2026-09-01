@@ -95,6 +95,52 @@
   padding: 0.5rem 0.6rem;
 }
 
+.services-view__freshness-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease),
+    transform 0.1s var(--ease);
+}
+
+.services-view__freshness-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.services-view__freshness-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.services-view__freshness-btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.services-view__freshness-icon {
+  width: 0.9em;
+  height: 0.9em;
+  flex: none;
+}
+
+.services-view__freshness-btn:hover:not(:disabled) .services-view__freshness-icon {
+  transform: rotate(75deg);
+  transition: transform 0.25s var(--ease);
+}
+
 .services-table__freshness {
   display: inline-flex;
   gap: 0.3rem;

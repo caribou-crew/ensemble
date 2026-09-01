@@ -630,8 +630,31 @@ export default function ServicesView() {
   return (
     <div className="services-view">
       <div className="services-view__toolbar">
-        <button type="button" disabled={checkingFreshness} onClick={() => void handleFreshnessCheck()}>
-          {checkingFreshness ? <Spinner /> : 'Check freshness'}
+        <button
+          type="button"
+          className="services-view__freshness-btn"
+          disabled={checkingFreshness}
+          onClick={() => void handleFreshnessCheck()}
+        >
+          {checkingFreshness ? (
+            <Spinner />
+          ) : (
+            <svg
+              className="services-view__freshness-icon"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.3v3.2h-3.2"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+          Check freshness
         </button>
         {freshnessError && <InlineError message={freshnessError} />}
       </div>
