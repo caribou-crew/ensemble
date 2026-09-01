@@ -50,6 +50,12 @@ type EndReport struct {
 	Hops    int           `json:"hops"`
 	Verdict trace.Verdict `json:"verdict"`
 	Reasons []string      `json:"reasons"`
+	// DroppedHops is ensemble's count of hops routed to the session after
+	// it ended (core/proxy.Session.DroppedHops) — threaded into the run
+	// manifest's CaptureTrust so the artifact carries the loss (roadmap
+	// F.3). Absent from an older ensemble's response, which decodes as the
+	// honest zero.
+	DroppedHops uint64 `json:"droppedHops"`
 }
 
 // controlTimeout bounds a single call to ensemble's control plane outside
@@ -102,7 +108,7 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 		ProxyURL:    "http://" + edge,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		ens:         c,
-		redact:      o.Redact, maxBody: bodyLimit(o.MaxBody),
+		redact:      o.Redact, redactBodyDefaultsOff: o.RedactBodyDefaultsOff, maxBody: bodyLimit(o.MaxBody),
 		dataKey: dataKey, keyID: keyID, wrappedDataKey: wrappedDataKey,
 	}
 	if err := s.startMarkerDoor(now); err != nil {
@@ -218,6 +224,12 @@ func (s *Session) Close() error {
 				l.stop()
 			}
 		}
+		// Flush the Recorder's write queue BEFORE the wire file closes: a
+		// short-lived capture's last hops are otherwise still queued when
+		// the file underneath the writer goes away.
+		if s.rec != nil {
+			s.rec.Close()
+		}
 		if s.wireFile == nil {
 			return nil
 		}
@@ -239,6 +251,7 @@ func (s *Session) Close() error {
 		// RedactEntry.UnmarshalYAML.
 		return fmt.Errorf("capture: rebuilding the redactor at close: %w", err)
 	}
+	red.SetBodyDefaults(!s.redactBodyDefaultsOff)
 	written := 0
 	writeErr := writeHops(s.Paths.HopsPath, s.hops, red, func(trace.Hop) bool { return true }, &written)
 	wire := 0
@@ -285,7 +298,14 @@ func writeHops(path string, hops []trace.Hop, red *trace.Redactor, keep func(tra
 		if !keep(h) {
 			continue
 		}
-		if err := w.Write(red.Hop(h)); err != nil {
+		rh, rerr := red.Hop(h)
+		if rerr != nil {
+			// Same degrade policy as core/proxy's Recorder: the redactor
+			// already destroyed what it could not seal, so the hop is kept
+			// with its bodies dropped and the failure named on Err.
+			rh = trace.DegradeHop(rh, rerr)
+		}
+		if err := w.Write(rh); err != nil {
 			return err
 		}
 		*n++
@@ -316,6 +336,12 @@ func (s *Session) EndVerdict() trace.Verdict {
 
 func (s *Session) EndReasons() []string {
 	return append([]string(nil), s.endReport.Reasons...)
+}
+
+// EndDroppedHops is ensemble's post-End hop-loss count for this session, 0
+// in standalone mode (no session plane, so nothing is ever routed late).
+func (s *Session) EndDroppedHops() uint64 {
+	return s.endReport.DroppedHops
 }
 
 func (s *Session) TrustNotes() []string {

@@ -36,6 +36,22 @@ const proc = (globalThis as unknown as { process: { cwd(): string } }).process;
 /** messageOf's own definition — the one place allowed to read an error's `.message`. */
 const DEFINITION = 'src/api/client.ts';
 
+/** `.message` reads that are legitimate because there is no caught error involved at all —
+ * messageOf's ApiError-vs-everything-else decision doesn't apply, so it isn't a bypass of it.
+ * Matched by file + exact trimmed line content (not line number), so a genuinely NEW
+ * `.message` read landing elsewhere in the same file still fails the scan. Add an entry here,
+ * with a reason, only for a case like this one — never to quiet an actual error read. */
+const ALLOWED: { file: string; line: string; reason: string }[] = [
+  {
+    file: 'src/views/ServicesView.tsx',
+    line: "title={warnings.map((w) => w.message).join('\\n')}",
+    reason:
+      "WiringWarning.message is our own control plane's prose (config.WiringWarning's own " +
+      '`message` field, structured API data describing a proxy-wiring mismatch) — never a ' +
+      "caught Error, so messageOf's ApiError-vs-unknown-failure decision doesn't apply.",
+  },
+];
+
 function sourceFiles(dir: string, acc: string[] = []): string[] {
   for (const entry of fs.readdirSync(path.join(proc.cwd(), dir), { withFileTypes: true })) {
     const rel = `${dir}/${entry.name}`;
@@ -59,7 +75,10 @@ describe('messageOf is the only place an error message is read', () => {
       lines.forEach((line, i) => {
         // Comments discuss `.message` freely — this is about code.
         const code = line.replace(/\/\/.*$/, '');
-        if (/\.message\b/.test(code)) offenders.push(`${file}:${i + 1}  ${line.trim()}`);
+        if (!/\.message\b/.test(code)) return;
+        const trimmed = line.trim();
+        if (ALLOWED.some((a) => a.file === file && a.line === trimmed)) return;
+        offenders.push(`${file}:${i + 1}  ${line.trim()}`);
       });
     }
 

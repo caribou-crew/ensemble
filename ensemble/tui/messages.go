@@ -59,6 +59,14 @@ type actionMsg struct {
 	err     error
 }
 
+// serviceLogMsg carries the result of a GET /api/services/{name}/logs
+// fetch for the Services panel's log view — see servicesPanel.applyLog.
+type serviceLogMsg struct {
+	service string
+	content string
+	err     error
+}
+
 // hopMsg is one hop delivered by the traffic panel's SSE subscription.
 type hopMsg struct {
 	hop trace.Hop

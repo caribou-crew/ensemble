@@ -99,6 +99,14 @@ type Manifest struct {
 	// live stack" from "ran against fixtures" even on an otherwise
 	// identical, clean `ok` run.
 	Fixtures *FixtureSource `json:"fixtures,omitempty"`
+	// AcceptedWithSecrets records that this reference bundle was promoted
+	// with --force past a failing accept-time secret scan (refs.ScanForSecrets)
+	// — the human decided the findings were fixture data, and the decision is
+	// on the record where a pull-request reviewer can see it. Written only by
+	// refs.Accept into the BUNDLE's manifest copy; never set on a run's own
+	// manifest, and absent (the overwhelmingly common case) means the scan
+	// was clean or never forced.
+	AcceptedWithSecrets bool `json:"acceptedWithSecrets,omitempty"`
 }
 
 // FixtureSource records which reference bundle served a `retrace run
@@ -246,6 +254,12 @@ type CaptureTrust struct {
 	Gaps    []Gap         `json:"gaps,omitempty"`
 	Summary string        `json:"summary"`
 	Hint    string        `json:"hint,omitempty"`
+	// DroppedHops is how many hops provably belonging to this run's session
+	// were discarded rather than recorded (e.g. routed after the session
+	// ended). Zero is a real, provable zero — the session counts every drop
+	// it makes — so a clean verdict with droppedHops absent genuinely means
+	// no hops were lost, not that losses went unobserved (roadmap F.3).
+	DroppedHops uint64 `json:"droppedHops,omitempty"`
 }
 
 type TrustReason struct {

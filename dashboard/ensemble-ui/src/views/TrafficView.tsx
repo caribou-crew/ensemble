@@ -25,6 +25,9 @@ const INITIAL_LIMIT = 500;
 /** Client-side ring cap once the SSE stream is live — bounds memory/DOM
  * for a session left open a long time; oldest hops fall off the front. */
 const RING_MAX = 2000;
+/** Page size for each "load earlier" click against GET
+ * /api/traffic/history. */
+const HISTORY_PAGE_SIZE = 200;
 /** How far from the bottom (px) still counts as "at the bottom" — a
  * scrollbar rendering a px or two short of true bottom shouldn't read as
  * "the user scrolled up". */
@@ -43,6 +46,23 @@ function sessionLabel(session: string): string {
 
 function useHopRing() {
   const [hops, setHops] = useState<Hop[]>([]);
+  // Hops paged in from disk via "load earlier" — always strictly older
+  // than anything `oldestSeqRef` has ever pointed at, so `[...olderHops,
+  // ...hops]` stays chronological without a merge/sort step. Kept apart
+  // from `hops` so the live ring's RING_MAX eviction (which only ever
+  // trims `hops`' front) can't silently swallow a page the user
+  // deliberately loaded.
+  const [olderHops, setOlderHops] = useState<Hop[]>([]);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [noMoreHistory, setNoMoreHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // The paging cursor for the next "load earlier" call. A ref, not
+  // derived from `hops`/`olderHops` state, so it survives `clear()`
+  // (visual-only) and RING_MAX evicting the live ring's front — both of
+  // which would otherwise erase the one piece of state that remembers
+  // how far back the user has already paged.
+  const oldestSeqRef = useRef<number | null>(null);
+
   // The seed load and the live SSE stream are one race-safety problem, not two: the initial
   // GET races nothing else here (deps: []), so useAsync's generation guard alone is enough to
   // keep a slow/duplicate seed load from clobbering hops the stream has already appended —
@@ -53,36 +73,99 @@ function useHopRing() {
   useEffect(() => {
     if (initial === null) return;
     setHops(initial);
-    const lastSeq = initial.reduce((max, h) => Math.max(max, h.seq), 0);
-    const unsubscribe = subscribeHops(lastSeq, (hop) => {
-      setHops((cur) => {
-        // The stream can, at worst, redeliver the cursor hop itself on
-        // reconnect — never accept anything at or behind what's
-        // already at the tail. Comparing against the tail alone (rather
-        // than requiring monotonic growth from the ring's start) is also
-        // what makes `clear` safe: after it empties the ring, the very
-        // next delivered hop always passes (cur.length === 0) regardless
-        // of its seq.
-        if (cur.length > 0 && hop.seq <= cur[cur.length - 1].seq) return cur;
-        const next = cur.length >= RING_MAX ? cur.slice(cur.length - RING_MAX + 1) : cur.slice();
-        next.push(hop);
-        return next;
-      });
-    });
+    let lastSeq = 0;
+    for (const h of initial) {
+      lastSeq = Math.max(lastSeq, h.seq);
+      oldestSeqRef.current = oldestSeqRef.current === null ? h.seq : Math.min(oldestSeqRef.current, h.seq);
+    }
+    const unsubscribe = subscribeHops(
+      lastSeq,
+      (hop) => {
+        setHops((cur) => {
+          // The stream can, at worst, redeliver the cursor hop itself on
+          // reconnect — never accept anything at or behind what's
+          // already at the tail. Comparing against the tail alone (rather
+          // than requiring monotonic growth from the ring's start) is also
+          // what makes `clear` safe: after it empties the ring, the very
+          // next delivered hop always passes (cur.length === 0) regardless
+          // of its seq.
+          if (cur.length > 0 && hop.seq <= cur[cur.length - 1].seq) return cur;
+          const next = cur.length >= RING_MAX ? cur.slice(cur.length - RING_MAX + 1) : cur.slice();
+          next.push(hop);
+          return next;
+        });
+      },
+      (hop) => {
+        // hop.updated: a streaming hop finalizing in place — same seq,
+        // now with its duration and final body. Upsert, never append; a
+        // seq no longer in the ring (evicted, or cleared) is dropped.
+        setHops((cur) => {
+          const i = cur.findIndex((h) => h.seq === hop.seq);
+          if (i < 0) return cur;
+          const next = cur.slice();
+          next[i] = hop;
+          return next;
+        });
+      },
+    );
     return unsubscribe;
   }, [initial]);
 
   // Visual-only: empties the client-side ring so the table reads clean.
   // The SSE subscription above keeps running — new hops still land as
   // they happen — and nothing server-side is touched, so a page reload
-  // (or another dashboard tab) still sees the full history.
-  const clear = useCallback(() => setHops([]), []);
+  // (or another dashboard tab) still sees the full history. `olderHops`
+  // clears with it (it's part of the same visible list); the paging
+  // cursor does not, so "load earlier" afterward resumes rather than
+  // restarting from whatever's newly at the live ring's front.
+  const clear = useCallback(() => {
+    setHops([]);
+    setOlderHops([]);
+  }, []);
 
-  return { hops, clear, error: error ? messageOf(error, 'failed to reach the ensemble API') : null, loading };
+  // Pages one older batch in from GET /api/traffic/history, prepending
+  // it. A no-op while already loading or once the endpoint has reported
+  // nothing older is left (both re-checked here, not just at the call
+  // site, so a fast double-click can't fire two overlapping requests).
+  const loadEarlier = useCallback(() => {
+    if (loadingEarlier || noMoreHistory) return;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    const before = oldestSeqRef.current ?? undefined;
+    api
+      .trafficHistory({ before, limit: HISTORY_PAGE_SIZE })
+      .then((page) => {
+        if (page.hops.length === 0) {
+          setNoMoreHistory(true);
+          return;
+        }
+        // The endpoint returns newest-first; olderHops (like hops) reads
+        // chronologically, so reverse before prepending.
+        const ascending = page.hops.slice().reverse();
+        oldestSeqRef.current = ascending[0].seq;
+        setOlderHops((cur) => [...ascending, ...cur]);
+        if (!page.hasMore) setNoMoreHistory(true);
+      })
+      .catch((err: unknown) => setHistoryError(messageOf(err, 'failed to load earlier traffic')))
+      .finally(() => setLoadingEarlier(false));
+  }, [loadingEarlier, noMoreHistory]);
+
+  const allHops = useMemo(() => [...olderHops, ...hops], [olderHops, hops]);
+
+  return {
+    hops: allHops,
+    clear,
+    error: error ? messageOf(error, 'failed to reach the ensemble API') : null,
+    loading,
+    loadEarlier,
+    loadingEarlier,
+    noMoreHistory,
+    historyError,
+  };
 }
 
 export default function TrafficView() {
-  const { hops, clear, error, loading } = useHopRing();
+  const { hops, clear, error, loading, loadEarlier, loadingEarlier, noMoreHistory, historyError } = useHopRing();
   // Best-effort: the gateway show/hide split is a nice-to-have, so a topology fetch failure
   // just leaves showGateways' default (collapse nothing configured) rather than erroring the
   // whole Traffic tab.
@@ -301,6 +384,17 @@ export default function TrafficView() {
         </button>
       </div>
       <div className="traffic-view__body">
+        <div className="traffic-view__load-earlier">
+          {noMoreHistory ? (
+            <span className="traffic-view__load-earlier-end">— beginning of history —</span>
+          ) : (
+            <button type="button" className="traffic-view__toggle" onClick={loadEarlier} disabled={loadingEarlier}>
+              {loadingEarlier ? <Spinner /> : null}
+              {loadingEarlier ? 'loading earlier…' : 'load earlier'}
+            </button>
+          )}
+          {historyError ? <span className="traffic-view__load-earlier-error">{historyError}</span> : null}
+        </div>
         <div className="traffic-view__table" ref={scrollRef} onScroll={handleScroll}>
           {filtered.length === 0 ? (
             <p className="traffic-view__empty">no traffic matches these filters</p>

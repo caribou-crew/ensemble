@@ -10,6 +10,12 @@ export interface Timings {
 export interface Payload {
   headers?: Record<string, string>;
   body?: string;
+  /** Base64 of a binary body (invalid UTF-8 or a known-binary content
+   * type), captured losslessly — mutually exclusive with `body`. */
+  bodyB64?: string;
+  /** Every Set-Cookie response header value, in order — the joined
+   * `headers` form is lossy for multiple cookies. */
+  setCookies?: string[];
   truncated?: boolean;
 }
 
@@ -52,6 +58,15 @@ export interface Hop {
    * group and filter on; a value that failed validation arrives as the
    * literal "client" and the original is never stored. */
   client?: string;
+  /** True for a hop recorded at response-headers time for a streaming
+   * response (SSE, or chunked with no Content-Length). Finalized in place
+   * — same seq, via the `hop.updated` SSE event — when the stream closes;
+   * until then `t.doneMs` is absent. */
+  streaming?: boolean;
+  /** A protocol the proxy detected and refused rather than silently
+   * breaking ("websocket" | "grpc") — the hop's status is the 501 it was
+   * answered with; nothing was forwarded upstream. */
+  unsupported?: string;
 }
 
 export interface ServiceState {
@@ -63,6 +78,12 @@ export interface ServiceState {
   port?: number;
   startedAt?: string;
   lastErr?: string;
+  /** How this service's process last ended on its own — set alongside status "exited"
+   * (clean zero exit) or "crashed" (non-zero exit or signal), cleared on the next start.
+   * `signal` is set instead of `exitCode` when the process died to a signal. */
+  exitCode?: number;
+  signal?: string;
+  exitedAt?: string;
   /** Current `variants:` choice, for a service that declares any. */
   variant?: string;
   /** Sampled RSS in KB. Only populated when status was fetched with `?mem=1`. */
@@ -93,6 +114,20 @@ export interface FreshnessState {
    * earlier successful check — that's "this is what we last knew, and the most recent
    * recheck failed", not a fresh empty answer. */
   error?: string;
+}
+
+/** One env: value that references another service's REAL port when that service also
+ * declares a `proxy:` port — mirrors config.WiringWarning's JSON shape exactly. Advisory:
+ * the referencing stack still starts, the hop is just uncaptured. See GET /api/status's
+ * `warnings` field and the proxy-wiring-validation spec. */
+export interface WiringWarning {
+  service: string;
+  variant?: string;
+  env: string;
+  target: string;
+  port: number;
+  proxyPort: number;
+  message: string;
 }
 
 export interface TopologyNode {

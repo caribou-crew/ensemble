@@ -196,3 +196,26 @@ func TestNormalizeRejectsAnUnknownMatcherNamingTheRuleIndex(t *testing.T) {
 		t.Errorf("error should name the rule index: %v", err)
 	}
 }
+
+func TestNormalizeRefusesAnExcludeWithNoWhy(t *testing.T) {
+	_, err := Normalize([]Raw{{Path: "/health", Exclude: true}})
+	if err == nil {
+		t.Fatal("Normalize accepted exclude: true with no why — dropping a recorded exchange must carry a stated reason")
+	}
+	if !strings.Contains(err.Error(), "wireRules[0]") || !strings.Contains(err.Error(), "why") {
+		t.Fatalf("error %q does not name the rule and the missing why", err)
+	}
+	// Whitespace is not a reason.
+	if _, err := Normalize([]Raw{{Path: "/health", Exclude: true, Why: "   "}}); err == nil {
+		t.Fatal("Normalize accepted a whitespace-only why on an exclude rule")
+	}
+	// A stated reason lowers, carrying Exclude onto the Rule — regardless
+	// of require_why, which governs ORDINARY rules at the config layer.
+	rs, err := Normalize([]Raw{{Method: "get", Path: "/health", Exclude: true, Why: "readiness probe, not part of the contract"}})
+	if err != nil {
+		t.Fatalf("Normalize refused an explained exclude: %v", err)
+	}
+	if len(rs) != 1 || !rs[0].Exclude || rs[0].Method != "GET" {
+		t.Fatalf("rules = %+v, want one Exclude rule with the method upper-cased", rs)
+	}
+}

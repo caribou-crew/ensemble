@@ -68,7 +68,16 @@ func envSlice(env map[string]string) []string {
 // logPath. logPath is a rotating file (see serviceLogMaxBytes) rather than
 // a plain append: a long-running dev server, left up for days or stuck in a
 // noisy retry loop, would otherwise grow it without bound.
-func startNativeProcess(run, workDir string, env map[string]string, logPath string) (*exec.Cmd, error) {
+//
+// onExit, if non-nil, is invoked (with the finished cmd, whose
+// ProcessState is then populated) once Wait returns — the supervision
+// reaper's hook (see supervise.go's noteNativeExit). The exit is observed
+// off cmd itself rather than by teeing output through a pipe: with
+// stdout/stderr as a plain *os.File the fd is passed to the child
+// directly, so Wait returns the moment the process dies even when a
+// backgrounded grandchild still holds the fd — an os/exec copy goroutine
+// (what any non-file writer forces) would block Wait on that fd instead.
+func startNativeProcess(run, workDir string, env map[string]string, logPath string, onExit func(*exec.Cmd)) (*exec.Cmd, error) {
 	// 0700/0600 (set by OpenRotatingFile): a service's stdout/stderr
 	// routinely carries connection strings, tokens, and request payloads —
 	// same reasoning as the hop log's permissions in cmd/ensemble's runUp.
@@ -93,6 +102,9 @@ func startNativeProcess(run, workDir string, env map[string]string, logPath stri
 	go func() {
 		_ = cmd.Wait()
 		logFile.Close()
+		if onExit != nil {
+			onExit(cmd)
+		}
 	}()
 	return cmd, nil
 }

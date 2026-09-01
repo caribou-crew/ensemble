@@ -87,6 +87,27 @@
   flex-direction: column;
 }
 
+.traffic-view__load-earlier {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--bg-panel);
+}
+
+.traffic-view__load-earlier-end {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  margin: 0 auto;
+}
+
+.traffic-view__load-earlier-error {
+  color: var(--status-red);
+  font-size: 0.75rem;
+}
+
 .traffic-view__table {
   flex: 1 1 50%;
   min-height: 0;

@@ -16,14 +16,14 @@ func TestAppendRedactEntryWritesTheOverlayAndDiscoverMergesItAfterYaml(t *testin
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if len(cfg.Redact) != 2 {
-		t.Fatalf("expected the yaml entry plus the overlay entry, got %+v", cfg.Redact)
+	if len(cfg.Redact.Entries) != 2 {
+		t.Fatalf("expected the yaml entry plus the overlay entry, got %+v", cfg.Redact.Entries)
 	}
-	if cfg.Redact[0].Field != "password" || cfg.Redact[0].Mode != "destroy" {
-		t.Fatalf("yaml entry changed: %+v", cfg.Redact[0])
+	if cfg.Redact.Entries[0].Field != "password" || cfg.Redact.Entries[0].Mode != "destroy" {
+		t.Fatalf("yaml entry changed: %+v", cfg.Redact.Entries[0])
 	}
-	if cfg.Redact[1].Field != "account_number" || cfg.Redact[1].Mode != "encrypt" {
-		t.Fatalf("overlay entry not merged: %+v", cfg.Redact[1])
+	if cfg.Redact.Entries[1].Field != "account_number" || cfg.Redact.Entries[1].Mode != "encrypt" {
+		t.Fatalf("overlay entry not merged: %+v", cfg.Redact.Entries[1])
 	}
 
 	// Idempotent, same as AppendWireRule.
@@ -34,8 +34,8 @@ func TestAppendRedactEntryWritesTheOverlayAndDiscoverMergesItAfterYaml(t *testin
 	if err != nil {
 		t.Fatalf("Discover (second): %v", err)
 	}
-	if len(cfg.Redact) != 2 {
-		t.Fatalf("duplicate entry appended: %+v", cfg.Redact)
+	if len(cfg.Redact.Entries) != 2 {
+		t.Fatalf("duplicate entry appended: %+v", cfg.Redact.Entries)
 	}
 }
 
@@ -49,8 +49,8 @@ func TestAppendRedactEntryDefaultsModeToDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Redact) != 1 || cfg.Redact[0].Mode != "destroy" {
-		t.Fatalf("expected mode to default to destroy, got %+v", cfg.Redact)
+	if len(cfg.Redact.Entries) != 1 || cfg.Redact.Entries[0].Mode != "destroy" {
+		t.Fatalf("expected mode to default to destroy, got %+v", cfg.Redact.Entries)
 	}
 }
 

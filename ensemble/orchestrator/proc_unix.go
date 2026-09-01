@@ -3,6 +3,7 @@
 package orchestrator
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -43,4 +44,15 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return syscall.Kill(pid, 0) == nil
+}
+
+// exitSignal names the signal that terminated a finished process (e.g.
+// "killed", "segmentation fault"), or "" for a normal exit — the reaper's
+// input for ServiceState.Signal (see supervise.go).
+func exitSignal(ps *os.ProcessState) string {
+	ws, ok := ps.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return ""
+	}
+	return ws.Signal().String()
 }

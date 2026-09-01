@@ -54,8 +54,8 @@ func TestPostRedactAppendsAnEntryAndTheNextQueueReadSeesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Redact) != 1 || cfg.Redact[0].Field != "account_number" || cfg.Redact[0].Mode != "encrypt" {
-		t.Fatalf("Discover after POST redact = %+v, want the new entry merged in", cfg.Redact)
+	if len(cfg.Redact.Entries) != 1 || cfg.Redact.Entries[0].Field != "account_number" || cfg.Redact.Entries[0].Mode != "encrypt" {
+		t.Fatalf("Discover after POST redact = %+v, want the new entry merged in", cfg.Redact.Entries)
 	}
 }
 

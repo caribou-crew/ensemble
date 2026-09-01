@@ -30,6 +30,9 @@ type apiClient interface {
 	Restart(ctx context.Context, name string) (orchestrator.ServiceState, error)
 	Flip(ctx context.Context, name string) (orchestrator.ServiceState, error)
 	Seed(ctx context.Context, name string) (SeedResponse, error)
+	// ServiceLogs fetches the last tail lines of name's service log — GET
+	// /api/services/{name}/logs?tail=N, plain text.
+	ServiceLogs(ctx context.Context, name string, tail int) (string, error)
 	LatencyList(ctx context.Context) (LatencyListResponse, error)
 	LatencyArmAll(ctx context.Context, enabled bool) (LatencyListResponse, error)
 	LatencyReset(ctx context.Context) (LatencyListResponse, error)
@@ -170,6 +173,22 @@ func (c *Client) Seed(ctx context.Context, name string) (SeedResponse, error) {
 		return out, fmt.Errorf("POST %s: decode response: %w", path, jsonErr)
 	}
 	return out, nil
+}
+
+// --- service logs ---
+
+// ServiceLogs fetches the last tail lines of name's log as plain text —
+// decoded by hand rather than through do(), which expects JSON.
+func (c *Client) ServiceLogs(ctx context.Context, name string, tail int) (string, error) {
+	path := fmt.Sprintf("/api/services/%s/logs?tail=%d", url.PathEscape(name), tail)
+	status, data, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", err
+	}
+	if status >= 400 {
+		return "", apiError(http.MethodGet, path, status, data)
+	}
+	return string(data), nil
 }
 
 // --- latency ---

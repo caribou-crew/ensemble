@@ -21,11 +21,31 @@ func mustRedactor(t *testing.T, rules []KeyRule, maxBody int) *Redactor {
 	return r
 }
 
+// mustPayload/mustHop scrub and require success — the shape every test here
+// had before redaction failures became error returns instead of panics.
+func mustPayload(t *testing.T, r *Redactor, p Payload) Payload {
+	t.Helper()
+	out, err := r.Payload(p)
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	return out
+}
+
+func mustHop(t *testing.T, r *Redactor, h Hop) Hop {
+	t.Helper()
+	out, err := r.Hop(h)
+	if err != nil {
+		t.Fatalf("Hop: %v", err)
+	}
+	return out
+}
+
 // Semantics ported from the prototype's redactHops: one user list covers both
 // headers and body fields; defaults always redact auth-bearing headers.
 func TestRedactDefaultHeadersCaseInsensitive(t *testing.T) {
 	r := mustRedactor(t, nil, 0)
-	p := r.Payload(Payload{Headers: map[string]string{
+	p := mustPayload(t, r, Payload{Headers: map[string]string{
 		"Authorization": "Bearer x",
 		"COOKIE":        "sid=1",
 		"Set-Cookie":    "sid=2",
@@ -44,7 +64,7 @@ func TestRedactDefaultHeadersCaseInsensitive(t *testing.T) {
 
 func TestRedactBodyFieldsRecursively(t *testing.T) {
 	r := mustRedactor(t, destroyRules("token", "pan"), 0)
-	p := r.Payload(Payload{Body: `{"token":"abc","nested":{"pan":"4111","keep":1},"list":[{"pan":"4222"}]}`})
+	p := mustPayload(t, r, Payload{Body: `{"token":"abc","nested":{"pan":"4111","keep":1},"list":[{"pan":"4222"}]}`})
 	if strings.Contains(p.Body, "abc") || strings.Contains(p.Body, "4111") || strings.Contains(p.Body, "4222") {
 		t.Fatalf("secrets survived: %s", p.Body)
 	}
@@ -58,7 +78,7 @@ func TestRedactBodyFieldsRecursively(t *testing.T) {
 
 func TestRedactUserHeaderListAndNonJSONBody(t *testing.T) {
 	r := mustRedactor(t, destroyRules("x-api-key"), 0)
-	p := r.Payload(Payload{
+	p := mustPayload(t, r, Payload{
 		Headers: map[string]string{"X-Api-Key": "k"},
 		Body:    "plain text, not json",
 	})
@@ -72,11 +92,11 @@ func TestRedactUserHeaderListAndNonJSONBody(t *testing.T) {
 
 func TestBodySizeCap(t *testing.T) {
 	r := mustRedactor(t, nil, 10)
-	p := r.Payload(Payload{Body: "0123456789ABCDEF"})
+	p := mustPayload(t, r, Payload{Body: "0123456789ABCDEF"})
 	if p.Body != "0123456789" || !p.Truncated {
 		t.Fatalf("cap failed: body=%q truncated=%v", p.Body, p.Truncated)
 	}
-	small := r.Payload(Payload{Body: "tiny"})
+	small := mustPayload(t, r, Payload{Body: "tiny"})
 	if small.Body != "tiny" || small.Truncated {
 		t.Fatalf("small body mangled: %+v", small)
 	}
@@ -91,7 +111,7 @@ func TestBodySizeCap(t *testing.T) {
 // query keys/values must survive untouched.
 func TestRedactHopQueryStringValues(t *testing.T) {
 	r := mustRedactor(t, destroyRules("token"), 0)
-	h := r.Hop(Hop{Path: "/v1/accounts?authorization=Bearer%20x&token=y&keep=1"})
+	h := mustHop(t, r, Hop{Path: "/v1/accounts?authorization=Bearer%20x&token=y&keep=1"})
 	if !strings.HasPrefix(h.Path, "/v1/accounts?") {
 		t.Fatalf("path base mangled: %q", h.Path)
 	}
@@ -116,7 +136,7 @@ func TestRedactHopQueryStringValues(t *testing.T) {
 // error swallowing the path).
 func TestRedactHopPathWithoutQueryUntouched(t *testing.T) {
 	r := mustRedactor(t, nil, 0)
-	h := r.Hop(Hop{Path: "/v1/accounts"})
+	h := mustHop(t, r, Hop{Path: "/v1/accounts"})
 	if h.Path != "/v1/accounts" {
 		t.Fatalf("path without query changed: %q", h.Path)
 	}
@@ -124,7 +144,7 @@ func TestRedactHopPathWithoutQueryUntouched(t *testing.T) {
 
 func TestRedactHopBothSides(t *testing.T) {
 	r := mustRedactor(t, destroyRules("token"), 0)
-	h := r.Hop(Hop{
+	h := mustHop(t, r, Hop{
 		Req:  Payload{Headers: map[string]string{"authorization": "Bearer x"}, Body: `{"token":"abc"}`},
 		Resp: Payload{Headers: map[string]string{"set-cookie": "sid=1"}},
 	})

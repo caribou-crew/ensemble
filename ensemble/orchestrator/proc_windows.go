@@ -3,6 +3,7 @@
 package orchestrator
 
 import (
+	"os"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -56,6 +57,11 @@ func killProcessGroup(pid int, sig syscall.Signal) error {
 	}
 	return nil
 }
+
+// exitSignal is the unix reaper's signal-name lookup; Windows has no
+// termination signals, so a finished process always reports "" and the
+// reaper classifies purely on the exit code.
+func exitSignal(_ *os.ProcessState) string { return "" }
 
 // processAlive reports whether pid is still running, by asking the kernel
 // for its exit code: a live process reports STILL_ACTIVE.

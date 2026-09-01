@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 )
 
@@ -118,6 +119,49 @@ func SignificantQuery(query string, ignore []string) string {
 	return vals.Encode()
 }
 
+// queryAdmits decides whether a RECORDED query admits a live one. Both are
+// canonicalised through SignificantQuery first; beyond string equality, a
+// recorded parameter whose every value is the destroy-mode redaction
+// sentinel matches whatever the live request sent for that key — redaction
+// asserted "something secret was here", and holding the client to the
+// literal sentinel would make redacting a request parameter guarantee a
+// miss. The key must still be PRESENT on the live side: an absent parameter
+// is not "any value", it is a different request.
+//
+// Either side failing to parse falls back to SignificantQuery's own
+// verbatim comparison — the same fail-closed reading it documents.
+func queryAdmits(recorded, live string, ignore []string) bool {
+	recCanon := SignificantQuery(recorded, ignore)
+	liveCanon := SignificantQuery(live, ignore)
+	if recCanon == liveCanon {
+		return true
+	}
+	rec, rerr := url.ParseQuery(recCanon)
+	liv, lerr := url.ParseQuery(liveCanon)
+	if rerr != nil || lerr != nil {
+		return false
+	}
+	for k, vals := range rec {
+		if !allRedacted(vals) {
+			continue
+		}
+		if _, present := liv[k]; !present {
+			continue
+		}
+		liv[k] = vals
+	}
+	return rec.Encode() == liv.Encode()
+}
+
+func allRedacted(vals []string) bool {
+	for _, v := range vals {
+		if v != trace.Redacted {
+			return false
+		}
+	}
+	return len(vals) > 0
+}
+
 // Match answers a request from the bundle's exchange table, in the prototype's
 // order — method+path, then query, then request body — with two additions
 // the Go side needs: body equivalence is decided by the SAME wire rules
@@ -165,7 +209,7 @@ func (b *Bundle) Match(r Request, o Options) Result {
 
 	var byQuery []int
 	for _, i := range byMethodAndPath {
-		if SignificantQuery(b.Exchanges[i].Key.Query, o.QueryIgnore) == wantQuery {
+		if queryAdmits(b.Exchanges[i].Key.Query, r.Query, o.QueryIgnore) {
 			byQuery = append(byQuery, i)
 		}
 	}
@@ -322,6 +366,17 @@ func bodyDiff(fixture, request any, path string, res rules.Resolved) []MissField
 	fixObj, isObj := fixture.(map[string]any)
 	if !isObj {
 		if equalJSON(fixture, request) {
+			return nil
+		}
+		// A recorded value that IS the destroy-mode redaction sentinel is a
+		// wildcard, no rule required: redaction asserted "something secret
+		// was here", and a client sending the real secret is exactly the
+		// recorded shape. Without this, redacting a request field would
+		// guarantee a replay miss. Built in — same trust model as the
+		// `redacted` matcher a user can also write explicitly — and only for
+		// a PRESENT live value: bodyDiff's absent-key branches never reach
+		// here, so a missing field stays a real difference.
+		if s, ok := fixture.(string); ok && s == trace.Redacted {
 			return nil
 		}
 		if silenced(res, path, fixture, request, request != nil) {

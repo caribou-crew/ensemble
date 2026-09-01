@@ -64,6 +64,21 @@ func isErrorHop(h trace.Hop) bool {
 
 func (p *trafficPanel) appendHop(h trace.Hop) {
 	p.connected = true
+	// Upsert by Seq, not append-only: a streaming hop is delivered twice —
+	// once at response-headers time and again (same Seq, hop.updated) when
+	// the stream closes with its duration and final body — and a reconnect
+	// can redeliver a hop already held. The scan runs back-to-front because
+	// an update is almost always for a recent hop.
+	for i := len(p.all) - 1; i >= 0; i-- {
+		if p.all[i].Seq == h.Seq {
+			p.all[i] = h
+			p.upsertVisible(h)
+			return
+		}
+		if p.all[i].Seq < h.Seq {
+			break
+		}
+	}
 	p.all = append(p.all, h)
 	if len(p.all) > trafficBufferCap {
 		p.all = p.all[len(p.all)-trafficBufferCap:]
@@ -74,6 +89,25 @@ func (p *trafficPanel) appendHop(h trace.Hop) {
 			p.visible = p.visible[len(p.visible)-trafficBufferCap:]
 		}
 		p.refreshRows()
+	}
+}
+
+// upsertVisible mirrors an in-place update into the filtered view. A hop
+// that only now became an error (a stream that closed with one) appears
+// under errors-only; one already visible is refreshed in place.
+func (p *trafficPanel) upsertVisible(h trace.Hop) {
+	for i := len(p.visible) - 1; i >= 0; i-- {
+		if p.visible[i].Seq == h.Seq {
+			p.visible[i] = h
+			p.refreshRows()
+			return
+		}
+		if p.visible[i].Seq < h.Seq {
+			break
+		}
+	}
+	if !p.errorsOnly || isErrorHop(h) {
+		p.setErrorsOnly(p.errorsOnly) // rebuild keeps seq order without a manual insert
 	}
 }
 

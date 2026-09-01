@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,14 @@ const (
 	StatusHealthy   Status = "healthy"
 	StatusUnhealthy Status = "unhealthy"
 	StatusFailed    Status = "failed"
+	// StatusExited/StatusCrashed mark a process that ran and then ended on
+	// its own after a successful start — exited for a zero exit, crashed
+	// for a non-zero exit or a signal. Distinct from StatusStopped, which
+	// is operator-initiated (Stop/Down), and from StatusFailed, which is a
+	// start that never succeeded. Set by the supervision reapers (see
+	// supervise.go); never auto-restarted.
+	StatusExited  Status = "exited"
+	StatusCrashed Status = "crashed"
 )
 
 // ServiceState is a snapshot of one supervised node (service or database).
@@ -71,6 +80,14 @@ type ServiceState struct {
 	Version   string    `json:"version,omitempty"`
 	StartedAt time.Time `json:"startedAt,omitzero"`
 	LastErr   string    `json:"lastErr,omitempty"`
+	// ExitCode/Signal/ExitedAt describe how this node's last process (or
+	// container) run ended on its own — populated by the supervision
+	// reapers alongside StatusExited/StatusCrashed, cleared on the next
+	// start. ExitCode is a pointer so a genuine exit 0 survives omitempty;
+	// Signal is set instead of ExitCode when the process died to a signal.
+	ExitCode *int      `json:"exitCode,omitempty"`
+	Signal   string    `json:"signal,omitempty"`
+	ExitedAt time.Time `json:"exitedAt,omitzero"`
 	// RSSKB is resident memory in KB, sampled best-effort at read time (see
 	// WithMemory) — 0 when unsampled or the node isn't currently running.
 	// Not tracked continuously: States()/Service() never set it, only
@@ -117,6 +134,13 @@ type Orchestrator struct {
 	// lastSeed is the most recent successfully applied seed, or nil. Guarded
 	// by mu like every other field here; read through LastSeed.
 	lastSeed *SeedRecord
+	// wiringWarnings is the last-computed set of proxy-wiring warnings (see
+	// config.Config.WiringWarnings) — recomputed by
+	// recomputeWiringWarnings at the end of Up/Reconcile and after a
+	// successful SetVariant/Flip, since either can change which variant's
+	// env: values are live. Never nil once New has run, so GET /api/status
+	// always reports "[]" rather than "null" before the first Up.
+	wiringWarnings []config.WiringWarning
 	// variants is each service's chosen config.Service variant, when it
 	// declares any: seeded from Opts.Variants, else the config default,
 	// and changed by SetVariant. Read through currentVariant.
@@ -143,6 +167,29 @@ type Orchestrator struct {
 	// snapshot copy is exactly what's needed, and taking one is cheap next
 	// to the process/container churn a real diff can trigger.
 	lastConfig config.Config
+
+	// stopping names the services the orchestrator is deliberately tearing
+	// down right now (Stop/Restart/Down/variant switch/flip) — set before
+	// the kill, cleared once the maps no longer track the killed instance.
+	// The exit reapers (see supervise.go) consult it so an operator-
+	// initiated kill is never mistaken for a crash: between killGroup
+	// returning and the procs/dockerNodes delete, the dying process is
+	// still tracked, and without this flag its Wait returning in that
+	// window would be indistinguishable from the process dying on its own.
+	stopping map[string]bool
+
+	// superviseCancel/superviseDone control the docker supervision poll
+	// loop (see supervise.go's beginSupervision/stopSupervision) — same
+	// lifecycle contract as freshnessCancel/freshnessDone below: nil when
+	// not running, and Down waits for the goroutine to actually return.
+	superviseCancel context.CancelFunc
+	superviseDone   chan struct{}
+
+	// dockerState is an indirection over dockerContainerExit, so tests can
+	// simulate a vanished/stopped container without a docker daemon — same
+	// pattern as killGroup/removeDockerContainer below. Defaults to the
+	// real implementation in New.
+	dockerState func(ctx context.Context, name string) (exists, running bool, exitCode int, err error)
 
 	// serviceLocks holds one mutex per service name, serializing Flip,
 	// Restart, and Down's per-service teardown against each other for a
@@ -244,14 +291,17 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		states:                map[string]*ServiceState{},
 		procs:                 map[string]*exec.Cmd{},
 		dockerNodes:           map[string]bool{},
+		wiringWarnings:        []config.WiringWarning{},
 		variants:              variantsFrom(cfg, opts.Variants),
 		active:                profileSet(opts.Profiles),
 		wired:                 map[string]bool{},
 		gatewayStop:           map[string]func(){},
 		stubs:                 map[string]*stub.Stub{},
 		serviceLocks:          map[string]*sync.Mutex{},
+		stopping:              map[string]bool{},
 		killGroup:             killProcessGroup,
 		removeDockerContainer: dockerRemove,
+		dockerState:           dockerContainerExit,
 	}
 }
 
@@ -498,6 +548,7 @@ func (o *Orchestrator) SetVariant(ctx context.Context, name, variant string) err
 		o.variants[name] = variant
 		o.mu.Unlock()
 		o.setState(name, func(s *ServiceState) { s.Variant = variant; s.Kind = resolved.Kind })
+		o.recomputeWiringWarnings()
 		return nil
 	}
 	if _, _, err := o.stopCurrent(name); err != nil {
@@ -507,7 +558,28 @@ func (o *Orchestrator) SetVariant(ctx context.Context, name, variant string) err
 	o.mu.Lock()
 	o.variants[name] = variant
 	o.mu.Unlock()
-	return o.startServiceAs(ctx, name, resolved, defaultPlacement(resolved))
+	if err := o.startServiceAs(ctx, name, resolved, defaultPlacement(resolved)); err != nil {
+		return err
+	}
+	o.recomputeWiringWarnings()
+	return nil
+}
+
+// markStopping flags name as being deliberately torn down, so the exit
+// reapers (see supervise.go and the stopping field comment) don't mistake
+// the kill for a crash. Returns the func that clears the flag; every kill
+// site defers it around its whole kill-and-forget span — but never across
+// a replacement start, so a genuine crash right after a Restart is still
+// seen.
+func (o *Orchestrator) markStopping(name string) func() {
+	o.mu.Lock()
+	o.stopping[name] = true
+	o.mu.Unlock()
+	return func() {
+		o.mu.Lock()
+		delete(o.stopping, name)
+		o.mu.Unlock()
+	}
 }
 
 // stopCurrent tears down whichever placement of name is live and forgets
@@ -515,6 +587,8 @@ func (o *Orchestrator) SetVariant(ctx context.Context, name, variant string) err
 // teardown error is returned before the maps are touched, so a
 // possibly-still-live predecessor stays tracked rather than orphaned.
 func (o *Orchestrator) stopCurrent(name string) (hadProc, wasDocker bool, err error) {
+	defer o.markStopping(name)()
+
 	o.mu.Lock()
 	cmd, hadProc := o.procs[name]
 	wasDocker = o.dockerNodes[name]
@@ -667,11 +741,21 @@ func (o *Orchestrator) Up(ctx context.Context) error {
 	o.lastConfig = *o.cfg
 	o.mu.Unlock()
 
+	// Every active service's env: is now resolved through its actual
+	// startup variant, so this is the first point the wiring-warning scan
+	// (task 3.1/3.2) has a live answer — see recomputeWiringWarnings.
+	o.recomputeWiringWarnings()
+
 	// Never blocks on a fetch: beginFreshness only spawns the background
 	// loop. Started after per-node failures are known (not before) so it
 	// still runs against whatever partial stack came up — same rule as
 	// on_ready/readiness above.
 	o.beginFreshness()
+
+	// Docker-placed nodes have no Wait() to reap, so a background poll
+	// (see supervise.go) notices a container that stopped or vanished;
+	// native processes are reaped directly via startNativeProcess's onExit.
+	o.beginSupervision()
 
 	return errors.Join(errs...)
 }
@@ -718,8 +802,11 @@ func (o *Orchestrator) Down() error {
 	// Stopped first, and waited on: a freshness fetch that outlives Down
 	// would still be mutating o.states (via setState) after Down considers
 	// teardown complete, which is exactly the race the design's "stop when
-	// Down is called" requirement exists to rule out.
+	// Down is called" requirement exists to rule out. The docker
+	// supervision loop is stopped for the same reason — and before the
+	// containers are removed, so their removal is never read as a crash.
 	o.stopFreshness()
+	o.stopSupervision()
 
 	// Union of every name ever tracked as native or docker, taken up front
 	// so Down knows what to visit. The actual placement to tear down for
@@ -743,6 +830,7 @@ func (o *Orchestrator) Down() error {
 			// (or double-tears-down) whichever placement is actually live.
 			unlock := o.lockService(name)
 			defer unlock()
+			defer o.markStopping(name)()
 
 			o.mu.Lock()
 			cmd, hasProc := o.procs[name]
@@ -826,8 +914,14 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 		placement = "native"
 	}
 
+	// Cleared before startServiceAs (not deferred over it): the flag must
+	// cover only the teardown of the OLD instance, or a replacement that
+	// crashes immediately would have its exit swallowed by the reaper.
+	clearStopping := o.markStopping(name)
+
 	if hasProc && cmd.Process != nil {
 		if err := o.killGroup(cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			clearStopping()
 			wrapped := fmt.Errorf("kill previous instance (pid %d): %w", cmd.Process.Pid, err)
 			o.fail(name, wrapped)
 			return fmt.Errorf("orchestrator: restart %q: %w", name, wrapped)
@@ -838,6 +932,7 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 	}
 	if isDocker {
 		if err := o.removeDockerContainer(name); err != nil {
+			clearStopping()
 			wrapped := fmt.Errorf("remove previous container: %w", err)
 			o.fail(name, wrapped)
 			return fmt.Errorf("orchestrator: restart %q: %w", name, wrapped)
@@ -846,6 +941,7 @@ func (o *Orchestrator) Restart(ctx context.Context, name string) error {
 		delete(o.dockerNodes, name)
 		o.mu.Unlock()
 	}
+	clearStopping()
 
 	return o.startServiceAs(ctx, name, svc, placement)
 }
@@ -865,6 +961,7 @@ func (o *Orchestrator) Stop(name string) error {
 	// this same service — see the serviceLocks field comment.
 	unlock := o.lockService(name)
 	defer unlock()
+	defer o.markStopping(name)()
 
 	o.mu.Lock()
 	cmd, hasProc := o.procs[name]
@@ -907,6 +1004,41 @@ func (o *Orchestrator) States() []ServiceState {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// LogDir is the directory holding per-service log files (<name>.log) —
+// exposed for the server's log endpoints (GET /api/services/{name}/logs*),
+// which read the same files the orchestrator writes.
+func (o *Orchestrator) LogDir() string { return o.opts.LogDir }
+
+// WiringWarnings returns the proxy-wiring warnings computed at the last
+// Up/Reconcile/SetVariant/Flip — see config.Config.WiringWarnings. Never
+// nil: "[]" before the first Up, same never-null convention as States().
+func (o *Orchestrator) WiringWarnings() []config.WiringWarning {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.wiringWarnings
+}
+
+// recomputeWiringWarnings recalculates the proxy-wiring warning set against
+// the current config and the live per-service variant selection. Cheap
+// (an in-memory map/regex scan over declared services, no I/O) so it's run
+// eagerly on every event that could change the answer — see the
+// wiringWarnings field comment for the call sites.
+func (o *Orchestrator) recomputeWiringWarnings() {
+	o.mu.Lock()
+	variants := make(map[string]string, len(o.variants))
+	maps.Copy(variants, o.variants)
+	o.mu.Unlock()
+
+	// o.cfg itself is read without mu, same as activeServices/resolve —
+	// Reconcile is the only mutator (a dereferenced assignment under mu)
+	// and isn't run concurrently with the other call sites here.
+	warnings := o.cfg.WiringWarnings(variants)
+
+	o.mu.Lock()
+	o.wiringWarnings = warnings
+	o.mu.Unlock()
 }
 
 // Service returns name's current state, if known.
@@ -953,6 +1085,10 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		s.Variant = variant
 		s.Kind = svc.Kind
 		s.PID = 0 // stale from a previous placement until the native branch below sets it
+		// A fresh start owes nothing to how the previous run ended.
+		s.ExitCode = nil
+		s.Signal = ""
+		s.ExitedAt = time.Time{}
 	})
 
 	workDir := resolveDir(o.cfg.Dir, svc.Dir)
@@ -1013,7 +1149,9 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)
 		}
-		cmd, err := startNativeProcess(svc.Run, workDir, svc.Env, logPath)
+		cmd, err := startNativeProcess(svc.Run, workDir, svc.Env, logPath, func(c *exec.Cmd) {
+			o.noteNativeExit(name, c, logPath)
+		})
 		if err != nil {
 			o.fail(name, err)
 			return fmt.Errorf("orchestrator: %s: %w", name, err)

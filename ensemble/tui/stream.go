@@ -37,7 +37,12 @@ func StreamTraffic(ctx context.Context, client apiClient, since uint64) <-chan t
 				continue
 			}
 			for h := range hops {
-				cursor = h.Seq
+				// Advance only: a hop.updated frame re-delivers an OLD seq
+				// (a streaming hop finalizing), and regressing the cursor to
+				// it would make the next reconnect replay everything since.
+				if h.Seq > cursor {
+					cursor = h.Seq
+				}
 				select {
 				case out <- h:
 				case <-ctx.Done():

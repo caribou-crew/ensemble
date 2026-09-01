@@ -29,6 +29,8 @@ type fakeAPIClient struct {
 	flipErr       error
 	seedResult    SeedResponse
 	seedErr       error
+	logsContent   string
+	logsErr       error
 
 	latency    LatencyListResponse
 	latencyErr error
@@ -74,6 +76,11 @@ func (f *fakeAPIClient) Flip(ctx context.Context, name string) (orchestrator.Ser
 func (f *fakeAPIClient) Seed(ctx context.Context, name string) (SeedResponse, error) {
 	f.record("seed:" + name)
 	return f.seedResult, f.seedErr
+}
+
+func (f *fakeAPIClient) ServiceLogs(ctx context.Context, name string, tail int) (string, error) {
+	f.record("logs:" + name)
+	return f.logsContent, f.logsErr
 }
 
 func (f *fakeAPIClient) LatencyList(ctx context.Context) (LatencyListResponse, error) {

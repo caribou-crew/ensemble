@@ -17,7 +17,8 @@
   ],
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "engines": {
     "node": ">=18"
@@ -29,6 +30,8 @@
     "@caribou-crew/retrace-darwin-arm64": "workspace:*",
     "@caribou-crew/retrace-darwin-x64": "workspace:*",
     "@caribou-crew/retrace-linux-arm64": "workspace:*",
-    "@caribou-crew/retrace-linux-x64": "workspace:*"
+    "@caribou-crew/retrace-linux-x64": "workspace:*",
+    "@caribou-crew/retrace-win32-arm64": "workspace:*",
+    "@caribou-crew/retrace-win32-x64": "workspace:*"
   }
 }

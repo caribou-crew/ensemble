@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeReadyServer answers GET /api/status with bodies() in sequence
@@ -68,6 +69,28 @@ func TestCmdReadyNotReadyAtTimeout(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "catalog-up") {
 		t.Errorf("stderr should name the failing check:\n%s", stderr.String())
+	}
+}
+
+// TestCmdReadyFailsFastOnCrashedService: readiness never resolves here, so
+// without the crash check `ready` would sit out the full --timeout — the
+// generous 30s flag is the proof that the early exit path fired.
+func TestCmdReadyFailsFastOnCrashedService(t *testing.T) {
+	ts := fakeReadyServer(t, []string{
+		`{"services":[{"name":"web","status":"crashed","placement":"native","exitCode":1}],"readiness":{"state":"checking","checks":[]}}`,
+	})
+
+	var stdout, stderr bytes.Buffer
+	start := time.Now()
+	code := cmdReady([]string{"--api-url", ts.URL, "--timeout", "30s"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("expected non-zero exit for a crashed service")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %s; want a fail-fast exit well under the 30s timeout", elapsed)
+	}
+	if !strings.Contains(stderr.String(), "web") {
+		t.Errorf("stderr should name the crashed service:\n%s", stderr.String())
 	}
 }
 

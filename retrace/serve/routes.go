@@ -277,6 +277,20 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		ProjectMaskedCheckpoints: cfg.ProjectMaskEntryCheckpoints(),
 	})
 	if err != nil {
+		// The secret-scan refusal travels TYPED, findings and all, so the
+		// review UI can render each field path and offer the same forced
+		// accept the CLI's --force performs — and only that refusal is
+		// marked forcible: every other Accept error stays a plain refusal
+		// the button must not offer to push through.
+		var scanErr *refs.SecretScanError
+		if errors.As(err, &scanErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":          err.Error(),
+				"secretFindings": scanErr.Findings,
+				"forcible":       true,
+			})
+			return
+		}
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -284,6 +298,7 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	// sentences the CLI prints: an agent accepting through REST must be
 	// able to see that it just promoted a non-ok capture, or that a
 	// project-wide mask entry matched nothing, without parsing prose.
+	// secretFindings says what a forced accept just pushed past.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"bundle": map[string]any{
@@ -293,6 +308,7 @@ func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 			"runId":          res.RunID,
 			"captureStatus":  res.CaptureStatus,
 			"unmatchedMasks": res.UnmatchedMasks,
+			"secretFindings": res.SecretFindings,
 		},
 	})
 }
@@ -526,7 +542,7 @@ func (s *server) handleRedact(w http.ResponseWriter, r *http.Request) {
 		"redact": entry,
 		// Every redact entry now in effect — the file's own plus the
 		// overlay's — matching handleRule's own "rules" field.
-		"rules": s.deps().Cfg.Redact,
+		"rules": s.deps().Cfg.Redact.Entries,
 	})
 }
 

@@ -61,8 +61,13 @@ type Options struct {
 	// proxy mesh), and does not participate in this field at all.
 	Listeners []config.ListenerEntry
 	Redact    []config.RedactEntry
-	MaxBody   int
-	Now       func() time.Time
+	// RedactBodyDefaultsOff disables core/trace's built-in JSON-body
+	// redaction (the shared secret-key list) — retrace.yaml's
+	// `redact: { body_defaults: off }`. The zero value, on, is the
+	// protective reading; Redact entries layer on top either way.
+	RedactBodyDefaultsOff bool
+	MaxBody               int
+	Now                   func() time.Time
 }
 
 // listenPort normalizes Options.Port: zero means "the caller did not
@@ -131,8 +136,12 @@ type Session struct {
 	// writes its hops at Close time rather than streaming them through a
 	// Recorder. Set in BOTH constructors: a Session that forgot them would
 	// write the user's own keys to disk in plaintext.
-	redact  []config.RedactEntry
-	maxBody int
+	redact []config.RedactEntry
+	// redactBodyDefaultsOff mirrors Options.RedactBodyDefaultsOff, applied
+	// to every Redactor this Session builds (start, close, external hops)
+	// so the three cannot disagree about what the body walker does.
+	redactBodyDefaultsOff bool
+	maxBody               int
 	// dataKey is this run's per-recording AES-256 key, generated once at
 	// Start* when any redact rule needs mode encrypt; nil otherwise. keyID
 	// and wrappedDataKey are its team-key-wrapped form, written to
@@ -208,6 +217,7 @@ func StartStandalone(o Options) (*Session, error) {
 		os.RemoveAll(p.RunDir)
 		return nil, err
 	}
+	red.SetBodyDefaults(!o.RedactBodyDefaultsOff)
 	rec := proxy.NewRecorder(proxy.RecorderOpts{
 		Ring:     8192,
 		Redactor: red,
@@ -249,7 +259,7 @@ func StartStandalone(o Options) (*Session, error) {
 		StartedAt: now(), rec: rec, prox: prox, listeners: listeners, wireFile: wire,
 		ProxyURL:    listeners[0].ProxyURL,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
-		redact:      o.Redact, maxBody: maxBody,
+		redact:      o.Redact, redactBodyDefaultsOff: o.RedactBodyDefaultsOff, maxBody: maxBody,
 		dataKey: dataKey, keyID: keyID, wrappedDataKey: wrappedDataKey,
 	}
 	if err := s.startMarkerDoor(now); err != nil {

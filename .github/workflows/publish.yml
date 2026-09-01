@@ -48,11 +48,12 @@ jobs:
 
       # goreleaser's own job already built and archived these; this job
       # runs separately (own runner, no dist/), so it re-fetches the
-      # darwin/linux archives from the release just published and unpacks
-      # each binary to where scripts/prepare-npm-binary.mjs expects it:
-      # .npm-stage/<node-platform>/<binary>. Windows isn't published to npm
-      # (see npm/retrace/README.md's "Supported platforms"), so its
-      # archives are left alone.
+      # archives from the release just published and unpacks each binary to
+      # where scripts/prepare-npm-binary.mjs expects it:
+      # .npm-stage/<node-platform>/<binary>[.exe]. goreleaser ships windows
+      # as .zip (see .goreleaser.yaml's format_overrides) with the binary
+      # named <binary>.exe inside, and node calls that platform "win32" —
+      # hence the separate zip branch and the goos rename below.
       - name: Stage platform binaries from the release archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,17 +63,25 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern 'ensemble_*_darwin_*.tar.gz' \
             --pattern 'ensemble_*_linux_*.tar.gz' \
+            --pattern 'ensemble_*_windows_*.zip' \
             --pattern 'retrace_*_darwin_*.tar.gz' \
             --pattern 'retrace_*_linux_*.tar.gz' \
+            --pattern 'retrace_*_windows_*.zip' \
             --dir .npm-stage
-          for archive in .npm-stage/*.tar.gz; do
-            # ensemble_0.0.4_linux_amd64.tar.gz -> binary=ensemble, platform=linux-x64
-            base=$(basename "$archive" .tar.gz)
+          for archive in .npm-stage/*.tar.gz .npm-stage/*.zip; do
+            # ensemble_0.0.4_linux_amd64.tar.gz  -> binary=ensemble, platform=linux-x64
+            # ensemble_0.0.4_windows_amd64.zip   -> binary=ensemble, platform=win32-x64
+            base=$(basename "$archive")
+            base=${base%.tar.gz}
+            base=${base%.zip}
             binary=$(echo "$base" | sed -E 's/_.*//')
             goos_goarch=$(echo "$base" | sed -E 's/^[^_]+_[^_]+_//')
-            platform=$(echo "$goos_goarch" | sed -E 's/_/-/; s/amd64/x64/')
+            platform=$(echo "$goos_goarch" | sed -E 's/_/-/; s/amd64/x64/; s/^windows/win32/')
             mkdir -p ".npm-stage/$platform"
-            tar xzf "$archive" -C ".npm-stage/$platform" "$binary"
+            case "$archive" in
+              *.zip) unzip -o -q "$archive" "$binary.exe" -d ".npm-stage/$platform" ;;
+              *) tar xzf "$archive" -C ".npm-stage/$platform" "$binary" ;;
+            esac
           done
 
       # Each package below needs a ONE-TIME setup before its first release
@@ -90,8 +99,10 @@ jobs:
       #      "caribou-crew", Repository "ensemble", Workflow filename
       #      "publish.yml" (just the filename, not the full path), Allowed
       #      actions "npm publish".
-      #   3. Repeat for all 10 packages (npm/ensemble + 4 platforms,
-      #      npm/retrace + 4 platforms).
+      #   3. Repeat for all 14 packages (npm/ensemble + 6 platforms,
+      #      npm/retrace + 6 platforms). The win32 packages were added
+      #      after the first releases, so they need this one-time setup
+      #      before the first publish that includes them.
       #
       # After that, this job needs no npm credentials at all — the
       # `id-token: write` permission above is the entire auth story, and
@@ -108,9 +119,11 @@ jobs:
         run: |
           set -euo pipefail
           for pkg in npm/ensemble-darwin-arm64 npm/ensemble-darwin-x64 \
-                     npm/ensemble-linux-arm64 npm/ensemble-linux-x64 npm/ensemble \
+                     npm/ensemble-linux-arm64 npm/ensemble-linux-x64 \
+                     npm/ensemble-win32-arm64 npm/ensemble-win32-x64 npm/ensemble \
                      npm/retrace-darwin-arm64 npm/retrace-darwin-x64 \
-                     npm/retrace-linux-arm64 npm/retrace-linux-x64 npm/retrace; do
+                     npm/retrace-linux-arm64 npm/retrace-linux-x64 \
+                     npm/retrace-win32-arm64 npm/retrace-win32-x64 npm/retrace; do
             name=$(node -p "require('./$pkg/package.json').name")
             # Re-running this workflow (e.g. after fixing one package's
             # trusted-publisher setup) must not fail on the packages a prior

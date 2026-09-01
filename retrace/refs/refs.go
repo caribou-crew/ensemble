@@ -292,11 +292,13 @@ type AcceptOptions struct {
 	// form — the mask wiring being dead, so no mask applies at all — is
 	// closed by the end-to-end test in retrace/cmd/retrace.
 	ProjectMaskedCheckpoints []string
-	// Force overrides ONE refusal: promoting a run whose capture verdict is
+	// Force overrides TWO refusals: promoting a run whose capture verdict is
 	// fatal (capture.Fatal — degraded, broken, failed, or the unassessed
-	// zero verdict). It overrides nothing else, and the zero value is the
-	// protective reading, which is the only reading this phase allows a
-	// bool to have.
+	// zero verdict), and promoting past a failing accept-time secret scan
+	// (ScanForSecrets — the manifest then records acceptedWithSecrets: true,
+	// so the decision is reviewable in the pull request). It overrides
+	// nothing else, and the zero value is the protective reading, which is
+	// the only reading this phase allows a bool to have.
 	//
 	// It is not a general override, because the other two refusals want
 	// different answers:
@@ -339,6 +341,11 @@ type AcceptResult struct {
 	// warning text. A promotion off a non-ok capture is the human's call to
 	// make, but the machine-readable record of having made it belongs here.
 	CaptureStatus trace.Verdict `json:"captureStatus"`
+	// SecretFindings is what the accept-time secret scan found and Force
+	// pushed past — empty (never null, same contract as UnmatchedMasks) on
+	// every clean promotion. Non-empty means the bundle's manifest carries
+	// acceptedWithSecrets: true and every consumer should say so out loud.
+	SecretFindings []SecretFinding `json:"secretFindings"`
 }
 
 // bundleFile is one file staged for a bundle: where it came from, where it
@@ -372,6 +379,10 @@ type bundleFile struct {
 //
 // A fatal capture verdict is REFUSED unless o.Force; a `suspect` one is
 // promoted and left for the caller to warn about. See AcceptOptions.Force.
+// The accept-time secret scan (ScanForSecrets) refuses the same way — with
+// a typed *SecretScanError naming each finding — and Force pushes past it
+// at the price of a permanent acceptedWithSecrets note in the bundle's
+// manifest copy.
 //
 // Three refusals protect the redaction itself and none of them is
 // forcible, because each ends the same way — unredacted pixels in a
@@ -417,7 +428,33 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	}
 	reported := unmatchedNames(m.Checkpoints, o.ProjectMaskedCheckpoints)
 
-	files := []bundleFile{{rel: "manifest.json", src: p.ManifestPath}}
+	// The secret scan is a staging check like the ones above: nothing has
+	// been written yet, so a refusal leaves the previous reference exactly
+	// where it was. Force pushes past it, and the price of forcing is the
+	// permanent acceptedWithSecrets note in the bundle's own manifest —
+	// written into the STAGED copy below, never back into the run's.
+	findings, err := ScanForSecrets(p.RunDir)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if len(findings) > 0 && !o.Force {
+		return AcceptResult{}, &SecretScanError{Findings: findings}
+	}
+	if findings == nil {
+		findings = []SecretFinding{}
+	}
+
+	manifest := bundleFile{rel: "manifest.json", src: p.ManifestPath}
+	if len(findings) > 0 {
+		m.AcceptedWithSecrets = true
+		b, merr := json.MarshalIndent(m, "", "  ")
+		if merr != nil {
+			return AcceptResult{}, merr
+		}
+		b = append(b, '\n')
+		manifest.bytes, manifest.size = b, int64(len(b))
+	}
+	files := []bundleFile{manifest}
 	for _, name := range []string{"wire.jsonl", "hops.jsonl", runs.EncryptionFile} {
 		src := filepath.Join(p.RunDir, name)
 		if _, err := os.Stat(src); err == nil {
@@ -448,7 +485,7 @@ func Accept(o AcceptOptions) (AcceptResult, error) {
 	for i, f := range files {
 		names[i] = f.rel
 	}
-	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, UnmatchedMasks: reported, CaptureStatus: m.Capture.Status}, nil
+	return AcceptResult{Dir: dir, Files: names, RunID: o.RunID, Bytes: total, UnmatchedMasks: reported, CaptureStatus: m.Capture.Status, SecretFindings: findings}, nil
 }
 
 // unmatchedMasks refuses a promotion whose flow-scoped configuration

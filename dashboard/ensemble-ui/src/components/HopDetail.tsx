@@ -174,6 +174,10 @@ export default function HopDetail({ hop, onClose, onViewTrace }: HopDetailProps)
 
       <div className="hop-detail__meta">
         <Badge tone={isError ? 'red' : 'green'}>{hop.err ? 'err' : (hop.status ?? '—')}</Badge>
+        {hop.unsupported && <Badge tone="red">{hop.unsupported} — refused, not proxied</Badge>}
+        {hop.streaming && (
+          <Badge tone="accent">{hop.t.doneMs === undefined ? 'streaming…' : 'stream'}</Badge>
+        )}
         <span className="hop-detail__route">
           {callerAttribution(hop) ? (
             <span

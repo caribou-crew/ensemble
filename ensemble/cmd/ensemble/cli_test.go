@@ -890,6 +890,91 @@ func TestCLI_TraceJSONAndExportCurl(t *testing.T) {
 	}
 }
 
+// TestCLI_TrafficSessionExportHar drives `ensemble traffic --session <id>
+// --export har`: start a recording session, generate one hop of traffic
+// through its edge listener, end the session, then export it and confirm
+// the CLI's output is the same HAR the server hands back directly.
+func TestCLI_TrafficSessionExportHar(t *testing.T) {
+	env := startEnsemble(t)
+	const sessionID = "cli-export-sess"
+
+	reqBody, _ := json.Marshal(map[string]string{"id": sessionID, "entry": "svc"})
+	resp, err := http.Post(env.apiURL+"/api/sessions", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	var start struct {
+		EdgeAddr string `json:"edgeAddr"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+		t.Fatalf("decode session start: %v", err)
+	}
+	resp.Body.Close()
+	if start.EdgeAddr == "" {
+		t.Fatal("session start returned no edgeAddr")
+	}
+
+	hresp, err := http.Get("http://" + start.EdgeAddr + "/hello")
+	if err != nil {
+		t.Fatalf("GET session edge: %v", err)
+	}
+	hresp.Body.Close()
+
+	// SessionManager attributes hops asynchronously — poll before ending.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hresp, err := http.Get(env.apiURL + "/api/sessions/" + sessionID + "/hops")
+		if err == nil {
+			body, _ := io.ReadAll(hresp.Body)
+			hresp.Body.Close()
+			if len(strings.TrimSpace(string(body))) > 0 {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	endReq, err := http.NewRequest(http.MethodDelete, env.apiURL+"/api/sessions/"+sessionID, nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	endResp, err := http.DefaultClient.Do(endReq)
+	if err != nil {
+		t.Fatalf("end session: %v", err)
+	}
+	endResp.Body.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"traffic", "--api-url", env.apiURL, "--session", sessionID, "--export", "har"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("traffic --session --export har exit = %d, stderr = %s", code, stderr.String())
+	}
+
+	var got struct {
+		Log struct {
+			Entries []struct {
+				Request struct {
+					URL string `json:"url"`
+				} `json:"request"`
+			} `json:"entries"`
+		} `json:"log"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode stdout as HAR: %v; stdout = %s", err, stdout.String())
+	}
+	if len(got.Log.Entries) == 0 {
+		t.Fatalf("expected at least one HAR entry for session %s", sessionID)
+	}
+
+	// --export without --session is a usage error, not a silent no-op.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"traffic", "--api-url", env.apiURL, "--export", "har"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("traffic --export without --session exit = %d, want 2; stderr = %s", code, stderr.String())
+	}
+}
+
 // TestCLI_SeedUnknownFails exercises the `seed` command's error path (exit
 // code gates CI): a seed name the config doesn't define.
 func TestCLI_SeedUnknownFails(t *testing.T) {
@@ -1092,6 +1177,39 @@ func TestDefaultAPIURLMatchesUpDefaultAddr(t *testing.T) {
 	want := "http://" + opts.Addr
 	if got := defaultAPIURL(); got != want {
 		t.Fatalf("defaultAPIURL() = %q, want %q (matching up's default --api)", got, want)
+	}
+}
+
+// TestUpCheckURLTargetsTheFlagAddressNeverTheDefault guards the scratch
+// -stack footgun: `ensemble up --api <other>` while a different instance
+// runs on the default 4700 used to probe defaultAPIURL(), see "running",
+// and reconcile (or attach to and later stop) the WRONG instance. The
+// existing-instance probe must target the address this up would bind.
+func TestUpCheckURLTargetsTheFlagAddressNeverTheDefault(t *testing.T) {
+	t.Setenv("ENSEMBLE_API", "")
+	cases := []struct{ addr, want string }{
+		{"127.0.0.1:5900", "http://127.0.0.1:5900"}, // the footgun case
+		{":5900", "http://127.0.0.1:5900"},          // wildcard probes loopback
+		{"0.0.0.0:5900", "http://127.0.0.1:5900"},
+		{"[::]:5900", "http://127.0.0.1:5900"},
+		{"192.168.1.9:5900", "http://192.168.1.9:5900"}, // specific host as itself
+		{defaultAPIAddr, "http://127.0.0.1:4700"},       // flag at default: unchanged
+	}
+	for _, c := range cases {
+		if got := upCheckURL(c.addr); got != c.want {
+			t.Fatalf("upCheckURL(%q) = %q, want %q", c.addr, got, c.want)
+		}
+	}
+	// With the flag at its default the ENSEMBLE_API resolution still wins,
+	// exactly as before.
+	t.Setenv("ENSEMBLE_API", "http://10.0.0.5:4700")
+	if got := upCheckURL(defaultAPIAddr); got != "http://10.0.0.5:4700" {
+		t.Fatalf("upCheckURL(default) = %q, want the ENSEMBLE_API resolution", got)
+	}
+	// But an explicit --api beats ENSEMBLE_API — the probe must match the
+	// bind, not the client-side env.
+	if got := upCheckURL("127.0.0.1:5900"); got != "http://127.0.0.1:5900" {
+		t.Fatalf("upCheckURL(explicit) = %q, want the flag address", got)
 	}
 }
 

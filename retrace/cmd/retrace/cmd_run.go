@@ -360,8 +360,11 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		Host:      p.host,
 		Port:      p.port,
 		Listeners: listeners,
-		Redact:    p.cfg.Redact,
-		Now:       time.Now,
+		Redact:    p.cfg.Redact.Entries,
+		// The body-defaults opt-out travels beside the entry list: user
+		// entries layer on top of the built-in body redaction either way.
+		RedactBodyDefaultsOff: p.cfg.Redact.BodyDefaultsOff(),
+		Now:                   time.Now,
 	}
 
 	// Attach when ensemble answers AND the config names an entry service.
@@ -866,6 +869,7 @@ func assessTrust(s *capture.Session, hops []trace.Hop, cps []runs.Checkpoint,
 		SessionVerdict: s.EndVerdict(),
 		SessionReasons: s.EndReasons(),
 		Notes:          s.TrustNotes(),
+		DroppedHops:    s.EndDroppedHops(),
 		HopSource:      hopSource,
 	})
 }

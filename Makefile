@@ -22,16 +22,21 @@ ui:
 	git update-index --skip-worktree ensemble/server/ui/dist/index.html
 	git update-index --skip-worktree retrace/serve/ui/dist/index.html
 
+# Note the bin/ prefix: `-o ensemble` would name an EXISTING directory (the
+# ensemble/ module), and Go treats a directory -o as "write the binary into
+# it" — the result lands at ensemble/ensemble, not repo root, and a root
+# file can't share the module dir's name anyway.
 build: ui
-	go build -o ensemble ./ensemble/cmd/ensemble
-	go build -o retrace ./retrace/cmd/retrace
+	mkdir -p bin
+	go build -o bin/ensemble ./ensemble/cmd/ensemble
+	go build -o bin/retrace ./retrace/cmd/retrace
 
 install: ui
 	go install ./ensemble/cmd/ensemble
 	go install ./retrace/cmd/retrace
 
 clean:
-	rm -f ensemble retrace
+	rm -rf bin
 	git update-index --no-skip-worktree ensemble/server/ui/dist/index.html
 	git update-index --no-skip-worktree retrace/serve/ui/dist/index.html
 	git checkout -- ensemble/server/ui/dist retrace/serve/ui/dist

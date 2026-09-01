@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -326,5 +327,35 @@ func TestAMarkerWithNoTimestampCannotSuppressGapDetection(t *testing.T) {
 	}
 	if gaps := FindGaps(traffic, DefaultGapThreshold, groups); len(gaps) != 1 || gaps[0].Seconds != 600 {
 		t.Fatalf("gaps = %+v, want the one 600s gap", gaps)
+	}
+}
+
+// TestDroppedHopsDegradeAndAreCarriedOntoTheManifest: a non-zero
+// droppedHops count from ensemble's session-end report must both degrade
+// the verdict with a reason naming the loss AND land as a number on
+// CaptureTrust — the manifest records the count, not just the complaint
+// (roadmap F.3).
+func TestDroppedHopsDegradeAndAreCarriedOntoTheManifest(t *testing.T) {
+	got := Assess(AssessInput{Hops: hops(3), Checkpoints: 1, RequestsSeen: 3, DroppedHops: 2})
+	if got.Status != trace.VerdictDegraded {
+		t.Fatalf("status = %s, want degraded when hops were dropped", got.Status)
+	}
+	found := false
+	for _, r := range got.Reasons {
+		if r.Code == "dropped-hops" && strings.Contains(r.Detail, "2 hop(s)") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reasons = %+v, want a dropped-hops reason carrying the count", got.Reasons)
+	}
+	if got.DroppedHops != 2 {
+		t.Fatalf("CaptureTrust.DroppedHops = %d, want 2", got.DroppedHops)
+	}
+
+	// The provable zero stays clean: no drops, no reason, no field.
+	clean := Assess(AssessInput{Hops: hops(3), Checkpoints: 1, RequestsSeen: 3})
+	if clean.Status != trace.VerdictOK || clean.DroppedHops != 0 {
+		t.Fatalf("clean run = %s droppedHops=%d, want ok with 0", clean.Status, clean.DroppedHops)
 	}
 }

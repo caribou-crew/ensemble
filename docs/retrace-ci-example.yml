@@ -14,6 +14,9 @@
 #      be `.retrace/runs`, not `.retrace/runs/<app>` — the upload path
 #      decides what directory structure survives inside the artifact, and
 #      sync expects to find `<app>/<flow>/<run-id>/manifest.json` intact.
+#   4. `retrace replay` (the last job) is the inverse of 1-3: instead of
+#      recording against a live backend, it answers the app's calls FROM
+#      the committed reference bundle — a backend-free e2e gate.
 #
 # `retrace sync --from github --repo <org>/<repo>` (run locally, or from
 # `ensemble up`'s Retrace tab via "Sync now") then merges these artifacts
@@ -133,3 +136,54 @@ jobs:
           name: retrace-runs-web-${{ github.sha }}
           path: .retrace/runs
           retention-days: 7
+
+  # The jobs above need a live backend to record against. This one needs
+  # NO stack at all: `retrace replay` serves the reference bundle a
+  # developer promoted with `retrace ref accept` — committed under
+  # .retrace-ref/, so the ordinary checkout step is what delivers it to
+  # the runner — as STRICT mocks. A call the bundle can answer gets the
+  # recorded response; a call it cannot gets a 501 and a recorded miss.
+  # No database, no backend build, no network beyond the app under test.
+  retrace-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4     # brings the committed .retrace-ref/ bundle
+      # ... set up the app-under-test's toolchain here — and nothing else:
+      # the whole point is that the backend never starts ...
+      #
+      # `--ref checkout` names the FLOW whose reference answers the calls
+      # (`.retrace-ref/<app>/checkout/`). The replay listener binds
+      # `--listen` (default 127.0.0.1:0, an ephemeral loopback port — the
+      # flag refuses a non-loopback address, since it serves recorded
+      # traffic verbatim). The test command receives the same env handshake
+      # `retrace run` exports — RETRACE_PROXY_URL (the replay listener;
+      # point the app under test here exactly as you do when recording),
+      # RETRACE_RUN_DIR, RETRACE_MARKER_URL, plus one
+      # RETRACE_PROXY_URL_<NAME> per configured `listeners:` entry — so an
+      # adapter cannot tell a replay from a recording and needs no second
+      # code path. An app with a hard-coded base URL bypasses the listener,
+      # nothing is compared, and the job fails with exit 3 — deliberately
+      # not a pass.
+      - run: retrace replay --ref checkout --app web -- <your web e2e command>
+        env:
+          # Same rule as recording: only matters when a redact rule uses
+          # `mode: encrypt` — replay decrypts the sealed value before
+          # serving it. Without the key, calls matching an encrypted
+          # exchange are reported as misses, never served as markers or
+          # plaintext.
+          RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }}
+      # The exit code IS the gate — no separate check step:
+      #   0  every call matched, and the test command itself passed (a red
+      #      suite's own exit code passes through, so it still fails the job)
+      #   2  at least one miss — the app called something the reference
+      #      never recorded. This outranks a green test suite on purpose:
+      #      the interesting case is precisely the suite that stayed green
+      #      while calling something new.
+      #   3  could not evaluate — no reference bundle exists for the flow,
+      #      or the command made no calls the bundle could answer (the
+      #      hard-coded-base-URL case above). Never shares an exit code
+      #      with a pass.
+      # A miss's full detail (nearest recorded exchange, field-by-field
+      # diff) is on stdout and in the replay run's misses.jsonl under
+      # .retrace/replays/ — upload that directory if you want it as an
+      # artifact, same pattern as .retrace/runs above.

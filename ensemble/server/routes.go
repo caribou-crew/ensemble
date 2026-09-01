@@ -31,6 +31,11 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/services/{name}/flip", s.withAnnotation(s.handleServiceFlip))
 	mux.HandleFunc("POST /api/services/{name}/variant", s.withAnnotation(s.handleServiceVariant))
 
+	// Service log reads (see logs.go) — plain GETs over files the
+	// orchestrator already writes, so no annotation wrapper.
+	mux.HandleFunc("GET /api/services/{name}/logs", s.handleServiceLogs)
+	mux.HandleFunc("GET /api/services/{name}/logs/stream", s.handleServiceLogStream)
+
 	mux.HandleFunc("POST /api/seed/{name}", s.withAnnotation(s.handleSeed))
 
 	mux.HandleFunc("GET /api/profiles", s.handleProfiles)
@@ -43,6 +48,7 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/traffic/stream", s.handleTrafficStream)
+	mux.HandleFunc("GET /api/traffic/history", s.handleTrafficHistory)
 
 	mux.HandleFunc("GET /api/traces/{traceId}", s.handleTrace)
 	mux.HandleFunc("GET /api/traces/{traceId}/export", s.handleTraceExport)
@@ -59,6 +65,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions", s.withAnnotation(s.handleSessionStart))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.withAnnotation(s.handleSessionEnd))
 	mux.HandleFunc("GET /api/sessions/{id}/hops", s.handleSessionHops)
+	mux.HandleFunc("GET /api/sessions/{id}/export", s.handleSessionExport)
 
 	mux.HandleFunc("GET /api/databases", s.handleDatabases)
 	mux.HandleFunc("GET /api/databases/{name}/schema", s.handleDatabaseSchema)
@@ -191,7 +198,16 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mem") == "1" {
 		states = s.Orch.WithMemory(r.Context(), states)
 	}
-	body := map[string]any{"services": states, "readiness": s.Orch.Readiness()}
+	body := map[string]any{"services": states, "readiness": s.Orch.Readiness(), "warnings": s.Orch.WiringWarnings()}
+	// Recorder write-pipeline counters: non-zero means hops.jsonl is
+	// missing hops (queue overflow) or writes failed (disk) — the capture
+	// plane owning up to its own losses rather than swallowing them.
+	if s.Rec != nil {
+		body["recorder"] = map[string]uint64{
+			"droppedWrites": s.Rec.DroppedWrites(),
+			"writeErrors":   s.Rec.WriteErrors(),
+		}
+	}
 	// Omitted entirely when no seed has been applied, rather than sent as
 	// null or as a zero-time record: "this stack was never seeded" and "this
 	// stack was seeded by a nameless seed at the epoch" are different facts,
@@ -865,11 +881,17 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	hops := ses.Hops()
 	verdict, reasons := ses.Verdict()
+	// droppedHops counts hops routed to this session after it ended — as
+	// observed at THIS moment; the SessionManager keeps counting on the
+	// retained ended session, but a report can only carry what has arrived.
+	// Zero is provable (roadmap F.3), so it is always present, never
+	// omitted.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":      id,
-		"hops":    len(hops),
-		"verdict": verdict,
-		"reasons": reasons,
+		"id":          id,
+		"hops":        len(hops),
+		"verdict":     verdict,
+		"reasons":     reasons,
+		"droppedHops": ses.DroppedHops(),
 	})
 }
 

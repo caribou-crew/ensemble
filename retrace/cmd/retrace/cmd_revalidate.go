@@ -69,11 +69,11 @@ func cmdRevalidate(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir)
+	opts, err := replayOptions(cfg)
 	if err != nil {
 		return fail(stderr, "revalidate: %v", err)
 	}
-	opts, err := replayOptions(cfg)
+	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir, opts.Rules)
 	if err != nil {
 		return fail(stderr, "revalidate: %v", err)
 	}

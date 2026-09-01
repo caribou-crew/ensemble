@@ -73,6 +73,8 @@ func (o *Orchestrator) Reconcile(ctx context.Context, newCfg config.Config) (*Re
 	o.lastConfig = newCfg
 	o.mu.Unlock()
 
+	o.recomputeWiringWarnings()
+
 	return result, errors.Join(errs...)
 }
 

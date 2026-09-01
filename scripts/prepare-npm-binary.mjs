@@ -34,7 +34,20 @@ if (!version) {
 
 const STAGE = '.npm-stage';
 const NPM_ROOT = 'npm';
-const PLATFORMS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'];
+const PLATFORMS = [
+  'darwin-arm64',
+  'darwin-x64',
+  'linux-arm64',
+  'linux-x64',
+  'win32-arm64',
+  'win32-x64',
+];
+
+// Windows binaries carry the .exe suffix all the way through: goreleaser
+// archives ensemble.exe, publish.yml stages it as-is, and the npm shim
+// (npm/<binary>/bin/<binary>.mjs) resolves bin/<binary>.exe on win32.
+const binaryName = (platform) =>
+  platform.startsWith('win32-') ? `${binary}.exe` : binary;
 
 function bumpVersion(pkgPath) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -48,8 +61,8 @@ function bumpVersion(pkgPath) {
 }
 
 for (const platform of PLATFORMS) {
-  const src = join(STAGE, platform, binary);
-  const dest = join(NPM_ROOT, `${binary}-${platform}`, 'bin', binary);
+  const src = join(STAGE, platform, binaryName(platform));
+  const dest = join(NPM_ROOT, `${binary}-${platform}`, 'bin', binaryName(platform));
   copyFileSync(src, dest);
   chmodSync(dest, 0o755);
   bumpVersion(join(NPM_ROOT, `${binary}-${platform}`, 'package.json'));

@@ -1577,3 +1577,46 @@ func TestAcceptUsesCfgForWhenSet(t *testing.T) {
 		t.Fatalf("(5,5) = %+v, want masked black — accept should have used the CfgFor app config's mask", got)
 	}
 }
+
+// TestPostAcceptSurfacesTheSecretScanAndAllowsForcedAccept is the REST face
+// of refs' accept-time secret scan: the refusal carries the findings as
+// VALUES (field path, kind, suggestion) plus a `forcible` marker, so the
+// review UI can render exactly what the CLI's stderr says and offer the same
+// --force — and a forced accept answers with the findings it pushed past.
+func TestPostAcceptSurfacesTheSecretScanAndAllowsForcedAccept(t *testing.T) {
+	cwd := threeFlowProject(t)
+	recordRun(t, cwd, "web", "search", "20260821T103000Z-ddddddd",
+		map[string][]byte{"results": shotPNG(t, blue)},
+		[]trace.Hop{hop(1, "GET", "/search", 200, `{"session_key":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig-part"}`)})
+	ts := newServer(t, cwd)
+
+	r := post(t, ts, "/api/queue/web/search/accept", "")
+	if r.status != http.StatusConflict {
+		t.Fatalf("accept of a bundle with a likely credential = %d, want 409:\n%s", r.status, r.body)
+	}
+	doc := r.json(t)
+	if doc["forcible"] != true {
+		t.Fatalf("the secret-scan refusal must be marked forcible: %v", doc)
+	}
+	findings, _ := doc["secretFindings"].([]any)
+	if len(findings) != 1 {
+		t.Fatalf("secretFindings = %v, want exactly the one finding", doc["secretFindings"])
+	}
+	f := findings[0].(map[string]any)
+	if f["path"] != "resp.body.session_key" || f["kind"] != "jwt" {
+		t.Fatalf("finding = %v, want resp.body.session_key/jwt", f)
+	}
+
+	forced := mustOK(t, post(t, ts, "/api/queue/web/search/accept", `{"force":true}`), "POST accept --force past the scan")
+	bundle := forced["bundle"].(map[string]any)
+	if got, _ := bundle["secretFindings"].([]any); len(got) != 1 {
+		t.Fatalf("the forced promotion must report what it pushed past: %v", bundle)
+	}
+	m, err := runs.ReadManifest(filepath.Join(bundle["dir"].(string), "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading the bundle manifest: %v", err)
+	}
+	if !m.AcceptedWithSecrets {
+		t.Fatal("the promoted bundle's manifest must record acceptedWithSecrets: true")
+	}
+}

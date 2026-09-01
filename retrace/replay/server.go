@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -281,6 +282,7 @@ func observedHop(r *http.Request, raw string, hit Exchange, seq uint64) trace.Ho
 		Resp: trace.Payload{
 			Headers: hit.Headers,
 			Body:    hit.Body,
+			BodyB64: hit.BodyB64,
 		},
 	}
 }
@@ -330,9 +332,19 @@ func writeHit(w http.ResponseWriter, r *http.Request, e Exchange) {
 		case strings.EqualFold(k, "location"):
 			v = rewriteLocation(v, r)
 		case strings.EqualFold(k, "set-cookie"):
+			// The ordered SetCookies list below is authoritative when the
+			// recording carries one — the joined Headers form is lossy for
+			// multiple cookies. The joined form is only emitted for older
+			// recordings that never captured the list.
+			if len(e.SetCookies) > 0 {
+				continue
+			}
 			v = stripCookieDomain(v)
 		}
 		w.Header().Set(k, v)
+	}
+	for _, c := range e.SetCookies {
+		w.Header().Add("Set-Cookie", stripCookieDomain(c))
 	}
 	status := e.Status
 	if status == 0 {
@@ -342,6 +354,15 @@ func writeHit(w http.ResponseWriter, r *http.Request, e Exchange) {
 		status = http.StatusBadGateway
 	}
 	w.WriteHeader(status)
+	if e.BodyB64 != "" {
+		// A binary body, captured losslessly as base64 (LoadBundle already
+		// verified it decodes) — the client gets the original bytes.
+		raw, err := base64.StdEncoding.DecodeString(e.BodyB64)
+		if err == nil {
+			_, _ = w.Write(raw)
+		}
+		return
+	}
 	_, _ = io.WriteString(w, e.Body)
 }
 
@@ -444,14 +465,14 @@ func requestScheme(r *http.Request) string {
 // does not have the same effect on a loopback listener, and stripping it
 // would weaken what the recording said rather than re-address it.
 //
-// One interaction, reported rather than papered over: trace.Hop headers
-// are a map[string]string, and core/proxy's flatHeaders JOINS a repeated
-// header with ", ", so a response that set TWO cookies is already recorded
-// as one malformed value before replay sees it. Splitting that on ";" can
-// drop a segment carrying the second cookie's name. This function does not
-// try to unpick it — reconstructing cookies from a lossy join would hide a
-// capture-layer defect behind a plausible-looking result, which is the one
-// thing this package refuses to do.
+// The multi-cookie lossy-join problem this comment used to report is
+// resolved upstream: capture now records every Set-Cookie value in order
+// (trace.Payload.SetCookies), and writeHit emits each list entry as its
+// own header through this function. The joined Headers form still exists
+// only for recordings made before the list did, and for those this
+// function still refuses to unpick the join — reconstructing cookies from
+// a lossy join would hide a capture-layer defect behind a
+// plausible-looking result.
 func stripCookieDomain(v string) string {
 	parts := strings.Split(v, ";")
 	out := parts[:0]

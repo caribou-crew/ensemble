@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 )
@@ -258,6 +260,55 @@ func BindLoopbackCompanion(primary net.Listener) (net.Listener, error) {
 	return ln, nil
 }
 
+// Listen binds the listener(s) for one capture-plane listen address, with
+// this package's loopback enforcement: a hostname (anything net.ParseIP
+// does not recognize) is resolved, MUST be loopback-only (see hostAddrs),
+// and binds both loopback families where available; a literal IP binds
+// exactly as given, with a best-effort loopback companion (see
+// BindLoopbackCompanion). advertise is the address a client should be told
+// — built from the CONFIGURED hostname string for a hostname, never the
+// resolved address, so it reads back exactly as configured.
+//
+// Exported so core/stub binds through the same enforcement instead of a
+// bare net.Listen — the stub records hops into the same Recorder, so a
+// stub reachable from a LAN interface would be the same forged-capture
+// hazard hostAddrs documents for the proxy.
+func Listen(listen string) (lns []net.Listener, advertise string, err error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil, "", err
+	}
+	if host != "" && net.ParseIP(host) == nil {
+		ln4, ln6, herr := hostAddrs(host, port)
+		if herr != nil {
+			return nil, "", herr
+		}
+		lns = append(lns, ln4)
+		if ln6 != nil {
+			lns = append(lns, ln6)
+		}
+		_, boundPort, _ := net.SplitHostPort(ln4.Addr().String())
+		return lns, net.JoinHostPort(host, boundPort), nil
+	}
+	ln, lerr := net.Listen("tcp", listen)
+	if lerr != nil {
+		return nil, "", lerr
+	}
+	lns = append(lns, ln)
+	if companion, cerr := BindLoopbackCompanion(ln); cerr == nil && companion != nil {
+		lns = append(lns, companion)
+	}
+	return lns, ln.Addr().String(), nil
+}
+
+// ServerReadHeaderTimeout bounds how long a connected client may dawdle
+// before sending its request headers — without it an idle socket holds a
+// server goroutine forever (slowloris). Generous, because everything here
+// is loopback: the point is reclaiming abandoned sockets, not policing
+// latency. Exported so core/stub's server sets the same bound. A var, not
+// a const, only so tests can shorten it — production never writes it.
+var ServerReadHeaderTimeout = 10 * time.Second
+
 // ServeStoppable is Serve with a per-listener stop, used for ephemeral
 // listeners like session client-edge ports.
 //
@@ -274,37 +325,12 @@ func BindLoopbackCompanion(primary net.Listener) (net.Listener, error) {
 // selection — ":0" still picks an ephemeral port — so it does not
 // reintroduce the shared-fixed-port design that was rejected there.
 func (p *Proxy) ServeStoppable(t Target) (string, func(), error) {
-	host, port, err := net.SplitHostPort(t.Listen)
+	lns, advertise, err := Listen(t.Listen)
 	if err != nil {
 		return "", nil, fmt.Errorf("proxy %s: %w", t.Name, err)
 	}
 
-	var lns []net.Listener
-	advertise := t.Listen
-	if host != "" && net.ParseIP(host) == nil {
-		ln4, ln6, herr := hostAddrs(host, port)
-		if herr != nil {
-			return "", nil, fmt.Errorf("proxy %s: %w", t.Name, herr)
-		}
-		lns = append(lns, ln4)
-		if ln6 != nil {
-			lns = append(lns, ln6)
-		}
-		_, boundPort, _ := net.SplitHostPort(ln4.Addr().String())
-		advertise = net.JoinHostPort(host, boundPort)
-	} else {
-		ln, lerr := net.Listen("tcp", t.Listen)
-		if lerr != nil {
-			return "", nil, fmt.Errorf("proxy %s: %w", t.Name, lerr)
-		}
-		lns = append(lns, ln)
-		advertise = ln.Addr().String()
-		if companion, cerr := BindLoopbackCompanion(ln); cerr == nil && companion != nil {
-			lns = append(lns, companion)
-		}
-	}
-
-	srv := &http.Server{Handler: p.handler(t)}
+	srv := &http.Server{Handler: p.handler(t), ReadHeaderTimeout: ServerReadHeaderTimeout}
 	p.mu.Lock()
 	p.servers = append(p.servers, srv)
 	p.mu.Unlock()
@@ -459,6 +485,23 @@ func (p *Proxy) handler(t Target) http.Handler {
 			T:             trace.Timings{Start: start},
 		}
 
+		// Unsupported protocols are refused HERE — after the hop carries its
+		// full trace context (so the refusal lands in the right session and
+		// the verdict can degrade), before anything is forwarded. A silent
+		// dead 101 or a garbled gRPC stream told the user nothing; a flagged
+		// 501 at the first request tells them at the first request.
+		if proto := unsupportedProtocol(r); proto != "" {
+			hop.Status = http.StatusNotImplemented
+			hop.Unsupported = proto
+			hop.Req.Headers = flatHeaders(r.Header)
+			hop.T.DoneMs = msSince(start)
+			p.rec.Record(hop)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotImplemented)
+			fmt.Fprintf(w, `{"error":"ensemble does not proxy %s — this request was refused, not forwarded","unsupported":%q}`+"\n", proto, proto)
+			return
+		}
+
 		// Artificial latency runs before the upstream clock starts.
 		forwardStart := start
 		if p.Latency != nil {
@@ -517,7 +560,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 		if err != nil {
 			hop.Status, hop.Err = http.StatusBadGateway, err.Error()
 			hop.Req.Headers = flatHeaders(r.Header)
-			hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
+			setCapturedBody(&hop.Req, reqCap, r.Header.Get("Content-Type"))
 			hop.T.DoneMs = msSince(forwardStart)
 			p.rec.Record(hop)
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -530,19 +573,141 @@ func (p *Proxy) handler(t Target) http.Handler {
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		respCap := &cappedBuffer{limit: CaptureLimit}
-		_, copyErr := io.Copy(w, io.TeeReader(resp.Body, respCap))
 
 		hop.Status = resp.StatusCode
 		hop.Req.Headers = flatHeaders(r.Header)
-		hop.Req.Body, hop.Req.Truncated = reqCap.buf.String(), reqCap.truncated
+		setCapturedBody(&hop.Req, reqCap, r.Header.Get("Content-Type"))
 		hop.Resp.Headers = flatHeaders(resp.Header)
-		hop.Resp.Body, hop.Resp.Truncated = respCap.buf.String(), respCap.truncated
+		// Every Set-Cookie value, in order — the flattened Headers join is
+		// lossy for cookies specifically (see trace.Payload.SetCookies).
+		if sc := resp.Header.Values("Set-Cookie"); len(sc) > 0 {
+			hop.Resp.SetCookies = append([]string(nil), sc...)
+		}
+
+		if isStreamingResponse(resp) {
+			// A streaming response is recorded NOW, at response-headers time
+			// (Streaming true, no DoneMs, body so far empty), so an
+			// hour-long SSE stream is visible in the traffic plane while
+			// open, and finalized in place — same Seq — when it closes.
+			// Writes are flushed through per-write so events reach the
+			// client the moment the upstream sends them, not at stream end.
+			hop.Streaming = true
+			hop.Seq = p.rec.Record(hop).Seq
+			var dst io.Writer = w
+			if f, ok := w.(http.Flusher); ok {
+				dst = flushWriter{w: w, f: f}
+			}
+			_, copyErr := io.Copy(dst, io.TeeReader(resp.Body, respCap))
+			setCapturedBody(&hop.Resp, respCap, resp.Header.Get("Content-Type"))
+			hop.T.DoneMs = msSince(forwardStart)
+			if copyErr != nil {
+				hop.Err = copyErr.Error()
+			}
+			p.rec.Update(hop)
+			return
+		}
+
+		_, copyErr := io.Copy(w, io.TeeReader(resp.Body, respCap))
+		setCapturedBody(&hop.Resp, respCap, resp.Header.Get("Content-Type"))
 		hop.T.DoneMs = msSince(forwardStart)
 		if copyErr != nil {
 			hop.Err = copyErr.Error()
 		}
 		p.rec.Record(hop)
 	})
+}
+
+// unsupportedProtocol classifies a request the proxy cannot forward
+// faithfully: a WebSocket upgrade (an Upgrade header, or an Upgrade token
+// in Connection — either one means the client expects a protocol switch
+// this proxy cannot relay) or a gRPC call (Content-Type application/grpc
+// and its +proto/+json subtypes, which needs trailers and HTTP/2 framing
+// the tee-capture path would destroy). "" means an ordinary HTTP request.
+func unsupportedProtocol(r *http.Request) string {
+	if r.Header.Get("Upgrade") != "" {
+		return "websocket"
+	}
+	for _, tok := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), "upgrade") {
+			return "websocket"
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+		return "grpc"
+	}
+	return ""
+}
+
+// isStreamingResponse identifies a response whose bytes should reach the
+// client as they arrive: SSE by content type, or a chunked response with
+// no declared length (an upstream that doesn't know its own end is
+// streaming by construction). A plain response with Content-Length keeps
+// the buffered relay — one flush at the end is cheaper and identical to
+// the client.
+func isStreamingResponse(resp *http.Response) bool {
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return true
+	}
+	for _, te := range resp.TransferEncoding {
+		if strings.EqualFold(te, "chunked") {
+			return resp.ContentLength < 0
+		}
+	}
+	return false
+}
+
+// flushWriter flushes after every write, so a streaming upstream's events
+// cross the proxy the moment they are written instead of pooling in the
+// response buffer until the stream ends.
+type flushWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw flushWriter) Write(b []byte) (int, error) {
+	n, err := fw.w.Write(b)
+	fw.f.Flush()
+	return n, err
+}
+
+// knownBinaryType reports content types whose bodies are bytes rather than
+// text — the families the protocol-guardrails spec names. A body of one of
+// these is stored base64 (Payload.BodyB64) even when it happens to be
+// valid UTF-8, so a PNG that accidentally decodes never gets a lossy
+// string round-trip.
+func knownBinaryType(contentType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	switch {
+	case strings.HasPrefix(ct, "image/"), strings.HasPrefix(ct, "font/"),
+		strings.HasPrefix(ct, "application/grpc"):
+		return true
+	case ct == "application/octet-stream", ct == "application/pdf",
+		ct == "application/protobuf":
+		return true
+	}
+	return false
+}
+
+// setCapturedBody stores one captured payload body, choosing Body or
+// BodyB64: a known-binary content type or bytes that are not valid UTF-8
+// go base64 (lossless — a Go string written through encoding/json replaces
+// every invalid byte with U+FFFD), everything else stays the raw text it
+// always was. The cap already happened in the cappedBuffer, so Truncated
+// describes the raw bytes regardless of which field holds them.
+func setCapturedBody(p *trace.Payload, buf *cappedBuffer, contentType string) {
+	p.Truncated = buf.truncated
+	data := buf.buf.Bytes()
+	if len(data) == 0 {
+		return
+	}
+	if knownBinaryType(contentType) || !utf8.Valid(data) {
+		p.BodyB64 = base64.StdEncoding.EncodeToString(data)
+		return
+	}
+	p.Body = string(data)
 }
 
 func msSince(t time.Time) float64 {

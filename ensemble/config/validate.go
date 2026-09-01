@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -259,6 +261,120 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateLatencyProfiles()...)
 
 	return errors.Join(errs...)
+}
+
+// loopbackPortRef matches a loopback-or-docker-host reference to a port
+// anywhere in a string: "127.0.0.1:8081", "localhost:8081",
+// "host.docker.internal:8081" — the three forms an env: value uses to
+// reach another node on this same machine (see WiringWarnings). A value
+// may contain more than one (e.g. a JDBC URL naming host and a
+// query-string port); every occurrence is checked.
+var loopbackPortRef = regexp.MustCompile(`(?:127\.0\.0\.1|localhost|host\.docker\.internal):(\d{1,5})`)
+
+// WiringWarning flags one service env: value that references another
+// service's REAL port when that service also declares a proxy: port — see
+// the proxy-wiring-validation spec. Calling a real port directly is legal
+// (it's what the proxy itself does), but the hop never reaches the
+// intercept listener, so it's silently uncaptured. Warnings are advisory
+// data, never a Validate error.
+type WiringWarning struct {
+	// Service is the service whose env: value is mis-wired.
+	Service string `json:"service"`
+	// Variant is the active variant the warning was evaluated against,
+	// empty for a service that declares none.
+	Variant string `json:"variant,omitempty"`
+	// Env is the env var name carrying the mis-wired reference.
+	Env string `json:"env"`
+	// Target is the service actually listening on Port.
+	Target string `json:"target"`
+	// Port is the real port Env's value references.
+	Port int `json:"port"`
+	// ProxyPort is Target's declared proxy: port — what Env should
+	// reference instead.
+	ProxyPort int `json:"proxyPort"`
+	// Message is a ready-to-print human summary naming Service, Env,
+	// Target, Port, and ProxyPort.
+	Message string `json:"message"`
+}
+
+// wiringTarget is a proxy-fronted node keyed by its real port, for
+// WiringWarnings' lookup below.
+type wiringTarget struct {
+	name  string
+	proxy int
+}
+
+// WiringWarnings scans every declared service's active env (each resolved
+// through activeVariants — the same per-service variant selection choice
+// the orchestrator is currently running, keyed by service name, missing
+// entries falling back to that service's default variant, exactly like
+// ResolveService) for a loopback/host.docker.internal reference to another
+// service's real port when that service also declares a proxy: port. A
+// port matching a proxy: port, a stub's port, a database's port, a
+// gateway's port, or no declared node at all never warns — only a
+// reference to a node's REAL port that ALSO has a proxy: falls in the
+// warn zone, which loopbackPortRef ∩ the map built below enforces without
+// any of those needing special-casing. A service referencing its OWN real
+// port is not warned about either — "another declared node's real port"
+// per the spec, and there's no cross-service hop to bypass.
+//
+// Order is deterministic (service name, then declared env key order) so
+// `up`/`status` output and tests are stable.
+func (c *Config) WiringWarnings(activeVariants map[string]string) []WiringWarning {
+	targets := make(map[int]wiringTarget, len(c.Services))
+	for name, svc := range c.Services {
+		if svc.Port > 0 && svc.Proxy > 0 {
+			targets[svc.Port] = wiringTarget{name: name, proxy: svc.Proxy}
+		}
+	}
+
+	names := make([]string, 0, len(c.Services))
+	for name := range c.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var warnings []WiringWarning
+	for _, name := range names {
+		resolved, err := c.ResolveService(name, activeVariants[name])
+		if err != nil {
+			// A variant name that no longer exists — Validate would have
+			// already rejected the config that got here; skip rather than
+			// fail a warning scan over it.
+			continue
+		}
+		envKeys := make([]string, 0, len(resolved.Env))
+		for k := range resolved.Env {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+
+		for _, key := range envKeys {
+			for _, m := range loopbackPortRef.FindAllStringSubmatch(resolved.Env[key], -1) {
+				port, err := strconv.Atoi(m[1])
+				if err != nil {
+					continue
+				}
+				target, ok := targets[port]
+				if !ok || target.name == name {
+					continue
+				}
+				warnings = append(warnings, WiringWarning{
+					Service:   name,
+					Variant:   activeVariants[name],
+					Env:       key,
+					Target:    target.name,
+					Port:      port,
+					ProxyPort: target.proxy,
+					Message: fmt.Sprintf(
+						"%s's %s points at %s's real port %d; hops bypass capture — use proxy port %d instead",
+						name, key, target.name, port, target.proxy,
+					),
+				})
+			}
+		}
+	}
+	return warnings
 }
 
 // validEntityLinkKinds are the only values EntityLink.Kind may take. Empty

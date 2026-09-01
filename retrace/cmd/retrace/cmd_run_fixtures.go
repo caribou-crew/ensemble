@@ -79,7 +79,7 @@ func startFixtureUpstreams(r refs.Reference, cfg *config.Config, listeners []con
 		}
 	}
 	for _, l := range listeners {
-		bundle, err := replay.LoadBundle(r.Dir, cfg.Dir)
+		bundle, err := replay.LoadBundle(r.Dir, cfg.Dir, opts.Rules)
 		if err != nil {
 			closeAll()
 			return nil, err

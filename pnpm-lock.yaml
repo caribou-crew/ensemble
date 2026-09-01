@@ -185,6 +185,12 @@ importers:
       '@caribou-crew/ensemble-linux-x64':
         specifier: workspace:*
         version: link:../ensemble-linux-x64
+      '@caribou-crew/ensemble-win32-arm64':
+        specifier: workspace:*
+        version: link:../ensemble-win32-arm64
+      '@caribou-crew/ensemble-win32-x64':
+        specifier: workspace:*
+        version: link:../ensemble-win32-x64
 
   npm/ensemble-darwin-arm64: {}
 
@@ -193,6 +199,10 @@ importers:
   npm/ensemble-linux-arm64: {}
 
   npm/ensemble-linux-x64: {}
+
+  npm/ensemble-win32-arm64: {}
+
+  npm/ensemble-win32-x64: {}
 
   npm/retrace:
     optionalDependencies:
@@ -208,6 +218,12 @@ importers:
       '@caribou-crew/retrace-linux-x64':
         specifier: workspace:*
         version: link:../retrace-linux-x64
+      '@caribou-crew/retrace-win32-arm64':
+        specifier: workspace:*
+        version: link:../retrace-win32-arm64
+      '@caribou-crew/retrace-win32-x64':
+        specifier: workspace:*
+        version: link:../retrace-win32-x64
 
   npm/retrace-darwin-arm64: {}
 
@@ -216,6 +232,10 @@ importers:
   npm/retrace-linux-arm64: {}
 
   npm/retrace-linux-x64: {}
+
+  npm/retrace-win32-arm64: {}
+
+  npm/retrace-win32-x64: {}
 
   sample/clients/web-app:
     dependencies:

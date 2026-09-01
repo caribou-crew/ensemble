@@ -96,14 +96,16 @@ found after installing). Once it is, `ensemble` runs from anywhere — no need
 to `cd` into the repo or reference a local binary path.
 
 Prefer local binaries instead? `make build` does the same thing but leaves
-`./ensemble` and `./retrace` in the repo root rather than installing them.
+`bin/ensemble` and `bin/retrace` in the repo rather than installing them
+(they can't sit at the repo root itself — `ensemble/` and `retrace/` are
+the module directories).
 
 Without `make`, the equivalent by hand is:
 
 ```sh
 pnpm install
 pnpm -r build                              # must run first — see above
-go build -o ensemble ./ensemble/cmd/ensemble
+go build -o bin/ensemble ./ensemble/cmd/ensemble
 ```
 
 If you ever see "UI not built" in the dashboard, it means the Go binary was
@@ -552,12 +554,12 @@ always wins over `.env`.
 Then:
 
 ```sh
-./ensemble up                     # starts everything, serves the dashboard
-./ensemble dashboard              # opens it in your browser: topology, live traffic, latency, inspector
-./ensemble tui                    # or watch it from the terminal instead: services, traffic, latency, profiles
-./ensemble up --tui                # ...or go straight into the terminal UI once the stack is up
-./ensemble traffic --follow       # or tail the hops from the terminal, non-interactively
-./ensemble down
+ensemble up                     # starts everything, serves the dashboard
+ensemble dashboard              # opens it in your browser: topology, live traffic, latency, inspector
+ensemble tui                    # or watch it from the terminal instead: services, traffic, latency, profiles
+ensemble up --tui                # ...or go straight into the terminal UI once the stack is up
+ensemble traffic --follow       # or tail the hops from the terminal, non-interactively
+ensemble down
 ```
 
 `ensemble tui` (and `ensemble up --tui`) is a terminal client of the same
@@ -571,7 +573,37 @@ inspection — those stay browser-only.
 
 Send your app's traffic at the **proxy** ports (`9080` above) rather than the
 service ports, and every hop between your services is captured with its trace
-id, correlation id, and timings.
+id, correlation id, and timings. The same rule applies between services:
+an `env:` value that points one service at another's *real* port works
+fine — which is what makes the mistake invisible — but those hops bypass
+capture entirely. `ensemble up` checks for exactly this and warns when an
+`env:` value references another service's real port while that service has
+a `proxy:` port, naming both and the port to use instead; the warning also
+shows in `ensemble status` (a `warnings` field) and as a badge on the
+dashboard's Services tab. It's a warning, never an error — calling a real
+port directly is legal, it just isn't observed.
+
+New here? [docs/getting-started.md](docs/getting-started.md) walks a
+minimal two-service config through `up`, the dashboard, and a first
+recorded flow.
+
+### What the proxy carries — and what it refuses
+
+The proxy speaks HTTP/1.1. Streaming responses (SSE, chunked responses
+with no `Content-Length`) flush through write-by-write, so a proxied
+event stream is as live as a direct one — and its hop appears in Traffic
+marked `streaming` while still open, finalized in place (duration, final
+body) when the stream closes. Bodies that aren't valid UTF-8 (images,
+PDFs, protobuf) are captured losslessly base64-encoded, so a recorded
+binary response replays byte-identical.
+
+What it doesn't carry, it refuses loudly rather than breaking silently:
+a WebSocket upgrade or a gRPC request through a proxied port gets an
+immediate `501` with a JSON body naming the limitation, and the attempt
+is recorded as a hop flagged `unsupported` — a distinct badge in the
+traffic view, and a degraded note on any recording session containing
+one. Full WebSocket/gRPC/TLS proxying is future work; until then the
+first request tells you, instead of a connection that mysteriously hangs.
 
 ### Trace and caller headers
 
@@ -611,8 +643,8 @@ wants one and not the other.
 ### Injecting latency
 
 ```sh
-./ensemble latency set --target catalog --path / --fixed 400 --enabled
-./ensemble latency arm-all --enabled=false      # disarm everything at once
+ensemble latency set --target catalog --path / --fixed 400 --enabled
+ensemble latency arm-all --enabled=false      # disarm everything at once
 ```
 
 Injected delay is reported separately from real upstream time, so a hop's
@@ -636,7 +668,7 @@ numbers straight from Datadog into `LatencyStore`:
 
 ```sh
 # one ad hoc rule — {P} is substituted with 50/95/99 and queried separately
-./ensemble latency from-datadog \
+ensemble latency from-datadog \
   --target billing --path / \
   --query 'p{P}:trace.http.server.request.duration{service:billing,env:prod}'
 # billing /: p50=45ms p95=120ms p99=340ms (source: datadog, last 60m)
@@ -691,7 +723,7 @@ rules:
 ```
 
 ```sh
-./ensemble latency apply production
+ensemble latency apply production
 # billing /: p50=45ms p95=120ms p99=340ms (source: datadog)
 # statements /v3/statements: fixed=25ms
 # 2 applied, 0 failed
@@ -845,6 +877,28 @@ A fetch failure (VPN down, SSH key not forwarded) never reports a false
 successfully known, or to "never checked" for a service that has never
 succeeded.
 
+### When a service dies
+
+A process that exits after a successful start doesn't linger as a stale
+`healthy`: the orchestrator records its exit code (or signal) and time,
+and the service moves to `exited` (clean zero) or `crashed` (anything
+else) — both distinct from `stopped`, which is reserved for an exit *you*
+asked for. `lastErr` carries the tail of the service's log, the change
+streams over SSE so the dashboard and TUI update without a refresh, and
+`ensemble ready` fails fast on a `crashed` service instead of waiting out
+its timeout. Nothing auto-restarts — same philosophy as freshness never
+pulling: recovery is a deliberate action (`ensemble restart <service>`),
+not something that happens behind your back.
+
+The logs behind that tail are readable directly, not just on disk:
+`GET /api/services/{name}/logs?tail=N` returns the last N lines of
+`.ensemble/run/<name>.log` (default 200) and
+`GET /api/services/{name}/logs/stream` follows it over SSE — build output,
+`on_healthy` hooks, and the process's own stdout/stderr, since they all
+land in the same file. The dashboard's Services tab has a log pane per
+service (tail + follow), and in the TUI `l` opens a log tail on the
+selected service.
+
 ### CLI
 
 ```
@@ -856,13 +910,24 @@ ensemble restart <service>
 ensemble variant <service> <name>
 ensemble profiles
 ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
-ensemble traffic [--since N] [--errors-only] [--follow]
+ensemble traffic [--since N] [--errors-only] [--follow] [--session ID] [--export har]
 ensemble trace <traceId> [--export har|curl|raw]
 ```
 
 `ensemble ready` blocks until the stack's readiness checks resolve (or
 `--timeout` elapses), exiting 0/1 — the deterministic gate for CI:
 `ensemble up && ensemble ready && pnpm test:e2e`.
+
+Traffic isn't limited to what's still in memory: the live view is backed
+by an in-memory ring, but every hop is also persisted to
+`.ensemble/hops.jsonl`, and `GET /api/traffic/history` reads it back —
+newest-first, paginated (`before=<seq>` + `limit`), with the same filters
+as `GET /api/traffic` — so yesterday's traffic is a query away, and the
+dashboard's Traffic view pages into it with "load earlier". A whole
+session exports as one HAR (`GET /api/sessions/{id}/export?format=har`,
+or `ensemble traffic --session <id> --export har`), covering every hop
+that carried the session's id across ring and history — the multi-trace
+counterpart to `ensemble trace <traceId> --export har`.
 
 Every command takes `--json`, and every one is a thin client over the REST API,
 so anything the CLI does an agent or script can do over HTTP. `ENSEMBLE_API`
@@ -902,6 +967,31 @@ recordings captured in CI rather than locally.
 
 Like `ensemble`, every command takes `--json`; `ENSEMBLE_API` is read for the
 `--ensemble` default.
+
+**Recordings are secret-safe by default.** Redaction happens at capture,
+never post-hoc, and the defaults cover the places credentials actually
+travel: sensitive headers, secret-keyed query parameters, and — when a
+body parses as JSON — any object key on the same secret list
+(`access_token`, `password`, `client_secret`, …), case-insensitive, at any
+nesting depth, in both requests and responses. Your own `redact:` rules
+layer on top (destroy or `encrypt` per field), and a stack that
+legitimately records fixture credentials can opt the body defaults off
+with `redact: { body_defaults: off }`. Redacting never breaks replay: a
+recorded `[redacted]` value matches any live value (the built-in
+`redacted` matcher), asserting "something secret was here" rather than
+its content. And because a reference bundle is made to be committed,
+`retrace ref accept` scans the staged exchanges for anything that slipped
+past — unredacted secret-keyed values, JWT-shaped strings, AWS key ids,
+`Bearer` tokens — and refuses the promotion with the field path and the
+rule command that fixes it; `--force` overrides and permanently records
+`acceptedWithSecrets: true` in the reference manifest.
+
+The full record → accept → commit → diff → re-accept loop across commits
+is walked through in
+[docs/reference-lifecycle.md](docs/reference-lifecycle.md), and
+[docs/retrace-ci-example.yml](docs/retrace-ci-example.yml) is a
+copy-in CI workflow covering both recording in CI and replaying the
+committed reference as strict mocks.
 
 ## Layout
 

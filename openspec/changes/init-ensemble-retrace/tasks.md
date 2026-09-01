@@ -106,35 +106,38 @@ only cryptographic surface in the product and deserves one coherent security
 review, and it cannot be tested end to end until part 1's replay server and
 review UI exist.
 
-- [ ] 4.1 `retrace/run`: `retrace run --flow -- <cmd>` — session registration
+Boxes 4.1–4.8 shipped — see git history. Checked retroactively (2026-08-31);
+only 4.9 remains open in this phase.
+
+- [x] 4.1 `retrace/run`: `retrace run --flow -- <cmd>` — session registration
       w/ ensemble (or standalone capture proxy), env handshake
       (RETRACE_RUN_DIR/RETRACE_PROXY_URL/RETRACE_UPSTREAM_URL), run-dir writer
       (manifest, wire.jsonl, hops.jsonl, groups.jsonl), capture-trust
       computation. RETRACE_UPSTREAM_URL exists so URL-bound auth schemes
       (DPoP et al.) can sign against upstream while transport goes through
       the proxy — see design.md §6.1.2.
-- [ ] 4.2 `retrace/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
+- [x] 4.2 `retrace/rules`: wire-rules matchers (uuid/iso8601/http-date/etag/
       integer/semver/custom/ignore/exact). Golden tests from the prototype
       `wire-rules`/`matchers` fixtures.
-- [ ] 4.3 `retrace/replay`: strict mock server from a reference bundle
+- [x] 4.3 `retrace/replay`: strict mock server from a reference bundle
       (match via rules; unmatched → fail + miss report); `retrace revalidate`
       against a live stack.
-- [ ] 4.4 `retrace/diff`: pixel (pixelmatch port: thresholds, masks, border
+- [x] 4.4 `retrace/diff`: pixel (pixelmatch port: thresholds, masks, border
       trim, A/B/overlay/diff PNGs — golden images from the prototype), wire
       (pairing, field-level, LIS reorder), hop (added/removed calls,
       hopRequire), unexpected-status, perf budgets, OpenAPI conformance;
       unified summary + `--json` + exit codes.
-- [ ] 4.5 `retrace/refs`: compact reference bundles, accept/reject/rule
+- [x] 4.5 `retrace/refs`: compact reference bundles, accept/reject/rule
       mutations, opt-in deviations ledger.
-- [ ] 4.6 `retrace/serve` + `dashboard/retrace-ui`: review queue (worst-first,
+- [x] 4.6 `retrace/serve` + `dashboard/retrace-ui`: review queue (worst-first,
       keyboard-driven item screen, three verbs) + identical REST verbs;
       `retrace export` static report.
-- [ ] 4.7 `adapters/`: retrace-js (groups/markers), retrace-playwright
+- [x] 4.7 `adapters/`: retrace-js (groups/markers), retrace-playwright
       (fixture: checkpoint shots + groups), retrace-maestro (HTTP markers);
       strict-mode env handshake failure message; document the
       RETRACE_UPSTREAM_URL convention (design.md §6.1.2) for apps/adapters
       wiring URL-bound auth (DPoP et al.).
-- [ ] 4.8 Redaction modes + recording encryption: extend `core/trace`
+- [x] 4.8 Redaction modes + recording encryption: extend `core/trace`
       Redactor with display/encrypt/destroy per-key modes (AES-256-GCM
       `$enc:v1` markers, deterministic `red-<hash>` placeholders); envelope
       key wrapping w/ team key (env/keyfile), `retrace rekey`; replay-time
@@ -190,9 +193,11 @@ without the RN/Expo toolchain weight.
       target). Nothing is pushed or published until that sync.
 - [ ] 6.1 GoReleaser: darwin/linux/windows × arm64/x64, GitHub releases,
       Homebrew tap, curl installer.
-- [ ] 6.2 npm wrappers (@caribou-crew/{ensemble,retrace} + platform pkgs,
+- [x] 6.2 npm wrappers (@caribou-crew/{ensemble,retrace} + platform pkgs,
       bin shims, lockstep versions); adapters depend on retrace wrapper.
       Verify in a clean Docker node image with network limited to registry.
+      Shipped — see git history; published as `@caribou-crew/ensemble` and
+      `@caribou-crew/retrace`.
 - [ ] 6.3 Docs: getting-started (bring-your-own-stack walkthrough), config
       reference generated from schema, retrace CI recipe; archive this
       openspec change (`openspec archive init-ensemble-retrace`) syncing
@@ -215,7 +220,7 @@ without the RN/Expo toolchain weight.
       `config.Validate` (1-65535). Today an absurd or negative value is
       accepted by config parsing and fails late at `docker run` with a
       docker-level error instead of a config error naming the field.
-- [ ] F.3 Count dropped hops in `SessionManager.route`
+- [x] F.3 Count dropped hops in `SessionManager.route`
       (`core/proxy/session.go`) and expose the count so a capture can report
       it. Measured during the Phase 4 Task 5 review: `rep.Hops` is
       snapshotted when `End` deletes the session from the map, and any hop
@@ -227,6 +232,10 @@ without the RN/Expo toolchain weight.
       "hops were lost and nobody counted them" currently serialize to
       identical bytes. A counter alone is enough to tell them apart — the
       race itself may stay.
+      Closed by `openspec/changes/audit-hardening` (capture-robustness,
+      task 7.4): post-`End` hops are counted into `droppedHops` on the
+      session result and run manifest, degrading the verdict note when
+      non-zero.
 
 ## Stretch (post-v1)
 

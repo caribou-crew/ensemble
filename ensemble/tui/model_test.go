@@ -59,8 +59,7 @@ func TestModelSwitchingTabRefetchesActivePanel(t *testing.T) {
 	fc := &fakeAPIClient{}
 	m := newTestModel(fc)
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
-	m = next.(model)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
 	if cmd == nil {
 		t.Fatal("expected switching to Latency to issue a fetch Cmd")
 	}

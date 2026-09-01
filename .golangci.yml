@@ -1,0 +1,72 @@
+# golangci-lint v2 configuration, shared by all three Go modules (core,
+# ensemble, retrace). CI runs golangci-lint once per module directory (see
+# .github/workflows/ci.yml) — golangci-lint finds this file by walking up
+# from each module dir to the repo root.
+#
+# Written against golangci-lint v2.13.2, the version the CI lint job pins;
+# run the same version locally (`golangci-lint run ./...` from each module
+# dir) to reproduce CI results.
+version: "2"
+
+linters:
+  # The v2 "standard" set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+  settings:
+    errcheck:
+      # Fire-and-forget calls whose error is deliberately dropped across the
+      # codebase: deferred/cleanup Close on files, listeners and servers;
+      # best-effort temp-file removal; writes to log files and report
+      # writers. Flagging these would force `_ =` noise onto every cleanup
+      # path with nothing actionable behind it.
+      exclude-functions:
+        - (*os.File).Close
+        - (net.Listener).Close
+        - (*net/http.Server).Close
+        - (*net/http.Server).Serve # returns ErrServerClosed on normal shutdown
+        - (io.Closer).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - io.WriteString
+        - os.Remove
+        - os.RemoveAll
+
+    staticcheck:
+      # golangci-lint's default staticcheck selection (all minus the ST1000/
+      # ST1003/ST1016/ST1020/ST1021/ST1022 doc-comment/naming checks), with
+      # a few more opinionated style/quickfix checks off:
+      #   QF1001/QF1008 — De Morgan / embedded-field-selector rewrite
+      #     suggestions; pure style, and the flagged files (core/proxy,
+      #     ensemble/server, retrace) are being modified by concurrent
+      #     audit-hardening work, so no drive-by edits there.
+      #   ST1013 — "use http.StatusX instead of 502" in tests; literal
+      #     status codes in test assertions are the readable form.
+      #   S1011 — single-element append-loop rewrite; same
+      #     no-drive-by-edits reasoning (retrace/refs is under active edit).
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1001
+        - -QF1008
+        - -ST1013
+        - -S1011
+
+  exclusions:
+    # Keep the generated-file and standard exclusion presets golangci-lint
+    # applies by default.
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      # Tests drop errors on setup/teardown constantly (w.Write in handler
+      # stubs, json Encode/Decode of fixed fixtures, os.WriteFile of temp
+      # fixtures). Enforcing errcheck there buys nothing.
+      - path: _test\.go
+        linters:
+          - errcheck

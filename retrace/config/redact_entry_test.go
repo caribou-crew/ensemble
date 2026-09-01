@@ -19,7 +19,7 @@ func loadRedact(t *testing.T, yaml string) []RedactEntry {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	return cfg.Redact
+	return cfg.Redact.Entries
 }
 
 func TestRedactBareScalarListParsesAsDestroyMode(t *testing.T) {
@@ -104,5 +104,73 @@ func TestRedactKeyRulesConvertsEntriesToTraceKeyRules(t *testing.T) {
 	}
 	if rules[1].Key != "account_number" || rules[1].Mode != trace.ModeEncrypt {
 		t.Errorf("rule 1 = %+v", rules[1])
+	}
+}
+
+// loadRedactSection is loadRedact's whole-section sibling, for the tests
+// that need BodyDefaults as well as the entries.
+func loadRedactSection(t *testing.T, yaml string) RedactSection {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg.Redact
+}
+
+func TestRedactListFormLeavesBodyDefaultsOn(t *testing.T) {
+	s := loadRedactSection(t, "app: web\nredact: [password]\n")
+	if s.BodyDefaultsOff() {
+		t.Fatal("the bare list form must not switch body defaults off")
+	}
+	if len(s.Entries) != 1 || s.Entries[0].Field != "password" {
+		t.Fatalf("entries = %+v", s.Entries)
+	}
+}
+
+func TestRedactMappingFormBodyDefaultsOff(t *testing.T) {
+	s := loadRedactSection(t, `
+app: web
+redact:
+  body_defaults: off
+  fields:
+    - password
+    - field: account_number
+      mode: encrypt
+`)
+	if !s.BodyDefaultsOff() {
+		t.Fatal("body_defaults: off did not register")
+	}
+	if len(s.Entries) != 2 || s.Entries[0].Field != "password" || s.Entries[1].Mode != "encrypt" {
+		t.Fatalf("fields under the mapping form did not parse: %+v", s.Entries)
+	}
+}
+
+func TestRedactMappingFormUnknownKeyIsALoadError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yaml := "app: web\nredact:\n  body_defalts: off\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a typo'd redact mapping key must fail to load — a silently-absent opt-out that appears to work is the trap")
+	}
+}
+
+func TestRedactBodyDefaultsRejectsNonSwitchValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "retrace.yaml")
+	yaml := "app: web\nredact:\n  body_defaults: maybe\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("body_defaults must accept only on/off values")
 	}
 }

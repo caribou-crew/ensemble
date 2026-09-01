@@ -1,6 +1,10 @@
 package rules
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+)
 
 func TestNamedMatchersAcceptTheirFormatAndRejectOthers(t *testing.T) {
 	cases := []struct {
@@ -221,5 +225,35 @@ func TestAValueMatcherNeverExcusesAnAppearingOrDisappearingField(t *testing.T) {
 	ign, _ := ParseMatcher("ignore", "test")
 	if got := Classify(ign, "x", nil, false); got != Ignored {
 		t.Errorf("ignore must silence a one-sided value, got %v", got)
+	}
+}
+
+// TestRedactedMatcherIsAsymmetric pins the one matcher whose two sides are
+// NOT interchangeable: a recorded destroy-sentinel tolerates ANY live value
+// ("something secret was here" asserts shape, not content), but a recorded
+// value that is not the sentinel — including the live side carrying it while
+// the recorded side does not — is a Violation like any other unsatisfied
+// named matcher.
+func TestRedactedMatcherIsAsymmetric(t *testing.T) {
+	m, err := ParseMatcher("redacted", "test")
+	if err != nil {
+		t.Fatalf("ParseMatcher: %v", err)
+	}
+	if got := Classify(m, trace.Redacted, "hunter2", true); got != Tolerated {
+		t.Errorf("recorded sentinel vs live secret = %v, want Tolerated", got)
+	}
+	if got := Classify(m, trace.Redacted, 42.0, true); got != Tolerated {
+		t.Errorf("recorded sentinel vs live non-string = %v, want Tolerated", got)
+	}
+	if got := Classify(m, "plaintext", "hunter2", true); got != Violation {
+		t.Errorf("recorded non-sentinel = %v, want Violation", got)
+	}
+	if got := Classify(m, "hunter2", trace.Redacted, true); got != Violation {
+		t.Errorf("sentinel on the LIVE side only = %v, want Violation", got)
+	}
+	// One-sided: the general rule holds — a value matcher never excuses an
+	// appearing or disappearing field.
+	if got := Classify(m, trace.Redacted, nil, false); got != Changed {
+		t.Errorf("one-sided redacted = %v, want Changed", got)
 	}
 }

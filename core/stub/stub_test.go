@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 )
@@ -95,15 +96,14 @@ func TestStubTemplating(t *testing.T) {
 	}
 }
 
-// TestStubRequestBodyCappedAtCaptureLimit guards final-review finding I5:
-// the stub capture path did a bare io.ReadAll(r.Body) and stored the whole
-// thing in the hop, with no cap — unlike core/proxy, which caps captured
-// bodies at proxy.CaptureLimit (256KB) regardless of Redactor config.
-// runUp disables the Redactor's own cap on the (proxy-only) assumption
-// that capping already happened upstream, so a >256KB POST to a stub would
-// retain the full body in the recorder ring, hops.jsonl, and every
-// /api/traffic response. The stub must cap independently, at the same
-// limit.
+// TestStubRequestBodyCappedAtCaptureLimit guards final-review finding I5
+// plus the capture-robustness hardening on top of it: the stub capture path
+// did a bare io.ReadAll(r.Body) with no cap, so a >256KB POST retained the
+// full body in the recorder ring, hops.jsonl, and every /api/traffic
+// response. The read is now bounded by http.MaxBytesReader at
+// proxy.CaptureLimit — a body beyond it is answered 413 without ever being
+// buffered, and the refusal is still recorded as a hop with the captured
+// prefix marked Truncated.
 func TestStubRequestBodyCappedAtCaptureLimit(t *testing.T) {
 	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
 	addr := startStub(t, rec, []Route{{
@@ -118,12 +118,18 @@ func TestStubRequestBodyCappedAtCaptureLimit(t *testing.T) {
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 for a body over the cap", resp.StatusCode)
+	}
 
 	hops := rec.Snapshot()
 	if len(hops) != 1 {
 		t.Fatalf("want 1 hop, got %d", len(hops))
 	}
 	h := hops[0]
+	if h.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("hop status = %d, want 413", h.Status)
+	}
 	if !h.Req.Truncated {
 		t.Fatalf("request body over CaptureLimit not marked Truncated: len=%d", len(h.Req.Body))
 	}
@@ -254,5 +260,49 @@ func TestStubTraceHeaderAdoptsCustomTraceID(t *testing.T) {
 	hops := rec.Snapshot()
 	if len(hops) != 1 || hops[0].TraceID != "company-corr-stub-1" {
 		t.Fatalf("hop.TraceID = %q, want the custom header's value: %+v", hops[0].TraceID, hops)
+	}
+}
+
+// TestStubRefusesANonLoopbackListenAddress: the stub binds through
+// proxy.Listen, so it inherits the proxy's loopback enforcement — a
+// hostname is resolved and must be loopback-only. A resolution failure is
+// the closest refusal exercisable without stubbing DNS (the
+// loopback-specific branch is pinned in core/proxy's Listen tests, on the
+// same seam this Serve call goes through); what this test proves is that
+// Serve actually routes the bind through that enforcement and surfaces its
+// error instead of falling back to a bare net.Listen.
+func TestStubRefusesANonLoopbackListenAddress(t *testing.T) {
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	s := New("aws-kms", nil, rec)
+	_, err := s.Serve("stub-host-that-does-not-resolve.invalid:0")
+	if err == nil {
+		s.Close()
+		t.Fatal("Serve on an unresolvable hostname returned nil error, want the proxy.Listen refusal")
+	}
+	if !strings.Contains(err.Error(), "stub aws-kms") {
+		t.Errorf("error = %v, want it to name the stub", err)
+	}
+}
+
+// TestStubClosesConnectionThatNeverSendsHeaders: the stub's server carries
+// the same ReadHeaderTimeout as the proxy's — an idle socket is reclaimed.
+func TestStubClosesConnectionThatNeverSendsHeaders(t *testing.T) {
+	saved := proxy.ServerReadHeaderTimeout
+	proxy.ServerReadHeaderTimeout = 150 * time.Millisecond
+	defer func() { proxy.ServerReadHeaderTimeout = saved }()
+
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 8})
+	addr := startStub(t, rec, nil)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("stub sent bytes to a silent connection; want it closed by the header timeout")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("connection still open after the read-header timeout — ReadHeaderTimeout not wired")
 	}
 }

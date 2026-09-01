@@ -77,6 +77,28 @@ func parseUpOptions(args []string, stderr io.Writer) (upOptions, error) {
 	return upOptions{ConfigPath: *cfgPath, Profiles: splitCSV(*profile), Variants: variants, Addr: *addr, TUI: *tuiFlag, Positional: fs.Args()}, nil
 }
 
+// upCheckURL builds the URL cmdUp probes for an already-running instance:
+// the SAME address this `up` would bind (opts.Addr), never blindly the
+// default — `ensemble up --api :5900` for a scratch stack used to probe
+// (and then reconcile, or attach-and-stop) an unrelated instance on the
+// default 4700. With the flag left at its default the probe stays
+// defaultAPIURL(), which honors ENSEMBLE_API exactly as before. A wildcard
+// or empty host is probed over loopback (the bind answers there, same
+// reasoning as tuiAPIURL); a specific host is probed as itself.
+func upCheckURL(addr string) string {
+	if addr == defaultAPIAddr {
+		return defaultAPIURL()
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return defaultAPIURL()
+	}
+	if h := strings.Trim(host, "[]"); h == "" || h == "0.0.0.0" || h == "::" {
+		return "http://127.0.0.1:" + port
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
 // parseVariantFlag parses --variant's "svc=name,svc2=name2" form.
 func parseVariantFlag(v string) (map[string]string, error) {
 	out := map[string]string{}
@@ -95,7 +117,7 @@ func cmdUp(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
-	c := NewClient(defaultAPIURL())
+	c := NewClient(upCheckURL(opts.Addr))
 	running := c.Health(context.Background()) == nil
 	switch {
 	case len(opts.Positional) > 0 && running:
@@ -194,6 +216,10 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		Redactor: redactor,
 		Writer:   trace.NewWriter(hopsFile),
 	})
+	// Flush the recorder's write queue before hopsFile closes (defers run
+	// LIFO; hopsFile.Close is deferred above) — hops recorded in the final
+	// moments of a run must reach disk, not die in the queue.
+	defer rec.Close()
 
 	logf := func(f string, a ...any) { fmt.Fprintf(stderr, f+"\n", a...) }
 
@@ -326,6 +352,7 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		if upErr != nil {
 			logStartupWarning(stderr, upErr)
 		}
+		printWiringWarnings(stdout, orch.WiringWarnings())
 		// Fall through to the steady-state wait below, same as a clean Up.
 	case <-shutdownCtx.Done():
 		// SIGINT/SIGTERM (or POST /api/shutdown, though nothing can reach

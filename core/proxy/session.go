@@ -28,8 +28,55 @@ type Session struct {
 	hops    []trace.Hop
 	verdict trace.Verdict
 	reasons []string
+	// droppedHops counts hops that provably belonged to this session but
+	// were not kept — today that means hops routed after End. Zero must be
+	// provable: any hop discarded on the session's account increments this
+	// instead of vanishing, so "no hops lost" and "hops lost silently" never
+	// serialize identically (roadmap F.3).
+	droppedHops uint64
 
 	stopEdge func()
+}
+
+// DroppedHops returns how many of this session's hops were discarded
+// rather than kept. See the field comment for what counts.
+func (s *Session) DroppedHops() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.droppedHops
+}
+
+func (s *Session) noteDropped() {
+	s.mu.Lock()
+	s.droppedHops++
+	s.mu.Unlock()
+}
+
+// noteHop stores one hop attributed to this session. updated means the hop
+// is a finalization of a Seq already delivered (a streaming hop closing) —
+// upsert in place so the session's record carries the final body and
+// duration, not the headers-time snapshot; if the original was never seen
+// (delivered before this session subscribed its slice — or dropped) the
+// finalized hop is simply appended, which is the complete version anyway.
+// A hop the proxy refused as an unsupported protocol degrades the verdict:
+// the traffic provably reached a captured port and was NOT captured, and a
+// recording missing it must say so (protocol-guardrails spec).
+func (s *Session) noteHop(h trace.Hop, updated bool) {
+	if h.Unsupported != "" {
+		s.degrade(trace.VerdictDegraded,
+			fmt.Sprintf("unsupported protocol: a %s request to %s was refused with 501 and is not captured", h.Unsupported, h.To))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if updated {
+		for i := len(s.hops) - 1; i >= 0; i-- {
+			if s.hops[i].Seq == h.Seq {
+				s.hops[i] = h
+				return
+			}
+		}
+	}
+	s.hops = append(s.hops, h)
 }
 
 // Hops returns the hops attributed to this session so far, oldest first.
@@ -63,6 +110,13 @@ func (s *Session) degrade(v trace.Verdict, reason string) {
 	s.mu.Unlock()
 }
 
+// endedCap bounds how many ended sessions the manager retains for
+// late-hop accounting (see SessionManager.ended). 128 comfortably covers
+// every session a single `ensemble up` realistically ends; beyond it the
+// oldest ended session stops counting its stragglers — bounded memory wins
+// over a perfect count for sessions nobody has asked about in ages.
+const endedCap = 128
+
 // SessionManager partitions the recorder's hop stream into sessions and
 // detects propagation gaps. One subscription goroutine sees every hop in
 // sequence order:
@@ -82,7 +136,15 @@ type SessionManager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
-	entries  map[string]bool // target names clients legitimately call context-less
+	// ended retains sessions after End, bounded by endedCap (endedQ is the
+	// eviction FIFO), so a hop routed to a session that already ended still
+	// lands on THAT session's droppedHops counter instead of vanishing.
+	// End deletes from the live map — routing must stop — but the counter
+	// has to stay reachable or "routed after End" would be exactly the
+	// silent loss droppedHops exists to make impossible (roadmap F.3).
+	ended   map[string]*Session
+	endedQ  []string
+	entries map[string]bool // target names clients legitimately call context-less
 
 	dropped   func() uint64 // cumulative hops the Recorder has dropped for our subscription
 	cancelSub func()
@@ -96,6 +158,7 @@ func NewSessionManager(p *Proxy, rec *Recorder, entryTargets []string) *SessionM
 		proxy:    p,
 		rec:      rec,
 		sessions: map[string]*Session{},
+		ended:    map[string]*Session{},
 		entries:  map[string]bool{},
 		done:     make(chan struct{}),
 	}
@@ -114,10 +177,10 @@ func NewSessionManager(p *Proxy, rec *Recorder, entryTargets []string) *SessionM
 // subscription — see loop's drop check.
 const dropReason = "recorder dropped hops for this subscriber (buffer full, slow consumer) — capture is incomplete"
 
-func (m *SessionManager) loop(ch <-chan trace.Hop) {
+func (m *SessionManager) loop(ch <-chan HopEvent) {
 	defer close(m.done)
 	var lastDropped uint64
-	for h := range ch {
+	for ev := range ch {
 		// The Recorder's fan-out to our subscription channel is
 		// non-blocking (Record must never stall on a slow subscriber), so a
 		// full buffer silently drops hops rather than notifying us
@@ -130,7 +193,7 @@ func (m *SessionManager) loop(ch <-chan trace.Hop) {
 			lastDropped = d
 			m.degradeActiveSessions(dropReason)
 		}
-		m.route(h)
+		m.route(ev)
 	}
 }
 
@@ -147,18 +210,24 @@ func (m *SessionManager) degradeActiveSessions(reason string) {
 	}
 }
 
-func (m *SessionManager) route(h trace.Hop) {
+func (m *SessionManager) route(ev HopEvent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	h := ev.Hop
 
 	if h.Session != "" {
 		ses := m.sessions[h.Session]
 		if ses == nil {
-			return // session already ended; late hop is dropped
+			// Session already ended. The finalization of a hop the session
+			// kept while live is not a lost hop — only a fresh one counts.
+			if !ev.Updated {
+				if ended := m.ended[h.Session]; ended != nil {
+					ended.noteDropped()
+				}
+			}
+			return
 		}
-		ses.mu.Lock()
-		ses.hops = append(ses.hops, h)
-		ses.mu.Unlock()
+		ses.noteHop(h, ev.Updated)
 		return
 	}
 
@@ -191,12 +260,16 @@ func (m *SessionManager) route(h trace.Hop) {
 				ses.degrade(trace.VerdictDegraded,
 					fmt.Sprintf("propagation gap at %s: traceparent forwarded but baggage dropped before %s", at, h.To))
 				// The hop provably belongs to this session — keep it.
-				ses.mu.Lock()
-				ses.hops = append(ses.hops, h)
-				ses.mu.Unlock()
+				ses.noteHop(h, ev.Updated)
 			}
 			return
 		}
+	}
+
+	// A finalization is not a new arrival: the heuristic below already had
+	// its chance at the original event for this Seq.
+	if ev.Updated {
+		return
 	}
 
 	// Heuristic: context-less arrival mid-chain during active sessions.
@@ -219,7 +292,23 @@ func (m *SessionManager) route(h trace.Hop) {
 // port already in use surfaces ServeStoppable's own bind error unchanged;
 // this never silently falls back to a different port (design.md §6.1.2's
 // proxy.port addendum).
+//
+// The duplicate-id check runs BEFORE the edge listener binds. Binding
+// first meant a colliding Start briefly held a fixed proxy.port the live
+// session was about to need back, and with an ephemeral port it opened a
+// listener whose only future was being torn down — a caller retrying a
+// 409 in a loop could starve the port it was colliding over. The check is
+// repeated under the lock after the bind: two concurrent Starts with the
+// same never-before-seen id both pass the pre-check, and the second one
+// must still lose.
 func (m *SessionManager) Start(id, entryName, entryUpstream, host string, port int) (*Session, error) {
+	m.mu.Lock()
+	if _, exists := m.sessions[id]; exists {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("session %q already active: %w", id, ErrSessionActive)
+	}
+	m.mu.Unlock()
+
 	if host == "" {
 		host = "127.0.0.1"
 	}
@@ -250,6 +339,9 @@ func (m *SessionManager) Start(id, entryName, entryUpstream, host string, port i
 		return nil, fmt.Errorf("session %q already active: %w", id, ErrSessionActive)
 	}
 	m.sessions[id] = ses
+	// A restarted id sheds its ended predecessor: routing must find the
+	// LIVE session, and the old counters described a different run.
+	delete(m.ended, id)
 	return ses, nil
 }
 
@@ -264,11 +356,25 @@ func (m *SessionManager) Get(id string) *Session {
 }
 
 // End closes the session's edge listener and detaches it from routing.
-// Returns the finalized session, or nil if unknown.
+// Returns the finalized session, or nil if unknown. The session is
+// retained in the bounded ended map so hops still in flight when the map
+// entry vanished land on droppedHops instead of nowhere — see the ended
+// field's comment.
 func (m *SessionManager) End(id string) *Session {
 	m.mu.Lock()
 	ses := m.sessions[id]
 	delete(m.sessions, id)
+	if ses != nil {
+		if _, already := m.ended[id]; !already {
+			m.endedQ = append(m.endedQ, id)
+			if len(m.endedQ) > endedCap {
+				evict := m.endedQ[0]
+				m.endedQ = m.endedQ[1:]
+				delete(m.ended, evict)
+			}
+		}
+		m.ended[id] = ses
+	}
 	m.mu.Unlock()
 	if ses == nil {
 		return nil

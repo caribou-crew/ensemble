@@ -131,7 +131,7 @@ type Config struct {
 	Masks            map[string][]Rect `yaml:"masks"`
 	Thresholds       Thresholds        `yaml:"thresholds"`
 	OpenAPI          string            `yaml:"openapi"`
-	Redact           []RedactEntry     `yaml:"redact"`
+	Redact           RedactSection     `yaml:"redact"`
 	Deviations       string            `yaml:"deviations"`
 	// Gates holds the per-plane CI budget (percent of checkpoints/calls
 	// allowed to differ before the run fails). Plane keys are "pixel",
@@ -500,6 +500,81 @@ func validateListeners(c *Config) error {
 	return nil
 }
 
+// RedactSection is the whole `redact:` config key. It accepts two YAML
+// shapes: the original bare list of entries — every existing config, which
+// must keep loading unchanged — and a mapping form that exists for the
+// body-defaults opt-out:
+//
+//	redact:                    # list form: entries only
+//	  - password
+//	  - field: account_number
+//	    mode: encrypt
+//
+//	redact:                    # mapping form
+//	  body_defaults: off       # switch off built-in JSON-body redaction
+//	  fields:                  # the same entry list, under `fields:`
+//	    - password
+//
+// BodyDefaults is a *bool because absence and `on` must stay
+// distinguishable from each other in principle, and nil — every config that
+// exists today — means ON: the built-in secret-key list redacts JSON body
+// fields at capture unless a config explicitly turns that off. Absence
+// being the protective reading is this codebase's standing zero-value rule.
+type RedactSection struct {
+	Entries      []RedactEntry
+	BodyDefaults *bool
+}
+
+// BodyDefaultsOff reports whether this config explicitly opted out of the
+// built-in body redaction. The name states the polarity so a call site
+// reads as the exception it is.
+func (s RedactSection) BodyDefaultsOff() bool { return s.BodyDefaults != nil && !*s.BodyDefaults }
+
+func (s *RedactSection) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		return node.Decode(&s.Entries)
+	case yaml.MappingNode:
+		// Known-field enforcement by hand, matching RedactEntry's own
+		// UnmarshalYAML: a typo'd key must not silently decode as absent.
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			k, v := node.Content[i], node.Content[i+1]
+			switch k.Value {
+			case "body_defaults":
+				on, err := yamlSwitch(v)
+				if err != nil {
+					return fmt.Errorf("line %d: redact.body_defaults: %v", v.Line, err)
+				}
+				s.BodyDefaults = &on
+			case "fields":
+				if err := v.Decode(&s.Entries); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("line %d: field %s not found in type config.RedactSection — want body_defaults or fields (or the bare entry-list form)",
+					k.Line, k.Value)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("line %d: redact: must be an entry list or a {body_defaults, fields} mapping", node.Line)
+	}
+}
+
+// yamlSwitch reads an on/off value. yaml.v3 only resolves true/false as
+// booleans, and the documented spelling of this opt-out is `off` — so the
+// human words are accepted explicitly rather than surfacing as a baffling
+// "cannot unmarshal !!str `off` into bool".
+func yamlSwitch(node *yaml.Node) (bool, error) {
+	switch strings.ToLower(node.Value) {
+	case "on", "true", "yes":
+		return true, nil
+	case "off", "false", "no":
+		return false, nil
+	}
+	return false, fmt.Errorf("unknown value %q — want on or off", node.Value)
+}
+
 // RedactEntry is one entry of Config.Redact. It accepts two YAML shapes,
 // the same reason WireIgnoreEntry does:
 //
@@ -587,7 +662,7 @@ func RedactKeyRules(entries []RedactEntry) []trace.KeyRule {
 // RedactKeyRules is the Config-bound convenience form of the free function
 // above.
 func (c *Config) RedactKeyRules() []trace.KeyRule {
-	return RedactKeyRules(c.Redact)
+	return RedactKeyRules(c.Redact.Entries)
 }
 
 // WireIgnorePaths returns just the paths from Config.WireIgnore, for the
@@ -887,7 +962,7 @@ func Discover(cwd string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.Redact = append(c.Redact, redactOverlay...)
+	c.Redact.Entries = append(c.Redact.Entries, redactOverlay...)
 	// AFTER the overlay merge, never inside Load: a machine-written rule is
 	// a tolerance like any other, and a ratchet that exempted the writer
 	// nobody reviews would be aimed at the wrong half of the list. This is

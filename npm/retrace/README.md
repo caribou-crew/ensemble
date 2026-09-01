@@ -23,10 +23,10 @@ npx retrace run -- npx playwright test
 
 ## Supported platforms
 
-darwin (arm64, x64) and linux (arm64, x64) — the complete
-`optionalDependencies` list below. Windows isn't published here yet; build
-from source in the meantime (`go run ./retrace/cmd/retrace` from a checkout
-of [caribou-crew/ensemble](https://github.com/caribou-crew/ensemble)).
+darwin (arm64, x64), linux (arm64, x64), and windows (arm64, x64) — the
+complete `optionalDependencies` list below. Anything else: build from
+source (`go run ./retrace/cmd/retrace` from a checkout of
+[caribou-crew/ensemble](https://github.com/caribou-crew/ensemble)).
 
 ## Publishing
 

@@ -6,7 +6,10 @@
 package diff
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math"
 	"reflect"
 	"sort"
@@ -508,6 +511,17 @@ func parseBody(p trace.Payload) (any, bool) {
 }
 
 func diffBodyScope(scope string, aPayload, bPayload trace.Payload, ctx diffCtx, acc *bodyAcc) {
+	// A binary payload (BodyB64) is opaque: there is no field tree to walk
+	// and no text worth printing, so the comparison is equal/not-equal over
+	// the encoded bytes, and a difference is reported as a short summary
+	// (kind + size) rather than kilobytes of base64 in the report. One
+	// side binary and the other text is a difference by construction.
+	if aPayload.BodyB64 != "" || bPayload.BodyB64 != "" {
+		if aPayload.BodyB64 != bPayload.BodyB64 || aPayload.Body != bPayload.Body {
+			acc.record(scope, "", "changed", binarySummary(aPayload), binarySummary(bPayload), ctx)
+		}
+		return
+	}
 	av, aok := parseBody(aPayload)
 	bv, bok := parseBody(bPayload)
 	if !aok || !bok {
@@ -517,6 +531,25 @@ func diffBodyScope(scope string, aPayload, bPayload trace.Payload, ctx diffCtx, 
 		return
 	}
 	walk(scope, "", av, bv, ctx, acc)
+}
+
+// binarySummary renders one side of a binary body comparison for the
+// report: what kind of bytes and how many, plus a content hash so two
+// reports of the same drift are recognizably the same drift. Never the
+// bytes themselves.
+func binarySummary(p trace.Payload) string {
+	if p.BodyB64 == "" {
+		if p.Body == "" {
+			return "(empty)"
+		}
+		return fmt.Sprintf("text body, %d bytes", len(p.Body))
+	}
+	raw, err := base64.StdEncoding.DecodeString(p.BodyB64)
+	if err != nil {
+		return "binary body (undecodable base64)"
+	}
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("binary body, %d bytes, sha256:%x", len(raw), sum[:8])
 }
 
 // walk recurses a decoded JSON value pair, dispatching to diffObjects or

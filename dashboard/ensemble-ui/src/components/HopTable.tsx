@@ -230,6 +230,13 @@ export default function HopTable({ hops, selectedSeq, onSelectHop, onViewTrace }
               <td className="hop-table__path">
                 {hop.path}
                 {hop.preflight && <Badge tone="blue">preflight</Badge>}
+                {/* Refused, not proxied (WebSocket/gRPC) — red so it can't be
+                    mistaken for captured traffic. The 501 in the status column
+                    is the refusal, not an upstream response. */}
+                {hop.unsupported && <Badge tone="red">{hop.unsupported}</Badge>}
+                {hop.streaming && (
+                  <Badge tone="accent">{hop.t.doneMs === undefined ? 'streaming…' : 'stream'}</Badge>
+                )}
               </td>
               <td className={`hop-table__status-icon ${statusClass(hop)}`} aria-hidden="true">
                 {icon}

@@ -156,15 +156,15 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir)
-	if err != nil {
-		return fail(stderr, "replay: %v", err)
-	}
 	opts, err := replayOptions(cfg)
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
 	opts.AssertRequests = *assertRequests
+	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir, opts.Rules)
+	if err != nil {
+		return fail(stderr, "replay: %v", err)
+	}
 
 	// The replay run directory: where misses.jsonl, the adapter's
 	// screenshots and any flow markers land.
@@ -439,8 +439,9 @@ func printCandidates(w io.Writer, r refs.Reference) {
 	}
 }
 
-// replayListener is one bound replay port: its listener name (empty for
-// the no-`listeners:`-configured case), the socket, the *http.Server
+// replayListener is one bound replay port: its effective TargetFilter
+// (empty whenever the server answers unfiltered — the no-`listeners:`
+// case AND any single-listener config), the socket, the *http.Server
 // wrapping it, and the *replay.Server answering it — each with its OWN
 // *replay.Bundle (see bindReplayListeners) so two listeners under
 // concurrent load never mutate one Bundle's `used` counters from two
@@ -460,12 +461,19 @@ type replayListener struct {
 }
 
 // bindReplayListeners opens one loopback socket per configured listener and
-// wires each to its own replay.Server. entries empty means this config
-// never declared `listeners:` (nor the `upstream:` sugar that synthesizes
-// one) — an `entry:`-mode config replayed standalone, for instance — and
-// today's exact single-listener, unfiltered behavior is preserved: one
-// server bound at listenFlag, answering from every recorded exchange
-// regardless of Target.
+// wires each to its own replay.Server. The TargetFilter rule matches
+// startFixtureUpstreams' (cmd_run_fixtures.go): unfiltered — every
+// exchange eligible regardless of Target — whenever there is at most one
+// listener, since nothing could conflict; filtered to each listener's own
+// name only when there is more than one. At-most-one matters, not exactly
+// zero: an `entry:` + `upstream:` config (sample/retrace.yaml's fallback
+// pattern) reaches here with applyDefaults' synthesized single
+// "client-edge" listener, while its bundle — recorded attached to
+// ensemble — carries the ENTRY name as every exchange's Target; filtering
+// a lone listener by its own name turned that mismatch into a server that
+// answered 0 of the recording's exchanges. entries empty (no `listeners:`
+// and no `upstream:` sugar at all) still binds one server at listenFlag,
+// unfiltered, exactly as before.
 //
 // Every entry loads its OWN Bundle from bundleDir rather than sharing one:
 // replay.Bundle.Match mutates the bundle's `used` counters and is
@@ -480,8 +488,8 @@ type replayListener struct {
 // before returning, so a caller never has to reason about a partially
 // bound set of listeners.
 func bindReplayListeners(entries []config.ListenerEntry, listenFlag, bundleDir, cfgDir string, opts replay.Options, missesPath string) ([]replayListener, error) {
-	unfiltered := len(entries) == 0
-	if unfiltered {
+	unfiltered := len(entries) <= 1
+	if len(entries) == 0 {
 		entries = []config.ListenerEntry{{}}
 	}
 	var out []replayListener
@@ -500,7 +508,7 @@ func bindReplayListeners(entries []config.ListenerEntry, listenFlag, bundleDir, 
 			closeAll()
 			return nil, fmt.Errorf("cannot listen on %s: %w", addr, err)
 		}
-		b, err := replay.LoadBundle(bundleDir, cfgDir)
+		b, err := replay.LoadBundle(bundleDir, cfgDir, opts.Rules)
 		if err != nil {
 			ln.Close()
 			closeAll()
@@ -517,8 +525,12 @@ func bindReplayListeners(entries []config.ListenerEntry, listenFlag, bundleDir, 
 		// BindLoopbackCompanion's doc comment for why this is silent and
 		// never affects the advertised address below.
 		companion, _ := proxy.BindLoopbackCompanion(ln)
+		// name mirrors the server's own TargetFilter — "" when unfiltered,
+		// even for a named single listener — so assertRequestsWire's
+		// reference-hop filtering can never disagree with what the server
+		// actually answered from.
 		out = append(out, replayListener{
-			name:      l.Name,
+			name:      o.TargetFilter,
 			ln:        ln,
 			companion: companion,
 			httpSrv:   &http.Server{Handler: srv},

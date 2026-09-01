@@ -5,11 +5,24 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/caribou-crew/ensemble/ensemble/config"
 	"github.com/caribou-crew/ensemble/ensemble/orchestrator"
 )
+
+// crashedServices names every service currently in StatusCrashed, sorted
+// by appearance — the fail-fast trigger for `ensemble ready`.
+func crashedServices(services []orchestrator.ServiceState) []string {
+	var out []string
+	for _, s := range services {
+		if s.Status == orchestrator.StatusCrashed {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
 
 // readinessPollInterval is how often `ensemble ready` re-polls GET
 // /api/status while waiting for the orchestrator's readiness state to
@@ -43,6 +56,19 @@ func cmdReady(args []string, stdout, stderr io.Writer) int {
 		res, err = c.Status(context.Background())
 		if err != nil {
 			fmt.Fprintf(stderr, "ensemble: ready: %v\n", err)
+			return 1
+		}
+		// A crashed service fails fast: a crash never heals on its own (no
+		// auto-restart), so waiting out the timeout would only delay the
+		// same non-zero exit.
+		if crashed := crashedServices(res.Services); len(crashed) > 0 {
+			if *jsonOut {
+				if code := printJSON(stdout, map[string]any{"ready": false, "crashed": crashed, "checks": res.Readiness.Checks}); code != 0 {
+					return code
+				}
+				return 1
+			}
+			fmt.Fprintf(stderr, "ensemble: not ready: crashed: %s\n", strings.Join(crashed, ", "))
 			return 1
 		}
 		if res.Readiness.State == orchestrator.ReadinessReady || res.Readiness.State == orchestrator.ReadinessNotReady {

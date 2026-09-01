@@ -10,6 +10,7 @@ import type {
   ServiceState,
   Topology,
   ProfilesState,
+  WiringWarning,
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
@@ -104,6 +105,27 @@ export interface TrafficParams {
   [key: string]: string | number | boolean | undefined;
 }
 
+export interface TrafficHistoryParams {
+  before?: number;
+  limit?: number;
+  errorsOnly?: boolean;
+  session?: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  // See TrafficParams above for why this is explicit rather than inferred.
+  [key: string]: string | number | boolean | undefined;
+}
+
+export interface TrafficHistoryResponse {
+  /** Newest-first, per GET /api/traffic/history's contract. */
+  hops: Hop[];
+  /** Malformed hops.jsonl lines skipped while building this page. */
+  corruptLines: number;
+  /** Whether hops older than the oldest one in this page still exist. */
+  hasMore: boolean;
+}
+
 export interface TraceResponse {
   hops: Hop[];
   logical: LogicalHop[];
@@ -128,9 +150,30 @@ export const api = {
     return request<Topology>("/api/topology");
   },
 
+  /** Proxy-wiring warnings (GET /api/status's `warnings` field) — a separate call from
+   * `status()` rather than widening its return type, since most `status()` callers (the
+   * health strip, TopologyView) have no use for them and `status()`'s own shape is already
+   * relied on elsewhere as `ServiceState[]`. Never null on the wire. */
+  wiringWarnings(): Promise<WiringWarning[]> {
+    return request<{ warnings?: WiringWarning[] }>("/api/status").then(
+      (r) => r.warnings ?? [],
+    );
+  },
+
   traffic(params: TrafficParams = {}): Promise<Hop[]> {
     return request<{ hops: Hop[] }>(`/api/traffic${query(params)}`).then(
       (r) => r.hops,
+    );
+  },
+
+  /** Persisted history beyond the live ring — GET /api/traffic/history,
+   * paged backwards by `before`. Powers the Traffic view's "load
+   * earlier" affordance. */
+  trafficHistory(
+    params: TrafficHistoryParams = {},
+  ): Promise<TrafficHistoryResponse> {
+    return request<TrafficHistoryResponse>(
+      `/api/traffic/history${query(params)}`,
     );
   },
 

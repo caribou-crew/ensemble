@@ -103,6 +103,7 @@ func apiError(method, path string, status int, body []byte) error {
 type StatusResponse struct {
 	Services  []orchestrator.ServiceState    `json:"services"`
 	Readiness orchestrator.ReadinessSnapshot `json:"readiness"`
+	Warnings  []config.WiringWarning         `json:"warnings"`
 }
 
 func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
@@ -285,6 +286,14 @@ type TrafficResponse struct {
 }
 
 func (c *Client) Traffic(ctx context.Context, since uint64, limit int, errorsOnly bool) (TrafficResponse, error) {
+	return c.TrafficFiltered(ctx, since, limit, errorsOnly, "")
+}
+
+// TrafficFiltered is Traffic plus a session id filter (GET
+// /api/traffic?session=), split out rather than adding a parameter to
+// Traffic so its existing call sites don't all need updating for a filter
+// most of them don't use.
+func (c *Client) TrafficFiltered(ctx context.Context, since uint64, limit int, errorsOnly bool, session string) (TrafficResponse, error) {
 	q := url.Values{}
 	if since > 0 {
 		q.Set("since", strconv.FormatUint(since, 10))
@@ -294,6 +303,9 @@ func (c *Client) Traffic(ctx context.Context, since uint64, limit int, errorsOnl
 	}
 	if errorsOnly {
 		q.Set("errorsOnly", "true")
+	}
+	if session != "" {
+		q.Set("session", session)
 	}
 	path := "/api/traffic"
 	if enc := q.Encode(); enc != "" {
@@ -388,6 +400,21 @@ func (c *Client) Trace(ctx context.Context, traceID string) (TraceResponse, erro
 // not re-decoded.
 func (c *Client) TraceExport(ctx context.Context, traceID, format string) (string, error) {
 	path := fmt.Sprintf("/api/traces/%s/export?format=%s", url.PathEscape(traceID), url.QueryEscape(format))
+	status, data, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", err
+	}
+	if status >= 400 {
+		return "", apiError(http.MethodGet, path, status, data)
+	}
+	return string(data), nil
+}
+
+// SessionExport returns the raw export body (JSON text) for every hop
+// carrying sessionID (ring + disk history) as one HAR — the multi-trace
+// counterpart to TraceExport. format is currently always "har".
+func (c *Client) SessionExport(ctx context.Context, sessionID, format string) (string, error) {
+	path := fmt.Sprintf("/api/sessions/%s/export?format=%s", url.PathEscape(sessionID), url.QueryEscape(format))
 	status, data, err := c.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return "", err

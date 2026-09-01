@@ -14,6 +14,13 @@ const heartbeatInterval = 15 * time.Second
 // handleTrafficStream serves GET /api/traffic/stream?since=<seq>: replays
 // retained hops with Seq > since, then streams live ones as they're
 // recorded, honoring client disconnect via the request context.
+//
+// Two event names share the stream: `hop` is a fresh hop (a new Seq), and
+// `hop.updated` is a finalization re-delivering a Seq already sent — a
+// streaming hop closing with its duration and final body. Consumers upsert
+// by seq on the latter; a consumer that only listens for `hop` (any
+// pre-change client) simply keeps the headers-time snapshot, which is the
+// compatible degradation.
 func (s *server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -38,15 +45,19 @@ func (s *server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case h, open := <-ch:
+		case ev, open := <-ch:
 			if !open {
 				return
 			}
-			b, err := json.Marshal(h)
+			b, err := json.Marshal(ev.Hop)
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: hop\ndata: %s\n\n", b); err != nil {
+			event := "hop"
+			if ev.Updated {
+				event = "hop.updated"
+			}
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
 				return
 			}
 			flusher.Flush()

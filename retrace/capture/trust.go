@@ -59,6 +59,11 @@ type AssessInput struct {
 	SessionVerdict      trace.Verdict
 	SessionReasons      []string
 	Notes               []string // Session.trustNotes (drain shortfall, teardown failure)
+	// DroppedHops is ensemble's count of hops routed to this run's session
+	// after it ended (EndReport.DroppedHops). Non-zero degrades the verdict
+	// AND is carried onto CaptureTrust.DroppedHops so the manifest records
+	// the number, not just the complaint (roadmap F.3).
+	DroppedHops uint64
 	// HopSource is the configured hop-source kind when it is NOT ensemble's
 	// own control plane. Empty for every run recorded the way runs have
 	// always been recorded, so the reason below appears only when there is
@@ -199,6 +204,15 @@ func Assess(in AssessInput) runs.CaptureTrust {
 		add("capture-note", trace.VerdictSuspect, n, "re-run if the recording matters; the artifact may be incomplete")
 	}
 
+	// A proven loss, not a heuristic: ensemble counted these hops arriving
+	// for the session after End, so the recording is known to be short by
+	// exactly this many. Degraded, same rank as any other proven gap.
+	if in.DroppedHops > 0 {
+		add("dropped-hops", trace.VerdictDegraded,
+			fmt.Sprintf("%d hop(s) were routed to this session after it ended and were not recorded", in.DroppedHops),
+			"end the session later (or drain longer) if those calls matter; the recording is missing them")
+	}
+
 	if len(gaps) > 0 {
 		longest := gaps[0]
 		for _, g := range gaps {
@@ -229,7 +243,7 @@ func Assess(in AssessInput) runs.CaptureTrust {
 	for _, r := range reasons {
 		status = status.Worse(r.Status)
 	}
-	out := runs.CaptureTrust{Status: status, Reasons: reasons, Gaps: gaps, Summary: "capture looks complete"}
+	out := runs.CaptureTrust{Status: status, Reasons: reasons, Gaps: gaps, Summary: "capture looks complete", DroppedHops: in.DroppedHops}
 	// The summary names the WORST evidence — which, on a clean capture, is no
 	// evidence at all. Guarded on status rather than only on the loop below:
 	// an informational reason (hop-source) also carries VerdictOK, and without

@@ -88,7 +88,7 @@ func (m model) Init() tea.Cmd {
 func (m *model) fetchActive() tea.Cmd {
 	switch m.active {
 	case tabServices:
-		return tea.Batch(fetchStatus(m.client), fetchTopology(m.client))
+		return tea.Batch(fetchStatus(m.client), fetchTopology(m.client), m.services.logPollCmd(m.client))
 	case tabLatency:
 		return fetchLatency(m.client)
 	case tabProfiles:
@@ -121,6 +121,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case actionMsg:
 		m.services.applyAction(msg)
+		return m, nil
+	case serviceLogMsg:
+		m.services.applyLog(msg)
 		return m, nil
 	case latencyMsg:
 		m.latency.applyLatency(msg)

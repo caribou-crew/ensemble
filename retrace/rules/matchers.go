@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 var (
@@ -69,6 +71,12 @@ var named = map[string]func(any) bool{
 		s, ok := v.(string)
 		return ok && httpDateRe.MatchString(s) && parses(s, http.TimeFormat)
 	},
+	// The recorded side asserts "something secret was here" — the destroy-mode
+	// redaction sentinel — and the live side may then be anything: see
+	// Classify, which evaluates this one ASYMMETRICALLY (recorded side only)
+	// where every other named matcher must hold on both sides. Same trust
+	// model as uuid/iso8601: the recorded value asserts shape, not content.
+	"redacted": func(v any) bool { s, ok := v.(string); return ok && s == trace.Redacted },
 	// Accepts a JSON number too — a body field carries 1760, a header "1760".
 	// Also accepts Go's own integer kinds: every value that reaches Classify
 	// from encoding/json arrives as float64, but a Go-side caller (a test,
@@ -248,6 +256,18 @@ func Classify(m Matcher, a, b any, bothPresent bool) Outcome {
 	}
 	ready, ok := m.ready()
 	if !ok {
+		return Violation
+	}
+	// `redacted` is the one ASYMMETRIC matcher: the RECORDED side (a, by the
+	// convention every caller already follows — reference/fixture first) must
+	// be the destroy-mode sentinel, and the live side may then be anything —
+	// "something secret was here" cannot demand the live request also send
+	// the literal sentinel. A recorded value that is NOT the sentinel is a
+	// Violation like any other unsatisfied named matcher.
+	if ready.Kind == KindNamed && ready.Name == "redacted" {
+		if ready.satisfies(a) {
+			return Tolerated
+		}
 		return Violation
 	}
 	if ready.satisfies(a) && ready.satisfies(b) {

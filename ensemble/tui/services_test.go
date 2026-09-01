@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -145,3 +146,60 @@ var errBoom = &staticError{"boom"}
 type staticError struct{ s string }
 
 func (e *staticError) Error() string { return e.s }
+
+func TestServicesPanelLogKeyOpensLogView(t *testing.T) {
+	p := newServicesPanel()
+	p.setServices([]orchestrator.ServiceState{{Name: "catalog", Status: orchestrator.StatusHealthy}})
+	fc := &fakeAPIClient{logsContent: "hello-log\nline-2\n"}
+
+	cmd := p.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")}, fc)
+	if p.logService != "catalog" {
+		t.Fatalf("logService = %q, want catalog", p.logService)
+	}
+	if cmd == nil {
+		t.Fatal("expected a log fetch Cmd")
+	}
+	msg, ok := cmd().(serviceLogMsg)
+	if !ok || msg.service != "catalog" {
+		t.Fatalf("unexpected msg: %#v", msg)
+	}
+	if got := fc.Calls(); len(got) != 1 || got[0] != "logs:catalog" {
+		t.Fatalf("expected client.ServiceLogs(catalog), got %v", got)
+	}
+	p.applyLog(msg)
+	if view := p.view(80, 20); !strings.Contains(view, "hello-log") {
+		t.Fatalf("log view should show the fetched tail, got:\n%s", view)
+	}
+
+	// esc closes the view and drops the buffered content.
+	p.update(tea.KeyMsg{Type: tea.KeyEsc}, fc)
+	if p.logService != "" || p.logContent != "" {
+		t.Fatalf("esc should close the log view, got %q/%q", p.logService, p.logContent)
+	}
+}
+
+// A log fetch resolving after the view was closed (or switched) must not
+// resurrect stale content.
+func TestServicesPanelStaleLogResultIsDropped(t *testing.T) {
+	p := newServicesPanel()
+	p.applyLog(serviceLogMsg{service: "catalog", content: "stale"})
+	if p.logContent != "" {
+		t.Fatalf("logContent = %q, want empty when no log view is open", p.logContent)
+	}
+}
+
+func TestServicesPanelRendersExitStates(t *testing.T) {
+	p := newServicesPanel()
+	code := 1
+	p.setServices([]orchestrator.ServiceState{
+		{Name: "catalog", Status: orchestrator.StatusCrashed, ExitCode: &code},
+		{Name: "worker", Status: orchestrator.StatusExited, ExitCode: new(int)},
+	})
+	rows := p.table.Rows()
+	if rows[0][1] != "crashed (exit 1)" {
+		t.Errorf("crashed row status = %q, want \"crashed (exit 1)\"", rows[0][1])
+	}
+	if rows[1][1] != "exited (exit 0)" {
+		t.Errorf("exited row status = %q, want \"exited (exit 0)\"", rows[1][1])
+	}
+}

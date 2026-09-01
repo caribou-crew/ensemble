@@ -499,3 +499,66 @@ func TestNoTargetFilterMatchesEitherTargetLikeBeforeMultiListener(t *testing.T) 
 		t.Fatalf("expected an unfiltered hit: %+v", got)
 	}
 }
+
+// TestRedactedRequestFieldMatchesAnyLiveValue pins the spec's
+// "Redacting a request field SHALL NOT by itself cause a replay miss": a
+// recorded body field carrying the destroy-mode sentinel is a built-in
+// wildcard — no rule required — while an ABSENT live field, or a live
+// sentinel against a recorded plaintext, stays a real difference.
+func TestRedactedRequestFieldMatchesAnyLiveValue(t *testing.T) {
+	b := bundleOf(
+		exch("POST", "/login", "", obj(t, `{"user":"a","password":"`+trace.Redacted+`"}`), 200, `{"ok":true}`, 1),
+	)
+	got := b.Match(Request{Method: "POST", Path: "/login", Body: obj(t, `{"user":"a","password":"hunter2"}`)}, Options{})
+	if got.Miss || got.Hit == nil {
+		t.Fatalf("redacted password should match any live value, got %+v", got.Diff)
+	}
+
+	// Nested, and a non-string live value: still a wildcard.
+	b = bundleOf(
+		exch("POST", "/pay", "", obj(t, `{"card":{"token":"`+trace.Redacted+`"}}`), 200, `{}`, 1),
+	)
+	got = b.Match(Request{Method: "POST", Path: "/pay", Body: obj(t, `{"card":{"token":12345}}`)}, Options{})
+	if got.Miss {
+		t.Fatalf("nested redacted field should match a non-string live value, got %+v", got.Diff)
+	}
+
+	// The key must still be present: a client that never sends the field is
+	// not sending "any value".
+	got = b.Match(Request{Method: "POST", Path: "/pay", Body: obj(t, `{"card":{}}`)}, Options{})
+	if !got.Miss {
+		t.Fatal("an absent field must stay a miss even when the recording redacted it")
+	}
+
+	// The wildcard is one-directional: a recorded plaintext value is not
+	// excused by the LIVE side sending the sentinel.
+	b = bundleOf(
+		exch("POST", "/login", "", obj(t, `{"password":"real"}`), 200, `{}`, 1),
+	)
+	got = b.Match(Request{Method: "POST", Path: "/login", Body: obj(t, `{"password":"`+trace.Redacted+`"}`)}, Options{})
+	if !got.Miss {
+		t.Fatal("live sentinel against recorded plaintext must miss")
+	}
+}
+
+// TestRedactedQueryParamMatchesAnyLiveValue is the query half of the same
+// spec requirement: `token=[redacted]` recorded admits `token=abc` live —
+// and only that key; a differing unredacted param still discriminates, and
+// an absent live param is still a miss.
+func TestRedactedQueryParamMatchesAnyLiveValue(t *testing.T) {
+	b := bundleOf(
+		exch("GET", "/me", "token="+trace.Redacted+"&page=1", nil, 200, `{"me":true}`, 1),
+	)
+	got := b.Match(Request{Method: "GET", Path: "/me", Query: "token=abc&page=1"}, Options{})
+	if got.Miss || got.Hit == nil {
+		t.Fatalf("redacted query param should match any live value: %+v", got.Diff)
+	}
+	got = b.Match(Request{Method: "GET", Path: "/me", Query: "token=abc&page=2"}, Options{})
+	if !got.Miss {
+		t.Fatal("an unredacted param that differs must still miss")
+	}
+	got = b.Match(Request{Method: "GET", Path: "/me", Query: "page=1"}, Options{})
+	if !got.Miss {
+		t.Fatal("a live request missing the redacted param entirely must still miss")
+	}
+}

@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"sort"
@@ -1163,4 +1164,44 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 
 	dev := Deviation{ID: "d1", Status: "approved", Apps: [2]string{"a", "b"}, Method: "GET", Path: "/x", Reason: "expected"}
 	assertJSONKeys(t, dev, []string{"id", "status", "apps", "method", "path", "reason"})
+}
+
+// TestBinaryBodiesDiffAsOpaqueHashesNeverAsFieldTrees: a BodyB64 payload
+// has no field tree to walk — equal bytes diff clean, different bytes
+// produce ONE change whose rendered sides are short summaries (kind, size,
+// hash), never the base64 itself; and binary vs text is a difference by
+// construction.
+func TestBinaryBodiesDiffAsOpaqueHashesNeverAsFieldTrees(t *testing.T) {
+	bin := func(b []byte) trace.Payload {
+		return trace.Payload{BodyB64: base64.StdEncoding.EncodeToString(b)}
+	}
+
+	same := &bodyAcc{}
+	diffBodyScope("resp", bin([]byte{0x00, 0x01}), bin([]byte{0x00, 0x01}), diffCtx{}, same)
+	if len(same.Diff) != 0 {
+		t.Fatalf("identical binary bodies diffed: %+v", same.Diff)
+	}
+
+	acc := &bodyAcc{}
+	diffBodyScope("resp", bin([]byte{0x00, 0x01}), bin([]byte{0x00, 0x02}), diffCtx{}, acc)
+	if len(acc.Diff) != 1 {
+		t.Fatalf("diff = %+v, want exactly one opaque change", acc.Diff)
+	}
+	da, _ := acc.Diff[0].A.(string)
+	db, _ := acc.Diff[0].B.(string)
+	if !strings.Contains(da, "sha256:") || !strings.Contains(db, "sha256:") || !strings.Contains(da, "2 bytes") {
+		t.Fatalf("sides = %q / %q, want kind+size+hash summaries", da, db)
+	}
+	if strings.Contains(da, base64.StdEncoding.EncodeToString([]byte{0x00, 0x01})) {
+		t.Fatalf("report leaks the base64 bytes: %q", da)
+	}
+
+	mixed := &bodyAcc{}
+	diffBodyScope("resp", bin([]byte{0x00}), trace.Payload{Body: `{"a":1}`}, diffCtx{}, mixed)
+	if len(mixed.Diff) != 1 {
+		t.Fatalf("binary-vs-text = %+v, want exactly one change", mixed.Diff)
+	}
+	if mb, _ := mixed.Diff[0].B.(string); !strings.Contains(mb, "text body") {
+		t.Fatalf("binary-vs-text sides = %+v, want the text side named", mixed.Diff[0])
+	}
 }

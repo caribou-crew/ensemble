@@ -13,10 +13,16 @@ const PLATFORM_PACKAGES = {
   'darwin-x64': '@caribou-crew/retrace-darwin-x64',
   'linux-arm64': '@caribou-crew/retrace-linux-arm64',
   'linux-x64': '@caribou-crew/retrace-linux-x64',
+  'win32-arm64': '@caribou-crew/retrace-win32-arm64',
+  'win32-x64': '@caribou-crew/retrace-win32-x64',
 };
 
 const key = `${process.platform}-${process.arch}`;
 const pkg = PLATFORM_PACKAGES[key];
+// The windows packages ship bin/retrace.exe — the suffix goreleaser gives
+// the binary and the one Windows needs to exec it (see
+// scripts/prepare-npm-binary.mjs).
+const binFile = process.platform === 'win32' ? 'retrace.exe' : 'retrace';
 
 if (!pkg) {
   console.error(
@@ -29,7 +35,7 @@ if (!pkg) {
 
 let binPath;
 try {
-  binPath = require.resolve(`${pkg}/bin/retrace`);
+  binPath = require.resolve(`${pkg}/bin/${binFile}`);
 } catch {
   console.error(
     `@caribou-crew/retrace: the optional dependency "${pkg}" is not installed.\n` +

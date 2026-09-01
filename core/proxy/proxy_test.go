@@ -134,8 +134,11 @@ func TestThreeHopChainThroughOneProcess(t *testing.T) {
 	if a.Req.Headers["authorization"] != trace.Redacted {
 		t.Fatalf("authorization not redacted: %q", a.Req.Headers["authorization"])
 	}
-	if a.Req.Body != `{"token":"secret-1"}` {
-		t.Fatalf("request body not captured: %q", a.Req.Body)
+	// "token" is on the default secret-key list, so the captured body carries
+	// the destroyed value — capture still proves the body reached the
+	// recorder, without the secret itself surviving to disk.
+	if a.Req.Body != `{"token":"`+trace.Redacted+`"}` {
+		t.Fatalf("request body not captured/redacted: %q", a.Req.Body)
 	}
 	if a.Resp.Body != `{"front":true}` {
 		t.Fatalf("response body not captured: %q", a.Resp.Body)

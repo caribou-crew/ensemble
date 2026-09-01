@@ -257,6 +257,7 @@ func (s *Session) RecordExternalHops(hops []trace.Hop) error {
 	if err != nil {
 		return fmt.Errorf("capture: rebuilding the redactor for external hops: %w", err)
 	}
+	red.SetBodyDefaults(!s.redactBodyDefaultsOff)
 	n := 0
 	if err := writeHops(s.Paths.HopsPath, hops, red, func(trace.Hop) bool { return true }, &n); err != nil {
 		return err

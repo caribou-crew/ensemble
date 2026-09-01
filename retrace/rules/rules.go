@@ -30,6 +30,16 @@ type Raw struct {
 	// check: same match, different stated reason, and the newer reason is
 	// worth keeping.
 	Why string `json:"why,omitempty" yaml:"why"`
+	// Exclude drops every matching exchange from a reference bundle at
+	// load (replay.LoadBundle) — the escape hatch for an exchange the
+	// loader would otherwise refuse the whole bundle over (a truncated
+	// body, Content-Encoding, a 206 partial). A live request matching the
+	// excluded route then misses with the standard explained 501: the
+	// exchange is out of the contract, never answered wrong. Unlike Why on
+	// an ordinary rule, an exclude's Why is MANDATORY regardless of
+	// require_why — dropping a recorded exchange is the strongest tolerance
+	// there is, and Normalize refuses one with no stated reason.
+	Exclude bool `json:"exclude,omitempty" yaml:"exclude"`
 }
 
 // BodyRule and Rule are not wire types — like Matcher, they never cross a
@@ -46,6 +56,7 @@ type Rule struct {
 	Path    string // "" = any
 	Headers map[string]Matcher
 	Body    []BodyRule
+	Exclude bool // see Raw.Exclude
 }
 
 // Normalize validates and lowers a config's raw rules. Map iteration order
@@ -62,7 +73,10 @@ func Normalize(raw []Raw) ([]Rule, error) {
 	out := make([]Rule, 0, len(raw))
 	for i, r := range raw {
 		where := fmt.Sprintf("wireRules[%d]", i)
-		rule := Rule{Method: strings.ToUpper(r.Method), Path: r.Path, Headers: map[string]Matcher{}}
+		if r.Exclude && strings.TrimSpace(r.Why) == "" {
+			return nil, fmt.Errorf("%s: exclude: true requires a why — dropping a recorded exchange from the reference is the strongest tolerance there is, and an unexplained one is indistinguishable from a rule added to make a failing load go away", where)
+		}
+		rule := Rule{Method: strings.ToUpper(r.Method), Path: r.Path, Headers: map[string]Matcher{}, Exclude: r.Exclude}
 		for _, name := range sortedKeys(r.Headers) {
 			m, err := ParseMatcher(r.Headers[name], where+".headers."+name)
 			if err != nil {

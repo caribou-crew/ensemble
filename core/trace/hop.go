@@ -70,6 +70,15 @@ type Hop struct {
 	// nothing a client puts in that header reaches disk, a UI, or a group-by
 	// key unexamined.
 	Client string `json:"client,omitempty"`
+	// Streaming marks a hop recorded at response-headers time for a response
+	// identified as streaming (SSE, or chunked with no Content-Length). Such
+	// a hop is finalized in place — duration and final body filled in — when
+	// the stream closes; until then DoneMs is zero.
+	Streaming bool `json:"streaming,omitempty"`
+	// Unsupported names a protocol the proxy detected and refused rather
+	// than silently breaking: "websocket" or "grpc". The hop's status is the
+	// 501 the proxy answered with; nothing was forwarded upstream.
+	Unsupported string `json:"unsupported,omitempty"`
 }
 
 // Timings breaks a hop into the three observable moments at the proxy.
@@ -81,10 +90,24 @@ type Timings struct {
 
 // Payload is one side of a hop. Body is raw text (JSON stays JSON);
 // Truncated marks a size-capped body.
+//
+// A body that is not valid UTF-8, or whose content type is a known-binary
+// family, is stored base64-encoded in BodyB64 instead of Body — the two are
+// mutually exclusive, and BodyB64 keeps capture lossless where a Go string
+// round-trip through encoding/json would corrupt the bytes (invalid UTF-8
+// becomes U+FFFD). Truncated applies to whichever field is populated.
+//
+// SetCookies preserves every Set-Cookie response header value, in order —
+// the flattened Headers map joins repeated values with ", ", which is lossy
+// for cookies specifically (cookie attributes themselves contain commas).
+// When present it is authoritative for replay; Headers keeps the joined
+// form for back-compat readers.
 type Payload struct {
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      string            `json:"body,omitempty"`
-	Truncated bool              `json:"truncated,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       string            `json:"body,omitempty"`
+	BodyB64    string            `json:"bodyB64,omitempty"`
+	SetCookies []string          `json:"setCookies,omitempty"`
+	Truncated  bool              `json:"truncated,omitempty"`
 }
 
 // ErrEOF reports a clean end of an NDJSON stream.

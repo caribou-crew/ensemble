@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -23,26 +24,37 @@ var defaultRedactHeaders = []string{
 	"x-amz-security-token", "x-goog-api-key",
 }
 
-// defaultRedactQuery names query parameters whose VALUES are always
-// redacted in Hop.Path, on top of the shared key set.
+// defaultRedactBodyKeys names parameters/fields whose VALUES are secrets by
+// definition: it drives both query-string redaction (Hop.Path) and the
+// default JSON-body redaction, so the two can never disagree about what
+// counts as a secret key. Kept separate from defaultRedactHeaders, which is
+// the header-name list.
 //
-// Kept separate from defaultRedactHeaders because the shared key set
-// applies to headers AND JSON body fields: a URL carrying "?token=" is a
-// credential in transit — it lands in the hop log, every export, and the
-// shell history of whoever runs the curl export — while a body field named
-// "token" is frequently the exact value a developer is debugging (a login
-// response, a refresh flow), and redaction is irreversible.
+// Applied to bodies in DESTROY mode only — a stack that legitimately records
+// fixture credentials opts out with retrace's `redact: { body_defaults: off }`
+// (see SetBodyDefaults), and a user rule for the same key (e.g. mode encrypt
+// or display) always wins over the default.
+var defaultRedactBodyKeys = []string{
+	"access_token", "refresh_token", "id_token", "token",
+	"api_key", "apikey", "client_secret",
+	"signature", "x-amz-signature", "sig", "password", "pwd",
+}
+
+// defaultRedactQuery is defaultRedactBodyKeys as a lookup set, for Hop.Path
+// query redaction and the body walker.
 var defaultRedactQuery = func() map[string]bool {
 	m := map[string]bool{}
-	for _, k := range []string{
-		"access_token", "refresh_token", "id_token", "token",
-		"api_key", "apikey", "client_secret",
-		"signature", "x-amz-signature", "sig", "password", "pwd",
-	} {
+	for _, k := range defaultRedactBodyKeys {
 		m[k] = true
 	}
 	return m
 }()
+
+// IsSecretKey reports whether a field/parameter/header NAME is on the
+// built-in secret-key list (case-insensitive). Exported for retrace's
+// accept-time secret scan, which must flag exactly the keys this package
+// would have redacted — one list, two consumers.
+func IsSecretKey(k string) bool { return defaultRedactQuery[strings.ToLower(k)] }
 
 // Mode is how a redaction key's matched value is treated at capture.
 type Mode string
@@ -89,6 +101,9 @@ type Redactor struct {
 	keys    map[string]Mode // lowercased; headers AND body fields
 	maxBody int
 	dataKey []byte // 32-byte AES-256-GCM key; nil when no rule needs it
+	// bodyDefaults applies defaultRedactBodyKeys (destroy mode) to JSON body
+	// fields on top of the user key list. On by default — see SetBodyDefaults.
+	bodyDefaults bool
 }
 
 // NewRedactor builds a Redactor from rules plus the built-in header list
@@ -123,57 +138,129 @@ func NewRedactor(rules []KeyRule, maxBody int, dataKey []byte) (*Redactor, error
 		}
 		keys[strings.ToLower(r.Key)] = mode
 	}
-	return &Redactor{keys: keys, maxBody: maxBody, dataKey: dataKey}, nil
+	return &Redactor{keys: keys, maxBody: maxBody, dataKey: dataKey, bodyDefaults: true}, nil
 }
 
-// apply transforms one matched value per its mode. ModeEncrypt cannot fail
-// here in practice: NewRedactor already refused to build a Redactor with an
-// encrypt rule and no (or malformed) data key, so a failure at this point
-// means that invariant broke, not a bad input — the same "unrecoverable"
-// framing this package already gives a crypto/rand failure elsewhere.
-func (r *Redactor) apply(mode Mode, v string) string {
+// SetBodyDefaults switches the built-in body-field redaction
+// (defaultRedactBodyKeys, destroy mode) on or off — retrace's
+// `redact: { body_defaults: off }` opt-out, for stacks that legitimately
+// record fixture credentials in bodies. Header and query-string defaults are
+// unaffected: a credential in a URL lands in the hop log, every export, and
+// shell history, and is never fixture data worth keeping.
+func (r *Redactor) SetBodyDefaults(on bool) { r.bodyDefaults = on }
+
+// apply transforms one matched value per its mode. ModeEncrypt should not
+// fail in practice — NewRedactor already refused to build a Redactor with an
+// encrypt rule and no (or malformed) data key — but a broken invariant
+// surfaces as an ERROR, not a panic: this runs inside Record on the live
+// path, and the recorder degrades the hop (payloads dropped, Err set) rather
+// than killing the request. The value returned alongside a non-nil error is
+// the DESTROYED marker, never the plaintext, so even a caller that
+// mishandles the error cannot leak the value it failed to seal.
+func (r *Redactor) apply(mode Mode, v string) (string, error) {
 	switch mode {
 	case ModeDisplay:
-		return v
+		return v, nil
 	case ModeEncrypt:
 		marker, err := EncryptField(r.dataKey, v)
 		if err != nil {
-			panic("trace: " + err.Error())
+			return Redacted, err
 		}
-		return marker
+		return marker, nil
 	default:
-		return Redacted
+		return Redacted, nil
 	}
 }
 
 // Payload returns a scrubbed copy: matching headers replaced per their
 // mode, matching JSON body fields replaced recursively, then the body
-// size-capped.
-func (r *Redactor) Payload(p Payload) Payload {
+// size-capped. On error the returned Payload is still fully scrubbed — a
+// value that could not be sealed was destroyed instead (see apply) — and the
+// FIRST failure is reported; the caller decides how loudly to degrade.
+func (r *Redactor) Payload(p Payload) (Payload, error) {
+	var firstErr error
 	if p.Headers != nil {
 		h := make(map[string]string, len(p.Headers))
 		for k, v := range p.Headers {
 			if mode, ok := r.keys[strings.ToLower(k)]; ok {
-				v = r.apply(mode, v)
+				red, err := r.apply(mode, v)
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				v = red
 			}
 			h[k] = v
 		}
 		p.Headers = h
 	}
-	p.Body = r.redactBody(p.Body)
+	// SetCookies carries the same values as the set-cookie header, one per
+	// cookie — it must be scrubbed under the same key (always present in
+	// r.keys via defaultRedactHeaders, whatever mode a user configured), or
+	// the ordered list would leak exactly what the joined header redacts.
+	if len(p.SetCookies) > 0 {
+		if mode, ok := r.keys["set-cookie"]; ok {
+			cookies := make([]string, len(p.SetCookies))
+			for i, v := range p.SetCookies {
+				red, err := r.apply(mode, v)
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				cookies[i] = red
+			}
+			p.SetCookies = cookies
+		}
+	}
+	body, err := r.redactBody(p.Body)
+	if err != nil && firstErr == nil {
+		firstErr = err
+	}
+	p.Body = body
 	if r.maxBody > 0 && len(p.Body) > r.maxBody {
 		p.Body = p.Body[:r.maxBody]
 		p.Truncated = true
 	}
-	return p
+	// A base64 body (binary capture) is never walked — it is not JSON — but
+	// the size cap still applies to the bytes it encodes: truncating the
+	// base64 STRING mid-quantum would corrupt every byte after the cut, so
+	// the cap decodes, cuts, and re-encodes. An undecodable value is left
+	// alone; downstream consumers refuse it on their own terms.
+	if r.maxBody > 0 && len(p.BodyB64) > base64.StdEncoding.EncodedLen(r.maxBody) {
+		if raw, err := base64.StdEncoding.DecodeString(p.BodyB64); err == nil && len(raw) > r.maxBody {
+			p.BodyB64 = base64.StdEncoding.EncodeToString(raw[:r.maxBody])
+			p.Truncated = true
+		}
+	}
+	return p, firstErr
 }
 
 // Hop returns a copy with both payloads scrubbed and query-string secrets
-// in Path redacted.
-func (r *Redactor) Hop(h Hop) Hop {
-	h.Req = r.Payload(h.Req)
-	h.Resp = r.Payload(h.Resp)
+// in Path redacted. A non-nil error reports the first redaction failure;
+// the returned Hop is still scrubbed (failed values destroyed, see apply)
+// and safe to degrade with DegradeHop.
+func (r *Redactor) Hop(h Hop) (Hop, error) {
+	req, reqErr := r.Payload(h.Req)
+	resp, respErr := r.Payload(h.Resp)
+	h.Req, h.Resp = req, resp
 	h.Path = r.redactPath(h.Path)
+	if reqErr != nil {
+		return h, reqErr
+	}
+	return h, respErr
+}
+
+// DegradeHop is the fail-closed shape a recorder stores when redaction
+// fails: both payload bodies dropped, the failure named on Err. The hop
+// survives — the request that produced it is never killed — but nothing a
+// failed redaction might have left behind reaches the ring or the disk.
+func DegradeHop(h Hop, err error) Hop {
+	h.Req.Body, h.Req.BodyB64 = "", ""
+	h.Resp.Body, h.Resp.BodyB64 = "", ""
+	note := "redaction failed: " + err.Error() + "; payload bodies dropped"
+	if h.Err != "" {
+		h.Err += "; " + note
+	} else {
+		h.Err = note
+	}
 	return h
 }
 
@@ -221,63 +308,87 @@ func (r *Redactor) redactPath(path string) string {
 }
 
 // redactBody rewrites matching field values in a JSON body. Non-JSON
-// bodies pass through untouched (header redaction still applies).
-func (r *Redactor) redactBody(body string) string {
+// bodies pass through untouched (header redaction still applies; the
+// accept-time secret scan is retrace's net for those).
+func (r *Redactor) redactBody(body string) (string, error) {
 	if body == "" || !strings.ContainsAny(body, "{[") {
-		return body
+		return body, nil
 	}
 	var v any
 	if err := json.Unmarshal([]byte(body), &v); err != nil {
-		return body
+		return body, nil
 	}
-	v = r.redactValue(v)
+	v, rerr := r.redactValue(v)
 	out, err := json.Marshal(v)
 	if err != nil {
-		return body
+		return body, rerr
 	}
-	return string(out)
+	return string(out), rerr
 }
 
-func (r *Redactor) redactValue(v any) any {
+// redactValue walks a decoded JSON value: user keys first (their configured
+// mode, including a display carve-out), then — when bodyDefaults is on — the
+// built-in secret-key list at destroy mode; arrays and nested objects at any
+// depth. Like Payload, it scrubs EVERYTHING it can and reports the first
+// failure rather than stopping at it.
+func (r *Redactor) redactValue(v any) (any, error) {
+	var firstErr error
+	keep := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if mode, ok := r.keys[strings.ToLower(k)]; ok {
-				t[k] = r.applyValue(mode, val)
+			mode, ok := r.keys[strings.ToLower(k)]
+			if !ok && r.bodyDefaults && defaultRedactQuery[strings.ToLower(k)] {
+				mode, ok = ModeDestroy, true
+			}
+			if ok {
+				red, err := r.applyValue(mode, val)
+				keep(err)
+				t[k] = red
 			} else {
-				t[k] = r.redactValue(val)
+				red, err := r.redactValue(val)
+				keep(err)
+				t[k] = red
 			}
 		}
-		return t
+		return t, firstErr
 	case []any:
 		for i, val := range t {
-			t[i] = r.redactValue(val)
+			red, err := r.redactValue(val)
+			keep(err)
+			t[i] = red
 		}
-		return t
+		return t, firstErr
 	default:
-		return v
+		return v, nil
 	}
 }
 
 // applyValue transforms one matched BODY field value per its mode. Unlike
 // apply (headers, always strings), a JSON field can be any value —
 // ModeEncrypt seals its canonical JSON encoding so a decrypt can hand the
-// field back as valid JSON of whatever type it originally was.
-func (r *Redactor) applyValue(mode Mode, v any) any {
+// field back as valid JSON of whatever type it originally was. Failure
+// follows apply's contract: the value comes back DESTROYED alongside the
+// error, never plaintext.
+func (r *Redactor) applyValue(mode Mode, v any) (any, error) {
 	switch mode {
 	case ModeDisplay:
-		return v
+		return v, nil
 	case ModeEncrypt:
 		enc, err := json.Marshal(v)
 		if err != nil {
-			panic("trace: " + err.Error())
+			return Redacted, err
 		}
 		marker, err := EncryptField(r.dataKey, string(enc))
 		if err != nil {
-			panic("trace: " + err.Error())
+			return Redacted, err
 		}
-		return marker
+		return marker, nil
 	default:
-		return Redacted
+		return Redacted, nil
 	}
 }

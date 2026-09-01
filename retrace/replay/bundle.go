@@ -13,6 +13,7 @@
 package replay
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/reckey"
+	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -71,7 +73,19 @@ type Exchange struct {
 	// Body is the raw recorded response body string, never re-encoded, so
 	// a replayed body is byte-identical to what was recorded.
 	Body string `json:"body"`
-	Seq  uint64 `json:"seq"`
+	// BodyB64 is a binary recorded response body, still base64 as captured
+	// (trace.Payload.BodyB64) — kept encoded here so an Exchange stays
+	// JSON-safe, and decoded only at serve time (writeHit), where the
+	// client receives the original bytes verbatim. Mutually exclusive with
+	// Body; LoadBundle validated it decodes.
+	BodyB64 string `json:"bodyB64,omitempty"`
+	// SetCookies is every recorded Set-Cookie value in order
+	// (trace.Payload.SetCookies) — when present it is authoritative for
+	// replay and each value is emitted as its own Set-Cookie header;
+	// Headers keeps the lossy joined form for older recordings, which
+	// writeHit falls back to exactly as before this field existed.
+	SetCookies []string `json:"setCookies,omitempty"`
+	Seq        uint64   `json:"seq"`
 	// used counts how many times this exchange has already been served.
 	// It is unexported because it is replay state, not bundle content:
 	// marshalling it would put a runtime counter into an artifact. It is
@@ -146,12 +160,23 @@ type Bundle struct {
 //     therefore worse. (The capture-layer root cause is out of scope here;
 //     this refusal is what makes it visible instead of silent.)
 //
+// Every refusal above is per-exchange and rule-excludable: a wire rule
+// with `exclude: true` (and its mandatory `why` — see rules.Raw.Exclude)
+// drops each matching exchange from the table at load, so one truncated
+// export download doesn't hold the other nine exchanges hostage. A live
+// request matching the excluded route then misses with the standard
+// explained 501. An unexcluded refusal still refuses the whole load — but
+// the error now prints the exact rule that would exclude that exchange.
+//
 // cfgDir is the directory holding retrace.yaml — the same one every other
 // project-relative lookup in this tree uses — and is where the team key's
 // gitignored keyfile fallback (reckey.LoadTeamKey) is looked for when
 // RETRACE_RECORDING_KEY is not set. A bundle with no encrypt-mode field
 // needs no key at all, so an empty cfgDir is fine for one of those.
-func LoadBundle(dir, cfgDir string) (*Bundle, error) {
+// wireRules is the project's normalized rule set (config.Rules()) — only
+// its exclude rules are consulted here; matching-time rules stay in
+// Options.Rules exactly as before.
+func LoadBundle(dir, cfgDir string, wireRules []rules.Rule) (*Bundle, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, fmt.Errorf("replay: bundle directory is empty — a bundle is never the process working directory")
 	}
@@ -179,16 +204,68 @@ func LoadBundle(dir, cfgDir string) (*Bundle, error) {
 		return nil, fmt.Errorf("replay: the bundle at %s: %w", dir, err)
 	}
 	b := &Bundle{Dir: dir, Manifest: m, Exchanges: make([]Exchange, 0, len(hops)), dataKey: dataKey}
+	excludedAny := false
 	for _, h := range hops {
-		if err := refuse(h); err != nil {
-			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w", dir, err)
+		if ruleExcludes(wireRules, h) {
+			// Dropped, on the operator's explicit say-so: requests matching
+			// this route become ordinary misses, never wrong answers.
+			excludedAny = true
+			continue
 		}
-		b.Exchanges = append(b.Exchanges, lower(h))
+		if err := refuse(h); err != nil {
+			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w\n%s", dir, err, excludeRuleSuggestion(h))
+		}
+		ex, err := lower(h)
+		if err != nil {
+			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w\n%s", dir, err, excludeRuleSuggestion(h))
+		}
+		b.Exchanges = append(b.Exchanges, ex)
 	}
 	if len(b.Exchanges) == 0 {
+		if excludedAny {
+			return nil, fmt.Errorf("replay: the bundle at %s has no exchanges left after exclusion rules — a server that answers every call with a miss is a broken mock rather than a strict one; narrow the exclude rules or re-record the flow", dir)
+		}
 		return nil, fmt.Errorf("replay: the bundle at %s records no exchanges — there is nothing to replay, and a server that answers every call with a miss is a broken mock rather than a strict one", dir)
 	}
 	return b, nil
+}
+
+// ruleExcludes reports whether any exclude-mode wire rule matches this
+// hop's method and path. Matching uses the same primitives rule resolution
+// does (method equality on the upper-cased method, MatchPathGlob on the
+// query-less path) — deliberately WITHOUT the config's path normalizer:
+// exclusion runs at load, where the recorded path is the only spelling
+// there is, and the docs' rule examples name recorded paths literally.
+func ruleExcludes(rs []rules.Rule, h trace.Hop) bool {
+	method := strings.ToUpper(h.Method)
+	path, _ := diff.SplitPath(h.Path)
+	for _, r := range rs {
+		if !r.Exclude {
+			continue
+		}
+		if r.Method != "" && r.Method != method {
+			continue
+		}
+		if rules.MatchPathGlob(r.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// excludeRuleSuggestion renders the exact retrace.yaml rule that would
+// drop the refused exchange from the bundle, so the error carries its own
+// way out (with the mandatory why left for the operator to fill in — the
+// reason is theirs to state, not ours to invent).
+func excludeRuleSuggestion(h trace.Hop) string {
+	path, _ := diff.SplitPath(h.Path)
+	return fmt.Sprintf("to exclude this exchange from the reference instead, add to retrace.yaml:\n"+
+		"  wire_rules:\n"+
+		"    - method: %s\n"+
+		"      path: %s\n"+
+		"      exclude: true\n"+
+		"      why: \"<why this exchange is not part of the contract>\"",
+		strings.ToUpper(h.Method), path)
 }
 
 // decryptExchange returns a copy of e with any encrypt-mode field in its
@@ -329,9 +406,17 @@ func reasonOr(s, def string) string {
 // RequestURI (query included), so it is split with the same helper the
 // wire diff uses — one splitter, so replay and diff can never disagree
 // about where a path ends.
-func lower(h trace.Hop) Exchange {
+//
+// Binary payloads (trace.Payload.BodyB64 — the lossless capture of a body
+// a Go string round-trip would have corrupted): the REQUEST side is
+// decoded here into ReqRaw, because matching compares raw bytes and the
+// live request arrives as raw bytes; the RESPONSE side stays encoded on
+// Exchange.BodyB64 and is decoded at serve time. Base64 that does not
+// decode is a corrupt bundle and refuses the load — serving or matching a
+// guess about what the bytes were is exactly what this package never does.
+func lower(h trace.Hop) (Exchange, error) {
 	path, query := diff.SplitPath(h.Path)
-	return Exchange{
+	e := Exchange{
 		Key:        Key{Method: strings.ToUpper(h.Method), Path: path, Query: query},
 		Target:     h.To,
 		ReqBody:    decodeBody(h.Req),
@@ -340,8 +425,23 @@ func lower(h trace.Hop) Exchange {
 		Status:     h.Status,
 		Headers:    h.Resp.Headers,
 		Body:       h.Resp.Body,
+		BodyB64:    h.Resp.BodyB64,
+		SetCookies: h.Resp.SetCookies,
 		Seq:        h.Seq,
 	}
+	if h.Req.BodyB64 != "" {
+		raw, err := base64.StdEncoding.DecodeString(h.Req.BodyB64)
+		if err != nil {
+			return Exchange{}, fmt.Errorf("hop %d (%s %s) has a request bodyB64 that does not decode (%v) — the recording is corrupt; re-record the flow", h.Seq, strings.ToUpper(h.Method), path, err)
+		}
+		e.ReqBody, e.ReqRaw = nil, string(raw)
+	}
+	if h.Resp.BodyB64 != "" {
+		if _, err := base64.StdEncoding.DecodeString(h.Resp.BodyB64); err != nil {
+			return Exchange{}, fmt.Errorf("hop %d (%s %s) has a response bodyB64 that does not decode (%v) — the recording is corrupt; re-record the flow", h.Seq, strings.ToUpper(h.Method), path, err)
+		}
+	}
+	return e, nil
 }
 
 // decodeBody parses a recorded payload as JSON for structural matching.

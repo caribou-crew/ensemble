@@ -255,6 +255,43 @@ export interface AcceptBundle {
   /** Project-wide mask entries that matched no checkpoint in this run —
    * never nil on the Go side, so this is `[]` and never absent. */
   unmatchedMasks: string[];
+  /** What a FORCED accept pushed past — the accept-time secret scan's
+   * findings, `[]` on every clean promotion (never absent, same contract as
+   * unmatchedMasks). Non-empty means the committed bundle's manifest now
+   * records acceptedWithSecrets: true. */
+  secretFindings: SecretFinding[];
+}
+
+/** One likely credential refs.ScanForSecrets found in the staged bundle —
+ * the typed refusal body of POST .../accept when the scan fails. */
+export interface SecretFinding {
+  /** which hop file ("wire.jsonl" | "hops.jsonl") */
+  file: string;
+  /** the offending hop's sequence number */
+  seq: number;
+  /** where the value sits, e.g. "resp.body.session_key" */
+  path: string;
+  /** which detector fired: "secret-key" | "jwt" | "aws-access-key-id" | "bearer-token" */
+  kind: string;
+  /** the command that fixes this for good, verbatim */
+  suggestion: string;
+}
+
+/**
+ * The secret-scan findings out of a refused accept, or null for every other
+ * failure. The server marks the scan refusal — and ONLY that refusal — with
+ * `forcible: true`; anything else (a fatal capture verdict without force, a
+ * mask typo) must keep rendering as a plain error, because offering a
+ * "force" button on a refusal the CLI would not override is two faces of one
+ * verb disagreeing.
+ */
+export function secretFindingsOf(err: unknown): SecretFinding[] | null {
+  if (!(err instanceof ApiError)) return null;
+  const body = err.body;
+  if (!body || typeof body !== 'object') return null;
+  const b = body as { forcible?: unknown; secretFindings?: unknown };
+  if (b.forcible !== true || !Array.isArray(b.secretFindings) || b.secretFindings.length === 0) return null;
+  return b.secretFindings as SecretFinding[];
 }
 
 /** What POST .../reject answered. `warning` is D3: handleReject sets it when
@@ -282,8 +319,13 @@ export const api = {
   itemAtRun(app: string, flow: string, runId: string): Promise<ItemResponse> {
     return request<ItemResponse>(`/api/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}`);
   },
-  accept(app: string, flow: string): Promise<{ ok: true; bundle: AcceptBundle }> {
-    return request(`/api/queue/${seg(app)}/${seg(flow)}/accept`, jsonInit('POST'));
+  /** `force` mirrors `retrace ref accept --force`: it pushes past a failing
+   * secret scan (recording acceptedWithSecrets in the bundle manifest) or a
+   * fatal capture verdict. Omitted — the default — is the protective
+   * reading, and the accept button only ever sends it after showing the
+   * findings the server refused over. */
+  accept(app: string, flow: string, force?: boolean): Promise<{ ok: true; bundle: AcceptBundle }> {
+    return request(`/api/queue/${seg(app)}/${seg(flow)}/accept`, jsonInit('POST', force ? { force: true } : undefined));
   },
   reject(app: string, flow: string): Promise<RejectResult> {
     return request(`/api/queue/${seg(app)}/${seg(flow)}/reject`, jsonInit('POST'));

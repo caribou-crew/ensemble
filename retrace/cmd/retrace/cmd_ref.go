@@ -188,7 +188,7 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 	flow := fs.String("flow", "", "flow name to promote (required)")
 	app := fs.String("app", "", "app name (default: config app, else the directory name)")
 	sel := fs.String("run", "latest", "which run to promote: \"latest\", an exact run id, or a git sha prefix")
-	force := fs.Bool("force", false, "promote even though the capture verdict is degraded/broken/failed (nothing else is overridden)")
+	force := fs.Bool("force", false, "promote past a degraded/broken/failed capture verdict or a failing secret scan (recording acceptedWithSecrets in the manifest); nothing else is overridden")
 	asJSON := fs.Bool("json", false, "emit the result as JSON on stdout")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -237,6 +237,17 @@ func cmdRefAccept(args []string, stdout, stderr io.Writer) int {
 	if len(res.UnmatchedMasks) > 0 {
 		fmt.Fprintf(stderr, "retrace: warning: the project-wide `masks:` map declares an entry for %s, which no checkpoint in %s/%s matches — it redacts nothing HERE. That is fine if it masks a screen in another flow; if it was meant for this one, fix the spelling or move it under `flows.%s.masks`, where a per-checkpoint mask belongs.\n",
 			strings.Join(res.UnmatchedMasks, ", "), p.app, *flow, *flow)
+	}
+	// Same channel and same reasoning as the two warnings above:
+	// AcceptResult.SecretFindings carries the fact as a value, stderr says
+	// it to the human who just forced past the scan.
+	if len(res.SecretFindings) > 0 {
+		paths := make([]string, len(res.SecretFindings))
+		for i, f := range res.SecretFindings {
+			paths[i] = f.Path
+		}
+		fmt.Fprintf(stderr, "retrace: warning: promoted WITH likely credentials at %s — the bundle manifest records acceptedWithSecrets: true, and every clone of this repository now carries those values\n",
+			strings.Join(paths, ", "))
 	}
 	if *asJSON {
 		if err := writeJSON(stdout, res); err != nil {
@@ -387,7 +398,7 @@ func cmdRefRule(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ref rule", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	field := fs.String("field", "", "dotted body field-path glob, e.g. \"items[*].requestId\" (required)")
-	matcher := fs.String("matcher", "", "matcher name: exact, ignore, uuid, etag, semver, iso8601, http-date, integer (required)")
+	matcher := fs.String("matcher", "", "matcher name: exact, ignore, uuid, etag, semver, iso8601, http-date, integer, redacted (required)")
 	method := fs.String("method", "", "limit the rule to one HTTP method (default: any)")
 	pathGlob := fs.String("path", "", "limit the rule to a URL path glob (default: any)")
 	why := fs.String("why", "", "why this field is allowed to change (required under require_why)")

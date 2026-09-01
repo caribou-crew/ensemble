@@ -31,6 +31,7 @@ describe('ServicesView: column sorting', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
+    vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
     vi.spyOn(api, 'status').mockResolvedValue(SERVICES);
   });
 

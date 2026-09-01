@@ -173,7 +173,7 @@ func TestLoadBundleResolvesTheDataKeyFromTheEncryptionSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b, err := LoadBundle(dir, "")
+	b, err := LoadBundle(dir, "", nil)
 	if err != nil {
 		t.Fatalf("LoadBundle: %v", err)
 	}

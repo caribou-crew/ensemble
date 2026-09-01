@@ -1,0 +1,16 @@
+{
+  "name": "@caribou-crew/ensemble-win32-x64",
+  "version": "0.0.1",
+  "description": "Prebuilt ensemble binary for windows/x64. Installed automatically as an optionalDependency of @caribou-crew/ensemble — not for direct use.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["bin/ensemble.exe"],
+  "scripts": {
+    "build": "true"
+  }
+}

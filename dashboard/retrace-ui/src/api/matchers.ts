@@ -27,6 +27,7 @@ export const MATCHER_NAMES = [
   'http-date',
   'integer',
   'iso8601',
+  'redacted',
   'semver',
   'uuid',
 ] as const;

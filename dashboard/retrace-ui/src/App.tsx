@@ -15,10 +15,12 @@ import {
   reportUrl,
   ruleBlastRadius,
   ruleRequestFor,
+  secretFindingsOf,
   videoUrl,
   type AcceptBundle,
   type RedactRequest,
   type RejectResult,
+  type SecretFinding,
 } from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
@@ -69,6 +71,11 @@ export function acceptNotice(app: string, flow: string, bundle: AcceptBundle): s
   if (bundle.unmatchedMasks.length > 0) {
     warnings.push(
       `the project-wide masks: entry for ${bundle.unmatchedMasks.join(', ')} matched no checkpoint in this flow, so it redacted NOTHING here — check the spelling before these shots are committed`,
+    );
+  }
+  if ((bundle.secretFindings ?? []).length > 0) {
+    warnings.push(
+      `it was FORCED past the secret scan (${bundle.secretFindings.map((f) => f.path).join(', ')}) — the bundle manifest records acceptedWithSecrets: true, and every clone of this repository now carries those values`,
     );
   }
   if (warnings.length === 0) return done;
@@ -238,6 +245,51 @@ export function RedactPicker({
           disabled={busy || fieldName.trim() === ''}
         >
           write the rule
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The accept-time secret scan's refusal, rendered for the reviewer who just
+ * pressed accept — the pickers' sibling, and the same say-it-before-the-
+ * confirm principle: each finding's field path and fix-for-good command are
+ * on screen BEFORE the force button, because a reference bundle is committed
+ * and a secret in git cannot be taken back. The force button performs exactly
+ * what `retrace ref accept --force` performs (the server marks only this
+ * refusal forcible), and the manifest will record acceptedWithSecrets: true. */
+export function SecretScanPanel({
+  findings,
+  busy,
+  onCancel,
+  onForce,
+}: {
+  findings: SecretFinding[];
+  busy: boolean;
+  onCancel: () => void;
+  onForce: () => void;
+}) {
+  return (
+    <div className="picker" role="dialog" aria-label="likely credentials found">
+      <h2>Likely credentials in this bundle</h2>
+      <p className="picker__radius">
+        The accept was refused: a reference bundle is COMMITTED, and these values would land in git
+        for every clone, forever. Redact the fields and re-record — or accept anyway, which records
+        acceptedWithSecrets: true in the bundle manifest for the pull-request reviewer to see.
+      </p>
+      <ul className="picker__findings">
+        {findings.map((f) => (
+          <li key={`${f.file}:${f.seq}:${f.path}`}>
+            <code>{f.path}</code> ({f.kind}, {f.file} seq {f.seq}) — {f.suggestion}
+          </li>
+        ))}
+      </ul>
+      <div className="picker__buttons">
+        <button type="button" onClick={onCancel} disabled={busy}>
+          cancel
+        </button>
+        <button type="button" onClick={onForce} disabled={busy}>
+          accept anyway (--force)
         </button>
       </div>
     </div>
@@ -545,6 +597,12 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [picker, setPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
   const [redactPicker, setRedactPicker] = useState<{ entry: Entry; field: FieldDiff } | null>(null);
+  // The secret-scan refusal for the accept the reviewer just attempted —
+  // non-null renders SecretScanPanel, whose force button re-runs the same
+  // accept with force: true. Cleared on cancel, on success, and on flow
+  // change (a findings panel over a different flow would offer to force the
+  // wrong promotion).
+  const [secretGate, setSecretGate] = useState<SecretFinding[] | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [showSyncPanel, setShowSyncPanel] = useState(false);
 
@@ -570,6 +628,7 @@ export default function App() {
     // whole problem is the reassuring direction.
     setNotice(null);
     setActionError(null);
+    setSecretGate(null);
   };
 
   const mutate = async (label: string, fn: () => Promise<string>) => {
@@ -590,15 +649,37 @@ export default function App() {
     }
   };
 
+  // Accept in both of its forms: the plain attempt, and — after the server
+  // refused it over the secret scan — the forced retry the SecretScanPanel's
+  // button fires. Only the scan refusal opens the panel (secretFindingsOf
+  // checks the server's own `forcible` marker); every other failure stays a
+  // plain actionError, because offering force on a refusal `retrace ref
+  // accept --force` would not override is two faces of one verb.
+  const doAccept = (force: boolean) => {
+    if (!app || !flow || busy) return;
+    void mutate('accept', async () => {
+      try {
+        const res = await api.accept(app, flow, force || undefined);
+        setSecretGate(null);
+        return acceptNotice(app, flow, res.bundle);
+      } catch (err) {
+        const findings = secretFindingsOf(err);
+        if (findings && !force) setSecretGate(findings);
+        throw err;
+      }
+    });
+  };
+
   const onAction = (action: Action) => {
     if (action === 'help') {
       setShowHelp((v) => !v);
       return;
     }
-    if (picker !== null || redactPicker !== null || showSyncPanel) {
+    if (picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
       if (action === 'back') {
         setPicker(null);
         setRedactPicker(null);
+        setSecretGate(null);
         setShowSyncPanel(false);
       }
       return;
@@ -638,10 +719,7 @@ export default function App() {
         // not see. A verb this expensive fires only from the screen that is
         // showing you what you are about to promote.
         if (!open || !app || !flow || busy) return;
-        void mutate('accept', async () => {
-          const res = await api.accept(app, flow);
-          return acceptNotice(app, flow, res.bundle);
-        });
+        doAccept(false);
         return;
       case 'reject':
         // Same gate, same reason: reject removes and rewrites a directory.
@@ -796,6 +874,15 @@ export default function App() {
               return `wrote a redaction rule for "${fieldName.trim()}" (${mode})`;
             });
           }}
+        />
+      ) : null}
+
+      {secretGate && app && flow ? (
+        <SecretScanPanel
+          findings={secretGate}
+          busy={busy}
+          onCancel={() => setSecretGate(null)}
+          onForce={() => doAccept(true)}
         />
       ) : null}
 

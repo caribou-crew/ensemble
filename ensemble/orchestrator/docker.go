@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,6 +172,31 @@ func dockerContainerState(ctx context.Context, name string) (exists, running boo
 		return false, false, fmt.Errorf("docker inspect %s: %w: %s", cn, err, strings.TrimSpace(string(out)))
 	}
 	return true, strings.TrimSpace(string(out)) == "true", nil
+}
+
+// dockerContainerExit is dockerContainerState plus the container's exit
+// code — one inspect for all three, so the supervision poll (see
+// supervise.go) can classify a stopped container as exited vs crashed
+// without a second round trip. ExitCode is only meaningful when exists is
+// true and running is false; docker reports 0 for a running container.
+func dockerContainerExit(ctx context.Context, name string) (exists, running bool, exitCode int, err error) {
+	cn := dockerContainerName(name)
+	out, err := dockerOutput(ctx, "inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", cn)
+	if err != nil {
+		if isNoSuchContainer(string(out)) {
+			return false, false, 0, nil
+		}
+		return false, false, 0, fmt.Errorf("docker inspect %s: %w: %s", cn, err, strings.TrimSpace(string(out)))
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 2 {
+		return false, false, 0, fmt.Errorf("docker inspect %s: unexpected output %q", cn, strings.TrimSpace(string(out)))
+	}
+	code, convErr := strconv.Atoi(fields[1])
+	if convErr != nil {
+		return false, false, 0, fmt.Errorf("docker inspect %s: exit code %q: %w", cn, fields[1], convErr)
+	}
+	return true, fields[0] == "true", code, nil
 }
 
 // isNoSuchContainer matches docker's "container is not there" wording. Both

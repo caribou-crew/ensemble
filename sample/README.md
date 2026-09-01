@@ -13,7 +13,10 @@ Local), the `payments` stub on the money path plus decorative
 `outage`), `entities:` over catalog's products, and the `web-app`
 (React/Vite) browser client.
 
-**Not built yet:** the `rn-app` (Expo) client — the rest of task 5.2.
+The `rn-app` (Expo) client was **dropped by decision** (2026-08-21, see
+task 5.2 in tasks.md): its purpose was demonstrating retrace tapping into
+a second test runner, and web-app's Playwright + Maestro flows cover that
+without the RN/Expo toolchain weight.
 
 Money path: `edge-gw` → `storefront-bff` → `order` → (`catalog-svc` +
 `user-svc` + `payments` stub) → Redis → `notify-worker`. `ops-bff` is a

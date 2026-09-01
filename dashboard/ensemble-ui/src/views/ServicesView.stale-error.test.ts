@@ -29,6 +29,7 @@ describe('ServicesView: the offline banner stays up across an in-flight poll', (
     container = document.createElement('div');
     document.body.appendChild(container);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
+    vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
   });
 
   afterEach(() => {

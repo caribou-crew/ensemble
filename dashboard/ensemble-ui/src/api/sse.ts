@@ -17,7 +17,12 @@ const RECONNECT_DELAY_MS = 1000;
  * unsubscribe closure that closes the current connection and cancels any
  * pending reconnect — safe to call at any point, including mid-backoff.
  */
-function subscribeSSE(urlFor: () => string, eventName: string, onFrame: (data: string) => void): () => void {
+function subscribeSSE(
+  urlFor: () => string,
+  eventName: string,
+  onFrame: (data: string) => void,
+  extraEvents?: Record<string, (data: string) => void>,
+): () => void {
   let closed = false;
   let source: EventSource | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -30,6 +35,11 @@ function subscribeSSE(urlFor: () => string, eventName: string, onFrame: (data: s
     es.addEventListener(eventName, (evt) => {
       onFrame((evt as MessageEvent<string>).data);
     });
+    for (const [name, handler] of Object.entries(extraEvents ?? {})) {
+      es.addEventListener(name, (evt) => {
+        handler((evt as MessageEvent<string>).data);
+      });
+    }
 
     es.onerror = () => {
       if (closed) return;
@@ -55,23 +65,59 @@ function subscribeSSE(urlFor: () => string, eventName: string, onFrame: (data: s
  * last seq already held locally, to avoid replaying it). `onHop` is called
  * once per hop, in delivery order. On reconnect, `since` is advanced to the
  * last seq actually observed.
+ *
+ * `onHopUpdated` (optional) receives `hop.updated` frames: a finalization
+ * re-delivering a seq already sent — a streaming hop closing with its
+ * duration and final body. Consumers upsert by seq; the reconnect cursor
+ * never regresses to an updated hop's older seq.
  */
-export function subscribeHops(since: number, onHop: (hop: Hop) => void): () => void {
+export function subscribeHops(
+  since: number,
+  onHop: (hop: Hop) => void,
+  onHopUpdated?: (hop: Hop) => void,
+): () => void {
   let lastSeq = since;
+  const parse = (raw: string): Hop | null => {
+    try {
+      return JSON.parse(raw) as Hop;
+    } catch {
+      // Malformed frame — drop it rather than crash the whole stream.
+      return null;
+    }
+  };
   return subscribeSSE(
     () => `/api/traffic/stream?since=${lastSeq}`,
     'hop',
     (raw) => {
-      let hop: Hop;
-      try {
-        hop = JSON.parse(raw) as Hop;
-      } catch {
-        // Malformed frame — drop it rather than crash the whole stream.
-        return;
-      }
+      const hop = parse(raw);
+      if (!hop) return;
       lastSeq = hop.seq;
       onHop(hop);
     },
+    onHopUpdated && {
+      'hop.updated': (raw) => {
+        const hop = parse(raw);
+        if (!hop) return;
+        onHopUpdated(hop);
+      },
+    },
+  );
+}
+
+/**
+ * Subscribes to a service's log follow (GET /api/services/{name}/logs/stream,
+ * `event: log`). The server replays a ~200-line tail as the first frame,
+ * then streams appended chunks of complete lines; each frame arrives here
+ * as plain text with EventSource having rejoined its lines with "\n". Like
+ * the inspector stream there's no cursor — a reconnect replays the current
+ * tail again, so consumers should treat every frame as append-only text and
+ * cap their own buffer.
+ */
+export function subscribeServiceLog(name: string, onChunk: (chunk: string) => void): () => void {
+  return subscribeSSE(
+    () => `/api/services/${encodeURIComponent(name)}/logs/stream`,
+    'log',
+    onChunk,
   );
 }
 

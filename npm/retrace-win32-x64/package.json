@@ -1,0 +1,16 @@
+{
+  "name": "@caribou-crew/retrace-win32-x64",
+  "version": "0.0.1",
+  "description": "Prebuilt retrace binary for windows/x64. Installed automatically as an optionalDependency of @caribou-crew/retrace — not for direct use.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/caribou-crew/ensemble.git"
+  },
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["bin/retrace.exe"],
+  "scripts": {
+    "build": "true"
+  }
+}

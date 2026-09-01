@@ -5,6 +5,35 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    # golangci-lint on the slowest module (retrace) runs in a few minutes
+    # cold; 15 is headroom. Same reasoning as the other jobs: a ceiling
+    # exists so a hang reports as a hang.
+    timeout-minutes: 15
+    strategy:
+      # One matrix leg per Go module: golangci-lint analyzes a single module
+      # at a time (it does not fan out across go.work members from the
+      # root), so each leg runs in its module dir and picks up the shared
+      # /.golangci.yml by walking up to the repo root.
+      matrix:
+        module: [core, ensemble, retrace]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: "${{ matrix.module }}/go.sum"
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          # Keep in sync with the version used locally (see .golangci.yml's
+          # header comment) — a floating "latest" would let a new linter
+          # release break CI on an untouched commit.
+          version: v2.13.2
+          working-directory: ${{ matrix.module }}
+    # No TS lint leg: no workspace package defines a `lint` script today.
+    # If one appears, add a `pnpm -r --if-present lint` step to the `ts` job.
+
   go:
     runs-on: ubuntu-latest
     # Without this, a hung step runs to GitHub's 6-hour default before anyone

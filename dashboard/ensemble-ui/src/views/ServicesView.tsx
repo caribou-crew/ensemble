@@ -4,11 +4,12 @@
 // ServicePanel already covers this per-node in a graph context; this view
 // is the "just show me the list" counterpart the graph doesn't serve well
 // once a stack has more than a handful of services.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import type { FreshnessState, ServiceState, Topology, TopologyNode } from '../api/types';
+import { subscribeServiceLog } from '../api/sse';
+import type { FreshnessState, ServiceState, Topology, TopologyNode, WiringWarning } from '../api/types';
 import InlineError from '../components/InlineError';
 import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
@@ -21,12 +22,22 @@ function statusTone(status: string): 'green' | 'red' | 'amber' | 'neutral' {
       return 'green';
     case 'unhealthy':
     case 'failed':
+    case 'crashed':
       return 'red';
     case 'stopped':
+    case 'exited':
       return 'neutral';
     default:
       return 'amber';
   }
+}
+
+/** Badge text for the status cell — the exited/crashed states carry how the process ended
+    ("crashed (exit 1)"), so the supervision detail is visible without opening anything. */
+function statusLabel(s: ServiceState): string {
+  if (s.exitCode !== undefined) return `${s.status} (exit ${s.exitCode})`;
+  if (s.signal) return `${s.status} (${s.signal})`;
+  return s.status;
 }
 
 /** "service" (the default, unlabeled) is deliberately unremarkable; anything the user
@@ -150,6 +161,7 @@ function sortServices(services: ServiceState[], sort: SortState | null): Service
 interface ServicesSnapshot {
   services: ServiceState[];
   topology: Topology;
+  warnings: WiringWarning[];
 }
 
 /** refresh() runs both from the poll interval and out-of-band after a row mutation, so an
@@ -161,8 +173,8 @@ interface ServicesSnapshot {
 function useServicesPoll() {
   const [tick, setTick] = useState(0);
   const { data, error, loading } = useAsync<ServicesSnapshot>(async () => {
-    const [s, t] = await Promise.all([api.status(true), api.topology()]);
-    return { services: s, topology: t };
+    const [s, t, w] = await Promise.all([api.status(true), api.topology(), api.wiringWarnings()]);
+    return { services: s, topology: t, warnings: w };
   }, [tick]);
 
   const [snapshot, setSnapshot] = useState<ServicesSnapshot | null>(null);
@@ -201,6 +213,7 @@ function useServicesPoll() {
   return {
     services: snapshot?.services ?? null,
     topology: snapshot?.topology ?? null,
+    warnings: snapshot?.warnings ?? [],
     error: staleError,
     refresh,
   };
@@ -208,17 +221,55 @@ function useServicesPoll() {
 
 type Action = 'start' | 'restart' | 'stop' | 'flip' | 'variant';
 
+/** Lines kept in a log pane's buffer — a follow of a chatty service must not grow the DOM
+    unbounded, and an SSE reconnect replays the tail (see subscribeServiceLog), so trimming
+    from the top is always safe. */
+const LOG_PANE_MAX_LINES = 2000;
+
+/** One service's live log: subscribes to the SSE follow on mount (the server replays a
+    ~200-line tail first, then streams appended lines — build output included), pins the
+    scroll to the bottom as text arrives, and unsubscribes on unmount/close. */
+function LogPane({ name }: { name: string }) {
+  const [text, setText] = useState('');
+  const preRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    setText('');
+    return subscribeServiceLog(name, (chunk) => {
+      setText((prev) => {
+        const next = prev ? `${prev}\n${chunk}` : chunk;
+        const lines = next.split('\n');
+        return lines.length > LOG_PANE_MAX_LINES ? lines.slice(-LOG_PANE_MAX_LINES).join('\n') : next;
+      });
+    });
+  }, [name]);
+
+  useEffect(() => {
+    const el = preRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+
+  return (
+    <pre ref={preRef} className="services-table__log">
+      {text || '(no log output yet)'}
+    </pre>
+  );
+}
+
 function ServiceRow({
   state,
   variants,
+  warnings,
   onAction,
 }: {
   state: ServiceState;
   variants: string[];
+  warnings: WiringWarning[];
   onAction: (action: Action, extra?: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState<Action | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
 
   async function run(action: Action, extra?: string) {
     setBusy(action);
@@ -232,13 +283,30 @@ function ServiceRow({
     }
   }
 
-  const stopped = state.status === 'stopped' || state.status === 'failed';
+  // exited/crashed are "not running" the same way stopped/failed are — the process is gone
+  // and the only lifecycle action that makes sense is a fresh start.
+  const stopped = ['stopped', 'failed', 'exited', 'crashed'].includes(state.status);
 
   return (
+    <>
     <tr className="services-table__row">
-      <td className="services-table__name">{state.name}</td>
+      <td className="services-table__name">
+        {state.name}
+        {warnings.length > 0 && (
+          <span
+            className="services-table__wiring-warning"
+            title={warnings.map((w) => w.message).join('\n')}
+          >
+            <Badge tone="red">wiring</Badge>
+          </span>
+        )}
+      </td>
       <td>
-        <Badge tone={statusTone(state.status)}>{state.status}</Badge>
+        {/* A crash's lastErr carries the log tail — surfaced as the badge tooltip so the
+            reason is one hover away without opening the log pane. */}
+        <span title={state.lastErr || undefined}>
+          <Badge tone={statusTone(state.status)}>{statusLabel(state)}</Badge>
+        </span>
       </td>
       <td>
         <Badge tone="neutral">{state.placement}</Badge>
@@ -288,9 +356,20 @@ function ServiceRow({
         <button type="button" disabled={busy !== null} onClick={() => void run('flip')}>
           {busy === 'flip' ? <Spinner /> : `Flip to ${state.placement === 'docker' ? 'native' : 'docker'}`}
         </button>
+        <button type="button" onClick={() => setLogsOpen((v) => !v)}>
+          {logsOpen ? 'Hide logs' : 'Logs'}
+        </button>
         {rowError && <InlineError message={rowError} className="services-table__row-error" />}
       </td>
     </tr>
+    {logsOpen && (
+      <tr className="services-table__log-row">
+        <td colSpan={11}>
+          <LogPane name={state.name} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 
@@ -357,7 +436,7 @@ function GatewayRow({ node }: { node: TopologyNode }) {
 }
 
 export default function ServicesView() {
-  const { services, topology, error, refresh } = useServicesPoll();
+  const { services, topology, warnings, error, refresh } = useServicesPoll();
   const [sort, setSort] = useState<SortState | null>(null);
   const [checkingFreshness, setCheckingFreshness] = useState(false);
   const [freshnessError, setFreshnessError] = useState<string | null>(null);
@@ -421,6 +500,12 @@ export default function ServicesView() {
   const variantsByName = new Map(
     (topology?.nodes ?? []).map((n) => [n.name, n.variants ?? []]),
   );
+  const warningsByService = new Map<string, WiringWarning[]>();
+  for (const w of warnings) {
+    const list = warningsByService.get(w.service);
+    if (list) list.push(w);
+    else warningsByService.set(w.service, [w]);
+  }
   const sorted = sortServices(services, sort);
   const stubNodes = (topology?.nodes ?? [])
     .filter((n) => n.category === 'stub')
@@ -471,6 +556,7 @@ export default function ServicesView() {
               key={s.name}
               state={s}
               variants={variantsByName.get(s.name) ?? []}
+              warnings={warningsByService.get(s.name) ?? []}
               onAction={(action, extra) => handleAction(s.name, action, extra)}
             />
           ))}

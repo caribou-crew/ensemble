@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,8 +57,8 @@ func TestSubscribeReplaysFromCursorThenLive(t *testing.T) {
 
 	got := func() trace.Hop {
 		select {
-		case h := <-ch:
-			return h
+		case ev := <-ch:
+			return ev.Hop
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for hop")
 			return trace.Hop{}
@@ -83,9 +85,9 @@ func TestSubscribeCursorSkipsAlreadySeen(t *testing.T) {
 	ch, _, cancel := rec.Subscribe(1) // cursor: last seen seq 1
 	defer cancel()
 	select {
-	case h := <-ch:
-		if h.Seq != 2 {
-			t.Fatalf("want seq 2 first, got %d", h.Seq)
+	case ev := <-ch:
+		if ev.Hop.Seq != 2 {
+			t.Fatalf("want seq 2 first, got %d", ev.Hop.Seq)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")
@@ -150,5 +152,42 @@ func TestRecorderAppliesRedaction(t *testing.T) {
 	rec.Record(trace.Hop{To: "a", Req: trace.Payload{Headers: map[string]string{"authorization": "Bearer x"}}})
 	if got := rec.Snapshot()[0].Req.Headers["authorization"]; got != trace.Redacted {
 		t.Fatalf("not redacted: %q", got)
+	}
+}
+
+// failingRedactor stands in for a trace.Redactor whose redaction failed —
+// e.g. an encrypt-mode data key corrupted after construction. It scrubs the
+// way the real one does on failure (values destroyed, error reported) so the
+// test exercises Record's degrade path, not the redactor's own.
+type failingRedactor struct{}
+
+func (failingRedactor) Hop(h trace.Hop) (trace.Hop, error) {
+	h.Req.Headers = map[string]string{"authorization": trace.Redacted}
+	return h, errors.New("trace: encrypt field: invalid key size")
+}
+
+// TestRecordDegradesHopOnRedactionFailure pins task 7.1's contract: a hop
+// whose redaction fails is RECORDED — bodies dropped, Err naming the failure
+// — rather than panicking, vanishing, or killing the request that produced
+// it.
+func TestRecordDegradesHopOnRedactionFailure(t *testing.T) {
+	rec := NewRecorder(RecorderOpts{Ring: 8, Redactor: failingRedactor{}})
+	got := rec.Record(trace.Hop{
+		To:   "api",
+		Req:  trace.Payload{Headers: map[string]string{"authorization": "Bearer x"}, Body: `{"a":1}`},
+		Resp: trace.Payload{Body: `{"b":2}`, BodyB64: "AAAA"},
+	})
+	if got.Req.Body != "" || got.Resp.Body != "" || got.Resp.BodyB64 != "" {
+		t.Fatalf("payload bodies must be dropped on redaction failure: %+v", got)
+	}
+	if !strings.Contains(got.Err, "redaction failed") {
+		t.Fatalf("Err must name the redaction failure, got %q", got.Err)
+	}
+	if got.Req.Headers["authorization"] != trace.Redacted {
+		t.Fatalf("the redactor's scrubbed headers must be kept: %+v", got.Req.Headers)
+	}
+	snap := rec.Snapshot()
+	if len(snap) != 1 || snap[0].Seq != 1 {
+		t.Fatalf("the degraded hop must still be retained: %+v", snap)
 	}
 }

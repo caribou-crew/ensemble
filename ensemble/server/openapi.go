@@ -24,10 +24,14 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/services/{name}/restart": {"post": {Summary: "Restart a service, preserving its current placement"}},
 		"/api/services/{name}/flip":    {"post": {Summary: "Flip a service between native and container placement"}},
 
+		"/api/services/{name}/logs":        {"get": {Summary: "Plain-text tail of the service's log file (?tail=, default 200, cap 5000)"}},
+		"/api/services/{name}/logs/stream": {"get": {Summary: "Server-Sent Events follow of the service's log: an initial tail, then appended lines"}},
+
 		"/api/seed/{name}": {"post": {Summary: "Run a named seed's SQL and HTTP steps"}},
 
-		"/api/traffic":        {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session"}},
-		"/api/traffic/stream": {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since="}},
+		"/api/traffic":         {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session"}},
+		"/api/traffic/stream":  {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since="}},
+		"/api/traffic/history": {"get": {Summary: "Hops persisted to .ensemble/hops.jsonl, newest-first, paginated by before=<seq>&limit=, filterable by errorsOnly/session/method/path/status"}},
 
 		"/api/traces/{traceId}":        {"get": {Summary: "A trace's hops plus its collapsed logical view"}},
 		"/api/traces/{traceId}/export": {"get": {Summary: "Export a trace as HAR, curl commands, or raw HTTP text"}},
@@ -44,7 +48,8 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/sessions/{id}": {
 			"delete": {Summary: "End a session; returns its hop count and capture-trust verdict"},
 		},
-		"/api/sessions/{id}/hops": {"get": {Summary: "NDJSON dump of an active session's hops so far"}},
+		"/api/sessions/{id}/hops":   {"get": {Summary: "NDJSON dump of an active session's hops so far"}},
+		"/api/sessions/{id}/export": {"get": {Summary: "Export every hop carrying this session id (ring + history) as one HAR (?format=har)"}},
 
 		"/api/databases":               {"get": {Summary: "Databases with a registered inspector driver (name/type)"}},
 		"/api/databases/{name}/schema": {"get": {Summary: "A database's tables and columns"}},

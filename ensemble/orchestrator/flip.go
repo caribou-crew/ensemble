@@ -50,5 +50,13 @@ func (o *Orchestrator) Flip(ctx context.Context, name string) error {
 		return fmt.Errorf("orchestrator: flip %q: service %s is not running", name, name)
 	}
 
-	return o.startServiceAs(ctx, name, svc, target)
+	if err := o.startServiceAs(ctx, name, svc, target); err != nil {
+		return err
+	}
+	// Flip doesn't change the variant selection, so this rarely flips a
+	// warning's answer — but it's cheap, and the design brief calls it out
+	// as a re-evaluation hook alongside SetVariant, so it stays exact
+	// rather than relying on the caller triggering a coincidental Restart.
+	o.recomputeWiringWarnings()
+	return nil
 }

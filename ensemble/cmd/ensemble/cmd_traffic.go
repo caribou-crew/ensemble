@@ -19,11 +19,27 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 	since := fs.Uint64("since", 0, "only hops with seq > since")
 	errorsOnly := fs.Bool("errors-only", false, "only hops with status>=400 or a transport error")
 	follow := fs.Bool("follow", false, "stream live hops via SSE (blocks until interrupted)")
+	session := fs.String("session", "", "only hops carrying this session id; with --export, export the whole session instead of listing it")
+	export := fs.String("export", "", "with --session, export format: har")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	c := NewClient(*apiURL)
+
+	if *export != "" {
+		if *session == "" {
+			fmt.Fprintln(stderr, "ensemble: traffic: --export requires --session <id>")
+			return 2
+		}
+		body, err := c.SessionExport(context.Background(), *session, *export)
+		if err != nil {
+			fmt.Fprintf(stderr, "ensemble: traffic: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, body)
+		return 0
+	}
 
 	if *follow {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -31,7 +47,7 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 		return followTraffic(ctx, c, *since, *jsonOut, stdout, stderr)
 	}
 
-	res, err := c.Traffic(context.Background(), *since, 0, *errorsOnly)
+	res, err := c.TrafficFiltered(context.Background(), *since, 0, *errorsOnly, *session)
 	if err != nil {
 		fmt.Fprintf(stderr, "ensemble: traffic: %v\n", err)
 		return 1
