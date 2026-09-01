@@ -187,6 +187,7 @@ func (c *Config) Validate() error {
 		if len(gw.Routes) == 0 {
 			errs = append(errs, fmt.Errorf("gateway %q: routes is empty", name))
 		}
+		errs = append(errs, c.validateGatewayUpstreams(name, gw)...)
 		seenPrefix := make(map[string]bool, len(gw.Routes))
 		seenRegex := make(map[string]bool, len(gw.Routes))
 		for i, route := range gw.Routes {

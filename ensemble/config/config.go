@@ -61,6 +61,12 @@ type Config struct {
 	// validatePassthrough/ClientCert) for the same reason readinessChecks
 	// is: a bad cert/key fails ensemble up at load time, not at first dial.
 	clientCerts map[string]tls.Certificate `yaml:"-"`
+	// gatewayClientCerts caches each gateway upstream's resolved mTLS
+	// client cert, keyed by gateway name then upstream name — kept
+	// separate from clientCerts (service-keyed) since nothing prevents a
+	// gateway and a service from sharing a name; see
+	// GatewayUpstreamClientCert.
+	gatewayClientCerts map[string]map[string]tls.Certificate `yaml:"-"`
 	// dotenv is the parsed .env file (if any) found next to ensemble.yaml
 	// at Load time — kept after ${VAR} expansion (see expandEnvVars) so
 	// LookupEnv can resolve names like a datadog: block's api_key_env
@@ -706,6 +712,26 @@ type Gateway struct {
 	// "client -> gateway -> target" down to "client -> target", since most
 	// users care about the logical call, not the router hop in front of it.
 	ExposeInTraffic bool `yaml:"expose_in_traffic"`
+	// Upstreams declares this gateway's tagged remote passthrough targets
+	// — see Orchestrator.FlipGateway. Empty means the gateway can only
+	// ever route locally; any number of entries may be declared, each
+	// independently selectable as a flip target by its Name.
+	Upstreams []GatewayUpstream `yaml:"upstreams"`
+}
+
+// GatewayUpstream is one tagged remote target a Gateway can be flipped to
+// — see Orchestrator.FlipGateway. Name is the flip target ("qa",
+// "sandbox", ...); URL is the remote base URL everything is forwarded to
+// verbatim once flipped. AllowWrites/ClientCertFile/ClientKeyEnv/
+// ClientKeyPassphraseEnv mirror Service's own passthrough fields exactly
+// — same safety rail, same mTLS shape — reused rather than reinvented.
+type GatewayUpstream struct {
+	Name                   string `yaml:"name"`
+	URL                    string `yaml:"url"`
+	AllowWrites            bool   `yaml:"allow_writes"`
+	ClientCertFile         string `yaml:"client_cert_file"`
+	ClientKeyEnv           string `yaml:"client_key_env"`
+	ClientKeyPassphraseEnv string `yaml:"client_key_passphrase_env"`
 }
 
 // GatewayRoute maps a request to a service or stub, matched by exactly one
