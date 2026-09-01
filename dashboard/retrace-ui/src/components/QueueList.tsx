@@ -62,6 +62,13 @@ function countsStrip(item: Item): string {
   return parts.join(' · ');
 }
 
+/**
+ * `app` and `flow` are separate columns rather than one "app/flow" string —
+ * a repo with several build variants recorded under one .retrace/runs tree
+ * (retrace.repo.yaml's `apps:` map — web, ios-native, ios-rn, ios-flutter,
+ * android x3, say) needs the HOST/FRAMEWORK to scan as its own column, not
+ * be read out of a slash-joined string one row at a time.
+ */
 function Row({
   item,
   selected,
@@ -75,35 +82,88 @@ function Row({
 }) {
   const strip = countsStrip(item);
   return (
-    <li className={`queue-row${selected ? ' queue-row--selected' : ''}`}>
-      <button
-        type="button"
-        className="queue-row__button"
+    <>
+      <tr
+        className={`queue-row${selected ? ' queue-row--selected' : ''}`}
         aria-current={selected ? 'true' : undefined}
+        role="button"
+        tabIndex={0}
         onClick={onSelect}
         onDoubleClick={onOpen}
+        onKeyDown={(e) => {
+          // Enter/Space mirrors the plain click a real <button> would have
+          // given for free — SELECT, not open. Opening stays a deliberate
+          // second step (double-click, or the app's own `enter` key
+          // handling), same as before this was a <tr>.
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onSelect();
+          }
+        }}
       >
-        <span className="queue-row__flow">
-          {item.app}/{item.flow}
-        </span>
-        <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
+        <td className="queue-row__app">{item.app}</td>
+        <td className="queue-row__flowname">{item.flow}</td>
+        <td className="queue-row__verdict">
+          <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
+        </td>
         {/* item.gates is ALWAYS an array — see the presence note in
             api/types.ts and TestAPassingItemSerialisesGatesAsAnEmptyArray on
             the Go side. It used to be omitted on exactly these healthy rows. */}
-        <span className="queue-row__gates">
+        <td className="queue-row__gates">
           {item.gates.length} {item.gates.length === 1 ? 'gate' : 'gates'}
-        </span>
-        <span className="queue-row__counts">{strip}</span>
-      </button>
-      <CaptureBanner capture={item.capture} />
-      {item.gates.length > 0 ? (
-        <ul className="queue-row__reasons">
-          {item.gates.map((g) => (
-            <li key={g}>{g}</li>
-          ))}
-        </ul>
-      ) : null}
-    </li>
+        </td>
+        <td className="queue-row__counts">{strip}</td>
+      </tr>
+      <tr className="queue-row__detail-row">
+        <td colSpan={5}>
+          <CaptureBanner capture={item.capture} />
+          {item.gates.length > 0 ? (
+            <ul className="queue-row__reasons">
+              {item.gates.map((g) => (
+                <li key={g}>{g}</li>
+              ))}
+            </ul>
+          ) : null}
+        </td>
+      </tr>
+    </>
+  );
+}
+
+function QueueTable({
+  items,
+  selected,
+  onSelect,
+  onOpen,
+}: {
+  items: Item[];
+  selected: string | null;
+  onSelect: (item: Item) => void;
+  onOpen: (item: Item) => void;
+}) {
+  return (
+    <table className="queue-table">
+      <thead>
+        <tr>
+          <th className="queue-table__col-app">app</th>
+          <th className="queue-table__col-flow">flow</th>
+          <th className="queue-table__col-verdict">verdict</th>
+          <th className="queue-table__col-gates">gates</th>
+          <th className="queue-table__col-counts">what changed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item) => (
+          <Row
+            key={keyOf(item)}
+            item={item}
+            selected={selected === keyOf(item)}
+            onSelect={() => onSelect(item)}
+            onOpen={() => onOpen(item)}
+          />
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -205,17 +265,9 @@ export default function QueueList({
   return (
     <div className="queue">
       {needsAttention.length === 0 ? <Empty reason={empty} /> : null}
-      <ul className="queue__list">
-        {needsAttention.map((item) => (
-          <Row
-            key={keyOf(item)}
-            item={item}
-            selected={selected === keyOf(item)}
-            onSelect={() => onSelect(item)}
-            onOpen={() => onOpen(item)}
-          />
-        ))}
-      </ul>
+      {needsAttention.length > 0 ? (
+        <QueueTable items={needsAttention} selected={selected} onSelect={onSelect} onOpen={onOpen} />
+      ) : null}
       {passing.length > 0 ? (
         <div className="queue__passing">
           <button
@@ -227,17 +279,7 @@ export default function QueueList({
             {showPassing ? '▾' : '▸'} {passing.length} passing
           </button>
           {showPassing ? (
-            <ul className="queue__list">
-              {passing.map((item) => (
-                <Row
-                  key={keyOf(item)}
-                  item={item}
-                  selected={selected === keyOf(item)}
-                  onSelect={() => onSelect(item)}
-                  onOpen={() => onOpen(item)}
-                />
-              ))}
-            </ul>
+            <QueueTable items={passing} selected={selected} onSelect={onSelect} onOpen={onOpen} />
           ) : null}
         </div>
       ) : null}

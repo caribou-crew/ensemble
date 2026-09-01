@@ -102,6 +102,15 @@
   background: var(--accent-dim);
 }
 
+.retrace-table__app {
+  color: var(--text-secondary);
+  width: 10rem;
+}
+
+.retrace-table__flow {
+  width: 12rem;
+}
+
 .retrace-table__changed,
 .retrace-table__when {
   color: var(--text-secondary);

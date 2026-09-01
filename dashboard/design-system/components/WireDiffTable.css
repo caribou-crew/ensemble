@@ -42,7 +42,30 @@
   vertical-align: top;
 }
 
+/* The section-level pane header: labels the two side-by-side columns every
+   row below renders (reference | candidate), the way a github.com split
+   diff labels "base"/"head" once per file rather than once per line. */
+.wire-table__pane-header th {
+  padding: 0.2rem 0.75rem 0;
+  border-top: 0;
+  font-weight: 500;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+
+.wire-table__pane-header .wire-row__pane {
+  display: inline-block;
+  width: 50%;
+}
+
 .wire-row__toggle {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr 1fr;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
   background: none;
   border: 0;
   color: inherit;
@@ -52,20 +75,33 @@
   text-align: left;
 }
 
+.wire-row__caret {
+  color: var(--text-tertiary);
+}
+
+/* Reference (a) and candidate (b) render as two literal panes on the SAME
+   row — the split-view read the "moved" case needed: a call's position in
+   the reference sequence and its position in the candidate sequence are two
+   different facts, and putting #posA next to #posB (rather than folding
+   them into one shared number) is what makes a reorder legible without
+   opening the row. */
+.wire-row__pane--a {
+  border-right: 1px solid var(--border-hairline);
+  padding-right: 0.5rem;
+}
+
+.wire-row__pos {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+}
+
 .wire-row--changed .wire-row__toggle {
   color: var(--status-amber);
 }
 
 .wire-row--moved .wire-row__toggle {
   color: var(--status-blue);
-}
-
-.wire-row--new .wire-row__toggle {
-  color: var(--status-green);
-}
-
-.wire-row--missing .wire-row__toggle {
-  color: var(--status-red);
 }
 
 .wire-row--identical .wire-row__toggle {
@@ -83,32 +119,42 @@
   font-style: italic;
 }
 
+/* The field-level split view: one row per field, reference (a) and
+   candidate (b) as two literal value columns rather than a single
+   "path: a → b" line — the same left-old/right-new layout a github.com
+   side-by-side diff uses for a changed line. */
 .wire-fields {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.wire-field__button {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  width: 100%;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
+.wire-fields thead th {
   text-align: left;
+  font-weight: 500;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  padding: 0.15rem 0.5rem;
+}
+
+.wire-fields__label-col {
+  width: 30%;
+}
+
+.wire-field {
   cursor: pointer;
-  padding: 0.1rem 0;
+}
+
+.wire-field td {
+  padding: 0.2rem 0.5rem;
+  vertical-align: top;
+  border-top: 1px solid var(--border-hairline);
 }
 
 .wire-field--selected {
   background: var(--accent-dim);
-  border-radius: 4px;
 }
 
 .wire-field--violation .wire-field__path {
@@ -117,6 +163,28 @@
 
 .wire-field--tolerated {
   color: var(--text-tertiary);
+}
+
+/* A real finding tints its two value cells the way a github.com split diff
+   tints a changed line: the old value's cell reads red, the new value's
+   cell reads green. Tolerated/ordering carry no tint — neither is a
+   difference the reviewer still has to act on. */
+.wire-field--changed .wire-field__side--a,
+.wire-field--violation .wire-field__side--a,
+.wire-field--added .wire-field__side--a,
+.wire-field--removed .wire-field__side--a {
+  background: var(--status-red-bg);
+}
+
+.wire-field--changed .wire-field__side--b,
+.wire-field--violation .wire-field__side--b,
+.wire-field--added .wire-field__side--b,
+.wire-field--removed .wire-field__side--b {
+  background: var(--status-green-bg);
+}
+
+.wire-field__side--a {
+  border-right: 1px solid var(--border-hairline);
 }
 
 .wire-field__scope {
@@ -128,6 +196,12 @@
 .wire-value,
 .wire-field__path {
   font-family: var(--font-mono);
+}
+
+.wire-field__label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
 }
 
 .wire-field__matcher {
@@ -160,16 +234,6 @@
   cursor: default;
   opacity: 0.6;
   text-decoration: none;
-}
-
-.wire-header {
-  margin-right: 0.6rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-
-.wire-header--violation {
-  color: var(--status-red);
 }
 
 .wire-empty {

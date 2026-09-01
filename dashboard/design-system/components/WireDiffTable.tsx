@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Badge } from '../primitives';
-import type { Entry, FieldDiff, Section } from '../diffTypes';
+import type { Entry, FieldDiff, HeaderDiff, Section } from '../diffTypes';
 import './WireDiffTable.css';
 
 export const entryKey = (e: Entry) => `${e.method} ${e.normalizedPath} #${e.seqB || e.seqA}`;
@@ -161,6 +161,13 @@ function RevealableValue({
   );
 }
 
+// Each field is a ROW with two literal value columns — reference (a) on the
+// left, candidate (b) on the right — the split-view a github.com side-by-side
+// diff uses, rather than one line reading "path: a → b". A <tr> that is
+// itself the click target (role="button", not a nested <button>) is what
+// lets each of the three cells stay a real table cell; RevealableValue's
+// reveal control still stops its own click short of this row exactly as it
+// did with the old <button>-wrapped version.
 function FieldRow({
   entryK,
   field,
@@ -177,13 +184,21 @@ function FieldRow({
   onReveal?: RevealFields;
 }) {
   return (
-    <li className={`wire-field wire-field--${kind}${selected ? ' wire-field--selected' : ''}`}>
-      <button type="button" className="wire-field__button" onClick={onSelect}>
+    <tr
+      className={`wire-field wire-field--${kind}${selected ? ' wire-field--selected' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
+      <td className="wire-field__label">
         <span className="wire-field__scope">{field.scope}</span>
         <code className="wire-field__path">{field.path}</code>
-        <RevealableValue value={field.a} entryK={entryK} kind={kind} field={field} side="a" onReveal={onReveal} />
-        <span className="wire-field__arrow">→</span>
-        <RevealableValue value={field.b} entryK={entryK} kind={kind} field={field} side="b" onReveal={onReveal} />
         {/* A tolerated field is NOT a change: it is a field a rule already
             says may vary, and showing it with the matcher that tolerated it
             is what tells a reviewer why it is not counted. */}
@@ -198,8 +213,41 @@ function FieldRow({
             ) : null}
           </span>
         ) : null}
-      </button>
-    </li>
+      </td>
+      <td className="wire-field__side wire-field__side--a">
+        <RevealableValue value={field.a} entryK={entryK} kind={kind} field={field} side="a" onReveal={onReveal} />
+      </td>
+      <td className="wire-field__side wire-field__side--b">
+        <RevealableValue value={field.b} entryK={entryK} kind={kind} field={field} side="b" onReveal={onReveal} />
+      </td>
+    </tr>
+  );
+}
+
+// A header's a/b live directly on it rather than in a separate list per
+// list-kind the way body fields do, so it renders through the same row shape
+// with its own `type` standing in for FieldKind — a header carries no
+// redaction marker, so its values render as plain code rather than through
+// RevealableValue.
+function HeaderRow({ h }: { h: HeaderDiff }) {
+  return (
+    <tr className={`wire-field wire-field--${h.type}`}>
+      <td className="wire-field__label">
+        <span className="wire-field__scope">{h.scope}</span>
+        <code className="wire-field__path">{h.name}</code>
+        {h.matcher ? (
+          <span className="wire-field__matcher">
+            tolerated by <code>{h.matcher}</code>
+          </span>
+        ) : null}
+      </td>
+      <td className="wire-field__side wire-field__side--a">
+        <code className="wire-value">{h.a ?? '—'}</code>
+      </td>
+      <td className="wire-field__side wire-field__side--b">
+        <code className="wire-value">{h.b ?? '—'}</code>
+      </td>
+    </tr>
   );
 }
 
@@ -221,14 +269,27 @@ function EntryRows({
   return (
     <tbody className={`wire-row ${entry.classes.map((c) => `wire-row--${c}`).join(' ')}`}>
       <tr>
-        <td>
+        <td className="wire-row__call">
+          {/* Reference and candidate positions sit SIDE BY SIDE, not folded
+              into one shared number — a moved entry's whole story is that
+              its rank in the candidate sequence differs from its rank in
+              the reference sequence, and #posA next to #posB is what makes
+              that visible on the row itself, before it's even opened. */}
           <button
             type="button"
             className="wire-row__toggle"
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}
           >
-            {open ? '▾' : '▸'} {entry.method} <code>{entry.normalizedPath}</code>
+            <span className="wire-row__caret">{open ? '▾' : '▸'}</span>
+            <span className="wire-row__pane wire-row__pane--a">
+              <span className="wire-row__pos">#{entry.posA + 1}</span> {entry.method}{' '}
+              <code>{entry.normalizedPath}</code>
+            </span>
+            <span className="wire-row__pane wire-row__pane--b">
+              <span className="wire-row__pos">#{entry.posB + 1}</span> {entry.method}{' '}
+              <code>{entry.normalizedPath}</code>
+            </span>
           </button>
         </td>
         <td>
@@ -256,7 +317,15 @@ function EntryRows({
                 body was size-capped at capture — not field diffed
               </p>
             ) : (
-              <ul className="wire-fields">
+              <table className="wire-fields">
+                <thead>
+                  <tr>
+                    <th className="wire-fields__label-col" />
+                    <th>reference</th>
+                    <th>candidate</th>
+                  </tr>
+                </thead>
+                <tbody>
                 {entry.bodyViolations.map((f) => (
                   <FieldRow
                     key={`v:${f.scope}:${f.path}`}
@@ -301,17 +370,11 @@ function EntryRows({
                     onReveal={onReveal}
                   />
                 ))}
-                {entry.headerDiff.length > 0 ? (
-                  <li className="wire-field wire-field--headers">
-                    {entry.headerDiff.map((h) => (
-                      <span key={`${h.scope}:${h.name}`} className={`wire-header wire-header--${h.type}`}>
-                        <code>{h.name}</code> {h.type}
-                        {h.matcher ? ` (${h.matcher})` : ''}
-                      </span>
-                    ))}
-                  </li>
-                ) : null}
-              </ul>
+                {entry.headerDiff.map((h) => (
+                  <HeaderRow key={`h:${h.scope}:${h.name}`} h={h} />
+                ))}
+                </tbody>
+              </table>
             )}
           </td>
         </tr>
@@ -377,6 +440,16 @@ export default function WireDiffTable({
             </button>
             {!isCollapsed ? (
               <table className="wire-table">
+                <thead>
+                  <tr className="wire-table__pane-header">
+                    <th>
+                      <span className="wire-row__pane wire-row__pane--a">reference</span>
+                      <span className="wire-row__pane wire-row__pane--b">candidate</span>
+                    </th>
+                    <th />
+                    <th />
+                  </tr>
+                </thead>
                 {section.entries.map((entry) => (
                   <EntryRows
                     key={entryKey(entry)}

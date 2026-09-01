@@ -170,11 +170,12 @@ describe('QueueList rows', () => {
     ];
     for (const [key, expected] of cases) {
       const row = item({ verdict: 'changed', score: 1, counts: { ...item().counts, [key]: 1 } });
-      const text = renderQueue([row], '');
+      renderQueue([row], '');
       const strip = container.querySelector('.queue-row__counts')?.textContent ?? '';
       expect(strip, `counts.${key} left the strip empty`).not.toBe('');
       expect(strip, `counts.${key} is not named in the strip`).toMatch(expected);
-      expect(text).toContain('web/checkout');
+      expect(container.querySelector('.queue-row__app')?.textContent).toBe('web');
+      expect(container.querySelector('.queue-row__flowname')?.textContent).toBe('checkout');
     }
   });
 
@@ -184,7 +185,17 @@ describe('QueueList rows', () => {
       '',
     );
     expect(text).toContain('1 passing');
-    expect(text).toContain('web/cart');
-    expect(text).not.toContain('web/checkout');
+    expect(text).toContain('cart');
+    expect(container.querySelector('.queue-row__flowname')?.textContent).toBe('cart');
+  });
+
+  // App/framework and flow are separate COLUMNS — a repo recording several
+  // build variants under one .retrace/runs tree (retrace.repo.yaml's
+  // `apps:` map) needs the host/framework to scan on its own, not be read
+  // out of a slash-joined "app/flow" string one row at a time.
+  it('renders app and flow as separate columns, not a joined string', () => {
+    renderQueue([item({ app: 'ios-native', flow: 'checkout', score: 1, verdict: 'changed' })], '');
+    expect(container.querySelector('.queue-row__app')?.textContent).toBe('ios-native');
+    expect(container.querySelector('.queue-row__flowname')?.textContent).toBe('checkout');
   });
 });

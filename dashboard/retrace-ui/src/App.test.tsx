@@ -205,11 +205,21 @@ async function press(key: string) {
 }
 
 const text = () => container.textContent ?? '';
-const selectedRow = () =>
-  container.querySelector('.queue-row--selected .queue-row__flow')?.textContent ?? null;
+// app and flow are separate columns now, not a joined "app/flow" string —
+// rebuild the same key from the two cells so the rest of this suite (which
+// asserts on "web/cart"-shaped strings) doesn't need to change shape.
+const rowKey = (row: Element): string => {
+  const app = row.querySelector('.queue-row__app')?.textContent ?? '';
+  const flow = row.querySelector('.queue-row__flowname')?.textContent ?? '';
+  return `${app}/${flow}`;
+};
+const selectedRow = () => {
+  const row = container.querySelector('.queue-row--selected');
+  return row ? rowKey(row) : null;
+};
 const notice = () => container.querySelector('.notice')?.textContent ?? null;
 const renderedFlows = () =>
-  Array.from(container.querySelectorAll('.queue-row__flow')).map((el) => el.textContent);
+  Array.from(container.querySelectorAll('tr.queue-row')).map((row) => rowKey(row));
 
 // --- the keyboard dispatch ---------------------------------------------
 
@@ -378,12 +388,12 @@ describe('the three verbs', () => {
     expect(container.querySelector('.picker')).toBeNull();
 
     await act(async () => {
-      (container.querySelector('.wire-row__toggle') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-row__toggle') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });
     await act(async () => {
-      (container.querySelector('.wire-field__button') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-field') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });
@@ -434,12 +444,12 @@ describe('the three verbs', () => {
     expect(container.querySelector('.picker')).toBeNull();
 
     await act(async () => {
-      (container.querySelector('.wire-row__toggle') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-row__toggle') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });
     await act(async () => {
-      (container.querySelector('.wire-field__button') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-field') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });
@@ -489,12 +499,12 @@ describe('the three verbs', () => {
     await mount();
     await openAFlow(calls);
     await act(async () => {
-      (container.querySelector('.wire-row__toggle') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-row__toggle') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });
     await act(async () => {
-      (container.querySelector('.wire-field__button') as HTMLButtonElement).dispatchEvent(
+      (container.querySelector('.wire-field') as HTMLElement).dispatchEvent(
         new MouseEvent('click', { bubbles: true }),
       );
     });

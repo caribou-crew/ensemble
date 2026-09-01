@@ -66,6 +66,43 @@ function expandTheOnlyRow() {
 }
 
 describe('WireDiffTable', () => {
+  it('renders reference and candidate as two literal side-by-side columns, not one "a → b" line', () => {
+    render(
+      <WireDiffTable
+        sections={[
+          section('checkout', [
+            entry({ bodyDiff: [{ scope: 'resp', path: 'total', type: 'changed', a: '10.00', b: '12.00' }] }),
+          ]),
+        ]}
+        selectedField={null}
+        onSelectField={() => {}}
+      />,
+    );
+    expandTheOnlyRow();
+    const sideA = container.querySelector('.wire-field__side--a');
+    const sideB = container.querySelector('.wire-field__side--b');
+    expect(sideA?.textContent).toBe('10.00');
+    expect(sideB?.textContent).toBe('12.00');
+    // The two values live in separate cells of the same row, not joined by
+    // an arrow into one piece of text.
+    expect(container.querySelector('.wire-field__arrow')).toBeNull();
+  });
+
+  it('shows the reference and candidate positions side by side on a moved entry', () => {
+    render(
+      <WireDiffTable
+        sections={[section('checkout', [entry({ posA: 0, posB: 2, moved: true, classes: ['moved'] })])]}
+        selectedField={null}
+        onSelectField={() => {}}
+      />,
+    );
+    const toggle = container.querySelector('.wire-row__toggle');
+    const paneA = toggle?.querySelector('.wire-row__pane--a');
+    const paneB = toggle?.querySelector('.wire-row__pane--b');
+    expect(paneA?.textContent).toContain('#1');
+    expect(paneB?.textContent).toContain('#3');
+  });
+
   it('renders a tolerated field with its matcher instead of counting it as a change', () => {
     render(
       <WireDiffTable

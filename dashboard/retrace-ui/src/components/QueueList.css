@@ -4,60 +4,94 @@
   gap: 0.75rem;
 }
 
-.queue__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.queue-table thead th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  white-space: nowrap;
+}
+
+.queue-table__col-app {
+  width: 10rem;
+}
+.queue-table__col-flow {
+  width: 12rem;
+}
+.queue-table__col-verdict {
+  width: 7rem;
+}
+.queue-table__col-gates {
+  width: 5rem;
 }
 
 .queue-row {
-  border: 1px solid var(--border-hairline);
-  border-radius: 6px;
-  background: var(--bg-panel);
-  padding: 0.25rem;
-}
-
-.queue-row--selected {
-  border-color: var(--accent-border);
-  background: var(--accent-glow);
-}
-
-.queue-row__button {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  width: 100%;
-  padding: 0.4rem 0.5rem;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
   cursor: pointer;
 }
 
-.queue-row__flow {
+.queue-row:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}
+
+.queue-row > td {
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
+  vertical-align: middle;
+}
+
+.queue-row:hover > td {
+  background: var(--bg-raised);
+}
+
+.queue-row--selected > td {
+  background: var(--accent-glow);
+}
+.queue-row--selected > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-border);
+}
+
+.queue-row__app {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.queue-row__flowname {
   font-family: var(--font-mono);
   color: var(--text-primary);
-  min-width: 16rem;
 }
 
 .queue-row__gates {
   color: var(--text-secondary);
-  font-size: 0.78rem;
 }
 
 .queue-row__counts {
   color: var(--text-tertiary);
-  font-size: 0.78rem;
+}
+
+/* The folded detail region: the capture banner + gate reasons, directly
+   under its row. `hidden` would remove it from layout entirely, but this
+   stays a plain row so CaptureBanner's own markup (a <div>, not a <td>
+   fragment) has somewhere valid to live — a table row's cell accepts any
+   child, a bare append to <tbody> would not. */
+.queue-row__detail-row > td {
+  padding: 0.15rem 0.6rem 0.6rem;
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .queue-row__reasons {
-  margin: 0 0 0.35rem;
-  padding-left: 2rem;
+  margin: 0.3rem 0 0;
+  padding-left: 1.25rem;
   color: var(--status-red);
   font-size: 0.78rem;
 }

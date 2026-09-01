@@ -109,7 +109,8 @@ describe('RetraceView', () => {
     });
     await flush();
 
-    expect(container.textContent).toContain('web/checkout');
+    expect(container.querySelector('.retrace-table__app')?.textContent).toBe('web');
+    expect(container.querySelector('.retrace-table__flow')?.textContent).toBe('checkout');
     expect(container.textContent).toContain('changed');
   });
 
@@ -133,6 +134,33 @@ describe('RetraceView', () => {
 
     expect(api.retraceItem).toHaveBeenCalledWith('web', 'checkout');
     expect(container.querySelector('.retrace-detail')).toBeTruthy();
+  });
+
+  it('clicking the same row again collapses the detail instead of re-opening it', async () => {
+    vi.spyOn(api, 'retraceQueue').mockResolvedValue({ items: [item()], empty: '' });
+    vi.spyOn(api, 'retraceItem').mockResolvedValue(summaryFor('web', 'checkout'));
+    vi.spyOn(api, 'retraceEvidence').mockResolvedValue({ videos: [], hasReport: false });
+
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(RetraceView));
+    });
+    await flush();
+
+    const row = container.querySelector('.retrace-table__row') as HTMLElement | null;
+    expect(row).toBeTruthy();
+
+    await act(async () => {
+      row!.click();
+    });
+    await flush();
+    expect(container.querySelector('.retrace-detail')).toBeTruthy();
+
+    await act(async () => {
+      row!.click();
+    });
+    await flush();
+    expect(container.querySelector('.retrace-detail')).toBeNull();
   });
 
   it('shows video and a report link when evidence is present', async () => {

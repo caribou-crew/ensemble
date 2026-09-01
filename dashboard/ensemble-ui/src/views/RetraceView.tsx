@@ -86,6 +86,7 @@ function QueueTable({
     <table className="retrace-table">
       <thead>
         <tr>
+          <th>app</th>
           <th>flow</th>
           <th>verdict</th>
           <th>what changed</th>
@@ -103,9 +104,14 @@ function QueueTable({
               className={`retrace-table__row${isSelected ? ' retrace-table__row--selected' : ''}`}
               onClick={() => onSelect(item.app, item.flow)}
             >
-              <td className="retrace-table__flow">
-                {item.app}/{item.flow}
-              </td>
+              {/* app/flow are separate columns — a repo recording several
+                  build variants under one .retrace/runs tree
+                  (retrace.repo.yaml's `apps:` map: web, ios-native, ios-rn,
+                  ios-flutter, android x3, say) needs the host/framework to
+                  scan on its own, not be read out of a slash-joined string
+                  one row at a time. */}
+              <td className="retrace-table__app">{item.app}</td>
+              <td className="retrace-table__flow">{item.flow}</td>
               <td>
                 <Badge tone={verdictTone(item.verdict)}>{item.verdict}</Badge>
               </td>
@@ -307,6 +313,14 @@ export default function RetraceView() {
 
   const [showSyncPanel, setShowSyncPanel] = useState(false);
 
+  // Clicking the already-selected row TOGGLES it closed, rather than
+  // re-selecting the same value — otherwise the only way to close the detail
+  // pane is to open a different row, and only one row is ever expanded at a
+  // time regardless.
+  const handleSelect = useCallback((app: string, flow: string) => {
+    setSelected((prev) => (prev?.app === app && prev?.flow === flow ? null : { app, flow }));
+  }, []);
+
   if (error) {
     return (
       <div className="retrace-view retrace-view--error">
@@ -343,7 +357,7 @@ export default function RetraceView() {
         />
       )}
       <div className="retrace-view__body">
-        <QueueTable items={items} selected={selected} onSelect={(app, flow) => setSelected({ app, flow })} />
+        <QueueTable items={items} selected={selected} onSelect={handleSelect} />
         {selected && summary && <DetailPane app={selected.app} flow={selected.flow} summary={summary} />}
         {selected && itemError && (
           <p className="retrace-view__item-error">{messageOf(itemError, 'failed to load flow detail')}</p>
