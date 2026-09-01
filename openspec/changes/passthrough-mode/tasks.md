@@ -56,6 +56,12 @@
 - [x] 3.2 `defaultPlacement` gained a `passthrough` branch (no `run`, no
   `docker`); `startServiceAs` bypasses build/spawn/native/docker entirely
   for that placement rather than extending the docker/native branches.
+  **Bug fixed during 5.5's live verification**: the passthrough branch
+  originally called `gateHealth` with `svc.Health`/`svc.Port` straight
+  through, which for a flippable service that also declares those for
+  its local placement (e.g. `ops`) polled the just-vacated local port and
+  failed every `FlipTo passthrough`. Now always a no-op for passthrough;
+  see `TestFlipToPassthroughWithLocalHealthPortDoesNotHealthCheckDeadLocalPort`.
 - [x] 3.3 `Flip` (binary, unchanged public behavior) and new `FlipTo`
   (explicit `native`/`docker`/`passthrough` target) both funnel through a
   shared `flipTo` that stops the current placement, starts the requested
@@ -108,10 +114,15 @@
 - [x] 5.4 `ServicesView.flip.test.ts`: 2-placement button, 3-placement
   select (correct options, correct `api.flip` call), no-op for a
   single-placement service.
-- [ ] 5.5 `retrace-iterate` verification of the Services tab flip
-  interaction — **not run this session**; the dev server wasn't started
-  and clicked through. `tsc --noEmit` + the full vitest suite are green,
-  which verifies correctness but not "looks right."
+- [x] 5.5 Verified against a real running stack (`ensemble up` on
+  `sample/`, driven with Playwright, not `retrace-iterate` — no existing
+  retrace flow covers the dashboard app itself, only sample's web-app
+  client): `ops` (native+passthrough, 2 placements) renders a single
+  "Flip to passthrough"/"Flip to native" button, not a select; clicking
+  it POSTs `{"target":...}` and the row updates placement/rss live;
+  `order` (a `variants:` service, still only 1 declared placement) shows
+  no flip control, confirmed distinct from the Flip mechanism. This run
+  also caught and fixed a real bug — see 2.x note below.
 
 ## 6. `retrace/runs` — reduced-scope capture honesty
 
