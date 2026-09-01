@@ -1,16 +1,16 @@
-import { useState, type FormEvent } from 'react';
-import { Badge, Spinner } from '@ensemble/design-system';
-import { useAsync } from '@ensemble/design-system/useAsync';
-import { mergeCandidates, sinceParam } from '@ensemble/design-system/syncCandidates';
-import { api, messageOf } from '../api/client';
-import type { SyncCandidate } from '../api/types';
-import { ItemScreen } from '../App';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Badge, Spinner } from '../primitives';
+import { useAsync } from '../useAsync';
+import { mergeCandidates, sinceParam } from '../syncCandidates';
+import { retraceMessageOf, type RetraceClient } from '../retraceClient';
+import type { SyncCandidate } from '../retraceTypes';
+import RetraceItemScreen from './RetraceItemScreen';
+import './RetraceSyncPanel.css';
 
 /** One "app/flow/run-id" — SourcesByURL's / sync.Result's own encoding —
  * parsed into its three components. app/flow/run-id are each validated
  * (runs.ValidateComponents) to contain no path separator, so a plain split
- * on "/" always yields exactly these three parts; there is nothing here
- * that could produce a fourth. */
+ * on "/" always yields exactly these three parts. */
 interface RunRef {
   app: string;
   flow: string;
@@ -23,16 +23,21 @@ function parseRunPath(path: string): RunRef {
 function runKey(r: RunRef): string {
   return `${r.app}/${r.flow}/${r.runId}`;
 }
+// Keyed on repo+databaseId, not databaseId alone: a config that fans sync
+// out across several GitHub repos (ensemble.yaml's retrace.repos) can see
+// the same numeric databaseId from two different repos.
+function candidateKey(c: SyncCandidate): string {
+  return `${c.repo}#${c.databaseId}`;
+}
 
-/** The read-only run-detail view: SyncPanel's click target for one flow.
- * Reuses ItemScreen exactly as the main queue's own "open a flow" does,
- * pointed at run-scoped routes (api.itemAtRun / api.shotUrlAtRun) so a
- * non-latest run's generated diff/overlay images are read from their own
- * cache instead of the "latest" queue's. ItemScreen carries no mutation
- * buttons of its own — see its doc comment in App.tsx — so nesting it here
- * risks nothing in the main queue's keyboard state machine. */
-function RunDetail({ app, flow, runId, onBack }: RunRef & { onBack: () => void }) {
-  const item = useAsync(() => api.itemAtRun(app, flow, runId).then((r) => r.summary), [app, flow, runId]);
+/** The read-only run-detail view: this panel's click target for one flow.
+ * Reuses RetraceItemScreen exactly as a main queue's own "open a flow"
+ * does, pointed at run-scoped routes so a non-latest run's generated
+ * diff/overlay images are read from their own cache instead of the
+ * "latest" queue's. RetraceItemScreen carries no mutation buttons of its
+ * own, so nesting it here risks nothing in a main queue's own state. */
+function RunDetail({ client, app, flow, runId, onBack }: { client: RetraceClient } & RunRef & { onBack: () => void }) {
+  const item = useAsync(() => client.itemAtRun(app, flow, runId).then((r) => r.summary), [client, app, flow, runId]);
 
   return (
     <div className="sync-panel__detail">
@@ -46,16 +51,17 @@ function RunDetail({ app, flow, runId, onBack }: RunRef & { onBack: () => void }
       ) : item.error ? (
         <p className="sync-panel__error">{item.error.message}</p>
       ) : item.data ? (
-        <ItemScreen
+        <RetraceItemScreen
+          client={client}
           app={app}
           flow={flow}
           summary={item.data}
           selectedField={null}
           onSelectField={() => {}}
           resolveShotUrl={(a, f, side, name) =>
-            api.shotUrlAtRun(a, f, runId, side as 'a' | 'b' | 'diff' | 'overlay', name)
+            client.shotUrlAtRun(a, f, runId, side as 'a' | 'b' | 'diff' | 'overlay', name)
           }
-          onReveal={() => api.itemAtRun(app, flow, runId).then((r) => r.summary.sections)}
+          onReveal={() => client.itemAtRun(app, flow, runId).then((r) => r.summary.sections)}
         />
       ) : null}
     </div>
@@ -63,8 +69,8 @@ function RunDetail({ app, flow, runId, onBack }: RunRef & { onBack: () => void }
 }
 
 /** Shown when a candidate's CI run produced more than one flow — a single
- * `retrace-web` job can record several — so the reviewer picks which one to
- * look at instead of the panel guessing. */
+ * job can record several — so the reviewer picks which one to look at
+ * instead of the panel guessing. */
 function RunChooser({ refs, onPick, onBack }: { refs: RunRef[]; onPick: (r: RunRef) => void; onBack: () => void }) {
   return (
     <div className="sync-panel__chooser" role="dialog" aria-label="choose a flow">
@@ -86,34 +92,66 @@ function RunChooser({ refs, onPick, onBack }: { refs: RunRef[]; onPick: (r: RunR
 }
 
 /**
- * Discover -> filter -> select -> pull-and-view, over retrace/serve's own
- * GET /api/sync/candidates and POST /api/sync. Unlike ensemble-ui's
- * equivalent panel, this package's config carries no repo default —
- * retrace.yaml has no `sync:` block — so the repo box here is required and
- * nothing pre-fills it.
- *
- * Each candidate row is the click target — there is no checkbox and no bulk
- * "pull N selected" any more. A row already pulled (localRuns non-empty)
- * opens straight into RunDetail with no network call; a row not yet pulled
- * triggers a pull scoped to just that one candidate, then opens from
- * whatever it produced. Either path can land on more than one flow, which
- * RunChooser mediates.
+ * Discover -> filter -> select -> pull-and-view, over a RetraceClient's own
+ * syncCandidates/sync. Each candidate row is the click target — a row
+ * already pulled (localRuns non-empty) opens straight into RunDetail with
+ * no network call; a row not yet pulled triggers a pull scoped to just that
+ * one candidate, then opens from whatever it produced. Either path can land
+ * on more than one flow, which RunChooser mediates.
  */
-export default function SyncPanel({
+export default function RetraceSyncPanel({
+  client,
   onClose,
   onSynced,
+  requireRepo = true,
 }: {
+  client: RetraceClient;
   onClose: () => void;
   onSynced: () => void;
+  /**
+   * true (the default — retrace-ui's behavior): show a repo input the
+   * reviewer must submit before candidates load, since retrace.yaml carries
+   * no sync default and nothing here can pre-fill it.
+   *
+   * false (ensemble-ui's behavior): repo(s) are already configured
+   * server-side (ensemble.yaml's `retrace:` block), so the repo box is
+   * pointless — candidates load immediately on mount instead.
+   */
+  requireRepo?: boolean;
 }) {
   const [repo, setRepo] = useState('');
   const [candidates, setCandidates] = useState<SyncCandidate[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!requireRepo);
   const [refreshing, setRefreshing] = useState(false);
-  const [pullingId, setPullingId] = useState<number | null>(null);
+  const [pullingKey, setPullingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chooser, setChooser] = useState<RunRef[] | null>(null);
   const [detail, setDetail] = useState<RunRef | null>(null);
+  const [filterText, setFilterText] = useState('');
+
+  // requireRepo === false means the server already knows which repo(s) to
+  // list, so the panel loads on mount rather than waiting on a form submit
+  // this mode never renders.
+  useEffect(() => {
+    if (requireRepo) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    client
+      .syncCandidates(undefined)
+      .then((res) => {
+        if (!cancelled) setCandidates(res.candidates);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(retraceMessageOf(err, 'could not list candidates'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requireRepo, client]);
 
   const load = async (e: FormEvent) => {
     e.preventDefault();
@@ -122,10 +160,10 @@ export default function SyncPanel({
     setLoading(true);
     setError(null);
     try {
-      const res = await api.syncCandidates(trimmed);
+      const res = await client.syncCandidates(trimmed);
       setCandidates(res.candidates);
     } catch (err) {
-      setError(messageOf(err, 'could not list candidates'));
+      setError(retraceMessageOf(err, 'could not list candidates'));
       setCandidates(null);
     } finally {
       setLoading(false);
@@ -142,14 +180,21 @@ export default function SyncPanel({
     setError(null);
     try {
       const since = sinceParam(candidates);
-      const res = await api.syncCandidates(repo.trim(), since ? { since } : {});
+      const res = await client.syncCandidates(requireRepo ? repo.trim() : undefined, since ? { since } : {});
       setCandidates((prev) => mergeCandidates(prev ?? [], res.candidates));
     } catch (err) {
-      setError(messageOf(err, 'refresh failed'));
+      setError(retraceMessageOf(err, 'refresh failed'));
     } finally {
       setRefreshing(false);
     }
   };
+
+  const list = candidates ?? [];
+  const visible = useMemo(() => {
+    const needle = filterText.trim().toLowerCase();
+    if (needle === '') return list;
+    return list.filter((c) => [c.workflowName, c.headBranch, c.actor, c.event].some((f) => f.toLowerCase().includes(needle)));
+  }, [list, filterText]);
 
   const openPaths = (paths: string[]) => {
     const refs = paths.map(parseRunPath);
@@ -172,9 +217,10 @@ export default function SyncPanel({
       return;
     }
     if (!c.hasArtifacts) return;
-    setPullingId(c.databaseId);
+    const key = candidateKey(c);
+    setPullingKey(key);
     try {
-      const res = await api.sync(repo.trim(), [{ repo: c.repo, databaseId: c.databaseId }]);
+      const res = await client.sync(requireRepo ? repo.trim() : undefined, [{ repo: c.repo, databaseId: c.databaseId }]);
       if (res.synced.length === 0) {
         const reason = res.skipped[0]?.reason;
         setError(
@@ -187,22 +233,20 @@ export default function SyncPanel({
       // Reflected locally so a reviewer who backs out to the list sees this
       // row as already pulled, rather than "pull & view" inviting a second,
       // redundant pull of the same run.
-      setCandidates((prev) =>
-        prev ? prev.map((x) => (x.databaseId === c.databaseId ? { ...x, localRuns: res.synced } : x)) : prev,
-      );
+      setCandidates((prev) => (prev ? prev.map((x) => (candidateKey(x) === key ? { ...x, localRuns: res.synced } : x)) : prev));
       onSynced();
       openPaths(res.synced);
     } catch (err) {
-      setError(messageOf(err, 'pull failed'));
+      setError(retraceMessageOf(err, 'pull failed'));
     } finally {
-      setPullingId(null);
+      setPullingKey(null);
     }
   };
 
   if (detail) {
     return (
       <div className="picker sync-panel" role="dialog" aria-label="sync from GitHub Actions">
-        <RunDetail {...detail} onBack={() => setDetail(null)} />
+        <RunDetail client={client} {...detail} onBack={() => setDetail(null)} />
         <div className="picker__buttons">
           <button type="button" onClick={onClose}>
             close
@@ -235,42 +279,58 @@ export default function SyncPanel({
   return (
     <div className="picker sync-panel" role="dialog" aria-label="sync from GitHub Actions">
       <h2>Sync from GitHub Actions</h2>
-      <form onSubmit={load}>
-        <label>
-          repo
-          <input
-            name="repo"
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="org/repo"
-            disabled={loading}
-          />
-        </label>
-        <button type="submit" disabled={loading || repo.trim() === ''}>
-          {loading ? <Spinner /> : 'list runs'}
-        </button>
-      </form>
+
+      {requireRepo ? (
+        <form onSubmit={load}>
+          <label>
+            repo
+            <input
+              name="repo"
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+              placeholder="org/repo"
+              disabled={loading}
+            />
+          </label>
+          <button type="submit" disabled={loading || repo.trim() === ''}>
+            {loading ? <Spinner /> : 'list runs'}
+          </button>
+        </form>
+      ) : null}
 
       {error ? <p className="sync-panel__error">{error}</p> : null}
+      {loading && !candidates ? (
+        <p className="loading">
+          <Spinner /> loading candidates…
+        </p>
+      ) : null}
 
       {candidates ? (
         candidates.length === 0 ? (
-          <p className="sync-panel__empty">No matching runs found in {repo.trim()}.</p>
+          <p className="sync-panel__empty">No matching runs found{requireRepo ? ` in ${repo.trim()}` : ''}.</p>
         ) : (
           <>
             <div className="sync-panel__toolbar">
+              <input
+                type="text"
+                className="sync-panel__filter"
+                placeholder="filter by workflow, branch, actor, event…"
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+              />
               <button type="button" onClick={() => void refresh()} disabled={refreshing || loading}>
                 {refreshing ? <Spinner /> : '↻ refresh'}
               </button>
             </div>
             <ul className="sync-panel__candidates">
-              {candidates.map((c) => {
+              {visible.map((c) => {
                 const tone = c.conclusion === 'success' ? 'green' : c.conclusion === 'failure' ? 'red' : 'neutral';
                 const pulled = c.localRuns.length > 0;
                 const clickable = pulled || c.hasArtifacts;
-                const pullingThis = pullingId === c.databaseId;
+                const key = candidateKey(c);
+                const pullingThis = pullingKey === key;
                 return (
-                  <li key={c.databaseId} className="sync-panel__candidate">
+                  <li key={key} className="sync-panel__candidate">
                     <button
                       type="button"
                       className="sync-panel__candidate-row"
@@ -295,6 +355,7 @@ export default function SyncPanel({
                   </li>
                 );
               })}
+              {visible.length === 0 ? <p className="sync-panel__empty">No candidates match this filter.</p> : null}
             </ul>
           </>
         )

@@ -113,6 +113,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	// fallback: an unmatched API path doesn't 404, it serves the app
 	// shell with a 200. A real client-detectable "no retrace here" needs
 	// a route that always exists and answers in JSON.
+	mux.HandleFunc("GET /api/retrace/instances", s.handleRetraceInstances)
 	mux.HandleFunc("GET /api/retrace/queue", s.handleRetraceQueue)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}", s.handleRetraceItem)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceItemAtRun)

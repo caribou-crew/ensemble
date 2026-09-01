@@ -3,39 +3,85 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 
+	"github.com/caribou-crew/ensemble/ensemble/config"
 	retraceconfig "github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 	"github.com/caribou-crew/ensemble/retrace/serve"
 	"github.com/caribou-crew/ensemble/retrace/sync"
 )
 
-// retraceDeps resolves a fresh retrace/serve.Deps for the current request.
-// There is no config-reload trigger in this package (unlike `retrace
-// serve`'s own reloadConfig) — retrace.yaml and its overlay are cheap to
-// read, so every request re-discovers them rather than caching a stale
-// copy. A nil s.Cfg.Retrace means no `retrace:` block is configured; it
-// writes the 501 itself and returns ok=false, mirroring the Insp
-// nil-disables-with-501 pattern this package already uses (routes.go
-// registers these handlers unconditionally, same as the Insp-gated ones).
+// retraceInstanceFor resolves which of RetraceConfig.EffectiveInstances a
+// request targets. An explicit key (the ?instance= query param) must name
+// a real entry — ok=false otherwise. With no key: the sole entry when
+// there is exactly one (the common single-repo case, and what makes an
+// unmodified single-instance config behave exactly as it did before
+// instance support existed — the synthetic "default" entry, unlabeled and
+// invisible to the caller); with more than one entry and no key, the
+// request is ambiguous and ok=false.
+func retraceInstanceFor(rc *config.RetraceConfig, key string) (string, config.RetraceInstanceConfig, bool) {
+	instances := rc.EffectiveInstances()
+	if key != "" {
+		inst, ok := instances[key]
+		return key, inst, ok
+	}
+	if len(instances) == 1 {
+		for name, inst := range instances {
+			return name, inst, true
+		}
+	}
+	return "", config.RetraceInstanceConfig{}, false
+}
+
+// resolveRetraceInstance resolves the RetraceInstanceConfig a request
+// targets, reading the optional ?instance= query param — see
+// retraceInstanceFor. Writes its own error response and returns ok=false
+// both when no `retrace:` block is configured at all (501, same as
+// before instance support existed) and when the requested/implied
+// instance can't be resolved (404 for an unknown key, 400 when multiple
+// instances exist and none was named).
+func (s *server) resolveRetraceInstance(w http.ResponseWriter, r *http.Request) (string, config.RetraceInstanceConfig, bool) {
+	if s.Cfg.Retrace == nil {
+		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+		return "", config.RetraceInstanceConfig{}, false
+	}
+	key := r.URL.Query().Get("instance")
+	name, inst, ok := retraceInstanceFor(s.Cfg.Retrace, key)
+	if !ok {
+		if key != "" {
+			writeErr(w, http.StatusNotFound, fmt.Sprintf("retrace: no such instance %q", key))
+		} else {
+			writeErr(w, http.StatusBadRequest, "retrace: multiple instances configured — specify ?instance=")
+		}
+		return "", config.RetraceInstanceConfig{}, false
+	}
+	return name, inst, true
+}
+
+// retraceDeps resolves a fresh retrace/serve.Deps for the current
+// request's instance (see resolveRetraceInstance). There is no
+// config-reload trigger in this package (unlike `retrace serve`'s own
+// reloadConfig) — retrace.yaml and its overlay are cheap to read, so
+// every request re-discovers them rather than caching a stale copy.
 //
-// CfgFor resolves each app against retrace.apps (RetraceConfig.Apps),
-// re-discovering retrace/config.Config from that app's own directory —
-// see EffectiveAppDir's own doc comment for why this exists: a run synced
-// from a different repository's CI was recorded against a retrace.yaml
-// the stack dir never has. An app with no Apps entry resolves to the SAME
+// CfgFor resolves each app against the instance's Apps map, re-discovering
+// retrace/config.Config from that app's own directory — see
+// EffectiveAppDir's own doc comment for why this exists: a run synced from
+// a different repository's CI was recorded against a retrace.yaml the
+// stack dir never has. An app with no Apps entry resolves to the SAME
 // directory the un-mapped Cfg above was already discovered from, so the
 // closure returns cfg directly rather than re-discovering it — every
 // stack with no apps: map pays no extra Discover call and behaves
 // byte-for-byte as before this field existed.
-func (s *server) retraceDeps(w http.ResponseWriter) (serve.Deps, bool) {
-	if s.Cfg.Retrace == nil {
-		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+func (s *server) retraceDeps(w http.ResponseWriter, r *http.Request) (serve.Deps, bool) {
+	_, rc, ok := s.resolveRetraceInstance(w, r)
+	if !ok {
 		return serve.Deps{}, false
 	}
-	rc := s.Cfg.Retrace
 	dir := rc.EffectiveDir(s.Cfg.Dir)
 	cfg, err := retraceconfig.Discover(dir)
 	if err != nil {
@@ -54,8 +100,39 @@ func (s *server) retraceDeps(w http.ResponseWriter) (serve.Deps, bool) {
 	}, true
 }
 
+// retraceInstanceInfo is one entry in GET /api/retrace/instances' list —
+// Key is what the frontend passes back as ?instance= on every subsequent
+// call; Label is what a picker shows. They're the same value today (the
+// config map key IS the display name — see RetraceConfig.Instances' own
+// doc comment); kept as separate fields in case a friendlier display name
+// is ever wanted without changing the routing key.
+type retraceInstanceInfo struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+func (s *server) handleRetraceInstances(w http.ResponseWriter, r *http.Request) {
+	if s.Cfg.Retrace == nil {
+		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+		return
+	}
+	instances := s.Cfg.Retrace.EffectiveInstances()
+	names := make([]string, 0, len(instances))
+	for name := range instances {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]retraceInstanceInfo, len(names))
+	for i, name := range names {
+		out[i] = retraceInstanceInfo{Key: name, Label: name}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Instances []retraceInstanceInfo `json:"instances"`
+	}{Instances: out})
+}
+
 func (s *server) handleRetraceQueue(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.retraceDeps(w)
+	d, ok := s.retraceDeps(w, r)
 	if !ok {
 		return
 	}
@@ -67,7 +144,7 @@ func (s *server) handleRetraceQueue(w http.ResponseWriter, r *http.Request) {
 // routes use — so a bad app/flow gets the identical status/message here as
 // it would from `retrace serve` directly.
 func (s *server) retraceFlowFrom(w http.ResponseWriter, r *http.Request) (serve.Deps, string, string, bool) {
-	d, ok := s.retraceDeps(w)
+	d, ok := s.retraceDeps(w, r)
 	if !ok {
 		return serve.Deps{}, "", "", false
 	}
@@ -152,11 +229,10 @@ type retraceSyncCandidatesResponse struct {
 }
 
 func (s *server) handleRetraceSyncCandidates(w http.ResponseWriter, r *http.Request) {
-	if s.Cfg.Retrace == nil {
-		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+	_, rc, ok := s.resolveRetraceInstance(w, r)
+	if !ok {
 		return
 	}
-	rc := s.Cfg.Retrace
 	repos := rc.EffectiveRepos()
 	if len(repos) == 0 {
 		writeErr(w, http.StatusBadRequest, "retrace sync needs a repo — set retrace.repo or retrace.repos in ensemble.yaml")
@@ -213,11 +289,10 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (s *server) handleRetraceSync(w http.ResponseWriter, r *http.Request) {
-	if s.Cfg.Retrace == nil {
-		writeErr(w, http.StatusNotImplemented, "retrace not configured — add a retrace: block to ensemble.yaml")
+	_, rc, ok := s.resolveRetraceInstance(w, r)
+	if !ok {
 		return
 	}
-	rc := s.Cfg.Retrace
 	repos := rc.EffectiveRepos()
 	if len(repos) == 0 {
 		writeErr(w, http.StatusBadRequest, "retrace sync needs a repo — set retrace.repo or retrace.repos in ensemble.yaml")

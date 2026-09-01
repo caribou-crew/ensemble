@@ -1,5 +1,5 @@
-import type { QueueFilter } from '../api/client';
-import './QueueFilters.css';
+import type { QueueFilter } from '../retraceClient';
+import './RetraceQueueFilters.css';
 
 function Chip({
   label,
@@ -24,7 +24,8 @@ function Chip({
 
 /**
  * The queue filter bar: two chip groups whose selection is the QueueFilter
- * App holds in the URL. Selecting a chip that is already active clears it
+ * the caller holds (typically mirrored into the URL, as retrace-ui and
+ * ensemble-ui both do). Selecting a chip that is already active clears it
  * (back to "all"), so the bar is a toggle rather than a mode you can get
  * stuck in — the "all" chip is the always-available escape either way.
  *
@@ -34,7 +35,7 @@ function Chip({
  * project's retrace config, not to this dashboard, so the only thing this
  * bar can safely offer is "whatever is actually here."
  */
-export default function QueueFilters({
+export default function RetraceQueueFilters({
   apps,
   filter,
   onChange,

@@ -1,0 +1,114 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRetraceClient, listRetraceInstances } from './retraceClient';
+
+function fakeResponse(body: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? 'OK' : 'Error',
+    text: () => Promise.resolve(JSON.stringify(body)),
+  };
+}
+
+/** Captures the one request the call under test makes. */
+function captureFetch(response = fakeResponse({ ok: true })) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const mock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: typeof input === 'string' ? input : input.toString(), init });
+    return Promise.resolve(response);
+  });
+  vi.stubGlobal('fetch', mock);
+  return calls;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+const client = createRetraceClient('/api');
+
+describe('shotUrl', () => {
+  it('builds the four comparison panes', () => {
+    expect(client.shotUrl('web', 'search', 'diff', 'results')).toBe('/api/shots/web/search/diff/results');
+  });
+
+  it('throws rather than building a URL for a side the summary never wrote', () => {
+    // The empty string means images.<side> was "" — the side was never
+    // written, and `/api/shots/web/search/diff/` would 404 as a mystery.
+    //
+    // What this throw does NOT do is make the mistake survivable. Every caller
+    // builds an `src` during render, and a render-phase throw does not reach
+    // useAsync's error state — there is no error boundary under dashboard/, so
+    // React unmounts the root and the reviewer gets a blank page. The
+    // component-side guard is what keeps that from happening; see
+    // ShotCompare.test.tsx, which drives the exact JSON summary.go emits for a
+    // missing checkpoint.
+    expect(() => client.shotUrl('web', 'search', 'diff', '')).toThrow(/no diff-side image/);
+  });
+});
+
+describe('itemAtRun', () => {
+  it('hits the run-scoped item route rather than the plain (latest) one', async () => {
+    const calls = captureFetch(fakeResponse({ summary: {} }));
+    await client.itemAtRun('web', 'search', '20260821T101000Z-bbbbbbb');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/queue/web/search/runs/20260821T101000Z-bbbbbbb');
+  });
+});
+
+describe('shotUrlAtRun', () => {
+  it('builds a run-scoped shot URL, distinct from the plain (latest) route', () => {
+    expect(client.shotUrlAtRun('web', 'search', '20260821T101000Z-bbbbbbb', 'diff', 'results')).toBe(
+      '/api/shots/web/search/runs/20260821T101000Z-bbbbbbb/diff/results',
+    );
+  });
+
+  it('throws rather than building a URL for a side the summary never wrote', () => {
+    expect(() => client.shotUrlAtRun('web', 'search', '20260821T101000Z-bbbbbbb', 'diff', '')).toThrow(
+      /no diff-side image/,
+    );
+  });
+});
+
+describe('instance scoping', () => {
+  it('carries no ?instance= param when the client was built with none — the single-repo/retrace-ui case', async () => {
+    const calls = captureFetch(fakeResponse({ items: [], empty: '' }));
+    await client.queue();
+    expect(calls[0].url).toBe('/api/queue');
+  });
+
+  it('adds ?instance= to a request with no other query params', async () => {
+    const scoped = createRetraceClient('/api/retrace', 'web');
+    const calls = captureFetch(fakeResponse({ summary: {} }));
+    await scoped.item('web', 'checkout');
+    expect(calls[0].url).toBe('/api/retrace/queue/web/checkout?instance=web');
+  });
+
+  it('merges ?instance= alongside an existing filter query string', async () => {
+    const scoped = createRetraceClient('/api/retrace', 'web');
+    const calls = captureFetch(fakeResponse({ items: [], empty: '' }));
+    await scoped.queue({ source: 'ci' });
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.pathname).toBe('/api/retrace/queue');
+    expect(url.searchParams.get('source')).toBe('ci');
+    expect(url.searchParams.get('instance')).toBe('web');
+  });
+
+  it('carries the instance on URL-builder methods too (shotUrl/videoUrl/reportUrl), since those become <img>/<video>/<a> attributes the server also resolves per-instance', () => {
+    const scoped = createRetraceClient('/api/retrace', 'web');
+    expect(scoped.shotUrl('a', 'b', 'diff', 'c')).toBe('/api/retrace/shots/a/b/diff/c?instance=web');
+    expect(scoped.videoUrl('a', 'b', 'c.webm')).toBe('/api/retrace/videos/a/b/c.webm?instance=web');
+    expect(scoped.reportUrl('a', 'b')).toBe('/api/retrace/report/a/b/?instance=web');
+  });
+});
+
+describe('listRetraceInstances', () => {
+  it('fetches {basePath}/instances', async () => {
+    const calls = captureFetch(fakeResponse({ instances: [{ key: 'web', label: 'Web' }] }));
+    const result = await listRetraceInstances('/api/retrace');
+    expect(calls[0].url).toBe('/api/retrace/instances');
+    expect(result.instances).toEqual([{ key: 'web', label: 'Web' }]);
+  });
+});

@@ -1,8 +1,8 @@
-import { Badge } from '@ensemble/design-system';
-import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
-import type { EmptyReason, Item } from '../api/types';
-import { verdictTone, verdictLabel } from '../tone';
-import './QueueList.css';
+import { Badge } from '../primitives';
+import CaptureBanner from './CaptureBanner';
+import type { EmptyReason, Item } from '../retraceTypes';
+import { verdictTone, verdictLabel } from '../retraceTone';
+import './RetraceQueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;
 
@@ -11,10 +11,10 @@ export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${ite
  *
  * `score > 0` is the server's own contract for "needs attention" — ScoreOf
  * floors every non-`pass` verdict above zero precisely so this line can stay
- * an exact test rather than an approximation. It is exported because App's
- * keyboard navigation must walk the same list the screen shows; two copies of
- * this filter is how `j` came to move the selection onto a row nobody can
- * see.
+ * an exact test rather than an approximation. It is exported because a
+ * consumer's keyboard navigation must walk the same list the screen shows;
+ * two copies of this filter is how `j` came to move the selection onto a
+ * row nobody can see.
  */
 export function partitionQueue(items: Item[]): { needsAttention: Item[]; passing: Item[] } {
   return {
@@ -39,14 +39,9 @@ export function visibleRows(items: Item[], showPassing: boolean): Item[] {
 
 // The one-line counts strip. Only planes with something to say appear: "0
 // shots · 0 wire" on every row is noise that trains a reviewer to skip the
-// strip, which is the opposite of what it is for.
-//
-// It covers EVERY count diff.changed() keys on, and that is not tidiness
-// (F7). wireMoved, conformance and unexpectedStatuses were missing, so a
-// reorder-only, conformance-only or unexpected-status-only flow rendered an
-// amber "changed" badge, "0 gates" and an EMPTY strip — flagged, with
-// nothing on the row saying why. The reviewer's only move from there is to
-// open the flow to find out whether anything is wrong at all.
+// strip, which is the opposite of what it is for. It covers EVERY count
+// diff.changed() keys on: wireMoved, conformance and unexpectedStatuses
+// alone would otherwise flag amber with an empty strip and no explanation.
 function countsStrip(item: Item): string {
   const parts: string[] = [];
   const c = item.counts;
@@ -91,10 +86,6 @@ function Row({
         onClick={onSelect}
         onDoubleClick={onOpen}
         onKeyDown={(e) => {
-          // Enter/Space mirrors the plain click a real <button> would have
-          // given for free — SELECT, not open. Opening stays a deliberate
-          // second step (double-click, or the app's own `enter` key
-          // handling), same as before this was a <tr>.
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             onSelect();
@@ -106,9 +97,6 @@ function Row({
         <td className="queue-row__verdict">
           <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
         </td>
-        {/* item.gates is ALWAYS an array — see the presence note in
-            api/types.ts and TestAPassingItemSerialisesGatesAsAnEmptyArray on
-            the Go side. It used to be omitted on exactly these healthy rows. */}
         <td className="queue-row__gates">
           {item.gates.length} {item.gates.length === 1 ? 'gate' : 'gates'}
         </td>
@@ -167,13 +155,9 @@ function QueueTable({
   );
 }
 
-// R-V. The two empty worlds render DIFFERENTLY, and neither is derived from
-// items.length here: the server decided, EmptyReasonFor is the one place that
-// decides, and this renders what it decided.
-//
-// `EmptyAllClear` requires positive evidence on the server side (at least one
-// flow, compared, all scoring zero). Re-deriving it from an empty list would
-// make the reassuring answer the one nobody has to earn.
+// The two empty worlds render DIFFERENTLY, and neither is derived from
+// items.length here: the server decided (EmptyReasonFor), and this renders
+// what it decided.
 function Empty({ reason }: { reason: EmptyReason }) {
   switch (reason) {
     case 'all-clear':
@@ -205,10 +189,6 @@ function Empty({ reason }: { reason: EmptyReason }) {
         </div>
       );
     case '':
-      // The zero value, and it promises nothing. The server sends it when the
-      // queue has rows; reaching it with none means the server did not say
-      // which world this is, and the one thing this must not do is guess the
-      // reassuring one.
       return (
         <div className="queue-empty">
           <Badge tone="neutral">no rows</Badge>
@@ -220,8 +200,8 @@ function Empty({ reason }: { reason: EmptyReason }) {
   }
 }
 
-// An unhandled fourth value is a TYPE error at this line, not a blank pane at
-// the reviewer's desk.
+// An unhandled fourth value is a TYPE error at this line, not a blank pane
+// at the reviewer's desk.
 function assertNever(reason: never): null {
   void reason;
   return null;
@@ -236,7 +216,7 @@ function assertNever(reason: never): null {
  * Score-zero rows collapse under a disclosure, which is what the score-0
  * contract is for.
  */
-export default function QueueList({
+export default function RetraceQueueList({
   items,
   empty,
   selected,
@@ -248,9 +228,8 @@ export default function QueueList({
   items: Item[];
   empty: EmptyReason;
   selected: string | null;
-  // The disclosure is CONTROLLED by App rather than owned here, because App's
-  // j/k navigation has to know which rows are on screen. Kept local, "what is
-  // rendered" lived in two places that could disagree — and they did.
+  // The disclosure is CONTROLLED by the caller rather than owned here,
+  // because keyboard navigation has to know which rows are on screen.
   showPassing: boolean;
   onShowPassingChange: (next: boolean) => void;
   onSelect: (item: Item) => void;

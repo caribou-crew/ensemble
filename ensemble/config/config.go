@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,11 @@ type Config struct {
 	// reason readinessChecks is: a bad profile file fails at config-load
 	// time, not at first `latency apply`. See Config.LatencyProfile.
 	latencyProfiles map[string]*LatencyProfileFile `yaml:"-"`
+	// clientCerts caches each passthrough service's resolved mTLS client
+	// certificate, keyed by service name — populated by Validate (see
+	// validatePassthrough/ClientCert) for the same reason readinessChecks
+	// is: a bad cert/key fails ensemble up at load time, not at first dial.
+	clientCerts map[string]tls.Certificate `yaml:"-"`
 	// dotenv is the parsed .env file (if any) found next to ensemble.yaml
 	// at Load time — kept after ${VAR} expansion (see expandEnvVars) so
 	// LookupEnv can resolve names like a datadog: block's api_key_env
@@ -212,6 +218,13 @@ type RetraceConfig struct {
 	// true` mask (retrace/diff/pixel.ResolveRects) is what makes that safe
 	// across two different device resolutions sharing one retrace.yaml.
 	Apps map[string]string `yaml:"apps"`
+	// Instances configures multiple independently-synced repos/`.retrace/`
+	// directories. When set, the dashboard's Retrace tab shows a picker
+	// (keyed by map key, used as the display name) instead of going
+	// straight to one queue; every field on RetraceInstanceConfig applies
+	// per-instance instead of globally, and RetraceConfig's own flat
+	// fields above are ignored in favor of it. See EffectiveInstances.
+	Instances map[string]RetraceInstanceConfig `yaml:"instances"`
 }
 
 // EffectiveDir returns Dir resolved against configDir (Config.Dir), or
@@ -267,6 +280,111 @@ func (r RetraceConfig) EffectiveRepos() []string {
 // Workflow when Workflows is empty, or nil (no workflow filter) when
 // neither is set.
 func (r RetraceConfig) EffectiveWorkflows() []string {
+	if len(r.Workflows) > 0 {
+		return r.Workflows
+	}
+	if r.Workflow != "" {
+		return []string{r.Workflow}
+	}
+	return nil
+}
+
+// EffectiveInstances returns Instances as-is when set, else a single
+// synthetic entry keyed "default" built from RetraceConfig's own flat
+// fields — so callers (ensemble/server/retrace.go) can always operate
+// over "the list of instances" uniformly, without branching between
+// single- and multi-repo modes.
+func (r RetraceConfig) EffectiveInstances() map[string]RetraceInstanceConfig {
+	if len(r.Instances) > 0 {
+		return r.Instances
+	}
+	return map[string]RetraceInstanceConfig{
+		"default": {
+			Dir:       r.Dir,
+			Repo:      r.Repo,
+			Workflow:  r.Workflow,
+			Repos:     r.Repos,
+			Workflows: r.Workflows,
+			Branch:    r.Branch,
+			Actor:     r.Actor,
+			Event:     r.Event,
+			Status:    r.Status,
+			Since:     r.Since,
+			Apps:      r.Apps,
+		},
+	}
+}
+
+// RetraceInstanceConfig is one independently-synced repo/`.retrace/`
+// directory within RetraceConfig.Instances — same fields and semantics as
+// RetraceConfig's own flat fields, duplicated rather than embedded so
+// existing RetraceConfig{Field: value} composite literals throughout the
+// config package (and its tests) keep compiling unchanged.
+type RetraceInstanceConfig struct {
+	Dir       string            `yaml:"dir"`
+	Repo      string            `yaml:"repo"`
+	Workflow  string            `yaml:"workflow"`
+	Repos     []string          `yaml:"repos"`
+	Workflows []string          `yaml:"workflows"`
+	Branch    string            `yaml:"branch"`
+	Actor     string            `yaml:"actor"`
+	Event     string            `yaml:"event"`
+	Status    string            `yaml:"status"`
+	Since     string            `yaml:"since"`
+	Apps      map[string]string `yaml:"apps"`
+}
+
+// EffectiveDir returns Dir resolved against configDir (Config.Dir), or
+// configDir itself when Dir is empty. See RetraceConfig.EffectiveDir.
+func (r RetraceInstanceConfig) EffectiveDir(configDir string) string {
+	if r.Dir == "" {
+		return configDir
+	}
+	if filepath.IsAbs(r.Dir) {
+		return r.Dir
+	}
+	return filepath.Join(configDir, r.Dir)
+}
+
+// EffectiveAppDir returns the directory holding app's own retrace.yaml.
+// See RetraceConfig.EffectiveAppDir.
+func (r RetraceInstanceConfig) EffectiveAppDir(configDir, app string) string {
+	if dir, ok := r.Apps[app]; ok {
+		if dir = strings.TrimSpace(dir); dir != "" {
+			if filepath.IsAbs(dir) {
+				return dir
+			}
+			return filepath.Join(configDir, dir)
+		}
+	}
+	return r.EffectiveDir(configDir)
+}
+
+// EffectiveSince returns Since, or DefaultRetraceSince when it's left
+// unset. See RetraceConfig.EffectiveSince.
+func (r RetraceInstanceConfig) EffectiveSince() string {
+	if r.Since != "" {
+		return r.Since
+	}
+	return DefaultRetraceSince
+}
+
+// EffectiveRepos returns Repos, or a one-element slice of Repo when Repos
+// is empty, or nil when neither is set. See RetraceConfig.EffectiveRepos.
+func (r RetraceInstanceConfig) EffectiveRepos() []string {
+	if len(r.Repos) > 0 {
+		return r.Repos
+	}
+	if r.Repo != "" {
+		return []string{r.Repo}
+	}
+	return nil
+}
+
+// EffectiveWorkflows returns Workflows, or a one-element slice of
+// Workflow when Workflows is empty, or nil (no workflow filter) when
+// neither is set. See RetraceConfig.EffectiveWorkflows.
+func (r RetraceInstanceConfig) EffectiveWorkflows() []string {
 	if len(r.Workflows) > 0 {
 		return r.Workflows
 	}
@@ -377,6 +495,42 @@ type Service struct {
 	// every boot, say) the global default is too tight to raise for
 	// everyone else just to accommodate one service.
 	StartupTimeoutS int `yaml:"startup_timeout_s"`
+
+	// Upstream, when set, makes this service a passthrough target: instead
+	// of spawning Run/Docker, the proxy forwards straight to this real
+	// remote base URL (e.g. a QA environment). A service may declare
+	// Upstream ALONGSIDE Run/Docker — that's what makes it flippable
+	// between a local placement and passthrough at runtime (see
+	// orchestrator.Flip); Upstream alone (no local placement) is also
+	// valid, it just can't be flipped back to anything. Requires Proxy > 0
+	// — a passthrough target has no real Port of its own, so the proxy
+	// listener is the only way a client ever reaches it.
+	Upstream string `yaml:"upstream"`
+	// Passthrough labels the remote environment Upstream points at (e.g.
+	// "qa") and is what arms the read-only safety rail: any non-empty
+	// value refuses non-GET/HEAD requests unless AllowWrites is true.
+	// Requires Upstream to also be set. The label itself is never matched
+	// against anything (not even "prod") — every passthrough target is
+	// read-only by default, regardless of label.
+	Passthrough string `yaml:"passthrough"`
+	// AllowWrites opts a passthrough target out of the read-only default.
+	// Ignored (and meaningless) when Passthrough is empty.
+	AllowWrites bool `yaml:"allow_writes"`
+	// ClientCertFile is a path, relative to Config.Dir unless absolute, to
+	// a PEM client certificate presented when dialing Upstream — for a
+	// remote edge that requires mTLS. Requires ClientKeyEnv. The cert
+	// itself is ordinary config (not secret) so it's a file path like
+	// Readiness.File; the private key is not.
+	ClientCertFile string `yaml:"client_cert_file"`
+	// ClientKeyEnv names the environment variable (resolved through
+	// Config.LookupEnv — real env, then .env) holding the PEM private key
+	// matching ClientCertFile. Never the key itself. Requires
+	// ClientCertFile.
+	ClientKeyEnv string `yaml:"client_key_env"`
+	// ClientKeyPassphraseEnv names the environment variable holding the
+	// private key's passphrase, for an encrypted key. Optional even when
+	// ClientKeyEnv is set — most keys aren't passphrase-protected.
+	ClientKeyPassphraseEnv string `yaml:"client_key_passphrase_env"`
 
 	// Variants are named alternative backings for this one logical
 	// service — e.g. a small Go stub of a monolith and the monolith

@@ -72,7 +72,7 @@ export interface Hop {
 export interface ServiceState {
   name: string;
   status: string;
-  placement: "native" | "docker";
+  placement: "native" | "docker" | "passthrough";
   pid?: number;
   proxyPort?: number;
   port?: number;
@@ -138,6 +138,10 @@ export interface TopologyNode {
   /** Set only for a service declaring `variants:` — the current choice and every option. */
   variant?: string;
   variants?: string[];
+  /** Every placement a "service" category node declares ("native", "docker", "passthrough",
+   * in that order) — never empty for a service. What decides which Flip targets to offer,
+   * since ServiceState.placement alone only says which one is CURRENTLY active. */
+  placements?: Array<"native" | "docker" | "passthrough">;
   /** "gateway" nodes only — mirrors config.Gateway.ExposeInTraffic. When false (the default),
    * the Traffic tab collapses this gateway's own hop into its target's. */
   exposeInTraffic?: boolean;
@@ -251,26 +255,17 @@ export interface ProfilesState {
   profiles: ProfileInfo[];
 }
 
-// --- retrace review queue (GET /api/retrace/queue, /queue/{app}/{flow}) ---
+// --- retrace availability probe (GET /api/retrace/queue) ---
 //
-// Mirrors dashboard/retrace-ui/src/api/types.ts's own Item/Summary/Manifest
-// block field-for-field against the same Go structs (retrace/diff/summary.go,
-// retrace/runs/manifest.go, retrace/serve/queue.go) — this app has no
-// dependency on that one (a separate standalone app, not a shared package),
-// so the mirror is kept here rather than imported. The diff-viewer WIRE types
-// (CaptureTrust, CheckpointVerdict, Section, HopDiff, …) come from
-// @ensemble/design-system/diffTypes instead, since RetraceView renders
-// through the same ShotCompare/WireDiffTable/HopDeltaList/CaptureBanner
-// components retrace-ui uses.
-import type {
-  CaptureTrust,
-  CheckpointVerdict,
-  Entry,
-  HopDiff,
-  Section,
-  StatusFinding,
-} from '@ensemble/design-system/diffTypes';
-export type { Entry, FieldDiff, HopDiff, Section } from '@ensemble/design-system/diffTypes';
+// App.tsx's useRetraceAvailable() calls api.retraceQueue() once to decide
+// whether the Retrace tab should even be shown (the route 501s when no
+// `retrace:` block is configured) — RetraceView itself no longer uses this
+// client or these types, since it renders through
+// @ensemble/design-system/retraceClient's own createRetraceClient
+// ("/api/retrace") and @ensemble/design-system/retraceTypes instead, shared
+// with retrace-ui's identical standalone dashboard. Only the sliver this one
+// probe still needs lives here.
+import type { CaptureTrust } from '@ensemble/design-system/diffTypes';
 
 export interface RetraceCounts {
   checkpoints: number;
@@ -322,190 +317,4 @@ export type RetraceEmptyReason = '' | 'no-runs' | 'all-clear';
 export interface RetraceQueueResponse {
   items: RetraceItem[];
   empty: RetraceEmptyReason;
-}
-
-export interface RetraceRunCounts {
-  calls: number;
-  recorded: boolean;
-  reason?: string;
-}
-
-export interface RetraceManifest {
-  schema: string;
-  app: string;
-  flow: string;
-  runId: string;
-  mode: 'ensemble' | 'standalone';
-  git: { sha: string; branch: string; dirty: boolean };
-  startedAt: string;
-  finishedAt: string;
-  checkpoints: { name: string; file: string; width: number; height: number; trim?: boolean; at: string }[];
-  groups: { name: string; startedAt: string; endedAt: string; quiet?: boolean }[];
-  capture: CaptureTrust;
-  wire: RetraceRunCounts;
-  hops?: RetraceRunCounts;
-  test: { command: string; exitCode: number; durationMs: number };
-  env: { go: string; platform: string; retrace: string };
-}
-
-export interface RetraceRunRef {
-  runId: string;
-  kind: 'bundle' | 'run' | 'none';
-  dir: string;
-  manifest: RetraceManifest;
-}
-
-export interface RetracePerfResult {
-  status: 'ok' | 'over' | 'unset';
-  measuredMs: number;
-  budgetMs: number;
-}
-
-export interface RetraceConformanceFinding {
-  method: string;
-  path: string;
-  status: number;
-  kind:
-    | 'unknown-path'
-    | 'unknown-method'
-    | 'undocumented-status'
-    | 'missing-required-field'
-    | 'unchecked';
-  detail: string;
-}
-
-export interface RetraceGate {
-  plane: 'pixel' | 'wire' | 'hop' | 'perf';
-  threshold: number;
-  observed: number;
-  failed: boolean;
-  checkpoint?: string;
-}
-
-export interface RetraceQuarantine {
-  side: 'a' | 'b';
-  reason: string;
-}
-
-export interface RetraceCall {
-  method: string;
-  path: string;
-  seq: number;
-  status: number;
-  group?: string;
-  tolerated?: { id: string; reason: string };
-}
-
-export interface RetraceGroupNames {
-  a: string[];
-  b: string[];
-}
-
-export interface RetraceTriageSignals {
-  pixel: boolean;
-  wire: boolean;
-  hop: boolean;
-  spec: boolean;
-  capture: boolean;
-}
-
-export interface RetraceTriage {
-  label: string;
-  rule: string;
-  signals: RetraceTriageSignals;
-}
-
-export interface RetraceSuppression {
-  plane: 'header' | 'body';
-  target: string;
-  source: 'wire_rule' | 'wire_ignore' | 'builtin';
-  matcher: string;
-  count: number;
-  why?: string;
-}
-
-export interface RetraceSummary {
-  schema: string;
-  app: string;
-  flow: string;
-  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
-  a: RetraceRunRef;
-  b: RetraceRunRef;
-  quarantined: RetraceQuarantine[];
-  checkpoints: CheckpointVerdict[];
-  wire: { paired: Entry[]; missing: RetraceCall[]; extra: RetraceCall[]; groups?: RetraceGroupNames };
-  sections: Section[];
-  hops: HopDiff;
-  unexpectedStatuses: StatusFinding[];
-  perf: RetracePerfResult;
-  conformance: RetraceConformanceFinding[];
-  openApiConfigured: boolean;
-  capture: { a: CaptureTrust; b: CaptureTrust };
-  counts: RetraceCounts;
-  gates: string[];
-  budgets: RetraceGate[];
-  unmeasuredGates: string[];
-  suppressions: RetraceSuppression[];
-  triage: RetraceTriage;
-}
-
-export interface RetraceItemResponse {
-  summary: RetraceSummary;
-}
-
-/** `sync.Result` — POST /api/retrace/sync's body. `synced`/`skipped` are
- * never null on the wire (see sync.Result's own doc comment), only ever `[]`
- * for "nothing new". */
-export interface RetraceSyncResult {
-  synced: string[];
-  skipped: { artifact: string; reason: string }[];
-}
-
-/** `sync.Candidate` — one row of GET /api/retrace/sync/candidates's
- * `candidates` array. `hasArtifacts`/`actor` both cost the server one
- * extra `gh api` call each (gh's own listing has neither), so this
- * endpoint is not meant to be polled. */
-export interface RetraceCandidate {
-  repo: string;
-  databaseId: number;
-  workflowName: string;
-  headBranch: string;
-  actor: string;
-  event: string;
-  status: string;
-  conclusion: string;
-  createdAt: string;
-  url: string;
-  hasArtifacts: boolean;
-  /**
-   * Every "app/flow/run-id" already pulled from this CI run
-   * (runs.SourcesByURL's reverse index, joined server-side on RunURL).
-   * Never null — an empty array means "not pulled yet", the same
-   * never-null contract this response's own `candidates` carries. A
-   * click-to-view sync panel uses this to open a candidate directly
-   * instead of re-pulling it, and to know whether the run produced one
-   * flow or several (multiple entries here means an inline chooser).
-   */
-  localRuns: string[];
-}
-
-/** GET /api/retrace/sync/candidates's body. `candidates` is never null on
- * the wire, only ever `[]` for "nothing in range". */
-export interface RetraceCandidatesResponse {
-  candidates: RetraceCandidate[];
-}
-
-/** One candidate a caller picked from RetraceCandidatesResponse — the
- * POST /api/retrace/sync request body's `selections` array shape. */
-export interface RetraceSelection {
-  repo: string;
-  databaseId: number;
-}
-
-/** GET /api/retrace/evidence/{app}/{flow}'s body — what's available to
- * view for the candidate run, never the files themselves. `videos` is
- * never null on the wire, only ever `[]` for "none attached". */
-export interface RetraceEvidence {
-  videos: string[];
-  hasReport: boolean;
 }

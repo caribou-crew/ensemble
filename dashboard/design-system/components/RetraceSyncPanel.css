@@ -1,0 +1,236 @@
+/* Base "floating dialog" chrome shared by every picker-shaped overlay in
+   the retrace review UI — the sync panel here, plus the rule/redact/secret
+   pickers a caller may render alongside it (see RulePicker etc. in
+   retrace-ui's App.tsx, which rely on these same classes rather than
+   duplicating them, now that this stylesheet is loaded wherever
+   RetraceSyncPanel is). */
+.picker {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  width: 26rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.picker h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.picker__radius {
+  margin: 0;
+  color: var(--status-amber);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.picker input,
+.picker select {
+  background: var(--bg-base);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.picker__buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.picker__buttons button {
+  background: var(--bg-raised-2);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.sync-panel {
+  width: 32rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+
+.sync-panel form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.sync-panel form label {
+  flex: 1;
+}
+
+.sync-panel__error {
+  margin: 0;
+  color: var(--status-red);
+  font-size: 0.78rem;
+}
+
+.sync-panel__result {
+  margin: 0;
+  color: var(--status-green);
+  font-size: 0.78rem;
+}
+
+.sync-panel__empty {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.sync-panel__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.sync-panel__filter {
+  flex: 1;
+  background: var(--bg-base);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.sync-panel__toolbar button {
+  background: var(--bg-raised-2);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.sync-panel__candidates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+.sync-panel__candidate label,
+.sync-panel__candidate-row {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+}
+
+.sync-panel__candidate-row {
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sync-panel__candidate-row:hover:not(:disabled) {
+  background: var(--bg-raised-2);
+}
+
+.sync-panel__candidate-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.sync-panel__workflow {
+  font-family: var(--font-mono);
+}
+
+.sync-panel__meta {
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+}
+
+.sync-panel__no-artifacts {
+  color: var(--status-amber);
+  font-size: 0.74rem;
+}
+
+.sync-panel__pulled {
+  color: var(--status-green, var(--text-secondary));
+  font-size: 0.74rem;
+}
+
+.sync-panel__pull-cta {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  text-decoration: underline;
+}
+
+.sync-panel__back {
+  background: var(--bg-raised-2);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+  margin-bottom: 0.6rem;
+}
+
+.sync-panel__detail,
+.sync-panel__chooser {
+  max-height: 32rem;
+  overflow-y: auto;
+}
+
+.sync-panel__chooser ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sync-panel__chooser-option {
+  background: var(--bg-raised-2);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  text-align: left;
+}

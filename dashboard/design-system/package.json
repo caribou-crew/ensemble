@@ -12,10 +12,20 @@
     "./syncCandidates": "./syncCandidates.ts",
     "./videoSeek": "./videoSeek.ts",
     "./diffTypes": "./diffTypes.ts",
+    "./retraceTypes": "./retraceTypes.ts",
+    "./retraceClient": "./retraceClient.ts",
+    "./retraceTone": "./retraceTone.ts",
+    "./retraceWhen": "./retraceWhen.ts",
     "./components/ShotCompare": "./components/ShotCompare.tsx",
     "./components/WireDiffTable": "./components/WireDiffTable.tsx",
     "./components/HopDeltaList": "./components/HopDeltaList.tsx",
-    "./components/CaptureBanner": "./components/CaptureBanner.tsx"
+    "./components/CaptureBanner": "./components/CaptureBanner.tsx",
+    "./components/RetraceQueueList": "./components/RetraceQueueList.tsx",
+    "./components/RetraceQueueFilters": "./components/RetraceQueueFilters.tsx",
+    "./components/RetraceRunsList": "./components/RetraceRunsList.tsx",
+    "./components/RetraceBreadcrumb": "./components/RetraceBreadcrumb.tsx",
+    "./components/RetraceItemScreen": "./components/RetraceItemScreen.tsx",
+    "./components/RetraceSyncPanel": "./components/RetraceSyncPanel.tsx"
   },
   "scripts": {
     "test": "tsc --noEmit -p tsconfig.json && vitest run"

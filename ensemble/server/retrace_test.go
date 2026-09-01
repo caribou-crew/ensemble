@@ -633,6 +633,147 @@ func TestRetraceSyncRequiresRepo(t *testing.T) {
 	}
 }
 
+// --- multi-instance (retrace.instances) --------------------------------
+
+// newRetraceInstancesTestEnv is newRetraceTestEnv's multi-instance
+// sibling: cwd holds ONE flow-worth of fixture, but the config declares
+// two named instances — "web" pointed at cwd, "empty" pointed at a bare
+// temp dir with no runs — so tests can pin that ?instance= actually
+// changes which directory a request reads from.
+func newRetraceInstancesTestEnv(t *testing.T) (*httptest.Server, string, string) {
+	t.Helper()
+	cwd := onePassingFlow(t)
+	empty := t.TempDir()
+	cfg := &config.Config{Dir: cwd, Retrace: &config.RetraceConfig{
+		Instances: map[string]config.RetraceInstanceConfig{
+			"web":   {Dir: cwd},
+			"empty": {Dir: empty},
+		},
+	}}
+	ts := httptest.NewServer(server.New(server.Deps{Cfg: cfg, Version: "test"}))
+	t.Cleanup(ts.Close)
+	return ts, cwd, empty
+}
+
+func TestRetraceInstancesRouteListsEveryInstance(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/instances")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, got)
+	}
+	instances, ok := got["instances"].([]any)
+	if !ok || len(instances) != 2 {
+		t.Fatalf("instances = %v, want 2 entries", got["instances"])
+	}
+	keys := map[string]bool{}
+	for _, raw := range instances {
+		row := raw.(map[string]any)
+		keys[row["key"].(string)] = true
+		if row["key"] != row["label"] {
+			t.Errorf("row = %v, want key == label", row)
+		}
+	}
+	if !keys["web"] || !keys["empty"] {
+		t.Fatalf("keys = %v, want {web, empty}", keys)
+	}
+}
+
+func TestRetraceInstancesRouteIs501WithoutARetraceBlock(t *testing.T) {
+	cwd := onePassingFlow(t)
+	cfg := &config.Config{Dir: cwd}
+	ts := httptest.NewServer(server.New(server.Deps{Cfg: cfg, Version: "test"}))
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/instances")
+	if err != nil {
+		t.Fatalf("GET /api/retrace/instances: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+func TestRetraceQueueWithNoInstanceParamIsAmbiguousWithMultipleInstances(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/queue")
+	if err != nil {
+		t.Fatalf("GET /api/retrace/queue: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 when multiple instances exist and none is named; body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestRetraceQueueUnknownInstanceIs404(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	resp, err := http.Get(ts.URL + "/api/retrace/queue?instance=nope")
+	if err != nil {
+		t.Fatalf("GET /api/retrace/queue?instance=nope: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 404 for an unknown instance key; body = %s", resp.StatusCode, body)
+	}
+}
+
+func TestRetraceQueueScopedByInstanceParam(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	status, got := getJSON(t, ts.URL+"/api/retrace/queue?instance=web")
+	if status != http.StatusOK {
+		t.Fatalf("GET queue?instance=web status = %d, body = %v", status, got)
+	}
+	items, ok := got["items"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("instance=web items = %v, want at least one (the fixture flow)", got["items"])
+	}
+
+	status, got = getJSON(t, ts.URL+"/api/retrace/queue?instance=empty")
+	if status != http.StatusOK {
+		t.Fatalf("GET queue?instance=empty status = %d, body = %v", status, got)
+	}
+	if got["empty"] != "no-runs" {
+		t.Fatalf("instance=empty empty = %v, want \"no-runs\" — the two instances must read from different directories", got["empty"])
+	}
+}
+
+func TestRetraceItemRouteScopedByInstanceParam(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	status, _ := getJSON(t, ts.URL+"/api/retrace/queue/web/home?instance=web")
+	if status != http.StatusOK {
+		t.Fatalf("instance=web: status = %d, want 200 (fixture flow exists there)", status)
+	}
+	status, _ = getJSON(t, ts.URL+"/api/retrace/queue/web/home?instance=empty")
+	if status != http.StatusNotFound {
+		t.Fatalf("instance=empty: status = %d, want 404 (no such flow in the empty instance's dir)", status)
+	}
+}
+
+func TestRetraceSyncCandidatesScopedByInstanceParam(t *testing.T) {
+	ts, _, _ := newRetraceInstancesTestEnv(t)
+
+	// Neither instance has a repo configured, so both must 400 the same
+	// way a single-instance config with no repo does — proving the sync
+	// handlers resolve through the instance param too, not just queue/item.
+	resp, err := http.Get(ts.URL + "/api/retrace/sync/candidates?instance=web")
+	if err != nil {
+		t.Fatalf("GET sync/candidates?instance=web: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400 when the instance has no repo configured; body = %s", resp.StatusCode, body)
+	}
+}
+
 func TestRetraceSyncFailsFastWithoutGh(t *testing.T) {
 	ts, _ := newRetraceTestEnv(t, &config.RetraceConfig{Repo: "org/repo"})
 	t.Setenv("PATH", t.TempDir()) // no gh anywhere on it

@@ -14,14 +14,7 @@ import type {
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
-import type {
-  RetraceEvidence,
-  RetraceQueueResponse,
-  RetraceSummary,
-  RetraceSyncResult,
-  RetraceCandidatesResponse,
-  RetraceSelection,
-} from "./types";
+import type { RetraceQueueResponse } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -224,10 +217,16 @@ export const api = {
     );
   },
 
-  flip(name: string): Promise<ServiceState> {
+  /** With no `target`, toggles between a service's two placements (legacy binary behavior).
+   * With `target` ("native" | "docker" | "passthrough"), switches to exactly that one —
+   * needed once a service has three declared placements, since "the other one" is ambiguous. */
+  flip(
+    name: string,
+    target?: "native" | "docker" | "passthrough",
+  ): Promise<ServiceState> {
     return request<ServiceState>(
       `/api/services/${encodeURIComponent(name)}/flip`,
-      jsonInit("POST"),
+      jsonInit("POST", target ? { target } : undefined),
     );
   },
 
@@ -350,88 +349,15 @@ export const api = {
     );
   },
 
-  // --- retrace (Group 9): cross-app review queue, embedded from
-  // retrace/serve. 501s when no `retrace:` block is configured — callers
-  // should treat `err.status === 501` as "no retrace here", the same
-  // convention the inspector routes above use. ---
-
+  // Cross-app review queue, embedded from retrace/serve. 501s when no
+  // `retrace:` block is configured. This is the only retrace call left
+  // here — App.tsx's useRetraceAvailable() probes it once to decide
+  // whether the Retrace tab should even be shown. RetraceView itself (and
+  // its sync panel) fetch through @ensemble/design-system/retraceClient's
+  // createRetraceClient("/api/retrace") instead, the same shared client
+  // retrace-ui's standalone dashboard uses against "/api" — see
+  // RetraceView.tsx.
   retraceQueue(): Promise<RetraceQueueResponse> {
     return request<RetraceQueueResponse>("/api/retrace/queue");
   },
-
-  retraceItem(app: string, flow: string): Promise<RetraceSummary> {
-    return request<{ summary: RetraceSummary }>(
-      `/api/retrace/queue/${encodeURIComponent(app)}/${encodeURIComponent(flow)}`,
-    ).then((r) => r.summary);
-  },
-
-  /** retraceItem pinned to one specific run rather than "latest" — powers
-   * the sync panel's click-into-a-CI-run detail view, so a reviewer can
-   * inspect any run in the candidate list, not only the newest one. */
-  retraceItemAtRun(app: string, flow: string, runId: string): Promise<RetraceSummary> {
-    return request<{ summary: RetraceSummary }>(
-      `/api/retrace/queue/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/runs/${encodeURIComponent(runId)}`,
-    ).then((r) => r.summary);
-  },
-
-  retraceSync(selections?: RetraceSelection[]): Promise<RetraceSyncResult> {
-    return request<RetraceSyncResult>(
-      "/api/retrace/sync",
-      jsonInit("POST", selections ? { selections } : undefined),
-    );
-  },
-
-  retraceSyncCandidates(filters: {
-    branch?: string;
-    actor?: string;
-    event?: string;
-    status?: string;
-    since?: string;
-  } = {}): Promise<RetraceCandidatesResponse> {
-    return request<RetraceCandidatesResponse>(
-      `/api/retrace/sync/candidates${query(filters)}`,
-    );
-  },
-
-  retraceEvidence(app: string, flow: string): Promise<RetraceEvidence> {
-    return request<RetraceEvidence>(
-      `/api/retrace/evidence/${encodeURIComponent(app)}/${encodeURIComponent(flow)}`,
-    );
-  },
 };
-
-/** Builds `/api/retrace/shots/{app}/{flow}/{side}/{name}` — passed to
- * ShotCompare as its `resolveShotUrl` prop rather than imported by it, the
- * same seam retrace-ui uses for its own `/api/shots/...` route. */
-export const resolveRetraceShotUrl = (
-  app: string,
-  flow: string,
-  side: string,
-  name: string,
-): string =>
-  `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
-
-/** resolveRetraceShotUrl's counterpart for a run-detail view pinned to one
- * specific run — GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/
- * {name}. Its own route, not a query param: the server caches "diff"/
- * "overlay" PNGs under a run-scoped directory precisely so a non-latest
- * run's generated images can never collide with the "latest" queue's own
- * cache for the same app/flow — see retrace/serve/queue.go's
- * diffDirForRun. Curried on runId so it fits ShotCompare's
- * (app, flow, side, name) => string resolver shape. */
-export const resolveRetraceShotUrlAtRun =
-  (runId: string) =>
-  (app: string, flow: string, side: string, name: string): string =>
-    `/api/retrace/shots/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/runs/${encodeURIComponent(runId)}/${encodeURIComponent(side)}/${encodeURIComponent(name)}`;
-
-/** Builds `/api/retrace/videos/{app}/{flow}/{name}` — the candidate run's
- * video, passed straight to a <video> element's src. */
-export const resolveRetraceVideoUrl = (app: string, flow: string, name: string): string =>
-  `/api/retrace/videos/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/${encodeURIComponent(name)}`;
-
-/** Builds `/api/retrace/report/{app}/{flow}/` — the candidate run's HTML
- * report root. Opened in a new tab rather than embedded: the report is a
- * full self-routing SPA (Playwright's html reporter), and an iframe would
- * fight its own routing. */
-export const retraceReportUrl = (app: string, flow: string): string =>
-  `/api/retrace/report/${encodeURIComponent(app)}/${encodeURIComponent(flow)}/`;

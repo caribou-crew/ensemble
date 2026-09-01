@@ -1,12 +1,12 @@
-import { Badge, Spinner } from '@ensemble/design-system';
-import { useAsync } from '@ensemble/design-system/useAsync';
-import { api, messageOf } from '../api/client';
-import type { RunRow } from '../api/types';
-import { verdictTone, verdictLabel } from '../tone';
-import { formatWhen } from '../when';
-import './QueueList.css';
+import { Badge, Spinner } from '../primitives';
+import { useAsync } from '../useAsync';
+import { retraceMessageOf, type RetraceClient } from '../retraceClient';
+import type { RunRow } from '../retraceTypes';
+import { verdictTone, verdictLabel } from '../retraceTone';
+import { formatWhen } from '../retraceWhen';
+import './RetraceQueueList.css';
 
-// The same counts strip QueueList's row uses, over one run's counts.
+// The same counts strip RetraceQueueList's row uses, over one run's counts.
 function countsStrip(counts: RunRow['counts']): string {
   const parts: string[] = [];
   const c = counts;
@@ -25,21 +25,24 @@ function countsStrip(counts: RunRow['counts']): string {
 /**
  * The runs-list drill-down: every run of one surface (app/flow), newest
  * first — the screen between a queue row and a specific run's detail view.
- * Fetches GET /api/queue/{app}/{flow}/runs; clicking a run opens it
- * (onOpenRun).
+ * `client` is a createRetraceClient(basePath) instance, so this renders
+ * identically whether it's fetching retrace-ui's `/api/queue/.../runs` or
+ * ensemble-ui's `/api/retrace/queue/.../runs`.
  */
-export default function RunsList({
+export default function RetraceRunsList({
+  client,
   app,
   flow,
   selectedRun,
   onOpenRun,
 }: {
+  client: RetraceClient;
   app: string;
   flow: string;
   selectedRun: string | null;
   onOpenRun: (runId: string) => void;
 }) {
-  const { data, loading, error } = useAsync(() => api.runs(app, flow), [app, flow]);
+  const { data, loading, error } = useAsync(() => client.runs(app, flow), [client, app, flow]);
 
   if (loading) {
     return (
@@ -52,7 +55,7 @@ export default function RunsList({
     return (
       <div className="problem">
         <Badge tone="red">error</Badge>
-        <span>{messageOf(error, 'could not load the runs for this surface')}</span>
+        <span>{retraceMessageOf(error, 'could not load the runs for this surface')}</span>
       </div>
     );
   }

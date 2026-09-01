@@ -29,8 +29,8 @@ function realMs(iso: string | undefined): number {
 /**
  * A human-readable local date+time for a run. `iso` is the manifest
  * timestamp (may be '', undefined, or the Go zero value); `runId` is the
- * fallback source. Returns the raw runId when neither yields a valid date, so
- * the cell is never blank and never a wrong date.
+ * fallback source. Returns the raw runId when neither yields a valid date,
+ * so the cell is never blank and never a wrong date.
  */
 export function formatWhen(iso: string | undefined, runId: string): string {
   const fromIso = realMs(iso);

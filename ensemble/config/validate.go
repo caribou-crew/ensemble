@@ -28,6 +28,38 @@ var validDatabaseTypes = map[string]bool{
 	"http":       true,
 }
 
+// validateRetraceInstance checks one RetraceInstanceConfig — either
+// RetraceConfig's own flat fields, synthesized into the "default" entry
+// by EffectiveInstances, or one real entry from retrace.instances — for
+// internal consistency. label prefixes every error message so multiple
+// instances' violations stay distinguishable within one Validate() run.
+func validateRetraceInstance(label, configDir string, r RetraceInstanceConfig) []error {
+	var errs []error
+	if r.Since != "" && !retraceSincePattern.MatchString(r.Since) {
+		errs = append(errs, fmt.Errorf("%s: since %q is not a duration like \"7d\", \"24h\", or \"30m\"", label, r.Since))
+	}
+	if r.Repo != "" && len(r.Repos) > 0 {
+		errs = append(errs, fmt.Errorf("%s: set repo or repos, not both", label))
+	}
+	if r.Workflow != "" && len(r.Workflows) > 0 {
+		errs = append(errs, fmt.Errorf("%s: set workflow or workflows, not both", label))
+	}
+	if len(r.Apps) > 0 {
+		apps := make([]string, 0, len(r.Apps))
+		for app := range r.Apps {
+			apps = append(apps, app)
+		}
+		slices.Sort(apps)
+		for _, app := range apps {
+			dir := r.EffectiveAppDir(configDir, app)
+			if _, err := os.Stat(filepath.Join(dir, "retrace.yaml")); err != nil {
+				errs = append(errs, fmt.Errorf("%s: apps[%q] = %q resolves to %s, which has no retrace.yaml", label, app, r.Apps[app], dir))
+			}
+		}
+	}
+	return errs
+}
+
 // Validate checks a Config for internal consistency, applying defaults
 // (currently: Database.Type inferred from Database.Image) along the way.
 // All violations found are reported together, joined via errors.Join.
@@ -60,26 +92,20 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("freshness: poll_interval_s must be >= 0"))
 	}
 
-	if c.Retrace != nil && c.Retrace.Since != "" && !retraceSincePattern.MatchString(c.Retrace.Since) {
-		errs = append(errs, fmt.Errorf("retrace: since %q is not a duration like \"7d\", \"24h\", or \"30m\"", c.Retrace.Since))
-	}
-	if c.Retrace != nil && c.Retrace.Repo != "" && len(c.Retrace.Repos) > 0 {
-		errs = append(errs, fmt.Errorf("retrace: set repo or repos, not both"))
-	}
-	if c.Retrace != nil && c.Retrace.Workflow != "" && len(c.Retrace.Workflows) > 0 {
-		errs = append(errs, fmt.Errorf("retrace: set workflow or workflows, not both"))
-	}
-	if c.Retrace != nil && len(c.Retrace.Apps) > 0 {
-		apps := make([]string, 0, len(c.Retrace.Apps))
-		for app := range c.Retrace.Apps {
-			apps = append(apps, app)
+	if c.Retrace != nil {
+		multi := len(c.Retrace.Instances) > 0
+		instances := c.Retrace.EffectiveInstances()
+		names := make([]string, 0, len(instances))
+		for name := range instances {
+			names = append(names, name)
 		}
-		slices.Sort(apps)
-		for _, app := range apps {
-			dir := c.Retrace.EffectiveAppDir(c.Dir, app)
-			if _, err := os.Stat(filepath.Join(dir, "retrace.yaml")); err != nil {
-				errs = append(errs, fmt.Errorf("retrace: apps[%q] = %q resolves to %s, which has no retrace.yaml", app, c.Retrace.Apps[app], dir))
+		sort.Strings(names)
+		for _, name := range names {
+			label := "retrace"
+			if multi {
+				label = fmt.Sprintf("retrace.instances[%q]", name)
 			}
+			errs = append(errs, validateRetraceInstance(label, c.Dir, instances[name])...)
 		}
 	}
 
@@ -106,13 +132,14 @@ func (c *Config) Validate() error {
 			if svc.Default != "" {
 				errs = append(errs, fmt.Errorf("service %q: default is set but no variants are declared", name))
 			}
-			if svc.Run == "" && svc.Docker == nil {
-				errs = append(errs, fmt.Errorf("service %q: must set run or docker", name))
+			if svc.Run == "" && svc.Docker == nil && svc.Upstream == "" {
+				errs = append(errs, fmt.Errorf("service %q: must set run, docker, or upstream", name))
 			}
 			if svc.Run != "" && svc.Port == 0 {
 				errs = append(errs, fmt.Errorf("service %q: run is set but port is 0", name))
 			}
 		}
+		errs = append(errs, c.validatePassthrough(name, svc)...)
 		if svc.Port != 0 {
 			usedPorts[svc.Port] = append(usedPorts[svc.Port], "service "+name)
 		}

@@ -1,4 +1,4 @@
-import './Breadcrumb.css';
+import './RetraceBreadcrumb.css';
 
 /**
  * The trail: queue / <app/flow> / <run>. Every segment EXCEPT the current
@@ -7,10 +7,10 @@ import './Breadcrumb.css';
  * rendered as plain text.
  *
  * Levels are derived from which values are present: no app -> queue (not
- * rendered at all, see App); app+flow, no run -> surface level; app+flow+run
- * -> run level.
+ * rendered at all, see the caller); app+flow, no run -> surface level;
+ * app+flow+run -> run level.
  */
-export default function Breadcrumb({
+export default function RetraceBreadcrumb({
   app,
   flow,
   runLabel,

@@ -188,3 +188,111 @@ func TestRetraceAppsEntryWithRetraceYamlValidates(t *testing.T) {
 		t.Fatalf("unexpected error for an apps entry with a retrace.yaml present: %v", err)
 	}
 }
+
+// --- Instances / EffectiveInstances ------------------------------------
+
+func TestRetraceEffectiveInstancesSyntheticDefaultWhenUnset(t *testing.T) {
+	r := RetraceConfig{Repo: "org/repo", Since: "24h"}
+	got := r.EffectiveInstances()
+	if len(got) != 1 {
+		t.Fatalf("EffectiveInstances() = %v, want exactly one synthetic entry", got)
+	}
+	inst, ok := got["default"]
+	if !ok {
+		t.Fatalf("EffectiveInstances() = %v, want a \"default\" key", got)
+	}
+	if inst.Repo != "org/repo" || inst.Since != "24h" {
+		t.Errorf("synthetic default = %+v, want it built from RetraceConfig's own flat fields", inst)
+	}
+}
+
+func TestRetraceEffectiveInstancesReturnsInstancesAsIsWhenSet(t *testing.T) {
+	r := RetraceConfig{
+		// Flat fields present alongside Instances are ignored in favor of
+		// it — see RetraceConfig.Instances' own doc comment.
+		Repo: "org/should-be-ignored",
+		Instances: map[string]RetraceInstanceConfig{
+			"web":     {Repo: "org/web"},
+			"backend": {Repo: "org/backend"},
+		},
+	}
+	got := r.EffectiveInstances()
+	if len(got) != 2 {
+		t.Fatalf("EffectiveInstances() = %v, want the 2 declared instances", got)
+	}
+	if got["web"].Repo != "org/web" || got["backend"].Repo != "org/backend" {
+		t.Errorf("EffectiveInstances() = %+v, want it returned unmodified", got)
+	}
+	if _, ok := got["default"]; ok {
+		t.Errorf("EffectiveInstances() = %v, should not synthesize \"default\" when Instances is set", got)
+	}
+}
+
+func TestRetraceInstanceConfigEffectiveMethodsMirrorRetraceConfig(t *testing.T) {
+	configDir := "/stack"
+	r := RetraceInstanceConfig{Repo: "org/repo", Workflow: "ios"}
+	if got := r.EffectiveDir(configDir); got != configDir {
+		t.Errorf("EffectiveDir() = %q, want %q", got, configDir)
+	}
+	if got := r.EffectiveSince(); got != DefaultRetraceSince {
+		t.Errorf("EffectiveSince() = %q, want %q", got, DefaultRetraceSince)
+	}
+	if got := r.EffectiveRepos(); len(got) != 1 || got[0] != "org/repo" {
+		t.Errorf("EffectiveRepos() = %v, want [org/repo]", got)
+	}
+	if got := r.EffectiveWorkflows(); len(got) != 1 || got[0] != "ios" {
+		t.Errorf("EffectiveWorkflows() = %v, want [ios]", got)
+	}
+}
+
+func TestRetraceInstancesValidatesEachEntryWithALabel(t *testing.T) {
+	c := &Config{
+		Dir: t.TempDir(),
+		Retrace: &RetraceConfig{
+			Instances: map[string]RetraceInstanceConfig{
+				"web": {Since: "a week"}, // invalid
+			},
+		},
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected an error for an invalid since inside retrace.instances, got nil")
+	}
+	if !strings.Contains(err.Error(), `retrace.instances["web"]`) {
+		t.Errorf("error = %q, want it to name the instance via its label", err.Error())
+	}
+}
+
+func TestRetraceInstancesEachEntryChecksItsOwnAppsMap(t *testing.T) {
+	missing := t.TempDir()
+	c := &Config{
+		Dir: t.TempDir(),
+		Retrace: &RetraceConfig{
+			Instances: map[string]RetraceInstanceConfig{
+				"web": {Apps: map[string]string{"mobile-ios": missing}},
+			},
+		},
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected an error for an instances[].apps entry with no retrace.yaml, got nil")
+	}
+	if !strings.Contains(err.Error(), "mobile-ios") {
+		t.Errorf("error = %q, want it to name the app key %q", err.Error(), "mobile-ios")
+	}
+}
+
+func TestRetraceInstancesValidConfigValidates(t *testing.T) {
+	c := &Config{
+		Dir: t.TempDir(),
+		Retrace: &RetraceConfig{
+			Instances: map[string]RetraceInstanceConfig{
+				"web":     {Repo: "org/web", Since: "7d"},
+				"backend": {Repo: "org/backend", Since: "24h"},
+			},
+		},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error for a valid multi-instance config: %v", err)
+	}
+}
