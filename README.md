@@ -299,6 +299,60 @@ therefore report the resulting `401` as drift; that's `revalidate`'s
 existing redaction behavior, not something specific to passthrough. Live
 credential resolution for `revalidate` is future work.
 
+### Gateway passthrough: flipping a gateway to a real remote edge
+
+Service-level passthrough (above) flips one service at a time. A
+`Gateway` fans requests out to many services/stubs by its own route
+table, and sometimes what you actually want is simpler: point the
+*whole* gateway at a real remote edge — QA's own envoy, say — and let it
+own the routing, exactly as if the client had pointed there directly.
+`upstreams:` declares any number of tagged remote targets a gateway can
+be flipped to:
+
+```yaml
+gateways:
+  public:
+    port: 9100
+    routes:
+      - { prefix: /bff, service: storefront, strip_prefix: true }
+    upstreams:
+      - name: qa
+        url: https://qa.example.com
+        allow_writes: false
+```
+
+Flipping `public` to `qa` makes it forward every request verbatim to
+`https://qa.example.com` — no `routes:` matching or rewriting, no local
+CORS handling, no fault/latency injection. It's a pure pass-through, not
+a second router layered on top of the real one; capturing/diffing this
+traffic reflects exactly what the remote edge does, nothing ensemble
+added. Flipping back to `local` restores the gateway's configured routing
+exactly as before. Like service passthrough, this is a runtime action,
+not a config edit — it resets to `local` on the next `ensemble up`.
+
+The same read-only-by-default safety rail and mTLS fields
+(`allow_writes`, `client_cert_file`, `client_key_env`,
+`client_key_passphrase_env`) apply per upstream, identical in meaning to
+their service-level counterparts above.
+
+Flip from the dashboard's Services tab (gateways get the same flip
+control services do, offering `local` plus every declared upstream) or
+the REST endpoint directly — `target` is always required, since a
+gateway has no binary toggle to fall back to:
+
+```sh
+curl -X POST localhost:8080/api/gateways/public/flip -d '{"target":"qa"}'
+curl -X POST localhost:8080/api/gateways/public/flip -d '{"target":"local"}'
+```
+
+`retrace diff`'s `reducedScope` disclosure (above) covers a
+passthrough-flipped gateway the same way it already covers a passthrough
+service — a run that went through one is honestly marked reduced-scope,
+not silently presented as a fully witnessed chain.
+
+Not built yet: flipping several gateways together under one named
+environment — today each gateway flips independently.
+
 ### Caller attribution: `called_by`
 
 The traffic view's caller for each hop normally comes from real trace-context

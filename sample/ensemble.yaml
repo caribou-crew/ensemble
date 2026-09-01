@@ -284,6 +284,14 @@ gateways:
       # backreference renames the segment to what ops-bff actually serves
       # (/admin/orders, /admin/products).
       - { regex: '^/console/(orders|products)$', rewrite: '/admin/$1', service: ops }
+    # Flip this gateway's entire path space to a real remote edge with
+    # `POST /api/gateways/public/flip {"target":"qa"}` (or the dashboard's
+    # Services view) — no real QA env exists in this repo, so `url` below
+    # is a placeholder; point it at your own remote edge to actually use
+    # this. See README's "Gateway passthrough" section.
+    upstreams:
+      - name: qa
+        url: https://qa.example.com
 
 # Turns on the dashboard's Retrace tab (openspec/changes/retrace-ci-sync).
 # `dir` is omitted: .retrace/ sits right next to this file, populated by
