@@ -150,6 +150,69 @@ func TestFlipToPassthroughRewiresProxyThenBackToNative(t *testing.T) {
 	}
 }
 
+// TestReconcileUpstreamEditRewiresProxy: a plain config-file edit to
+// `upstream:` on an already-passthrough service — no Flip/FlipTo call —
+// must still re-target the live proxy listener. Reconcile's changed-service
+// path skips stopCurrent for a passthrough service (nothing is running) and
+// falls straight through to startService + wireProxy, the same generalized
+// wireProxy FlipTo uses; this confirms that shared path actually rewires
+// rather than no-opping on the "already wired" fast path.
+func TestReconcileUpstreamEditRewiresProxy(t *testing.T) {
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-From", "a")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamA.Close()
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-From", "b")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamB.Close()
+
+	proxyPort := freePort(t)
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Services: map[string]config.Service{
+			"edge": {Upstream: upstreamA.URL, Proxy: proxyPort},
+		},
+	}
+	o := newTestOrchestrator(t, cfg, Opts{})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	get := func() string {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/anything", proxyPort))
+		if err != nil {
+			t.Fatalf("proxy GET: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.Header.Get("X-From")
+	}
+	if got := get(); got != "a" {
+		t.Fatalf("before reconcile: proxy X-From = %q, want a", got)
+	}
+
+	newCfg := *cfg
+	newCfg.Services = map[string]config.Service{
+		"edge": {Upstream: upstreamB.URL, Proxy: proxyPort},
+	}
+	result, err := o.Reconcile(context.Background(), newCfg)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := actionFor(t, result, "service", "edge"); got != "restarted" {
+		t.Errorf("service edge action = %q, want restarted", got)
+	}
+
+	if got := get(); got != "b" {
+		t.Fatalf("after reconcile: proxy X-From = %q, want b (proxy did not re-target)", got)
+	}
+}
+
 // TestFlipToPassthroughWithoutUpstreamErrors: a service with no declared
 // passthrough placement has nothing to flip to, same as today's
 // run/docker-only rule.

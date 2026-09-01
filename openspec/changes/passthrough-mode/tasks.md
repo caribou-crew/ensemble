@@ -60,10 +60,14 @@
   (explicit `native`/`docker`/`passthrough` target) both funnel through a
   shared `flipTo` that stops the current placement, starts the requested
   one, and re-wires the proxy.
-- [ ] 3.4 Reconcile picking up a plain `upstream:` config-file edit (no
-  `Flip`/`FlipTo` call) through the same generalized `wireProxy` — the
-  code path is shared so this should already work, but it's **not
-  covered by a dedicated test**; worth confirming before relying on it.
+- [x] 3.4 Reconcile picking up a plain `upstream:` config-file edit (no
+  `Flip`/`FlipTo` call) through the same generalized `wireProxy`:
+  confirmed by `TestReconcileUpstreamEditRewiresProxy`
+  (`ensemble/orchestrator/passthrough_test.go`) — a pure-passthrough
+  service edited to a new `upstream:` and reconciled (no process to
+  restart, so `reconcileServices` falls straight to `startService` +
+  `wireProxy`) actually re-targets the live listener, not just the
+  reported config.
 - [x] 3.5 Orchestrator tests (`ensemble/orchestrator/passthrough_test.go`):
   pure-upstream service skips process spawn and proxies to the real
   upstream; flippable service round-trips native→passthrough→native with
@@ -132,11 +136,17 @@
 
 ## 7. Docs and sample stack
 
-- [ ] 7.1 A passthrough-configured service in `sample/`. **Not built.**
-- [ ] 7.2 README/docs section on passthrough mode. **Not built** — this
-  proposal + design.md document the shape and the known `retrace
-  revalidate` limitation, but nothing user-facing in `docs/`/`README.md`
-  yet.
+- [x] 7.1 A passthrough-configured service in `sample/`: `ops` in
+  `sample/ensemble.yaml` now declares `upstream`/`passthrough` alongside
+  its existing `run`, making it flippable; `upstream` points at a
+  placeholder host (no real QA env exists in this repo) with a comment
+  explaining that and how to actually use it. Confirmed
+  `TestWiringWarningsSampleStackClean` still passes.
+- [x] 7.2 README/docs section on passthrough mode: new "Passthrough mode:
+  flipping a service to a real remote environment" section (after
+  Variants) covers config shape, the read-only safety rail, flipping via
+  the dashboard/REST, mTLS, `retrace diff`'s `reducedScope` disclosure,
+  and the known `revalidate` redaction caveat.
 
 ## 8. Verification
 

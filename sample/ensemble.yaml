@@ -146,6 +146,16 @@ services:
     health: /healthz
     depends_on: [catalog, dynamodb]
 
+  # Exercises passthrough mode (see README "Passthrough mode" and
+  # openspec/changes/passthrough-mode): ops-bff can flip live between its
+  # local node process and a real remote ops-bff instead of running one
+  # locally — a fit for ops because it's a read-only aggregator already,
+  # so the safety rail needs no allow_writes override. Flip it from the
+  # dashboard's Services tab (a native/passthrough select, since two
+  # placements are declared) or `POST /api/services/ops/flip
+  # {"target":"passthrough"}` (back with `{"target":"native"}`). As
+  # written, upstream points at a placeholder host and won't resolve —
+  # swap it for a real QA/staging ops-bff to actually use this.
   ops:
     dir: ./services/ops-bff
     build: npm install
@@ -158,6 +168,8 @@ services:
       ORDER_URL: "http://127.0.0.1:9083"
     health: /healthz
     depends_on: [catalog]
+    upstream: "https://ops-qa.internal.example.com"
+    passthrough: qa
 
   web:
     dir: ./clients/web-app

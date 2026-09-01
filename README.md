@@ -234,6 +234,71 @@ ensemble up --variant monolith=real     # one-off override of `default`
 column, and build stamps are kept per variant so switching never skips a
 stale build.
 
+### Passthrough mode: flipping a service to a real remote environment
+
+`upstream:` makes a service a passthrough target: instead of spawning
+`run`/`docker`, the proxy forwards straight to a real remote base URL —
+QA, staging, whatever environment you'd otherwise hit through a hand-rolled
+client with none of ensemble's capture/redaction/diff machinery. A service
+can declare `upstream:` **alongside** `run`/`docker`, which makes it
+flippable between its local placement and passthrough live, exactly like
+[variants](#variants-a-stub-or-the-real-thing-behind-one-service) — or
+`upstream:` alone, for a service with no local backing at all (it just
+can't be flipped back to anything):
+
+```yaml
+services:
+  ops:
+    dir: ./services/ops-bff
+    run: node index.js
+    proxy: 9086
+    upstream: "https://ops-qa.internal.example.com"
+    passthrough: qa
+```
+
+`passthrough:` is a label for the remote environment (any non-empty
+string — it's never matched against anything, not even `"prod"`) and is
+what arms the safety rail: a passthrough target refuses any non-GET/HEAD
+request with a `502`, recorded as a hop rather than silently dropped,
+unless the service also sets `allow_writes: true`. Fault/latency injection
+rules are skipped against a passthrough target by default too, so a
+stack-wide rule can't accidentally reach a real remote.
+
+Flip a flippable service from the dashboard's Services tab (a button for
+two declared placements, a target-picking select once a service declares
+three) or the REST endpoint directly:
+
+```sh
+curl -X POST localhost:8080/api/services/ops/flip -d '{"target":"passthrough"}'
+curl -X POST localhost:8080/api/services/ops/flip -d '{"target":"native"}'
+```
+
+A body-less `POST .../flip` keeps the legacy binary native/docker toggle,
+so existing callers (including the TUI's `f` key) are unaffected.
+
+For a remote that requires mTLS, add a client certificate — the key
+itself is never written to config, only the name of an env var holding it:
+
+```yaml
+    client_cert_file: ./certs/ops-qa-client.pem   # relative to ensemble.yaml
+    client_key_env: OPS_QA_CLIENT_KEY             # PEM key, from .env or the shell
+    client_key_passphrase_env: OPS_QA_CLIENT_KEY_PASSPHRASE   # optional
+```
+
+A recording that touched a passthrough leaf discloses it rather than
+silently narrowing: `retrace diff --json` includes `reducedScope`, the
+services (from either side) that were passthrough targets during capture
+— so a diff involving one is legible about which part of the chain wasn't
+actually witnessed, instead of a human having to already know.
+
+One caveat: `retrace revalidate` replays a recorded request's headers
+verbatim except any value the recording redacted (`Authorization`, DPoP)
+— which it always does for a passthrough target's real credential, same as
+any other hop. Revalidating against an auth-gated passthrough target will
+therefore report the resulting `401` as drift; that's `revalidate`'s
+existing redaction behavior, not something specific to passthrough. Live
+credential resolution for `revalidate` is future work.
+
 ### Caller attribution: `called_by`
 
 The traffic view's caller for each hop normally comes from real trace-context
