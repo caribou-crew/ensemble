@@ -298,7 +298,15 @@ function EntryRows({
               {entry.statusChange.a} → {entry.statusChange.b}
             </Badge>
           ) : null}
-          {entry.moved ? <Badge tone="blue">moved</Badge> : null}
+          {/* A bare "moved" badge names the fact but not the story: a
+              reviewer scanning the candidate column for where a call ended
+              up has to go find its row. The concrete posA→posB mapping is
+              that story on the row itself. */}
+          {entry.moved ? (
+            <Badge tone="amber">
+              moved {entry.posA + 1} → {entry.posB + 1}
+            </Badge>
+          ) : null}
           {entry.truncated ? <Badge tone="amber">truncated</Badge> : null}
         </td>
         <td className="wire-row__counts">
@@ -450,15 +458,26 @@ export default function WireDiffTable({
                     <th />
                   </tr>
                 </thead>
-                {section.entries.map((entry) => (
-                  <EntryRows
-                    key={entryKey(entry)}
-                    entry={entry}
-                    selectedField={selectedField}
-                    onSelectField={onSelectField}
-                    onReveal={onReveal}
-                  />
-                ))}
+                {/* Rows render in REFERENCE fire order (posA), not the
+                    server-bucket-then-align order they arrive in. A repeated
+                    endpoint's hops otherwise clump together by bucket, so
+                    the reference column reads out of sequence (e.g.
+                    1,2,5,3,4,6) and a reviewer can't tell at a glance what
+                    the reference run actually did. posA is already a dense,
+                    gap-free rank, so sorting by it alone puts the reference
+                    column in top-to-bottom order; the candidate column keeps
+                    its own posB, so a moved entry visibly falls out of step. */}
+                {[...section.entries]
+                  .sort((a, b) => a.posA - b.posA)
+                  .map((entry) => (
+                    <EntryRows
+                      key={entryKey(entry)}
+                      entry={entry}
+                      selectedField={selectedField}
+                      onSelectField={onSelectField}
+                      onReveal={onReveal}
+                    />
+                  ))}
               </table>
             ) : null}
           </section>

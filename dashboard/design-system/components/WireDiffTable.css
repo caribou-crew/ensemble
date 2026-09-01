@@ -101,7 +101,7 @@
 }
 
 .wire-row--moved .wire-row__toggle {
-  color: var(--status-blue);
+  color: var(--status-amber);
 }
 
 .wire-row--identical .wire-row__toggle {

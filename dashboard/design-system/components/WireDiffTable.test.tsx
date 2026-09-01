@@ -103,6 +103,43 @@ describe('WireDiffTable', () => {
     expect(paneB?.textContent).toContain('#3');
   });
 
+  it('sorts rows by reference fire order (posA), not the bucket/alignment order they arrive in', () => {
+    // A repeated endpoint's hops arrive bucketed-then-aligned, which scrambles
+    // the reference sequence (e.g. 1,2,5,3,4,6). posA is already a dense,
+    // gap-free rank, so sorting by it alone must put the reference column
+    // back in top-to-bottom order regardless of input order.
+    render(
+      <WireDiffTable
+        sections={[
+          section('checkout', [
+            entry({ posA: 2, posB: 0, normalizedPath: '/third' }),
+            entry({ posA: 0, posB: 2, normalizedPath: '/first' }),
+            entry({ posA: 1, posB: 1, normalizedPath: '/second' }),
+          ]),
+        ]}
+        selectedField={null}
+        onSelectField={() => {}}
+      />,
+    );
+    const paths = Array.from(container.querySelectorAll('.wire-row__pane--a code')).map(
+      (el) => el.textContent,
+    );
+    expect(paths).toEqual(['/first', '/second', '/third']);
+  });
+
+  it('labels a moved row with its concrete reference→candidate position mapping in amber, not a bare "moved" badge', () => {
+    render(
+      <WireDiffTable
+        sections={[section('checkout', [entry({ posA: 1, posB: 4, moved: true, classes: ['moved'] })])]}
+        selectedField={null}
+        onSelectField={() => {}}
+      />,
+    );
+    const badge = container.querySelector('.ds-badge--amber');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.replace(/\s+/g, ' ').trim()).toBe('moved 2 → 5');
+  });
+
   it('renders a tolerated field with its matcher instead of counting it as a change', () => {
     render(
       <WireDiffTable
