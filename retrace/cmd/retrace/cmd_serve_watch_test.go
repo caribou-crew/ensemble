@@ -15,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
 // writeRepoConfig writes a minimal retrace.repo.yaml at dir mapping each
@@ -32,18 +35,32 @@ func writeRepoConfig(t *testing.T, dir string, apps map[string]string) {
 	}
 }
 
-// stubRun creates an empty run directory under root's .retrace/runs tree —
-// enough for runs.ListAppsErr/ListFlowsErr to see app/flow, so the queue
-// carries a (quarantined, no ref yet) item naming them. BuildQueue's own
-// doc comment is explicit that a flow with no reference becomes an item,
-// never a dropped row, so this is a deliberately minimal fixture: this
+// stubRun creates a run directory under root's .retrace/runs tree carrying
+// just enough to be a real retrace run — a manifest.json, per appIsReal
+// (retrace/serve/queue.go) — so the queue carries a (quarantined, no ref
+// yet) item naming it rather than filtering the whole app out as a foreign
+// artifact tree. BuildQueue's own doc comment is explicit that a flow with
+// no reference becomes an item, never a dropped row, so this stays a
+// deliberately minimal fixture beyond that: no shots, no wire.jsonl — this
 // suite is about WHICH roots' apps show up, not about diff correctness,
 // which retrace/serve's own tests already cover.
 func stubRun(t *testing.T, root, app, flow string) {
 	t.Helper()
-	dir := filepath.Join(root, ".retrace", "runs", app, flow, "20260827T090000Z-aaa1111")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	runID := "20260827T090000Z-aaa1111"
+	p, err := runs.Create(runs.RunsRoot(root), app, flow, runID)
+	if err != nil {
 		t.Fatalf("staging run fixture: %v", err)
+	}
+	m := runs.Manifest{
+		App: app, Flow: flow, RunID: runID, Mode: runs.ModeStandalone,
+		Git:        runs.Git{SHA: "deadbee", Branch: "main"},
+		StartedAt:  time.Date(2026, 8, 27, 9, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 8, 27, 9, 0, 5, 0, time.UTC),
+		Capture:    runs.CaptureTrust{Status: trace.VerdictOK, Summary: "capture looks complete"},
+		Wire:       runs.Counts{Recorded: true},
+	}
+	if err := runs.WriteManifest(p, &m); err != nil {
+		t.Fatalf("writing manifest fixture: %v", err)
 	}
 }
 
