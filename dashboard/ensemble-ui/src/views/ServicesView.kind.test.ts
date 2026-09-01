@@ -39,6 +39,7 @@ describe('ServicesView: entity kind', () => {
     document.body.appendChild(container);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
     vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
+    vi.spyOn(api, 'gatewayStatus').mockResolvedValue([]);
     vi.spyOn(api, 'status').mockResolvedValue(SERVICES);
   });
 

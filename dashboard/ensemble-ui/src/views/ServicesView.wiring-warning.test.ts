@@ -56,6 +56,7 @@ describe('ServicesView: wiring warning badge', () => {
 
   it('badges the REFERENCING service with the message as a tooltip, leaving the target untouched', async () => {
     vi.spyOn(api, 'wiringWarnings').mockResolvedValue([WARNING]);
+    vi.spyOn(api, 'gatewayStatus').mockResolvedValue([]);
 
     root = createRoot(container);
     await act(async () => {
@@ -77,6 +78,7 @@ describe('ServicesView: wiring warning badge', () => {
 
   it('renders no badge when there are no wiring warnings', async () => {
     vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
+    vi.spyOn(api, 'gatewayStatus').mockResolvedValue([]);
 
     root = createRoot(container);
     await act(async () => {

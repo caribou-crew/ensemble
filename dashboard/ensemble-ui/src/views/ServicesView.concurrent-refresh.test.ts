@@ -49,6 +49,7 @@ describe('ServicesView: concurrent row actions', () => {
     document.body.appendChild(container);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
     vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
+    vi.spyOn(api, 'gatewayStatus').mockResolvedValue([]);
   });
 
   afterEach(() => {

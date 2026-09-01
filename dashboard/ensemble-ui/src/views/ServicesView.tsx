@@ -9,7 +9,14 @@ import { Badge, Spinner } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import { subscribeServiceLog } from '../api/sse';
-import type { FreshnessState, ServiceState, Topology, TopologyNode, WiringWarning } from '../api/types';
+import type {
+  FreshnessState,
+  GatewayStatus,
+  ServiceState,
+  Topology,
+  TopologyNode,
+  WiringWarning,
+} from '../api/types';
 import InlineError from '../components/InlineError';
 import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
@@ -162,6 +169,7 @@ interface ServicesSnapshot {
   services: ServiceState[];
   topology: Topology;
   warnings: WiringWarning[];
+  gateways: GatewayStatus[];
 }
 
 /** refresh() runs both from the poll interval and out-of-band after a row mutation, so an
@@ -173,8 +181,13 @@ interface ServicesSnapshot {
 function useServicesPoll() {
   const [tick, setTick] = useState(0);
   const { data, error, loading } = useAsync<ServicesSnapshot>(async () => {
-    const [s, t, w] = await Promise.all([api.status(true), api.topology(), api.wiringWarnings()]);
-    return { services: s, topology: t, warnings: w };
+    const [s, t, w, g] = await Promise.all([
+      api.status(true),
+      api.topology(),
+      api.wiringWarnings(),
+      api.gatewayStatus(),
+    ]);
+    return { services: s, topology: t, warnings: w, gateways: g };
   }, [tick]);
 
   const [snapshot, setSnapshot] = useState<ServicesSnapshot | null>(null);
@@ -214,6 +227,7 @@ function useServicesPoll() {
     services: snapshot?.services ?? null,
     topology: snapshot?.topology ?? null,
     warnings: snapshot?.warnings ?? [],
+    gateways: snapshot?.gateways ?? [],
     error: staleError,
     refresh,
   };
@@ -266,12 +280,14 @@ function FlipControl({
   busy,
   disabled,
   onFlip,
+  ariaLabel,
 }: {
   placement: string;
   placements: string[];
   busy: boolean;
   disabled: boolean;
   onFlip: (target: string) => void;
+  ariaLabel?: string;
 }) {
   const others = placements.filter((p) => p !== placement);
   if (others.length === 0) {
@@ -279,13 +295,14 @@ function FlipControl({
   }
   if (others.length === 1) {
     return (
-      <button type="button" disabled={disabled} onClick={() => onFlip(others[0])}>
+      <button type="button" aria-label={ariaLabel} disabled={disabled} onClick={() => onFlip(others[0])}>
         {busy ? <Spinner /> : `Flip to ${others[0]}`}
       </button>
     );
   }
   return (
     <select
+      aria-label={ariaLabel}
       value=""
       disabled={disabled}
       onChange={(e) => {
@@ -458,8 +475,33 @@ function StubRow({ node }: { node: TopologyNode }) {
 
 /** A cfg.Gateways entry, rendered from Topology's existing "gateway" category — gateways are
     static listeners the proxy binds at Up, not orchestrator-supervised nodes, so like stubs
-    they never get a ServiceState. */
-function GatewayRow({ node }: { node: TopologyNode }) {
+    they never get a ServiceState. Unlike a stub, a gateway CAN carry an action: flipping
+    between routing locally and forwarding to one of its declared upstreams (FlipGateway),
+    reusing the same FlipControl a 3-placement service uses. */
+function GatewayRow({
+  node,
+  activeTarget,
+  onFlip,
+}: {
+  node: TopologyNode;
+  activeTarget: string;
+  onFlip: (target: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  async function handleFlip(target: string) {
+    setBusy(true);
+    setRowError(null);
+    try {
+      await onFlip(target);
+    } catch (err) {
+      setRowError(messageOf(err, 'flip failed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <tr className="services-table__row">
       <td className="services-table__name">{node.name}</td>
@@ -467,7 +509,7 @@ function GatewayRow({ node }: { node: TopologyNode }) {
         <Badge tone={statusTone(node.status)}>{node.status}</Badge>
       </td>
       <td>
-        <span className="services-table__dash">—</span>
+        <Badge tone="neutral">{activeTarget}</Badge>
       </td>
       <td>
         <Badge tone="amber">gateway</Badge>
@@ -482,13 +524,23 @@ function GatewayRow({ node }: { node: TopologyNode }) {
       <td>
         <span className="services-table__dash">—</span>
       </td>
-      <td className="services-table__actions" />
+      <td className="services-table__actions">
+        <FlipControl
+          placement={activeTarget}
+          placements={['local', ...(node.upstreams ?? [])]}
+          busy={busy}
+          disabled={busy}
+          onFlip={(target) => void handleFlip(target)}
+          ariaLabel={`Flip gateway ${node.name}`}
+        />
+        {rowError && <InlineError message={rowError} className="services-table__row-error" />}
+      </td>
     </tr>
   );
 }
 
 export default function ServicesView() {
-  const { services, topology, warnings, error, refresh } = useServicesPoll();
+  const { services, topology, warnings, gateways, error, refresh } = useServicesPoll();
   const [sort, setSort] = useState<SortState | null>(null);
   const [checkingFreshness, setCheckingFreshness] = useState(false);
   const [freshnessError, setFreshnessError] = useState<string | null>(null);
@@ -531,6 +583,11 @@ export default function ServicesView() {
     await refresh();
   }
 
+  async function handleGatewayFlip(name: string, target: string) {
+    await api.flipGateway(name, target);
+    await refresh();
+  }
+
   if (error) {
     return (
       <div className="services-view services-view--error">
@@ -568,6 +625,7 @@ export default function ServicesView() {
   const gatewayNodes = (topology?.nodes ?? [])
     .filter((n) => n.category === 'gateway')
     .sort((a, b) => a.name.localeCompare(b.name));
+  const gatewayTargetByName = new Map(gateways.map((g) => [g.name, g.activeTarget]));
 
   return (
     <div className="services-view">
@@ -620,7 +678,12 @@ export default function ServicesView() {
             <StubRow key={n.name} node={n} />
           ))}
           {gatewayNodes.map((n) => (
-            <GatewayRow key={n.name} node={n} />
+            <GatewayRow
+              key={n.name}
+              node={n}
+              activeTarget={gatewayTargetByName.get(n.name) ?? 'local'}
+              onFlip={(target) => handleGatewayFlip(n.name, target)}
+            />
           ))}
         </tbody>
       </table>

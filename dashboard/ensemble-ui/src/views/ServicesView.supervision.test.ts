@@ -58,6 +58,7 @@ describe('ServicesView: supervision states and log pane', () => {
     vi.stubGlobal('EventSource', FakeEventSource);
     vi.spyOn(api, 'topology').mockResolvedValue(TOPOLOGY);
     vi.spyOn(api, 'wiringWarnings').mockResolvedValue([]);
+    vi.spyOn(api, 'gatewayStatus').mockResolvedValue([]);
     vi.spyOn(api, 'status').mockResolvedValue(SERVICES);
   });
 

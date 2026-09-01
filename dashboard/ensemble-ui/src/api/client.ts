@@ -4,6 +4,7 @@
 // it (SSE reconnection, polling, etc. land in later tasks).
 
 import type {
+  GatewayStatus,
   Hop,
   LatencyRule,
   LogicalHop,
@@ -234,6 +235,25 @@ export const api = {
     return request<ServiceState>(
       `/api/services/${encodeURIComponent(name)}/stop`,
       jsonInit("POST"),
+    );
+  },
+
+  /** GET /api/status's `gateways` field — a separate call from `status()` for the same
+   * reason `wiringWarnings()` is: most `status()` callers have no use for it, and
+   * `status()`'s own shape is already relied on elsewhere as `ServiceState[]`. */
+  gatewayStatus(): Promise<GatewayStatus[]> {
+    return request<{ gateways?: GatewayStatus[] }>("/api/status").then(
+      (r) => r.gateways ?? [],
+    );
+  },
+
+  /** Flips a gateway to `target` ("local" or one of its declared upstream names) — unlike
+   * `flip()`, `target` is always required; there's no legacy binary toggle for a gateway to
+   * fall back to. */
+  flipGateway(name: string, target: string): Promise<GatewayStatus[]> {
+    return request<GatewayStatus[]>(
+      `/api/gateways/${encodeURIComponent(name)}/flip`,
+      jsonInit("POST", { target }),
     );
   },
 

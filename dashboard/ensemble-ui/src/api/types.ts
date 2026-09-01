@@ -145,6 +145,19 @@ export interface TopologyNode {
   /** "gateway" nodes only — mirrors config.Gateway.ExposeInTraffic. When false (the default),
    * the Traffic tab collapses this gateway's own hop into its target's. */
   exposeInTraffic?: boolean;
+  /** Every upstream a "gateway" category node declares (by name), in declaration order —
+   * mirrors config.Gateway.Upstreams' Name field. What decides which FlipGateway targets to
+   * offer, since GatewayStatus.activeTarget alone only says which one is CURRENTLY active.
+   * Unset for every other category and for a gateway with none declared. */
+  upstreams?: string[];
+}
+
+/** One gateway's current flip target — mirrors ensemble/orchestrator.GatewayStatus's JSON
+ * shape exactly. "local" is the default (routed) mode; any other value names one of the
+ * gateway's declared TopologyNode.upstreams. */
+export interface GatewayStatus {
+  name: string;
+  activeTarget: string;
 }
 
 export interface TopologyEdge {
