@@ -43,3 +43,34 @@ export function verdictTone(v: Item['verdict']): 'green' | 'amber' | 'red' {
 function assertNever(v: never): never {
   throw new Error(`unhandled verdict ${String(v)}`);
 }
+
+/**
+ * The reviewer-facing NAME of a verdict — presentation only, decoupled from
+ * the wire value.
+ *
+ * The wire value stays `quarantined` (it is the Verdict the server computes
+ * and every Go test pins), but that word reads as "infected / dangerous" to
+ * a reviewer when what it actually means is "the comparison could not run" —
+ * a signal-killed capture, a geometry mismatch, no eligible reference. So the
+ * UI says `not compared`, which is the same sentence the detail screen
+ * already uses ("This flow was not compared"). The other three names are
+ * unchanged.
+ *
+ * TOTAL like verdictTone, and for the same reason: a fifth verdict added to
+ * the union is a type error here, not a raw `quarantined` leaking onto a
+ * badge.
+ */
+export function verdictLabel(v: Item['verdict']): string {
+  switch (v) {
+    case 'pass':
+      return 'pass';
+    case 'changed':
+      return 'changed';
+    case 'failed':
+      return 'failed';
+    case 'quarantined':
+      return 'not compared';
+    default:
+      return assertNever(v);
+  }
+}

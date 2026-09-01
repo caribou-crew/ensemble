@@ -128,15 +128,19 @@ describe('QueueList rows', () => {
     expect(text).not.toContain('reference');
   });
 
-  it('paints a quarantined row as a call for attention, not as a non-event', () => {
+  it('paints a not-compared row as a call for attention, not as a non-event', () => {
     // D1. ScoreOf gives quarantined 1000 — deliberately the top of the queue —
     // and a verdictTone with no arm for it returned undefined, which <Badge>
     // renders NEUTRAL GREY. The row sorted to the top because it demands
     // attention and was painted the colour of a non-event; colour is
     // pre-attentive and sort order is not.
+    //
+    // The wire value is still `quarantined`; the UI relabels it to `not
+    // compared` (verdictLabel) since that word reads as "infected" to a
+    // reviewer when it actually means "the comparison could not run".
     renderQueue([item({ verdict: 'quarantined', score: 1000, gates: ['side b was quarantined'] })], '');
     const badge = Array.from(container.querySelectorAll('.ds-badge')).find(
-      (b) => b.textContent === 'quarantined',
+      (b) => b.textContent === 'not compared',
     );
     expect(badge).toBeDefined();
     expect(badge!.className).not.toContain('ds-badge--neutral');

@@ -25,7 +25,7 @@ import {
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
 import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
-import { verdictTone } from './tone';
+import { verdictTone, verdictLabel } from './tone';
 import { useUrlParam } from './urlState';
 import QueueList, { keyOf, visibleRows } from './components/QueueList';
 import SyncPanel from './components/SyncPanel';
@@ -375,6 +375,7 @@ export function ItemScreen({
   onSelectField,
   resolveShotUrl = defaultResolveShotUrl,
   onReveal,
+  onBack,
 }: {
   app: string;
   flow: string;
@@ -383,6 +384,10 @@ export function ItemScreen({
   onSelectField: (entry: Entry, field: FieldDiff) => void;
   resolveShotUrl?: ResolveShotUrl;
   onReveal?: () => Promise<Summary['sections']>;
+  // Optional: only the main queue view wires a back-to-queue control. The
+  // sync panel embeds ItemScreen inside its own chrome (which has its own
+  // back affordance), so it omits this and the button does not render.
+  onBack?: () => void;
 }) {
   // Collapsed by default: a flow with a dozen+ checkpoints, most of which
   // passed, otherwise means a long scroll past every unchanged screen to
@@ -438,11 +443,16 @@ export function ItemScreen({
 
   return (
     <div className="item">
+      {onBack ? (
+        <button type="button" className="item__back" onClick={onBack}>
+          ← back to queue
+        </button>
+      ) : null}
       <header className="item__header">
         <h1>
           {app}/{flow}
         </h1>
-        <Badge tone={tone}>{summary.verdict}</Badge>
+        <Badge tone={tone}>{verdictLabel(summary.verdict)}</Badge>
         <span className="item__runs">
           {summary.a.runId || 'no reference'} → {summary.b.runId || 'no run'}
         </span>
@@ -483,19 +493,48 @@ export function ItemScreen({
       ) : null}
 
       {summary.verdict === 'quarantined' ? (
-        <div className="item__quarantine">
-          <p>
-            This flow was not compared. Every plane below is empty because the comparison never
-            ran, not because nothing changed.
-          </p>
-          <ul>
-            {summary.quarantined.map((q) => (
-              <li key={`${q.side}:${q.reason}`}>
-                side {q.side}: {q.reason}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <>
+          <div className="item__quarantine">
+            <p>
+              This flow was not compared. The per-checkpoint diff below is empty because the
+              comparison never ran, not because nothing changed — but the run still captured its
+              screenshots, shown below.
+            </p>
+            <ul>
+              {summary.quarantined.map((q) => (
+                <li key={`${q.side}:${q.reason}`}>
+                  side {q.side}: {q.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* The captured shots exist even for a not-compared run — the diff
+              couldn't run, but the screenshots were still taken. Show the
+              run-under-review (b side) checkpoints from the manifest so a
+              reviewer can see what the app actually rendered. */}
+          {summary.b.manifest.checkpoints.length > 0 ? (
+            <section className="item__plane">
+              <h2>captured screenshots</h2>
+              <div className="item__captures">
+                {summary.b.manifest.checkpoints.map((cp) => (
+                  <figure key={cp.name} className="item__capture">
+                    <figcaption className="item__capture-name">{cp.name}</figcaption>
+                    <a href={resolveShotUrl(app, flow, 'b', cp.name)} target="_blank" rel="noreferrer">
+                      <img
+                        className="item__capture-img"
+                        src={resolveShotUrl(app, flow, 'b', cp.name)}
+                        alt={`captured screenshot of ${cp.name}`}
+                      />
+                    </a>
+                  </figure>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <p className="item__none">This run captured no screenshots.</p>
+          )}
+        </>
       ) : (
         <>
           <section className="item__plane">
@@ -811,6 +850,7 @@ export default function App() {
               onSelectField={(entry, field) =>
                 setSelectedField(`${entryKey(entry)}|${field.scope}:${field.path}`)
               }
+              onBack={() => setOpen(false)}
             />
           ) : (
             <p className="loading">Nothing selected.</p>

@@ -624,25 +624,38 @@ func validShotRequest(w http.ResponseWriter, side, name string) bool {
 // under, resolve the checkpoint, refuse a generated side that was never
 // written, and stream the PNG.
 func writeShotImage(w http.ResponseWriter, sum diff.Summary, outDir, app, flow, side, name string) {
-	cp, found := checkpointNamed(sum, name)
-	if !found {
-		writeErr(w, http.StatusNotFound, fmt.Sprintf("no checkpoint %q in %s/%s", name, app, flow))
+	// The captured sides (a/b) exist whenever the run recorded that
+	// checkpoint — independent of whether the COMPARISON ran. A quarantined
+	// run (geometry mismatch, no reference) has an empty sum.Checkpoints but
+	// still captured its shots, and a reviewer must be able to look at them.
+	// So for a/b we accept a checkpoint the manifest recorded even if the
+	// comparison never produced a verdict for it; the file read below is the
+	// real gate. The GENERATED sides (diff/overlay) only exist when the
+	// comparison ran, so they stay gated on a comparison checkpoint with a
+	// non-empty image path.
+	if side == "diff" || side == "overlay" {
+		cp, found := checkpointNamed(sum, name)
+		if !found {
+			writeErr(w, http.StatusNotFound, fmt.Sprintf("no checkpoint %q in %s/%s", name, app, flow))
+			return
+		}
+		// A generated side that was never written is a 404 with a reason,
+		// never an empty 200: an empty body renders as a blank comparison
+		// pane, and a blank pane reads as "identical".
+		img := cp.Images.Diff
+		if side == "overlay" {
+			img = cp.Images.Overlay
+		}
+		if img == "" {
+			writeErr(w, http.StatusNotFound, "no diff image: this checkpoint did not change")
+			return
+		}
+	} else if !captureHasCheckpoint(sum, side, name) {
+		// a/b: the side must have recorded this checkpoint. Checked against
+		// the run's manifest, not the comparison, so a quarantined run's
+		// captured shots are reachable.
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("no checkpoint %q captured on side %s of %s/%s", name, side, app, flow))
 		return
-	}
-	// A generated side that was never written is a 404 with a reason, never
-	// an empty 200: an empty body renders as a blank comparison pane, and a
-	// blank pane reads as "identical".
-	switch side {
-	case "diff":
-		if cp.Images.Diff == "" {
-			writeErr(w, http.StatusNotFound, "no diff image: this checkpoint did not change")
-			return
-		}
-	case "overlay":
-		if cp.Images.Overlay == "" {
-			writeErr(w, http.StatusNotFound, "no diff image: this checkpoint did not change")
-			return
-		}
 	}
 
 	dir, err := shotDirFor(&sum, outDir, side)
@@ -746,6 +759,27 @@ func checkpointNamed(s diff.Summary, name string) (diff.CheckpointVerdict, bool)
 		}
 	}
 	return diff.CheckpointVerdict{}, false
+}
+
+// captureHasCheckpoint reports whether the named side (a/b) recorded a
+// checkpoint by this name in its MANIFEST — the record of what was captured,
+// which survives a quarantined comparison that produced no per-checkpoint
+// verdict. Falls back to the comparison checkpoints when the manifest has
+// none by this name, so nothing that used to resolve stops resolving.
+func captureHasCheckpoint(sum diff.Summary, side, name string) bool {
+	ref := sum.B
+	if side == "a" {
+		ref = sum.A
+	}
+	for _, cp := range ref.Manifest.Checkpoints {
+		if cp.Name == name {
+			return true
+		}
+	}
+	if _, found := checkpointNamed(sum, name); found {
+		return true
+	}
+	return false
 }
 
 // --- ui -----------------------------------------------------------------

@@ -1147,6 +1147,59 @@ func TestEverySideOfAChangedCheckpointServesAndAnUnchangedOneSaysSo(t *testing.T
 	}
 }
 
+// TestQuarantinedRunsCapturedShotsStillServe pins the a/b half of
+// writeShotImage's quarantine fix: a run whose capture quarantineCheck
+// refuses to compare (the proxy died mid-recording, here) still recorded its
+// screenshots on both sides, and a reviewer must be able to look at them
+// even though sum.Checkpoints (the comparison) is empty for a quarantined
+// verdict. The generated sides (diff/overlay), which only ever exist when a
+// comparison actually ran, must keep 404ing.
+func TestQuarantinedRunsCapturedShotsStillServe(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "onboarding", runA, map[string][]byte{"step1": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/onboarding", 200, `{"step":1}`)})
+	acceptRef(t, cwd, "web", "onboarding", runA)
+	p := recordRun(t, cwd, "web", "onboarding", runB, map[string][]byte{"step1": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/onboarding", 200, `{"step":1}`)})
+	m, err := runs.ReadManifest(p.ManifestPath)
+	if err != nil {
+		t.Fatalf("reading the manifest: %v", err)
+	}
+	m.Capture = runs.CaptureTrust{Status: trace.VerdictBroken, Summary: "the proxy died 12s in"}
+	if err := runs.WriteManifest(p, &m); err != nil {
+		t.Fatalf("rewriting the manifest: %v", err)
+	}
+	ts := newServer(t, cwd)
+
+	// Confirm the fixture actually reaches a quarantined verdict, so a
+	// regression that made the comparison run again (and this test pass for
+	// the wrong reason) would be caught here first.
+	doc := mustOK(t, get(t, ts, "/api/queue/web/onboarding"), "GET item")
+	summary := doc["summary"].(map[string]any)
+	if summary["verdict"] != "quarantined" {
+		t.Fatalf("fixture verdict = %v, want quarantined", summary["verdict"])
+	}
+
+	// Both sides captured "step1" even though the comparison itself never
+	// ran — a broken CAPTURE does not mean an absent SCREENSHOT.
+	for _, side := range []string{"a", "b"} {
+		r := get(t, ts, "/api/shots/web/onboarding/"+side+"/step1")
+		if r.status != http.StatusOK {
+			t.Fatalf("side %q of a quarantined run's captured checkpoint: status = %d\n%s", side, r.status, r.body)
+		}
+		if !strings.HasPrefix(r.ctype, "image/png") {
+			t.Fatalf("side %q: content-type = %q, want image/png", side, r.ctype)
+		}
+	}
+
+	// The generated sides never ran a comparison at all, so they stay 404s.
+	for _, side := range []string{"diff", "overlay"} {
+		if r := get(t, ts, "/api/shots/web/onboarding/"+side+"/step1"); r.status != http.StatusNotFound {
+			t.Fatalf("side %q of a quarantined run: status = %d, want 404\n%s", side, r.status, r.body)
+		}
+	}
+}
+
 func TestAnUnknownAppOrFlowIs404NotAPanic(t *testing.T) {
 	ts := newServer(t, threeFlowProject(t))
 

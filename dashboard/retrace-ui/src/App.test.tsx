@@ -681,7 +681,7 @@ describe('the item screen', () => {
     expect(banner?.textContent).not.toContain('reference');
   });
 
-  it('paints a quarantined flow as a call for attention, the same colour the queue row uses', async () => {
+  it('paints a not-compared flow as a call for attention, the same colour the queue row uses', async () => {
     const calls = stubServer({
       item: summary({
         verdict: 'quarantined',
@@ -691,12 +691,52 @@ describe('the item screen', () => {
     await mount();
     await openAFlow(calls);
     const badge = Array.from(container.querySelectorAll('.ds-badge')).find(
-      (b) => b.textContent === 'quarantined',
+      (b) => b.textContent === 'not compared',
     );
     expect(badge).toBeDefined();
     expect(badge!.className).not.toContain('ds-badge--neutral');
     expect(badge!.className).toContain('ds-badge--amber');
     expect(text()).toContain('This flow was not compared');
+  });
+
+  it('shows the captured screenshots for a not-compared run instead of nothing', async () => {
+    // The per-checkpoint diff can't run for a quarantined verdict, but the
+    // run's manifest still recorded whatever the app rendered — the
+    // reviewer should be able to look at it rather than seeing empty planes.
+    const calls = stubServer({
+      item: summary({
+        verdict: 'quarantined',
+        quarantined: [{ side: 'b', reason: 'the proxy was down for 40s' }],
+        b: {
+          ...summary().b,
+          manifest: {
+            ...summary().b.manifest,
+            checkpoints: [
+              { name: 'cart', file: 'cart.png', width: 100, height: 100, at: '2026-08-21T10:10:01Z' },
+            ],
+          },
+        },
+      }),
+    });
+    await mount();
+    await openAFlow(calls);
+    expect(text()).toContain('captured screenshots');
+    const img = container.querySelector('.item__capture-img') as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    expect(img!.alt).toContain('cart');
+  });
+
+  it('renders a back-to-queue control on the main item screen and returns to the queue', async () => {
+    const calls = stubServer();
+    await mount();
+    await openAFlow(calls);
+    const back = container.querySelector('.item__back') as HTMLButtonElement | null;
+    expect(back).not.toBeNull();
+    await act(async () => {
+      back!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.item')).toBeNull();
+    expect(container.querySelector('.queue')).not.toBeNull();
   });
 
   /**

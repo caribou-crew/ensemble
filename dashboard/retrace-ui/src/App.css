@@ -88,6 +88,21 @@
   max-width: 78rem;
 }
 
+.item__back {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0.1rem 0;
+  margin-bottom: 0.5rem;
+}
+.item__back:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
 .item__header {
   display: flex;
   align-items: baseline;
@@ -126,11 +141,37 @@
 }
 
 .item__quarantine {
-  border: 1px solid var(--status-red);
+  /* Amber, not red — this box says "could not be compared", which is the
+     absence of a verdict, not a failure. It matches the amber `not compared`
+     badge (verdictTone), so the colour agrees with the word. */
+  border: 1px solid var(--status-amber);
   border-radius: 6px;
-  background: var(--status-red-bg);
+  background: var(--bg-raised);
   padding: 0.75rem;
   font-size: 0.82rem;
+}
+
+.item__captures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1rem;
+}
+.item__capture {
+  margin: 0;
+}
+.item__capture-name {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.3rem;
+}
+.item__capture-img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  display: block;
 }
 
 .item__plane h2 {

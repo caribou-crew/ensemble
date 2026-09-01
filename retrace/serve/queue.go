@@ -9,6 +9,7 @@ package serve
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -221,6 +222,19 @@ func BuildQueue(d Deps) ([]Item, error) {
 			items = append(items, brokenItem(app, "", ferr))
 			continue
 		}
+		// Skip directories that are not a retrace app at all. A workflow
+		// that dumps its own raw test-runner output (screenshots, logs) into
+		// .retrace/runs alongside the real per-app run trees has no retrace
+		// manifest.json and no committed .retrace-ref, so every flow under
+		// it can only ever be a quarantined "no reference / broken capture"
+		// row. Listing them turns a small review queue into hundreds of
+		// un-actionable rows that bury the real ones (the failure this whole
+		// surface exists to prevent, inverted). A dir is a real app only if
+		// some flow has either a committed reference or at least one run
+		// carrying a retrace manifest; see appIsReal.
+		if !appIsReal(d, root, app, flows) {
+			continue
+		}
 		for _, flow := range flows {
 			s, serr := SummaryFor(d, app, flow)
 			if serr != nil {
@@ -232,6 +246,41 @@ func BuildQueue(d Deps) ([]Item, error) {
 	}
 	sortItems(items)
 	return items, nil
+}
+
+// appIsReal reports whether a directory under .retrace/runs is an actual
+// retrace app, as opposed to a raw artifact tree a workflow merged in
+// (loose screenshots/logs keyed by run timestamp, not by app). The
+// distinction is concrete: a real app has either a committed reference
+// bundle for some flow, or at least one run carrying a retrace
+// manifest.json. A merged artifact tree has neither — its "flows" are
+// timestamp dirs with no manifest — so every row it could produce is a
+// quarantined "no reference" non-finding. Filtering here (rather than at
+// ingest time) keeps a stale artifact dir already on disk from polluting
+// the queue too, and applies equally to the single-root and repo.yaml
+// multi-root paths since both run through BuildQueue.
+//
+// Best-effort and fail-open on I/O: a dir we cannot stat is kept, so a real
+// app is never hidden by a transient read error — the cost of a wrong guess
+// is one extra row, never a silently dropped surface.
+func appIsReal(d Deps, root, app string, flows []string) bool {
+	for _, flow := range flows {
+		if bundle, err := refs.BundleDir(d.Cwd, app, flow); err == nil {
+			if info, statErr := os.Stat(bundle); statErr == nil && info.IsDir() {
+				return true // a committed .retrace-ref/<app>/<flow> exists
+			}
+		}
+		for _, id := range runs.ListRuns(root, app, flow) {
+			p, err := runs.PathsFor(root, app, flow, id)
+			if err != nil {
+				continue
+			}
+			if _, err := os.Stat(p.ManifestPath); err == nil {
+				return true // a run with a retrace manifest exists
+			}
+		}
+	}
+	return false
 }
 
 // sortItems is the ONE worst-first comparator, shared by single-root

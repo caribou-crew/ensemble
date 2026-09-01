@@ -1190,3 +1190,39 @@ func TestSummaryForFallsBackToCfgWhenCfgForIsNil(t *testing.T) {
 		t.Fatalf("verdict = %q, want changed — with no CfgFor, the nonce field has no wire_ignore and must be reported", s.Verdict)
 	}
 }
+
+// TestBuildQueueSkipsADirectoryWithNoManifestAndNoReference pins appIsReal:
+// a dir under .retrace/runs with no committed reference and no run carrying
+// a retrace manifest.json is not a retrace app at all — a raw artifact tree
+// merged in by an unrelated tool — and must never produce a queue row. A
+// real, recorded app must still appear alongside it.
+func TestBuildQueueSkipsADirectoryWithNoManifestAndNoReference(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	// A raw artifact dir: a timestamp-keyed "flow" with a loose screenshot
+	// and no manifest.json anywhere underneath, and no committed reference —
+	// exactly what a non-retrace tool dumping its own output would leave.
+	rawFlow := filepath.Join(runs.RunsRoot(cwd), "raw-artifacts", "20260101T000000Z")
+	if err := os.MkdirAll(rawFlow, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rawFlow, "screenshot.png"), shotPNG(t, blue), 0o644); err != nil {
+		t.Fatalf("writing loose screenshot: %v", err)
+	}
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (the raw artifact dir must be filtered out): %+v", len(items), items)
+	}
+	if items[0].App != "web" || items[0].Flow != "login" {
+		t.Fatalf("the surviving item is %s/%s, want web/login", items[0].App, items[0].Flow)
+	}
+}

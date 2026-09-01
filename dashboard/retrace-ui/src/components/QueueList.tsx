@@ -1,7 +1,7 @@
 import { Badge } from '@ensemble/design-system';
 import CaptureBanner from '@ensemble/design-system/components/CaptureBanner';
 import type { EmptyReason, Item } from '../api/types';
-import { verdictTone } from '../tone';
+import { verdictTone, verdictLabel } from '../tone';
 import './QueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;
@@ -86,7 +86,7 @@ function Row({
         <span className="queue-row__flow">
           {item.app}/{item.flow}
         </span>
-        <Badge tone={verdictTone(item.verdict)}>{item.verdict}</Badge>
+        <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
         {/* item.gates is ALWAYS an array — see the presence note in
             api/types.ts and TestAPassingItemSerialisesGatesAsAnEmptyArray on
             the Go side. It used to be omitted on exactly these healthy rows. */}
