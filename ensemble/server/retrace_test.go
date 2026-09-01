@@ -177,7 +177,7 @@ func TestRetraceQueueMatchesDirectServeQueue(t *testing.T) {
 		t.Fatalf("retraceconfig.Discover: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	retraceserve.WriteQueue(rec, retraceserve.Deps{Cwd: cwd, Cfg: rcfg, Version: "test"})
+	retraceserve.WriteQueue(rec, retraceserve.Deps{Cwd: cwd, Cfg: rcfg, Version: "test"}, retraceserve.QueueFilter{})
 	var want map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &want); err != nil {
 		t.Fatalf("unmarshalling direct WriteQueue output: %v", err)

@@ -42,6 +42,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/queue", s.handleQueue)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}", s.handleItem)
+	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs/{runId}", s.handleItemAtRun)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/accept", s.handleAccept)
 	mux.HandleFunc("POST /api/queue/{app}/{flow}/reject", s.handleReject)
@@ -71,29 +72,31 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // --- queue --------------------------------------------------------------
 
 func (s *server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	filter := QueueFilterFromQuery(r.URL.Query())
 	if sources := s.currentSources(); sources != nil {
 		items, err := sources.BuildQueue()
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeQueueItems(w, items)
+		writeQueueItems(w, filter.Apply(items))
 		return
 	}
-	WriteQueue(w, s.deps())
+	WriteQueue(w, s.deps(), filter)
 }
 
 // WriteQueue writes the review queue as this handler's response would,
 // exported so a second HTTP surface (ensemble/server's retrace routes) can
 // serve the identical response without a second implementation of "what a
-// queue response looks like".
-func WriteQueue(w http.ResponseWriter, d Deps) {
+// queue response looks like". The filter narrows which rows are returned;
+// pass the zero QueueFilter to return the whole queue.
+func WriteQueue(w http.ResponseWriter, d Deps, filter QueueFilter) {
 	items, err := BuildQueue(d)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeQueueItems(w, items)
+	writeQueueItems(w, filter.Apply(items))
 }
 
 // writeQueueItems is WriteQueue's response body, factored out so

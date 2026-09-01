@@ -8,6 +8,7 @@ import type {
   FieldDiff,
   ItemResponse,
   QueueResponse,
+  RunsResponse,
   SyncCandidatesResponse,
   SyncResult,
   SyncSelection,
@@ -305,12 +306,47 @@ export interface RejectResult {
   warning?: string;
 }
 
+/**
+ * The queue filters the review surface offers — source (local vs CI) and one
+ * exact app key. This is the TS mirror of serve.QueueFilter; both fields are
+ * optional and an unset field matches everything, so the empty filter is the
+ * whole queue. There is no platform/framework parsing here on purpose: the
+ * structure of an app key belongs to the project's own retrace config, not
+ * to this dashboard, so an app filter is always an exact match against
+ * whatever key the server already sent on each row.
+ */
+export interface QueueFilter {
+  source?: 'local' | 'ci';
+  app?: string;
+}
+
+/**
+ * Serialises a QueueFilter into a query string, OMITTING every empty field —
+ * so an absent or all-empty filter yields "" and the request stays exactly
+ * `/api/queue`. That keeps the unfiltered fetch byte-identical to what it was
+ * before filters existed; only a filter the reviewer actually set adds a `?…`.
+ */
+export function queueQuery(filter?: QueueFilter): string {
+  if (!filter) return '';
+  const params = new URLSearchParams();
+  if (filter.source) params.set('source', filter.source);
+  if (filter.app) params.set('app', filter.app);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const api = {
-  queue(): Promise<QueueResponse> {
-    return request<QueueResponse>('/api/queue');
+  queue(filter?: QueueFilter): Promise<QueueResponse> {
+    return request<QueueResponse>(`/api/queue${queueQuery(filter)}`);
   },
   item(app: string, flow: string): Promise<ItemResponse> {
     return request<ItemResponse>(`/api/queue/${seg(app)}/${seg(flow)}`);
+  },
+  /** GET /api/queue/{app}/{flow}/runs — every run of a surface, newest
+   * first. The runs-list drill-down: a queue row opens to this list, and a
+   * row here opens to a run-scoped detail view. */
+  runs(app: string, flow: string): Promise<RunsResponse> {
+    return request<RunsResponse>(`/api/queue/${seg(app)}/${seg(flow)}/runs`);
   },
   /** GET /api/queue/{app}/{flow}/runs/{runId} — the same detail document as
    * item(), pinned to one specific run rather than "latest". Powers the

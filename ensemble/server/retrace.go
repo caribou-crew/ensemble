@@ -59,7 +59,7 @@ func (s *server) handleRetraceQueue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	serve.WriteQueue(w, d)
+	serve.WriteQueue(w, d, serve.QueueFilterFromQuery(r.URL.Query()))
 }
 
 // retraceFlowFrom resolves Deps plus the {app}/{flow} path values,

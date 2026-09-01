@@ -143,6 +143,7 @@ function stubServer(opts: {
   queue?: Item[];
   empty?: string;
   item?: Summary;
+  runs?: unknown[];
   evidence?: { videos: string[]; hasReport: boolean };
   posts?: Record<string, unknown>;
 } = {}) {
@@ -155,10 +156,25 @@ function stubServer(opts: {
       calls.push({ url, method });
 
       let body: unknown = { ok: true };
-      if (url === '/api/queue') {
+      if (url === '/api/queue' || url.startsWith('/api/queue?')) {
         body = { items: opts.queue ?? QUEUE, empty: opts.empty ?? '' };
       } else if (url.startsWith('/api/evidence/')) {
         body = opts.evidence ?? { videos: [], hasReport: false };
+      } else if (method === 'GET' && /\/runs$/.test(url.split('?')[0])) {
+        // The runs-list for a surface. Default to a single run (the
+        // summary's B run) so openAFlow can drill straight through it.
+        const sum = opts.item ?? summary();
+        body = {
+          runs: opts.runs ?? [
+            {
+              runId: sum.b.runId || '20260821T101000Z-bbbbbbb',
+              verdict: sum.verdict,
+              when: sum.b.manifest.finishedAt,
+              counts: sum.counts,
+              gates: sum.gates,
+            },
+          ],
+        };
       } else if (method === 'GET') {
         body = { summary: opts.item ?? summary() };
       } else {
@@ -275,17 +291,31 @@ describe('the keyboard dispatch', () => {
     expect(renderedFlows()).toContain('admin/login');
   });
 
-  it('opens the selected flow on enter and comes back on esc', async () => {
+  it('drills queue -> runs -> detail on enter/click and steps back up on esc', async () => {
     stubServer();
     await mount();
+    // Level 1 -> highlight web/cart, Enter opens its runs list.
     await press('j');
     await press('Enter');
-    expect(container.querySelector('.item')).not.toBeNull();
-    expect(text()).toContain('web/cart');
+    expect(container.querySelector('.item')).toBeNull();
+    expect(container.querySelector('.queue-table')).not.toBeNull();
+    expect(text()).toContain('web/cart'); // the breadcrumb names the surface
 
+    // Level 2 -> click the first run, opening its detail.
+    const runOpener = container.querySelector('.queue-row__open') as HTMLElement;
+    await act(async () => {
+      runOpener.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.item')).not.toBeNull();
+
+    // esc steps up exactly one level each time: detail -> runs list -> queue.
     await press('Escape');
     expect(container.querySelector('.item')).toBeNull();
+    expect(container.querySelector('.breadcrumb-bar')).not.toBeNull();
+    await press('Escape');
+    expect(container.querySelector('.breadcrumb-bar')).toBeNull();
     expect(container.querySelector('.queue')).not.toBeNull();
+    expect(renderedFlows()).toContain('web/cart');
   });
 });
 
@@ -293,9 +323,18 @@ describe('the keyboard dispatch', () => {
 
 /** Opens web/search on the item screen, which is where the verbs fire from. */
 async function openAFlow(calls: Call[]) {
+  // Level 1 -> highlight web/search and open it into its runs list.
   await press('j');
   await press('j');
   await press('Enter');
+  // Level 2 -> open the first (and, by default, only) run into its detail,
+  // where the verbs fire from.
+  const runOpener = container.querySelector('.queue-row__open') as HTMLElement | null;
+  if (runOpener) {
+    await act(async () => {
+      runOpener.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+  }
   calls.length = 0;
   return calls;
 }
@@ -664,8 +703,10 @@ describe('a notice belongs to the flow it was produced for', () => {
     await press('a');
     expect(notice()).toMatch(/accepted web\/search/);
 
-    // Back to the queue and onto a different row. The message is about
-    // web/search and must not sit above web/cart.
+    // Back to the queue (run -> surface -> queue, one level per esc) and
+    // onto a different row. The message is about web/search and must not
+    // sit above web/cart.
+    await press('Escape');
     await press('Escape');
     await press('k');
     expect(selectedRow()).toBe('web/cart');
@@ -736,7 +777,7 @@ describe('the item screen', () => {
     expect(img!.alt).toContain('cart');
   });
 
-  it('renders a back-to-queue control on the main item screen and returns to the queue', async () => {
+  it('renders a back control on the item screen that steps up to the runs list', async () => {
     const calls = stubServer();
     await mount();
     await openAFlow(calls);
@@ -745,8 +786,11 @@ describe('the item screen', () => {
     await act(async () => {
       back!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
+    // One level up: the runs list for this surface, not all the way to the
+    // queue — same "step up exactly one level" contract as esc.
     expect(container.querySelector('.item')).toBeNull();
-    expect(container.querySelector('.queue')).not.toBeNull();
+    expect(container.querySelector('.breadcrumb-bar')).not.toBeNull();
+    expect(container.querySelector('.queue-table')).not.toBeNull();
   });
 
   /**

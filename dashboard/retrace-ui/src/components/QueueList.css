@@ -34,6 +34,15 @@
 .queue-table__col-gates {
   width: 5rem;
 }
+.queue-table__col-source {
+  width: 7rem;
+}
+.queue-table__col-when {
+  width: 13rem;
+}
+.queue-table__col-chevron {
+  width: 1.6rem;
+}
 
 .queue-row {
   cursor: pointer;
@@ -77,6 +86,33 @@
 
 .queue-row__counts {
   color: var(--text-tertiary);
+}
+
+.queue-row__when {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.queue-row__open {
+  color: var(--text-primary);
+}
+.queue-row:hover .queue-row__open {
+  text-decoration: underline;
+}
+
+.queue-row__workflow {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  margin-left: 0.4rem;
+}
+
+.queue-row__chevron {
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: 1rem;
+}
+.queue-row:hover .queue-row__chevron {
+  color: var(--text-primary);
 }
 
 /* The folded detail region: the capture banner + gate reasons, directly

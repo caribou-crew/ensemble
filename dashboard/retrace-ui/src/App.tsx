@@ -18,16 +18,21 @@ import {
   secretFindingsOf,
   videoUrl,
   type AcceptBundle,
+  type QueueFilter,
   type RedactRequest,
   type RejectResult,
   type SecretFinding,
 } from './api/client';
 import { DEFAULT_MATCHER, MATCHER_NAMES } from './api/matchers';
-import type { Entry, FieldDiff, Item, Summary, TriageSignals } from './api/types';
+import type { Entry, FieldDiff, Summary, TriageSignals } from './api/types';
 import { KEY_HELP, actionFor, type Action } from './keys';
 import { verdictTone, verdictLabel } from './tone';
+import { formatWhen } from './when';
 import { useUrlParam } from './urlState';
 import QueueList, { keyOf, visibleRows } from './components/QueueList';
+import QueueFilters from './components/QueueFilters';
+import RunsList from './components/RunsList';
+import Breadcrumb from './components/Breadcrumb';
 import SyncPanel from './components/SyncPanel';
 import './App.css';
 
@@ -453,8 +458,11 @@ export function ItemScreen({
           {app}/{flow}
         </h1>
         <Badge tone={tone}>{verdictLabel(summary.verdict)}</Badge>
-        <span className="item__runs">
-          {summary.a.runId || 'no reference'} → {summary.b.runId || 'no run'}
+        <span
+          className="item__runs"
+          title={`${summary.a.runId || 'no reference'} → ${summary.b.runId || 'no run'}`}
+        >
+          {summary.b.runId ? <>ran {formatWhen(summary.b.manifest?.finishedAt, summary.b.runId)}</> : 'no run'}
         </span>
       </header>
 
@@ -622,10 +630,12 @@ export function ItemScreen({
 export default function App() {
   const [app, setApp] = useUrlParam('app');
   const [flow, setFlow] = useUrlParam('flow');
-  // A deep link that names a flow IS a request to look at that flow — the Go
-  // side's SPA fallback exists so that URL survives a hard refresh, and
-  // landing it on the queue instead would waste it.
-  const [open, setOpen] = useState(() => Boolean(app && flow));
+  // The open RUN, if any. The navigation level is derived from which of
+  // app/flow/run are set: none -> queue, app+flow -> that surface's runs
+  // list, app+flow+run -> that run's own detail. A deep link naming any of
+  // them survives a refresh (the Go side's SPA fallback) and lands on the
+  // right level.
+  const [run, setRun] = useUrlParam('run');
   const [version, setVersion] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
   // Owned here, not inside QueueList: j/k must walk the rows that are ON
@@ -644,30 +654,87 @@ export default function App() {
   const [secretGate, setSecretGate] = useState<SecretFinding[] | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [showSyncPanel, setShowSyncPanel] = useState(false);
+  // The queue-level keyboard highlight: which row j/k has landed on. A
+  // HIGHLIGHT, not navigation — arrows move it, enter opens it. Local state
+  // rather than app/flow, because app/flow now mean "a surface is open",
+  // and highlighting a row must not itself navigate away from the queue.
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
+
+  // The navigation level, derived — never stored, so it can never disagree
+  // with the URL.
+  const level: 'queue' | 'surface' | 'run' = app && flow && run ? 'run' : app && flow ? 'surface' : 'queue';
+
+  // The queue filter lives in the URL like every other bit of view state in
+  // this app (see urlState) — so a filtered queue is a shareable link and
+  // survives a refresh.
+  const [sourceParam, setSourceParam] = useUrlParam('source');
+  const [appParam, setAppParam] = useUrlParam('buildApp');
+  const filter: QueueFilter = {
+    source: sourceParam === 'local' || sourceParam === 'ci' ? sourceParam : undefined,
+    app: appParam ?? undefined,
+  };
+  const setFilter = (next: QueueFilter) => {
+    setSourceParam(next.source ?? null);
+    setAppParam(next.app ?? null);
+  };
 
   // Every fetch in this app goes through useAsync — the queue load, the item
   // load, and the post-mutation refetch, which is this same hook with
   // `version` in its deps. There is no hand-rolled cancellation anywhere.
-  const queue = useAsync(() => api.queue(), [version]);
+  //
+  // The filter is in the deps AND passed to the fetch, so changing a chip
+  // refetches with the new query params rather than filtering a stale client
+  // copy — the server stays the one place that decides what a filtered queue
+  // contains.
+  const queue = useAsync(() => api.queue(filter), [version, filter.source, filter.app]);
   const items = queue.data?.items ?? [];
-  const selectedKey = app && flow ? `${app}/${flow}` : null;
-  const item = useAsync(async () => {
-    if (!open || !app || !flow) return null;
-    return (await api.item(app, flow)).summary;
-  }, [open, app, flow, version]);
+  // The app chips need the FULL set of apps for the current source, not the
+  // already app-filtered `items` — once a reviewer picks one app, `items`
+  // only ever contains that app, and deriving the chip list from it would
+  // make every other app's chip disappear the moment it was needed (the one
+  // control meant to switch away from the current app). Only fetched when an
+  // app filter is actually set; otherwise `items` already is that full set.
+  const appsForChips = useAsync(
+    () => (filter.app ? api.queue({ source: filter.source }) : Promise.resolve(null)),
+    [version, filter.source, filter.app],
+  );
+  const apps = Array.from(new Set((filter.app ? appsForChips.data?.items : items)?.map((i) => i.app) ?? [])).sort();
 
-  const select = (next: Item) => {
-    setApp(next.app);
-    setFlow(next.flow);
+  // Fetches the run-scoped summary — the specific run named by ?run=, not
+  // "latest". Only fires at the run level.
+  const item = useAsync(async () => {
+    if (level !== 'run' || !app || !flow || !run) return null;
+    return (await api.itemAtRun(app, flow, run)).summary;
+  }, [level, app, flow, run, version]);
+
+  // --- navigation. Every transition writes URL params (via useUrlParam), so
+  // the level is always derivable from the URL and every view is a deep
+  // link. Notice/error/selection are flow-scoped and cleared on any move.
+  const clearTransient = () => {
     setSelectedField(null);
-    // The notice and the error belong to the flow they were produced for.
-    // "accepted web/search as the new reference" sitting above web/cart names
-    // its own flow and so does not strictly lie, but a stale success message
-    // over a different flow is the reassuring direction, and this phase's
-    // whole problem is the reassuring direction.
     setNotice(null);
     setActionError(null);
     setSecretGate(null);
+  };
+  const openSurface = (next: { app: string; flow: string }) => {
+    setApp(next.app);
+    setFlow(next.flow);
+    setRun(null);
+    clearTransient();
+  };
+  const openRun = (runId: string) => {
+    setRun(runId);
+    clearTransient();
+  };
+  const backToQueue = () => {
+    setApp(null);
+    setFlow(null);
+    setRun(null);
+    clearTransient();
+  };
+  const backToSurface = () => {
+    setRun(null);
+    clearTransient();
   };
 
   const mutate = async (label: string, fn: () => Promise<string>) => {
@@ -730,6 +797,11 @@ export default function App() {
     switch (action) {
       case 'next':
       case 'prev': {
+        // Queue level only: j/k move the HIGHLIGHT over the surfaces on
+        // screen (the passing group may be collapsed). At the surface/run
+        // levels the arrows are inert — those screens have their own click
+        // targets.
+        if (level !== 'queue') return;
         // The RENDERED rows, not queue.data.items. The queue screen shows two
         // groups and collapses the passing one, so stepping through the raw
         // server list walked the selection straight off the bottom of the
@@ -738,31 +810,40 @@ export default function App() {
         // had never seen.
         const rows = visibleRows(items, showPassing);
         if (rows.length === 0) return;
-        const at = rows.findIndex((i) => keyOf(i) === selectedKey);
+        const at = rows.findIndex((i) => keyOf(i) === highlightKey);
         const step = action === 'next' ? 1 : -1;
         const nextAt = at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + step));
-        select(rows[nextAt]);
+        setHighlightKey(keyOf(rows[nextAt]));
         return;
       }
-      case 'open':
-        if (selectedKey) setOpen(true);
+      case 'open': {
+        // Enter opens the highlighted surface's runs list.
+        if (level !== 'queue') return;
+        const rows = visibleRows(items, showPassing);
+        const row = rows.find((r) => keyOf(r) === highlightKey) ?? rows[0];
+        if (row) openSurface(row);
         return;
+      }
       case 'back':
-        setOpen(false);
+        // Step up exactly one level: run -> surface -> queue.
+        if (level === 'run') backToSurface();
+        else if (level === 'surface') backToQueue();
         return;
       case 'accept':
-        // Gated on `open`, and that gate is the point. Accepting a reference
-        // is a filesystem mutation, and ungated it fired from the QUEUE
-        // screen against whatever ?app=&flow= happened to hold — including a
-        // selection that had walked onto a collapsed row the reviewer could
-        // not see. A verb this expensive fires only from the screen that is
-        // showing you what you are about to promote.
-        if (!open || !app || !flow || busy) return;
+        // Gated on the RUN level, and that gate is the point. Accepting a
+        // reference is a filesystem mutation, and ungated it fired against
+        // whatever ?app=&flow= happened to hold — including a selection that
+        // had walked onto a collapsed row the reviewer could not see. A verb
+        // this expensive fires only from the screen showing what it will
+        // promote. Note this always promotes the LATEST run for the surface
+        // (api.accept takes no runId) — the same "latest" a fresh queue
+        // click always opened before runs history existed.
+        if (level !== 'run' || !app || !flow || busy) return;
         doAccept(false);
         return;
       case 'reject':
         // Same gate, same reason: reject removes and rewrites a directory.
-        if (!open || !app || !flow || busy) return;
+        if (level !== 'run' || !app || !flow || busy) return;
         void mutate('reject', async () => {
           return rejectNotice(app, flow, await api.reject(app, flow));
         });
@@ -817,7 +898,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <button type="button" className="app-header__brand" onClick={() => setOpen(false)}>
+        <button type="button" className="app-header__brand" onClick={backToQueue}>
           retrace review
         </button>
         {busy ? <Spinner /> : null}
@@ -833,16 +914,30 @@ export default function App() {
       {notice ? <p className="notice">{notice}</p> : null}
 
       <main className="app-main">
-        {open ? (
+        {/* The breadcrumb is the inline back/forward — shown at every level
+            below the queue, each earlier segment clickable to step up. */}
+        {level !== 'queue' ? (
+          <Breadcrumb
+            app={app}
+            flow={flow}
+            runLabel={
+              level === 'run' && item.data ? formatWhen(item.data.b.manifest?.finishedAt, item.data.b.runId) : null
+            }
+            onQueue={backToQueue}
+            onSurface={backToSurface}
+          />
+        ) : null}
+
+        {level === 'run' ? (
           item.loading ? (
             <p className="loading">
               <Spinner /> loading {app}/{flow}…
             </p>
           ) : item.error ? (
             <Problem message={item.error.message} />
-          ) : item.data && app && flow ? (
+          ) : item.data && app && flow && run ? (
             <ItemScreen
-              key={`${app}/${flow}`}
+              key={`${app}/${flow}/${run}`}
               app={app}
               flow={flow}
               summary={item.data}
@@ -850,11 +945,17 @@ export default function App() {
               onSelectField={(entry, field) =>
                 setSelectedField(`${entryKey(entry)}|${field.scope}:${field.path}`)
               }
-              onBack={() => setOpen(false)}
+              resolveShotUrl={(a, f, side, name) =>
+                api.shotUrlAtRun(a, f, run, side as 'a' | 'b' | 'diff' | 'overlay', name)
+              }
+              onReveal={() => api.itemAtRun(app, flow, run).then((r) => r.summary.sections)}
+              onBack={backToSurface}
             />
           ) : (
             <p className="loading">Nothing selected.</p>
           )
+        ) : level === 'surface' && app && flow ? (
+          <RunsList app={app} flow={flow} selectedRun={run} onOpenRun={openRun} />
         ) : queue.loading ? (
           <p className="loading">
             <Spinner /> loading the review queue…
@@ -862,18 +963,18 @@ export default function App() {
         ) : queue.error ? (
           <Problem message={queue.error.message} />
         ) : queue.data ? (
-          <QueueList
-            items={queue.data.items}
-            empty={queue.data.empty}
-            selected={selectedKey}
-            showPassing={showPassing}
-            onShowPassingChange={setShowPassing}
-            onSelect={select}
-            onOpen={(next) => {
-              select(next);
-              setOpen(true);
-            }}
-          />
+          <>
+            <QueueFilters apps={apps} filter={filter} onChange={setFilter} />
+            <QueueList
+              items={items}
+              empty={queue.data.empty}
+              selected={highlightKey}
+              showPassing={showPassing}
+              onShowPassingChange={setShowPassing}
+              onSelect={(next) => setHighlightKey(keyOf(next))}
+              onOpen={openSurface}
+            />
+          </>
         ) : null}
       </main>
 

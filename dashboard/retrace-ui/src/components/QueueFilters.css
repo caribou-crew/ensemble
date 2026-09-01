@@ -1,0 +1,47 @@
+.queue-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  align-items: center;
+  padding: 0.5rem 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--border-hairline);
+  margin-bottom: 0.75rem;
+}
+
+.queue-filters__group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.queue-filters__label {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 0.15rem;
+}
+
+.filter-chip {
+  font: inherit;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-hairline);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  border-color: var(--border-hairline-strong);
+  color: var(--text-primary);
+}
+
+.filter-chip--active {
+  color: var(--text-primary);
+  background: var(--accent-glow);
+  border-color: var(--accent-border);
+}

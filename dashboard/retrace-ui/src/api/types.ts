@@ -144,6 +144,40 @@ export interface Item {
   counts: Counts;
   capture: { a: CaptureTrust; b: CaptureTrust };
   gates: string[];
+  /**
+   * Where this run came from. ABSENT is the encoding of "recorded locally"
+   * — `runs.Source` carries `omitempty` and is only ever written by
+   * `retrace sync`, so a row with no `source` is a local run and a row with
+   * one is a CI run pulled down from a workflow. Do NOT default it to a
+   * placeholder object, which would make every local row look like a CI
+   * sync.
+   */
+  source?: Source;
+}
+
+/**
+ * `runs.Source` — the CI provenance `retrace sync` stamps onto a pulled run.
+ * Its very PRESENCE means "this came from CI"; a locally recorded run has no
+ * source.json and so no `source` field on its Item at all (see Item.source).
+ */
+export interface Source {
+  schema: string;
+  /** Always "ci" today: source.json is only written by `retrace sync`. */
+  kind: string;
+  /** The GitHub Actions workflow name the run was recorded under. */
+  workflow: string;
+  /** The workflow run's web URL, for jumping to the CI log. */
+  runUrl: string;
+  /** The commit the run was recorded against. */
+  sha: string;
+  /** The branch the workflow ran against, e.g. "main". */
+  headBranch?: string;
+  /** What triggered the run, e.g. "push" or "schedule". */
+  event?: string;
+  /** The GitHub login who triggered the run. */
+  actor?: string;
+  /** When `retrace sync` merged this run onto local disk. */
+  syncedAt: string;
 }
 
 export interface Call {
@@ -385,6 +419,27 @@ export interface QueueResponse {
 
 export interface ItemResponse {
   summary: Summary;
+}
+
+/**
+ * One run of a surface in the runs-list drill-down — the TS mirror of
+ * serve.RunRow. Lighter than Item: Item is "the one run worth reviewing for
+ * this surface" (always the newest), a RunRow is "one of the surface's
+ * runs, enough to pick which to open". `when` is an ISO timestamp string
+ * (Go's time.Time marshals to RFC3339); `source` follows the same presence
+ * contract as Item.source (absent == local, present == a CI sync).
+ */
+export interface RunRow {
+  runId: string;
+  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
+  when: string;
+  source?: Source;
+  counts: Counts;
+  gates: string[];
+}
+
+export interface RunsResponse {
+  runs: RunRow[];
 }
 
 // --- sync (discover -> filter -> select -> pull): retrace/serve/sync.go's
