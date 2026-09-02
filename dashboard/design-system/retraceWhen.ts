@@ -27,14 +27,23 @@ function realMs(iso: string | undefined): number {
 }
 
 /**
+ * The same iso-then-runId-stamp resolution `formatWhen` renders, as a raw
+ * epoch ms for sorting. NaN (neither source parsed) sorts a run to the
+ * bottom of a newest-first list rather than crashing the comparator.
+ */
+export function whenMs(iso: string | undefined, runId: string): number {
+  const fromIso = realMs(iso);
+  return Number.isNaN(fromIso) ? parseRunIdStamp(runId) : fromIso;
+}
+
+/**
  * A human-readable local date+time for a run. `iso` is the manifest
  * timestamp (may be '', undefined, or the Go zero value); `runId` is the
  * fallback source. Returns the raw runId when neither yields a valid date,
  * so the cell is never blank and never a wrong date.
  */
 export function formatWhen(iso: string | undefined, runId: string): string {
-  const fromIso = realMs(iso);
-  const ms = Number.isNaN(fromIso) ? parseRunIdStamp(runId) : fromIso;
+  const ms = whenMs(iso, runId);
   if (Number.isNaN(ms)) return runId || '—';
   return new Date(ms).toLocaleString(undefined, {
     dateStyle: 'medium',
