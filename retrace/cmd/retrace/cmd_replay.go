@@ -278,10 +278,22 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		observed = append(observed, rl.srv.ObservedHops()...)
 	}
 	if len(observed) > 0 {
-		// Redact the observed (live, unredacted) hops with the config's rules
-		// before persisting — dataKey nil: encrypt-mode fields are not
-		// re-sealed here, mask-mode secrets (dpop, tokens) are the concern.
-		red, rerr := trace.NewRedactor(cfg.RedactKeyRules(), 0, nil)
+		// Redact the observed (live, unredacted) hops before persisting. Only
+		// the MASK-mode rules apply here (dpop, tokens): encrypt-mode fields
+		// (pan/cvv/expiration) are recorded-reference BODY concerns sealed at
+		// record time with a per-run data key, which a replay does not hold —
+		// and NewRedactor hard-fails on an encrypt rule with a nil key. So we
+		// drop encrypt rules for the observed-wire redactor; the observed
+		// request wire is not where those body fields live anyway. Dropping
+		// them here does NOT weaken the reference: the committed reference's
+		// pan/cvv/expiration remain encrypted from record time.
+		var maskRules []trace.KeyRule
+		for _, r := range cfg.RedactKeyRules() {
+			if r.Mode != trace.ModeEncrypt {
+				maskRules = append(maskRules, r)
+			}
+		}
+		red, rerr := trace.NewRedactor(maskRules, 0, nil)
 		if rerr != nil {
 			fmt.Fprintf(stderr, "retrace: replay: could not build the redactor (%v) — not persisting wire to avoid leaking secrets\n", rerr)
 		} else if werr := writeObservedWire(p.WirePath, observed, red); werr != nil {

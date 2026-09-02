@@ -300,8 +300,18 @@ func TestReplayPersistsRedactedWire(t *testing.T) {
 
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
+	// Encrypt-mode rules need a team key at record time; a throwaway 32-byte
+	// hex key satisfies it (subprocesses inherit the parent env).
+	t.Setenv("RETRACE_RECORDING_KEY", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
 	// redact the secret header (key rule); the helper sends it live on replay.
-	writeConfig(t, cwd, "app: web\nredact:\n  - x-secret-token\nwire_rules:\n  - headers:\n      date: http-date\n")
+	// The config mixes a MASK rule (x-secret-token) with an ENCRYPT rule
+	// (pan) — the real-world shape. The observed-wire redactor must build
+	// with a nil data key (replay holds none), which it can only do by
+	// dropping the encrypt rule; a regression here (building with the encrypt
+	// rule) fails redactor construction and NO wire.jsonl is persisted,
+	// making the run unsyncable. So this pins both: wire IS persisted, and
+	// the mask secret is redacted.
+	writeConfig(t, cwd, "app: web\nredact:\n  - x-secret-token\n  - field: pan\n    mode: encrypt\n    why: test\nwire_rules:\n  - headers:\n      date: http-date\n")
 	recordAndAccept(t, bin, cwd, upstream.URL)
 
 	args := append([]string{"replay", "--ref", "checkout", "--app", "web"},
