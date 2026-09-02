@@ -250,45 +250,43 @@ describe('the keyboard dispatch', () => {
   it('never moves the selection off the rows that are on screen', async () => {
     stubServer();
     await mount();
-    expect(renderedFlows()).toEqual(['web/cart', 'web/search']);
+    // Needs-attention rows first, then passing — one flat table, all four
+    // rows on screen at once (there is no collapsed-passing disclosure any
+    // more; see RetraceQueueList.visibleRows).
+    expect(renderedFlows()).toEqual(['web/cart', 'web/search', 'admin/login', 'web/login']);
 
-    // Four presses over two visible rows. Walking the unfiltered server list
-    // would land on admin/login and then web/login — rows inside a collapsed
-    // disclosure, so NOTHING on screen is selected, the key looks like a
-    // no-op, and `enter` opens a flow the reviewer never saw.
+    // Five presses over four visible rows: the fifth has nowhere left to go,
+    // so the selection must stay on the last row rather than walking off the
+    // end of the rendered set.
     const seen: (string | null)[] = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       await press('j');
       seen.push(selectedRow());
     }
-    expect(seen).toEqual(['web/cart', 'web/search', 'web/search', 'web/search']);
+    expect(seen).toEqual(['web/cart', 'web/search', 'admin/login', 'web/login', 'web/login']);
     for (const s of seen) {
       expect(renderedFlows()).toContain(s);
     }
 
     // And back up, symmetrically — k must not walk off the top either.
-    await press('k');
-    expect(selectedRow()).toBe('web/cart');
-    await press('k');
+    for (let i = 0; i < 5; i++) {
+      await press('k');
+    }
     expect(selectedRow()).toBe('web/cart');
   });
 
-  it('reaches the passing rows once the reviewer expands them, and not before', async () => {
+  it('reaches the passing rows on plain j presses, with no disclosure to expand first', async () => {
     stubServer();
     await mount();
+
+    // Passing rows render inline from the start — nothing to click open.
+    expect(container.querySelector('.queue__disclosure')).toBeNull();
+    expect(renderedFlows()).toContain('admin/login');
+
     await press('j');
     await press('j');
-    expect(selectedRow()).toBe('web/search');
-
-    const disclosure = container.querySelector('.queue__disclosure') as HTMLButtonElement;
-    expect(disclosure.textContent).toContain('2 passing');
-    await act(async () => {
-      disclosure.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
     await press('j');
     expect(selectedRow()).toBe('admin/login');
-    expect(renderedFlows()).toContain('admin/login');
   });
 
   it('drills queue -> runs -> detail on enter/click and steps back up on esc', async () => {
