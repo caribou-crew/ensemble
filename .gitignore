@@ -111,10 +111,15 @@ ensemble/server/ui/dist/apple-touch-icon.png
 # retrace/serve/ui/dist/index.html is committed, and the blanket `dist/` rule
 # at the top would otherwise swallow it. `pnpm -r build` overwrites it with
 # the real bundle, which must never land in a commit — `git restore
-# retrace/serve/ui/dist/index.html` after building, before committing.
+# retrace/serve/ui/dist/index.html` after building, before committing. The
+# favicon files Vite copies from retrace-ui/public/ verbatim live tracked at
+# that public/ source, not here.
 !retrace/serve/ui/dist/
 !retrace/serve/ui/dist/index.html
 retrace/serve/ui/dist/assets/
+retrace/serve/ui/dist/favicon.svg
+retrace/serve/ui/dist/favicon.ico
+retrace/serve/ui/dist/apple-touch-icon.png
 
 # make build output
 /bin/
