@@ -137,5 +137,21 @@ jobs:
             # The leading ./ matters: without it, npm parses "npm/ensemble"
             # as GitHub owner/repo shorthand instead of a local path, and
             # tries to git-clone github.com/npm/ensemble.
-            npm publish --access public "./$pkg"
+            if ! npm publish --access public "./$pkg"; then
+              # win32-arm64 packages have never been published, so trusted
+              # publishing 404s until someone does the one-time manual
+              # first-publish + npmjs.com Trusted Publisher setup documented
+              # above. Don't let that abort the whole loop — the other 12
+              # packages (including the win32-x64 sibling and the main
+              # meta-packages, whose optionalDependencies just won't resolve
+              # on win32-arm64 until this is set up) still need to publish.
+              case "$pkg" in
+                npm/ensemble-win32-arm64|npm/retrace-win32-arm64)
+                  echo "::warning::$name@${{ inputs.version }} publish failed — needs the one-time manual first-publish + trusted-publisher setup (see comment above), skipping for now"
+                  ;;
+                *)
+                  exit 1
+                  ;;
+              esac
+            fi
           done
