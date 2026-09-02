@@ -160,6 +160,84 @@ func TestSyncDryRunListsWithoutPulling(t *testing.T) {
 	}
 }
 
+// TestSyncHonorsRepoConfigRoots reproduces the bug: `retrace serve --watch`
+// already splits a sync across each retrace.repo.yaml root (cmd_serve_watch.go's
+// startWatch), but plain `retrace sync` never consulted repoconfig at all —
+// it always merged every app's run directories under cwd's own
+// .retrace/runs, even when retrace.repo.yaml maps them to separate roots.
+func TestSyncHonorsRepoConfigRoots(t *testing.T) {
+	bin := buildRetrace(t)
+	fakeGHOnPath(t)
+
+	repoRoot := t.TempDir()
+	webRoot := filepath.Join(repoRoot, "web")
+	mobileRoot := filepath.Join(repoRoot, "mobile")
+	if err := os.MkdirAll(webRoot, 0o755); err != nil {
+		t.Fatalf("mkdir web root: %v", err)
+	}
+	if err := os.MkdirAll(mobileRoot, 0o755); err != nil {
+		t.Fatalf("mkdir mobile root: %v", err)
+	}
+	repoYAML := "repo: org/repo\napps:\n  web:\n    root: ./web\n  mobile:\n    root: ./mobile\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "retrace.repo.yaml"), []byte(repoYAML), 0o644); err != nil {
+		t.Fatalf("writing retrace.repo.yaml: %v", err)
+	}
+
+	runListPath := filepath.Join(t.TempDir(), "runs.json")
+	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-ci", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+		t.Fatalf("writing run list fixture: %v", err)
+	}
+	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
+
+	// One CI artifact bundling BOTH apps' run directories — the exact
+	// shape Options.Apps's doc comment exists to handle: without a
+	// per-root allowlist, every app in the artifact merges into every
+	// root that syncs it.
+	downloadRoot := t.TempDir()
+	webRunDir := filepath.Join(downloadRoot, "1", "web", "login", "20260827T090000Z-aaa1111")
+	mobileRunDir := filepath.Join(downloadRoot, "1", "mobile", "onboarding", "20260827T090000Z-aaa1112")
+	if err := os.MkdirAll(webRunDir, 0o755); err != nil {
+		t.Fatalf("staging web download fixture: %v", err)
+	}
+	if err := os.MkdirAll(mobileRunDir, 0o755); err != nil {
+		t.Fatalf("staging mobile download fixture: %v", err)
+	}
+	manifest := func(app string) []byte {
+		return []byte(fmt.Sprintf(`{"schema":"retrace/1","app":%q,"flow":"f","runId":"r","mode":"standalone","capture":{"status":"ok","summary":"ok"},"wire":{"recorded":true},"groups":[]}`, app))
+	}
+	if err := os.WriteFile(filepath.Join(webRunDir, "manifest.json"), manifest("web"), 0o644); err != nil {
+		t.Fatalf("writing web fixture manifest.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mobileRunDir, "manifest.json"), manifest("mobile"), 0o644); err != nil {
+		t.Fatalf("writing mobile fixture manifest.json: %v", err)
+	}
+	t.Setenv("GH_FAKE_DOWNLOAD_SRC", downloadRoot)
+
+	res := runRetrace(t, bin, repoRoot, "", "sync", "--repo", "org/repo", "--json")
+	if res.code != exitOK {
+		t.Fatalf("exit = %d, want %d; stdout: %s stderr: %s", res.code, exitOK, res.stdout, res.stderr)
+	}
+
+	webManifest := filepath.Join(webRoot, ".retrace", "runs", "web", "login", "20260827T090000Z-aaa1111", "manifest.json")
+	if _, err := os.Stat(webManifest); err != nil {
+		t.Errorf("web app's synced manifest.json missing under its configured root %s: %v", webRoot, err)
+	}
+	mobileManifest := filepath.Join(mobileRoot, ".retrace", "runs", "mobile", "onboarding", "20260827T090000Z-aaa1112", "manifest.json")
+	if _, err := os.Stat(mobileManifest); err != nil {
+		t.Errorf("mobile app's synced manifest.json missing under its configured root %s: %v", mobileRoot, err)
+	}
+
+	// Neither app's run directory should land directly under repoRoot's
+	// own .retrace/runs — that's the bug: cwd (repoRoot) is not either
+	// app's configured root.
+	if _, err := os.Stat(filepath.Join(repoRoot, ".retrace", "runs", "web")); !os.IsNotExist(err) {
+		t.Errorf("web run merged under repoRoot's own .retrace/runs instead of its configured root (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".retrace", "runs", "mobile")); !os.IsNotExist(err) {
+		t.Errorf("mobile run merged under repoRoot's own .retrace/runs instead of its configured root (err=%v)", err)
+	}
+}
+
 func TestSyncListRequiresRepo(t *testing.T) {
 	bin := buildRetrace(t)
 	cwd := t.TempDir()

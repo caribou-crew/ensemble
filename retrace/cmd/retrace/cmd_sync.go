@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/caribou-crew/ensemble/retrace/repoconfig"
 	"github.com/caribou-crew/ensemble/retrace/sync"
 )
 
@@ -67,14 +68,25 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "sync: cannot determine the working directory: %v", err)
 	}
 
-	o := sync.Options{
-		Cwd: cwd, From: *from, Repo: *repo, Repos: splitCSV(*repos),
+	// A repo.yaml maps this repo's apps across more than one root
+	// (retrace/repoconfig) the same way `retrace serve --watch` already
+	// discovers it (cmd_serve.go). A directory with none found behaves
+	// exactly as sync always has — see repoconfig.Discover's own contract.
+	repoCfg, _, err := repoconfig.Discover(cwd)
+	if err != nil {
+		return fail(stderr, "%v", err)
+	}
+
+	base := sync.Options{
+		From: *from, Repo: *repo, Repos: splitCSV(*repos),
 		Workflow: *workflow, Workflows: splitCSV(*workflows),
 		Branch: *branch, Actor: *actor, Event: *event, Status: *status,
 		Since: sinceDur,
 	}
 
 	if *dryRun {
+		o := base
+		o.Cwd = cwd
 		candidates, err := sync.List(o)
 		if err != nil {
 			return fail(stderr, "sync: %v", err)
@@ -89,9 +101,14 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 
-	res, err := sync.Run(o)
-	if err != nil {
-		return fail(stderr, "sync: %v", err)
+	res := sync.Result{Synced: []string{}, Skipped: []sync.SkipReason{}}
+	for _, o := range syncTargets(cwd, repoCfg, base) {
+		r, err := sync.Run(o)
+		if err != nil {
+			return fail(stderr, "sync: %v", err)
+		}
+		res.Synced = append(res.Synced, r.Synced...)
+		res.Skipped = append(res.Skipped, r.Skipped...)
 	}
 
 	if *asJSON {
@@ -110,6 +127,30 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "skipped %s: %s\n", sk.Artifact, sk.Reason)
 	}
 	return exitOK
+}
+
+// syncTargets returns one sync.Options per root repoCfg declares, each
+// scoped to that root's own Cwd and Apps allowlist (retrace/repoconfig's
+// design.md D4) — the same shape cmd_serve_watch.go's startWatch already
+// builds per watchTarget, so a plain `retrace sync` and `retrace serve
+// --watch` split a repo.yaml's roots identically. repoCfg == nil (no
+// retrace.repo.yaml found) returns a single unscoped Options{Cwd: cwd},
+// matching sync's own default before repoconfig existed.
+func syncTargets(cwd string, repoCfg *repoconfig.Config, base sync.Options) []sync.Options {
+	if repoCfg == nil {
+		o := base
+		o.Cwd = cwd
+		return []sync.Options{o}
+	}
+	roots := repoCfg.Roots()
+	out := make([]sync.Options, 0, len(roots))
+	for _, root := range roots {
+		o := base
+		o.Cwd = root
+		o.Apps = repoCfg.AppsIn(root)
+		out = append(out, o)
+	}
+	return out
 }
 
 // splitCSV splits a comma-separated flag value into a trimmed, non-empty
