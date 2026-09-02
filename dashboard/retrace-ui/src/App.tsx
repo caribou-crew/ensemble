@@ -502,9 +502,14 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <button type="button" className="app-header__brand" onClick={backToQueue}>
-          retrace review
-        </button>
+        <RetraceBreadcrumb
+          rootLabel="retrace review"
+          app={app}
+          flow={flow}
+          runLabel={level === 'run' && item.data ? formatWhen(item.data.b.manifest?.finishedAt, item.data.b.runId) : null}
+          onQueue={backToQueue}
+          onSurface={backToSurface}
+        />
         {busy ? <Spinner /> : null}
         <button type="button" className="app-header__sync" onClick={() => setShowSyncPanel(true)}>
           sync
@@ -518,20 +523,6 @@ export default function App() {
       {notice ? <p className="notice">{notice}</p> : null}
 
       <main className="app-main">
-        {/* The breadcrumb is the inline back/forward — shown at every level
-            below the queue, each earlier segment clickable to step up. */}
-        {level !== 'queue' ? (
-          <RetraceBreadcrumb
-            app={app}
-            flow={flow}
-            runLabel={
-              level === 'run' && item.data ? formatWhen(item.data.b.manifest?.finishedAt, item.data.b.runId) : null
-            }
-            onQueue={backToQueue}
-            onSurface={backToSurface}
-          />
-        ) : null}
-
         {level === 'run' ? (
           item.loading ? (
             <p className="loading">

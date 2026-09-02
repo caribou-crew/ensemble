@@ -110,26 +110,6 @@ func (s *server) routes(mux *http.ServeMux) {
 		mux.HandleFunc(method+" /api/entities/{name}/{path...}", s.handleEntityProxy)
 	}
 
-	// Always registered, 501 when unconfigured — mirroring Insp above.
-	// Registering only when Cfg.Retrace != nil looked appealing (a
-	// literal "route doesn't exist"), but GET / is the dashboard's SPA
-	// fallback: an unmatched API path doesn't 404, it serves the app
-	// shell with a 200. A real client-detectable "no retrace here" needs
-	// a route that always exists and answers in JSON.
-	mux.HandleFunc("GET /api/retrace/instances", s.handleRetraceInstances)
-	mux.HandleFunc("GET /api/retrace/queue", s.handleRetraceQueue)
-	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}", s.handleRetraceItem)
-	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs", s.handleRetraceRuns)
-	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceItemAtRun)
-	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/{side}/{name}", s.handleRetraceShot)
-	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleRetraceShotAtRun)
-	mux.HandleFunc("GET /api/retrace/evidence/{app}/{flow}", s.handleRetraceEvidence)
-	mux.HandleFunc("GET /api/retrace/videos/{app}/{flow}/{name}", s.handleRetraceVideo)
-	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}", s.handleRetraceReport)
-	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}/{path...}", s.handleRetraceReport)
-	mux.HandleFunc("POST /api/retrace/sync", s.withAnnotation(s.handleRetraceSync))
-	mux.HandleFunc("GET /api/retrace/sync/candidates", s.handleRetraceSyncCandidates)
-
 	mux.HandleFunc("GET /api/openapi.json", s.handleOpenAPI)
 
 	mux.HandleFunc("POST /api/shutdown", s.withAnnotation(s.handleShutdown))

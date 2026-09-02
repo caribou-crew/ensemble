@@ -3,20 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 )
-
-// retraceSincePattern matches a bare integer plus one unit — "7d", "24h",
-// "30m" — the same shape retrace/sync's own parser accepts. Days aren't a
-// valid time.ParseDuration unit, which is exactly why this is a distinct,
-// looser check rather than a call into time.ParseDuration.
-var retraceSincePattern = regexp.MustCompile(`^[0-9]+[dhms]$`)
 
 // validDatabaseTypes are the emulators ensemble knows how to provision.
 var validDatabaseTypes = map[string]bool{
@@ -26,38 +18,6 @@ var validDatabaseTypes = map[string]bool{
 	"dynamodb":   true,
 	"localstack": true,
 	"http":       true,
-}
-
-// validateRetraceInstance checks one RetraceInstanceConfig — either
-// RetraceConfig's own flat fields, synthesized into the "default" entry
-// by EffectiveInstances, or one real entry from retrace.instances — for
-// internal consistency. label prefixes every error message so multiple
-// instances' violations stay distinguishable within one Validate() run.
-func validateRetraceInstance(label, configDir string, r RetraceInstanceConfig) []error {
-	var errs []error
-	if r.Since != "" && !retraceSincePattern.MatchString(r.Since) {
-		errs = append(errs, fmt.Errorf("%s: since %q is not a duration like \"7d\", \"24h\", or \"30m\"", label, r.Since))
-	}
-	if r.Repo != "" && len(r.Repos) > 0 {
-		errs = append(errs, fmt.Errorf("%s: set repo or repos, not both", label))
-	}
-	if r.Workflow != "" && len(r.Workflows) > 0 {
-		errs = append(errs, fmt.Errorf("%s: set workflow or workflows, not both", label))
-	}
-	if len(r.Apps) > 0 {
-		apps := make([]string, 0, len(r.Apps))
-		for app := range r.Apps {
-			apps = append(apps, app)
-		}
-		slices.Sort(apps)
-		for _, app := range apps {
-			dir := r.EffectiveAppDir(configDir, app)
-			if _, err := os.Stat(filepath.Join(dir, "retrace.yaml")); err != nil {
-				errs = append(errs, fmt.Errorf("%s: apps[%q] = %q resolves to %s, which has no retrace.yaml", label, app, r.Apps[app], dir))
-			}
-		}
-	}
-	return errs
 }
 
 // Validate checks a Config for internal consistency, applying defaults
@@ -90,23 +50,6 @@ func (c *Config) Validate() error {
 
 	if c.Freshness != nil && c.Freshness.PollIntervalS < 0 {
 		errs = append(errs, fmt.Errorf("freshness: poll_interval_s must be >= 0"))
-	}
-
-	if c.Retrace != nil {
-		multi := len(c.Retrace.Instances) > 0
-		instances := c.Retrace.EffectiveInstances()
-		names := make([]string, 0, len(instances))
-		for name := range instances {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			label := "retrace"
-			if multi {
-				label = fmt.Sprintf("retrace.instances[%q]", name)
-			}
-			errs = append(errs, validateRetraceInstance(label, c.Dir, instances[name])...)
-		}
 	}
 
 	for name, db := range c.Databases {

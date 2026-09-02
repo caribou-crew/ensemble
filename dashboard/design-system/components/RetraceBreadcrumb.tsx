@@ -1,14 +1,15 @@
 import './RetraceBreadcrumb.css';
 
 /**
- * The trail: queue / <app/flow> / <run>. Every segment EXCEPT the current
- * one is a link that navigates up to that level — inline back/forward
- * without a separate button. The last segment is the page you are on and is
- * rendered as plain text.
+ * The trail: <rootLabel> / <app/flow> / <run>. Every segment EXCEPT the
+ * current one is a link that navigates up to that level — inline
+ * back/forward without a separate button. The last segment is the page you
+ * are on and is rendered as plain text.
  *
- * Levels are derived from which values are present: no app -> queue (not
- * rendered at all, see the caller); app+flow, no run -> surface level;
- * app+flow+run -> run level.
+ * Levels are derived from which values are present: no app -> root level;
+ * app+flow, no run -> surface level; app+flow+run -> run level. Meant to sit
+ * in a persistent header, so it always renders, including at the root level
+ * — the "← Back" control only appears once there's somewhere to go back to.
  */
 export default function RetraceBreadcrumb({
   app,
@@ -16,6 +17,7 @@ export default function RetraceBreadcrumb({
   runLabel,
   onQueue,
   onSurface,
+  rootLabel = 'queue',
 }: {
   app: string | null;
   flow: string | null;
@@ -23,6 +25,8 @@ export default function RetraceBreadcrumb({
   runLabel: string | null;
   onQueue: () => void;
   onSurface: () => void;
+  /** Label for the root segment. Defaults to "queue". */
+  rootLabel?: string;
 }) {
   const atSurface = Boolean(app && flow && !runLabel);
   const atRun = Boolean(app && flow && runLabel);
@@ -33,16 +37,18 @@ export default function RetraceBreadcrumb({
 
   return (
     <div className="breadcrumb-bar">
-      <button type="button" className="breadcrumb__back" onClick={onBack}>
-        ← Back
-      </button>
+      {atSurface || atRun ? (
+        <button type="button" className="breadcrumb__back" onClick={onBack}>
+          ← Back
+        </button>
+      ) : null}
       <nav className="breadcrumb" aria-label="breadcrumb">
         {atSurface || atRun ? (
           <button type="button" className="breadcrumb__link" onClick={onQueue}>
-            queue
+            {rootLabel}
           </button>
         ) : (
-          <span className="breadcrumb__current">queue</span>
+          <span className="breadcrumb__current">{rootLabel}</span>
         )}
 
         {app && flow ? (

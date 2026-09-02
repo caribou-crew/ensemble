@@ -7,7 +7,7 @@ import InspectorView from './InspectorView';
 import LatencyView from './LatencyView';
 import TopologyView from './TopologyView';
 import TrafficView from './TrafficView';
-import { api, ApiError } from '../api/client';
+import { api } from '../api/client';
 import { writeParams } from '../urlState';
 import type { DatabaseInfo, EntityInfo } from '../api/types';
 
@@ -93,7 +93,6 @@ describe('messageOf fallback at every load site', () => {
     window.history.replaceState(null, '', '/?view=entities');
     vi.spyOn(api, 'entities').mockResolvedValue([]);
     vi.spyOn(api, 'status').mockImplementation(netFail);
-    vi.spyOn(api, 'retraceQueue').mockRejectedValue(new ApiError(501, 'retrace not configured'));
     await render(App);
     expectFallback(container, API_FALLBACK);
   });

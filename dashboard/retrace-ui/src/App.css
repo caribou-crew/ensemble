@@ -16,14 +16,8 @@
   background: var(--bg-panel);
 }
 
-.app-header__brand {
-  background: none;
-  border: 0;
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0;
+.app-header .breadcrumb-bar {
+  margin-bottom: 0;
 }
 
 .app-header__sync {

@@ -312,10 +312,45 @@ describe('the keyboard dispatch', () => {
     await press('Escape');
     expect(container.querySelector('.item')).toBeNull();
     expect(container.querySelector('.breadcrumb-bar')).not.toBeNull();
+    expect(container.querySelector('.breadcrumb__back')).not.toBeNull();
     await press('Escape');
-    expect(container.querySelector('.breadcrumb-bar')).toBeNull();
+    // Back at the queue root: the breadcrumb bar stays in the header (it's
+    // the persistent nav strip now), but its back control and trail
+    // segments are gone — just the "retrace review" root remains.
+    expect(container.querySelector('.breadcrumb__back')).toBeNull();
+    expect(container.querySelector('.breadcrumb__sep')).toBeNull();
     expect(container.querySelector('.queue')).not.toBeNull();
     expect(renderedFlows()).toContain('web/cart');
+  });
+
+  it('keeps a persistent header nav that jumps straight back to the top level from any depth', async () => {
+    stubServer();
+    await mount();
+    const header = container.querySelector('.app-header') as HTMLElement;
+    expect(header.textContent).toContain('retrace review');
+    // At the queue root there's nowhere to go back to, so no back control.
+    expect(header.querySelector('.breadcrumb__back')).toBeNull();
+
+    // Drill all the way to a run's detail screen.
+    await press('j');
+    await press('Enter');
+    const runOpener = container.querySelector('.queue-row__open') as HTMLElement;
+    await act(async () => {
+      runOpener.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.item')).not.toBeNull();
+
+    // The header still shows the full trail, and its root segment is a
+    // single click back to the queue — no need to step up one level at a
+    // time via the now-removed standalone breadcrumb bar in <main>.
+    expect(header.textContent).toContain('retrace review');
+    const root = header.querySelector('.breadcrumb__link') as HTMLButtonElement;
+    expect(root.textContent).toBe('retrace review');
+    await act(async () => {
+      root.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.item')).toBeNull();
+    expect(container.querySelector('.queue')).not.toBeNull();
   });
 });
 

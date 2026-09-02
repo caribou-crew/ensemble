@@ -15,7 +15,6 @@ import type {
 } from "./types";
 import type { SeedStepResult } from "./types";
 import type { DatabaseInfo, EntityInfo, Table } from "./types";
-import type { RetraceQueueResponse } from "./types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -367,17 +366,5 @@ export const api = {
       `/api/entities/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
       jsonInit("DELETE"),
     );
-  },
-
-  // Cross-app review queue, embedded from retrace/serve. 501s when no
-  // `retrace:` block is configured. This is the only retrace call left
-  // here — App.tsx's useRetraceAvailable() probes it once to decide
-  // whether the Retrace tab should even be shown. RetraceView itself (and
-  // its sync panel) fetch through @ensemble/design-system/retraceClient's
-  // createRetraceClient("/api/retrace") instead, the same shared client
-  // retrace-ui's standalone dashboard uses against "/api" — see
-  // RetraceView.tsx.
-  retraceQueue(): Promise<RetraceQueueResponse> {
-    return request<RetraceQueueResponse>("/api/retrace/queue");
   },
 };
