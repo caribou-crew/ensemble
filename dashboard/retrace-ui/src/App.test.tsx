@@ -1040,4 +1040,25 @@ describe('evidence (video + report)', () => {
     expect(link?.getAttribute('href')).toBe('/api/report/web/search/');
     expect(link?.getAttribute('target')).toBe('_blank');
   });
+
+  it('sets the video playback rate from the speed buttons', async () => {
+    const calls = stubServer({
+      evidence: { videos: ['card-views.webm'], hasReport: false },
+    });
+    await mount();
+    await openAFlow(calls);
+
+    const video = container.querySelector('.item__video') as HTMLVideoElement;
+    expect(video.playbackRate).toBe(1);
+
+    const speedButtons = Array.from(container.querySelectorAll('.item__video-speed-btn')) as HTMLButtonElement[];
+    expect(speedButtons.map((b) => b.textContent)).toEqual(['1x', '2x', '4x', '8x']);
+
+    const fourX = speedButtons.find((b) => b.textContent === '4x')!;
+    await act(async () => {
+      fourX.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(video.playbackRate).toBe(4);
+    expect(fourX.className).toContain('item__video-speed-btn--active');
+  });
 });

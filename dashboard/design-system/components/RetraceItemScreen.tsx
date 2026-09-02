@@ -33,6 +33,53 @@ function movedSignals(signals: TriageSignals): string[] {
   return (['capture', 'wire', 'hop', 'spec', 'pixel'] as const).filter((k) => signals[k]);
 }
 
+// Every viewer wants to skim a long capture fast, so each video gets its own
+// rate buttons rather than relying on a browser's native (often hidden,
+// inconsistently placed) speed menu. 1x first so "no change" is the default
+// read; the rest doubles that a reviewer skimming for the moment something
+// went wrong actually wants.
+const PLAYBACK_SPEEDS = [1, 2, 4, 8] as const;
+
+function EvidenceVideo({
+  src,
+  registerVideo,
+}: {
+  src: string;
+  registerVideo: (el: HTMLVideoElement | null) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [rate, setRate] = useState<(typeof PLAYBACK_SPEEDS)[number]>(1);
+  // Composes with the parent's own ref (which drives seek-to-checkpoint) —
+  // both need the same DOM node, so this can't just be `ref={registerVideo}`.
+  const setRefs = useCallback(
+    (el: HTMLVideoElement | null) => {
+      videoRef.current = el;
+      registerVideo(el);
+    },
+    [registerVideo],
+  );
+  return (
+    <div className="item__evidence-video">
+      <video ref={setRefs} controls className="item__video" src={src} />
+      <div className="item__video-speed" role="group" aria-label="playback speed">
+        {PLAYBACK_SPEEDS.map((s) => (
+          <button
+            key={s}
+            type="button"
+            className={`item__video-speed-btn${s === rate ? ' item__video-speed-btn--active' : ''}`}
+            onClick={() => {
+              if (videoRef.current) videoRef.current.playbackRate = s;
+              setRate(s);
+            }}
+          >
+            {s}x
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // A self-contained fetch, not a prop threaded down from ItemScreen's own
 // summary useAsync: video/report attach to a run AFTER it finishes, so they
 // are never part of Summary and are worth failing independently of it — a
@@ -61,7 +108,7 @@ function EvidenceSection({
     <section className="item__plane item__evidence">
       <h2>evidence</h2>
       {data.videos.map((name) => (
-        <video key={name} ref={registerVideo} controls className="item__video" src={client.videoUrl(app, flow, name)} />
+        <EvidenceVideo key={name} src={client.videoUrl(app, flow, name)} registerVideo={registerVideo} />
       ))}
       {data.hasReport ? (
         <a className="item__report-link" href={client.reportUrl(app, flow)} target="_blank" rel="noreferrer">
