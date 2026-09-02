@@ -278,7 +278,13 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		observed = append(observed, rl.srv.ObservedHops()...)
 	}
 	if len(observed) > 0 {
-		if werr := writeObservedWire(p.WirePath, observed); werr != nil {
+		// Redact the observed (live, unredacted) hops with the config's rules
+		// before persisting — dataKey nil: encrypt-mode fields are not
+		// re-sealed here, mask-mode secrets (dpop, tokens) are the concern.
+		red, rerr := trace.NewRedactor(cfg.RedactKeyRules(), 0, nil)
+		if rerr != nil {
+			fmt.Fprintf(stderr, "retrace: replay: could not build the redactor (%v) — not persisting wire to avoid leaking secrets\n", rerr)
+		} else if werr := writeObservedWire(p.WirePath, observed, red); werr != nil {
 			fmt.Fprintf(stderr, "retrace: replay: could not write %s (%v) — the run will not sync as wire-comparable\n", p.WirePath, werr)
 		}
 	}
@@ -381,10 +387,15 @@ func requireLoopback(addr string) error {
 
 // writeObservedWire writes the hops a replay actually observed to the run's
 // wire.jsonl, in the same NDJSON-of-trace.Hop format a recording produces.
-// The hops come from the replay bundle, already redacted at record time, so
-// they pass through unchanged. This is what makes a shots-less replay
-// (FLAG_SECURE mobile card flows) sync as a real, wire-comparable run.
-func writeObservedWire(path string, hops []trace.Hop) error {
+//
+// The observed hops are the LIVE requests/responses the replay saw, which are
+// NOT redacted — so every hop goes through the configured Redactor before it
+// is written, exactly as capture.writeHops does for a recording. Without this
+// the persisted wire.jsonl leaks whatever the config marks secret (dpop
+// proofs, auth tokens) into a file that gets synced and committed as a
+// reference. A hop the redactor cannot seal is degraded (bodies dropped),
+// never written raw.
+func writeObservedWire(path string, hops []trace.Hop, red *trace.Redactor) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -392,7 +403,11 @@ func writeObservedWire(path string, hops []trace.Hop) error {
 	defer f.Close()
 	w := trace.NewWriter(f)
 	for _, h := range hops {
-		if err := w.Write(h); err != nil {
+		rh, rerr := red.Hop(h)
+		if rerr != nil {
+			rh = trace.DegradeHop(rh, rerr)
+		}
+		if err := w.Write(rh); err != nil {
 			return err
 		}
 	}

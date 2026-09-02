@@ -271,6 +271,55 @@ func TestHelperReplaySendsAnExtraHeader(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestHelperReplaySendsASecret sends a request carrying a secret header the
+// config redacts, so the persisted wire can be checked for the redaction.
+func TestHelperReplaySendsASecret(t *testing.T) {
+	if os.Getenv("RETRACE_TEST_HELPER") != "replay-secret" {
+		return
+	}
+	req, _ := http.NewRequest(http.MethodGet, os.Getenv("RETRACE_PROXY_URL")+"/cart", nil)
+	req.Header.Set("X-Secret-Token", "super-secret-value-123")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "helper fetch:", err)
+		os.Exit(9)
+	}
+	resp.Body.Close()
+	os.Exit(0)
+}
+
+// TestReplayPersistsRedactedWire pins that the observed wire replay persists
+// as wire.jsonl (what makes a shots-less run syncable) never contains a
+// secret the config marks for redaction — the file is synced and committed
+// as a reference, so a raw secret there is a leak.
+func TestReplayPersistsRedactedWire(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	// redact the secret header (key rule); the helper sends it live on replay.
+	writeConfig(t, cwd, "app: web\nredact:\n  - x-secret-token\nwire_rules:\n  - headers:\n      date: http-date\n")
+	recordAndAccept(t, bin, cwd, upstream.URL)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web"},
+		selfCmd(t, "TestHelperReplaySendsASecret")...)
+	res := runRetrace(t, bin, cwd, "replay-secret", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr: %s", res.code, res.stderr)
+	}
+	dir := newestReplayRunDir(t, cwd, "web", "checkout")
+	wire, err := os.ReadFile(filepath.Join(dir, "wire.jsonl"))
+	if err != nil {
+		t.Fatalf("no persisted wire.jsonl: %v", err)
+	}
+	if strings.Contains(string(wire), "super-secret-value-123") {
+		t.Fatalf("the persisted wire.jsonl leaked the secret header value:\n%s", wire)
+	}
+}
+
 // assertRequestsReport is the subset of replayReport this file's
 // --assert-requests tests decode, mirroring TestReplayJsonReportsEveryMissAndTheTestExitCode's
 // pattern of decoding only the fields under test.
