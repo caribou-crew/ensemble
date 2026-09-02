@@ -293,8 +293,13 @@ func TestHelperReplaySendsASecret(t *testing.T) {
 // secret the config marks for redaction — the file is synced and committed
 // as a reference, so a raw secret there is a leak.
 func TestReplayPersistsRedactedWire(t *testing.T) {
+	// The upstream returns a PAN in the body — an encrypt-mode field. The
+	// replay can't re-encrypt it (no data key), so the observed-wire redactor
+	// must MASK it (downgrade encrypt->destroy), never write it raw. A raw PAN
+	// in the persisted wire is a PCI leak in a file that gets committed.
+	const rawPAN = "5112347638924576"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"items":[]}`))
+		w.Write([]byte(`{"card":{"pan":"` + rawPAN + `"}}`))
 	}))
 	defer upstream.Close()
 
@@ -303,14 +308,10 @@ func TestReplayPersistsRedactedWire(t *testing.T) {
 	// Encrypt-mode rules need a team key at record time; a throwaway 32-byte
 	// hex key satisfies it (subprocesses inherit the parent env).
 	t.Setenv("RETRACE_RECORDING_KEY", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
-	// redact the secret header (key rule); the helper sends it live on replay.
-	// The config mixes a MASK rule (x-secret-token) with an ENCRYPT rule
-	// (pan) — the real-world shape. The observed-wire redactor must build
-	// with a nil data key (replay holds none), which it can only do by
-	// dropping the encrypt rule; a regression here (building with the encrypt
-	// rule) fails redactor construction and NO wire.jsonl is persisted,
-	// making the run unsyncable. So this pins both: wire IS persisted, and
-	// the mask secret is redacted.
+	// Config mixes a MASK rule (x-secret-token) with an ENCRYPT rule (pan) —
+	// the real card-flow shape. On replay the encrypt rule is downgraded to
+	// mask so pan is redacted (not raw, not a redactor build failure that
+	// drops the whole wire).
 	writeConfig(t, cwd, "app: web\nredact:\n  - x-secret-token\n  - field: pan\n    mode: encrypt\n    why: test\nwire_rules:\n  - headers:\n      date: http-date\n")
 	recordAndAccept(t, bin, cwd, upstream.URL)
 
@@ -327,6 +328,9 @@ func TestReplayPersistsRedactedWire(t *testing.T) {
 	}
 	if strings.Contains(string(wire), "super-secret-value-123") {
 		t.Fatalf("the persisted wire.jsonl leaked the secret header value:\n%s", wire)
+	}
+	if strings.Contains(string(wire), rawPAN) {
+		t.Fatalf("the persisted wire.jsonl leaked a raw PAN (encrypt-mode field not masked) — PCI leak:\n%s", wire)
 	}
 }
 
