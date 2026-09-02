@@ -278,25 +278,31 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		observed = append(observed, rl.srv.ObservedHops()...)
 	}
 	if len(observed) > 0 {
-		// Redact the observed (live, unredacted) hops before persisting.
+		// Redact the REQUEST side of each observed hop before persisting.
 		//
-		// A replay does not hold the per-run data key encrypt-mode fields
-		// were sealed with at record time, so those fields cannot be
-		// re-encrypted here. But they DO appear in the observed response wire
-		// (a card flow's showpan body carries pan/cvv/expiration), so leaving
-		// them unredacted writes a raw PAN into a file that is synced and
-		// committed as a reference — a PCI leak. Neither drop them (raw) nor
-		// encrypt them (no key): DOWNGRADE every encrypt rule to destroy, so
-		// the value is MASKED to the [redacted] marker. Mask-mode rules (dpop,
-		// tokens) pass through as-is. The committed reference's own encrypted
-		// fields are untouched — this only governs what a replay persists.
-		rules := cfg.RedactKeyRules()
-		for i := range rules {
-			if rules[i].Mode == trace.ModeEncrypt {
-				rules[i].Mode = trace.ModeDestroy
+		// Only the request side is live and unredacted (the client's real
+		// headers — dpop proofs, auth tokens). The RESPONSE side is the
+		// bundle's recorded body, already redacted/encrypted at record time
+		// ($enc: envelopes for pan/cvv/expiration) — it is already PCI-safe
+		// and must be left INTACT: masking it to [redacted] destroys the
+		// value the app decrypts and renders, breaking replay assertions
+		// (WLA: web ViewPan/ViewCVV "element not found"). So we redact
+		// h.Req only and copy h.Resp through untouched. dataKey nil is fine —
+		// the request side carries no encrypt-mode field.
+		red, rerr := trace.NewRedactor(cfg.RedactKeyRules(), 0, nil)
+		if rerr != nil {
+			// A config with an encrypt-mode field makes NewRedactor need a
+			// key; but we only redact the request side, which has no encrypt
+			// field, so drop encrypt rules from THIS redactor. (They still
+			// govern the recorded reference, untouched.)
+			maskRules := make([]trace.KeyRule, 0)
+			for _, r := range cfg.RedactKeyRules() {
+				if r.Mode != trace.ModeEncrypt {
+					maskRules = append(maskRules, r)
+				}
 			}
+			red, rerr = trace.NewRedactor(maskRules, 0, nil)
 		}
-		red, rerr := trace.NewRedactor(rules, 0, nil)
 		if rerr != nil {
 			fmt.Fprintf(stderr, "retrace: replay: could not build the redactor (%v) — not persisting wire to avoid leaking secrets\n", rerr)
 		} else if werr := writeObservedWire(p.WirePath, observed, red); werr != nil {
@@ -400,16 +406,17 @@ func requireLoopback(addr string) error {
 	return nil
 }
 
-// writeObservedWire writes the hops a replay actually observed to the run's
-// wire.jsonl, in the same NDJSON-of-trace.Hop format a recording produces.
+// writeObservedWire writes the hops a replay observed to the run's
+// wire.jsonl (NDJSON of trace.Hop), redacting only the REQUEST side.
 //
-// The observed hops are the LIVE requests/responses the replay saw, which are
-// NOT redacted — so every hop goes through the configured Redactor before it
-// is written, exactly as capture.writeHops does for a recording. Without this
-// the persisted wire.jsonl leaks whatever the config marks secret (dpop
-// proofs, auth tokens) into a file that gets synced and committed as a
-// reference. A hop the redactor cannot seal is degraded (bodies dropped),
-// never written raw.
+// The request side is the client's live, unredacted traffic (dpop proofs,
+// auth tokens) — it must be masked before this file is synced and committed
+// as a reference. The response side is the bundle's recorded body, already
+// redacted/encrypted at record time, so it is copied through UNTOUCHED:
+// re-redacting it would mask an already-safe $enc: value down to [redacted],
+// destroying the value the app decrypts and renders. A request whose
+// redaction fails drops its request body (fail-closed), never written raw;
+// the response is unaffected.
 func writeObservedWire(path string, hops []trace.Hop, red *trace.Redactor) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -418,11 +425,13 @@ func writeObservedWire(path string, hops []trace.Hop, red *trace.Redactor) error
 	defer f.Close()
 	w := trace.NewWriter(f)
 	for _, h := range hops {
-		rh, rerr := red.Hop(h)
+		req, rerr := red.Payload(h.Req)
 		if rerr != nil {
-			rh = trace.DegradeHop(rh, rerr)
+			req.Body, req.BodyB64 = "", "" // fail-closed: drop the request body, never raw
 		}
-		if err := w.Write(rh); err != nil {
+		h.Req = req
+		// h.Resp intentionally left as-is (bundle-recorded, already safe).
+		if err := w.Write(h); err != nil {
 			return err
 		}
 	}

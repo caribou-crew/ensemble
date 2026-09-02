@@ -293,25 +293,25 @@ func TestHelperReplaySendsASecret(t *testing.T) {
 // secret the config marks for redaction — the file is synced and committed
 // as a reference, so a raw secret there is a leak.
 func TestReplayPersistsRedactedWire(t *testing.T) {
-	// The upstream returns a PAN in the body — an encrypt-mode field. The
-	// replay can't re-encrypt it (no data key), so the observed-wire redactor
-	// must MASK it (downgrade encrypt->destroy), never write it raw. A raw PAN
-	// in the persisted wire is a PCI leak in a file that gets committed.
-	const rawPAN = "5112347638924576"
+	// Invariant: the persisted observed wire redacts the REQUEST side (live
+	// client secrets — dpop/tokens) but serves the RESPONSE side verbatim
+	// from the bundle, which was already redacted/encrypted at record time.
+	// Re-redacting the response would mask an already-safe $enc: value down
+	// to [redacted], destroying the value the app decrypts and renders
+	// (the web ViewPan/ViewCVV "element not found" regression).
+	//
+	// The upstream marks its response so we can assert it survived intact.
+	const respMarker = "RESP_BODY_MARKER_KEEP_ME"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"card":{"pan":"` + rawPAN + `"}}`))
+		w.Write([]byte(`{"marker":"` + respMarker + `"}`))
 	}))
 	defer upstream.Close()
 
 	bin := buildRetrace(t)
 	cwd := t.TempDir()
-	// Encrypt-mode rules need a team key at record time; a throwaway 32-byte
-	// hex key satisfies it (subprocesses inherit the parent env).
 	t.Setenv("RETRACE_RECORDING_KEY", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
-	// Config mixes a MASK rule (x-secret-token) with an ENCRYPT rule (pan) —
-	// the real card-flow shape. On replay the encrypt rule is downgraded to
-	// mask so pan is redacted (not raw, not a redactor build failure that
-	// drops the whole wire).
+	// A mask rule (the live request secret) + an encrypt rule (the card-flow
+	// shape) — the encrypt rule must not break observed-wire persistence.
 	writeConfig(t, cwd, "app: web\nredact:\n  - x-secret-token\n  - field: pan\n    mode: encrypt\n    why: test\nwire_rules:\n  - headers:\n      date: http-date\n")
 	recordAndAccept(t, bin, cwd, upstream.URL)
 
@@ -326,11 +326,17 @@ func TestReplayPersistsRedactedWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no persisted wire.jsonl: %v", err)
 	}
+	// Request side: the live secret header is masked.
 	if strings.Contains(string(wire), "super-secret-value-123") {
-		t.Fatalf("the persisted wire.jsonl leaked the secret header value:\n%s", wire)
+		t.Fatalf("the persisted wire.jsonl leaked the request secret header:\n%s", wire)
 	}
-	if strings.Contains(string(wire), rawPAN) {
-		t.Fatalf("the persisted wire.jsonl leaked a raw PAN (encrypt-mode field not masked) — PCI leak:\n%s", wire)
+	if !strings.Contains(string(wire), "[redacted]") {
+		t.Fatalf("expected the request secret to be masked to [redacted]:\n%s", wire)
+	}
+	// Response side: served verbatim from the bundle, NOT re-redacted away —
+	// this is what lets the app render (the value must survive replay).
+	if !strings.Contains(string(wire), respMarker) {
+		t.Fatalf("the response body was re-redacted on replay (marker gone) — the app could not render it:\n%s", wire)
 	}
 }
 
