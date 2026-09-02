@@ -54,6 +54,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/videos/{app}/{flow}/{name}", s.handleVideo)
 	mux.HandleFunc("GET /api/report/{app}/{flow}", s.handleReport)
 	mux.HandleFunc("GET /api/report/{app}/{flow}/{path...}", s.handleReport)
+	mux.HandleFunc("GET /api/sync/config", s.handleSyncConfig)
 	mux.HandleFunc("GET /api/sync/candidates", s.handleSyncCandidates)
 	mux.HandleFunc("POST /api/sync", s.handleSync)
 }

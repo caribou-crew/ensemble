@@ -200,7 +200,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, "%v", err)
 		}
-		h = serve.NewWithSources(defaultDeps, &sources)
+		h = serve.NewWithSourcesAndSync(defaultDeps, &sources, serve.SyncConfig{
+			Repo:      repoCfg.Repo,
+			Workflows: repoCfg.Sync.Workflows,
+			Branch:    repoCfg.Sync.Branch,
+			Actor:     repoCfg.Sync.Actor,
+			Event:     repoCfg.Sync.Event,
+			Status:    repoCfg.Sync.Status,
+			Since:     repoCfg.Sync.Since,
+		})
 		effectiveRepo = repoCfg.Repo
 		syncDefaults = repoCfg.Sync
 		fmt.Fprintf(stderr, "retrace serve: found %s at %s — aggregating %d app(s) across %d root(s)\n",

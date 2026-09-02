@@ -163,6 +163,10 @@ export interface Summary {
   a: RunRef;
   b: RunRef;
   quarantined: Quarantine[];
+  /** Set when a geometry mismatch was downgraded to wire-only (the pixel
+   * plane was skipped but wire/hop still produced a verdict). Explains the
+   * empty shots plane without failing the run. Absent in strict mode. */
+  geometryNote?: string;
   checkpoints: CheckpointVerdict[];
   wire: { paired: Entry[]; missing: Call[]; extra: Call[]; groups?: GroupNames };
   sections: Section[];
@@ -266,6 +270,19 @@ export interface SyncCandidate {
 
 export interface SyncCandidatesResponse {
   candidates: SyncCandidate[];
+}
+
+/** GET {basePath}/sync/config — the repo.yaml sync defaults the standalone
+ * `retrace serve` exposes so the Browse-&-sync panel prefills the repo and
+ * filters. Empty `repo` means no configured default (the panel asks). */
+export interface SyncConfigResponse {
+  repo: string;
+  workflows?: string[];
+  branch?: string;
+  actor?: string;
+  event?: string;
+  status?: string;
+  since?: string;
 }
 
 export interface SyncSelection {

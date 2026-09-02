@@ -223,6 +223,21 @@ func syncOneRun(o Options, repo string, r ghRun) (synced []string, skipped []Ski
 	}
 
 	for _, m := range manifests {
+		// A manifest.json must PARSE as a retrace manifest to be treated as
+		// a run. A Maestro debug bundle (uploaded by a mobile E2E workflow)
+		// carries its own manifest.json at maestro-schemas/artifact-manifest —
+		// findManifests can't tell them apart by name, and deriving
+		// app/flow/run-id from its path yields a junk `tests/<timestamp>/<cell>`
+		// app that pollutes every consumer. runs.ReadManifest rejects a
+		// non-retrace schema, so this is the same guard appIsReal applies at
+		// the queue, moved up to ingest so the junk never lands on disk.
+		if _, rerr := runs.ReadManifest(m); rerr != nil {
+			skipped = append(skipped, SkipReason{
+				Artifact: label,
+				Reason:   fmt.Sprintf("not a retrace manifest (schema check failed), skipping %s: %v", m, rerr),
+			})
+			continue
+		}
 		runDir := filepath.Dir(m)
 		runID := filepath.Base(runDir)
 		flowDir := filepath.Dir(runDir)

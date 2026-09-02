@@ -38,6 +38,16 @@
   font-family: var(--font-mono);
 }
 
+.item__run--a {
+  color: var(--text-secondary);
+}
+.item__run--b {
+  color: var(--text-primary);
+}
+.item__run-arrow {
+  opacity: 0.6;
+}
+
 .item__triage {
   margin: 0;
   font-size: 0.82rem;
@@ -138,4 +148,14 @@
 .item__report-link {
   font-size: 0.78rem;
   color: var(--accent-strong);
+}
+
+.item__geometry-note {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  border-left: 3px solid var(--status-amber);
 }

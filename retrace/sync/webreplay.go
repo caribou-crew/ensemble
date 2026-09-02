@@ -14,50 +14,74 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
-// webReplayBundle names one manifest-less pixel-replay run directory found
-// inside a downloaded artifact — a `retrace replay` bundle uploaded by a
-// browser-driven flow (Playwright), which by design has no wire plane and
-// so never writes manifest.json itself.
+// webReplayBundle names one manifest-less replay run directory found inside
+// a downloaded artifact — a `retrace replay` bundle. It may carry shots
+// (a browser/Playwright flow, or a mobile flow whose views are
+// screenshottable), wire (the observed hops replay now persists as
+// wire.jsonl), or both. A mobile card flow on Android RN/native is
+// wire-only: its PCI views are FLAG_SECURE, so no screenshot exists.
 type webReplayBundle struct {
-	runDir string
-	app    string
-	flow   string
-	runID  string
+	runDir   string
+	app      string
+	flow     string
+	runID    string
+	hasShots bool
+	hasWire  bool
 }
 
-// findWebReplayBundles finds every shots-bearing, manifest-less run
-// directory under root, at the same <app>/<flow>/<run-id> depth
-// findManifests looks for manifest.json at. A directory that has BOTH a
-// manifest and shots is a native run and is left to the manifest path —
-// never merged twice.
+// findWebReplayBundles finds every manifest-less replay run directory under
+// root, at the <app>/<flow>/<run-id> depth findManifests looks for
+// manifest.json at, that carries shots/ and/or wire.jsonl. A directory that
+// already has a manifest is a native run and is left to the manifest path —
+// never merged twice. Keyed off the run directory (not the shots/ dir) so a
+// wire-only run with no shots/ subdir is still found.
 func findWebReplayBundles(root string) ([]webReplayBundle, error) {
 	var out []webReplayBundle
+	seen := map[string]bool{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() || d.Name() != "shots" {
+		if !d.IsDir() {
 			return nil
 		}
-		runDir := filepath.Dir(p)
-		if _, statErr := os.Stat(filepath.Join(runDir, "manifest.json")); statErr == nil {
-			return filepath.SkipDir // native run — leave it to the manifest path
+		// A replay run dir is identified by carrying a shots/ dir or a
+		// wire.jsonl directly. Its own name is the run-id; its parents are
+		// flow and app.
+		shotsDir := filepath.Join(p, "shots")
+		wirePath := filepath.Join(p, "wire.jsonl")
+		hasShots := false
+		if info, statErr := os.Stat(shotsDir); statErr == nil && info.IsDir() {
+			if ok, perr := dirHasPNG(shotsDir); perr != nil {
+				return perr
+			} else {
+				hasShots = ok
+			}
 		}
-		hasPNG, err := dirHasPNG(p)
-		if err != nil {
-			return err
+		hasWire := false
+		if info, statErr := os.Stat(wirePath); statErr == nil && !info.IsDir() && info.Size() > 0 {
+			hasWire = true
 		}
-		if !hasPNG {
-			return filepath.SkipDir // nothing to diff
+		if !hasShots && !hasWire {
+			return nil
 		}
-		flowDir := filepath.Dir(runDir)
+		if _, statErr := os.Stat(filepath.Join(p, "manifest.json")); statErr == nil {
+			return nil // native run — leave it to the manifest path
+		}
+		if seen[p] {
+			return nil
+		}
+		seen[p] = true
+		flowDir := filepath.Dir(p)
 		out = append(out, webReplayBundle{
-			runDir: runDir,
-			app:    filepath.Base(filepath.Dir(flowDir)),
-			flow:   filepath.Base(flowDir),
-			runID:  filepath.Base(runDir),
+			runDir:   p,
+			app:      filepath.Base(filepath.Dir(flowDir)),
+			flow:     filepath.Base(flowDir),
+			runID:    filepath.Base(p),
+			hasShots: hasShots,
+			hasWire:  hasWire,
 		})
-		return filepath.SkipDir
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sync: walking downloaded artifact for web replays: %w", err)
@@ -127,15 +151,25 @@ func checkpointsFromShots(shotsDir string) ([]runs.Checkpoint, error) {
 	return out, nil
 }
 
-// synthesizeReplayManifest builds the manifest a pixel-replay bundle never
-// wrote itself. Groups stays nil (WriteManifest defaults it to []):
-// groups.jsonl travels with the copied tree, but a pixel-only run has no
-// wire diff to bucket into named sections, so there is nothing to fold it
-// into here.
+// synthesizeReplayManifest builds the manifest a replay bundle never wrote
+// itself. It handles three shapes: shots-only (browser/Playwright), wire-only
+// (Android RN/native card flows — FLAG_SECURE, no screenshots), and both.
+// Checkpoints come from shots when present; Wire.Recorded is true when a
+// wire.jsonl was persisted; trust is assessed on whatever plane exists.
 func synthesizeReplayManifest(b webReplayBundle) (runs.Manifest, error) {
-	checkpoints, err := checkpointsFromShots(filepath.Join(b.runDir, "shots"))
-	if err != nil {
-		return runs.Manifest{}, err
+	var checkpoints []runs.Checkpoint
+	if b.hasShots {
+		cps, err := checkpointsFromShots(filepath.Join(b.runDir, "shots"))
+		if err != nil {
+			return runs.Manifest{}, err
+		}
+		checkpoints = cps
+	}
+	wire := runs.Counts{Recorded: false, Reason: "replay: no wire plane was captured"}
+	if b.hasWire {
+		// Recorded=true with the count left at 0 is fine: diff reads the
+		// hops from wire.jsonl directly; Counts is the recorded-vs-not flag.
+		wire = runs.Counts{Recorded: true}
 	}
 	return runs.Manifest{
 		App:         b.app,
@@ -143,29 +177,28 @@ func synthesizeReplayManifest(b webReplayBundle) (runs.Manifest, error) {
 		RunID:       b.runID,
 		Mode:        runs.ModePixel,
 		Checkpoints: checkpoints,
-		Capture:     assessPixelOnly(len(checkpoints)),
-		Wire:        runs.Counts{Recorded: false, Reason: "pixel-only replay: no wire plane is captured"},
+		Capture:     assessReplay(len(checkpoints), b.hasWire),
+		Wire:        wire,
 	}, nil
 }
 
-// assessPixelOnly is the pixel-only trust seam: capture.Assess is
-// untouched, because ITS invariant (VerdictOK requires len(Hops) > 0) is
-// about wire captures and a category error for a run with no wire plane by
-// design. A shots-bearing replay assesses ok — not quarantined, diffable,
-// `ref accept`-able without --force. A zero-shot bundle fails closed: there
-// is nothing to diff, and reporting that as ok would be worse than the
-// permissive answer this package's other zero-value rules refuse to give.
-func assessPixelOnly(shots int) runs.CaptureTrust {
-	if shots == 0 {
+// assessReplay is the replay trust seam. A run with shots OR wire is
+// diffable and assesses ok. A run with neither fails closed — nothing to
+// compare, and reporting ok would be worse than the permissive answer this
+// package's zero-value rules refuse to give.
+func assessReplay(shots int, hasWire bool) runs.CaptureTrust {
+	if shots == 0 && !hasWire {
 		return runs.CaptureTrust{
 			Status:  trace.VerdictFailed,
-			Summary: "pixel-only replay captured no shots — there is nothing to diff",
+			Summary: "replay captured neither shots nor wire — there is nothing to diff",
 		}
 	}
-	return runs.CaptureTrust{
-		Status: trace.VerdictOK,
-		Summary: fmt.Sprintf(
-			"pixel-only replay: %d shot(s) captured; trust is judged on shots, not wire (this run has no wire plane by design)",
-			shots),
+	switch {
+	case shots > 0 && hasWire:
+		return runs.CaptureTrust{Status: trace.VerdictOK, Summary: fmt.Sprintf("replay: %d shot(s) + wire captured", shots)}
+	case shots > 0:
+		return runs.CaptureTrust{Status: trace.VerdictOK, Summary: fmt.Sprintf("pixel-only replay: %d shot(s) captured (no wire plane by design)", shots)}
+	default:
+		return runs.CaptureTrust{Status: trace.VerdictOK, Summary: "wire-only replay: shots are FLAG_SECURE-protected; trust is judged on the wire plane"}
 	}
 }

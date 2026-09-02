@@ -257,7 +257,6 @@ export default function RetraceView() {
               selected={null}
               showPassing={showPassing}
               onShowPassingChange={setShowPassing}
-              onSelect={openSurface}
               onOpen={openSurface}
             />
           </>

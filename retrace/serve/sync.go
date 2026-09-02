@@ -39,9 +39,22 @@ type syncCandidatesResponse struct {
 	Candidates []candidateWithLocalRuns `json:"candidates"`
 }
 
+// handleSyncConfig returns the repo.yaml sync defaults so the Browse-&-sync
+// panel can prefill the repo and filters rather than making a human retype
+// what retrace.repo.yaml already declares. Empty Repo means no configured
+// default (the pre-repo.yaml behavior: the panel asks for one).
+func (s *server) handleSyncConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.syncCfg)
+}
+
 func (s *server) handleSyncCandidates(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	repos := reposFrom(q.Get("repo"), q.Get("repos"))
+	// Fall back to the repo.yaml default when the request names none — the
+	// config already declared it, so a browse should not 400 for omitting it.
+	if len(repos) == 0 && s.syncCfg.Repo != "" {
+		repos = []string{s.syncCfg.Repo}
+	}
 	if len(repos) == 0 {
 		writeErr(w, http.StatusBadRequest, "sync needs a repo — pass ?repo=org/repo or ?repos=org/a,org/b")
 		return
@@ -105,6 +118,9 @@ func (s *server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repos := reposFrom(body.Repo, strings.Join(body.Repos, ","))
+	if len(repos) == 0 && s.syncCfg.Repo != "" {
+		repos = []string{s.syncCfg.Repo}
+	}
 	if len(repos) == 0 {
 		writeErr(w, http.StatusBadRequest, "sync needs a repo — set \"repo\" or \"repos\" in the request body")
 		return

@@ -197,6 +197,13 @@ type Summary struct {
 	// their own capture-trust verdict was not "ok". Empty unless
 	// --allow-degraded was NOT passed and at least one side warranted it.
 	Quarantined []Quarantine `json:"quarantined"`
+	// GeometryNote records a geometry mismatch that was DOWNGRADED (not
+	// quarantined) because GeometryMismatchWireOnly was set: the pixel plane
+	// was skipped but wire/hop still produced a real verdict. Empty in the
+	// default strict mode (where a mismatch quarantines the whole run) and
+	// whenever the geometries agree. A note, not a finding — it explains why
+	// there are no checkpoint diffs, without failing the run.
+	GeometryNote string `json:"geometryNote,omitempty"`
 	// Triage says WHOSE problem this is — the one question the four planes
 	// leave to the reader. See triage.go; never empty on a Summary Build
 	// returned, including both quarantine exits.
@@ -339,6 +346,17 @@ type BuildInput struct {
 	// (--allow-degraded). false is the safe default: a run that never sets
 	// it still refuses to diff a broken capture.
 	AllowDegraded bool
+	// GeometryMismatchWireOnly downgrades a geometry mismatch from a full
+	// quarantine to a pixel-plane skip: the wire and hop planes still
+	// compare and produce a real verdict, and the geometry difference is
+	// recorded as a note rather than refusing the whole run. Opt-in, false
+	// by default (the strict "a mismatched pair is a harness mistake, no
+	// half-pass" behavior is unchanged). Use it when the device sizes
+	// legitimately differ between environments (e.g. a CI emulator vs a
+	// local one) but the CLIENT-SIDE WIRE is what the flow actually asserts
+	// — the pixel diff would be meaningless across screens, but the API
+	// call sequence is not.
+	GeometryMismatchWireOnly bool
 }
 
 // OptionsFor assembles the diff Options from the config and the two
@@ -633,10 +651,18 @@ func Build(in BuildInput) (Summary, error) {
 	// run, and a run that cannot answer its primary plane does not get to
 	// half-pass.
 	if q := geometryCheck(in.A, in.B); len(q) > 0 {
-		s.Quarantined = q
-		s.Verdict = "quarantined"
-		s.finish(in.Cfg)
-		return s, nil
+		if in.GeometryMismatchWireOnly {
+			// Downgrade: keep the mismatch as a note, skip the pixel plane
+			// (a per-checkpoint % across screens is meaningless), and let
+			// wire/hop below still produce a real verdict from the client-
+			// side calls. The run does NOT quarantine.
+			s.GeometryNote = q[0].Reason
+		} else {
+			s.Quarantined = q
+			s.Verdict = "quarantined"
+			s.finish(in.Cfg)
+			return s, nil
+		}
 	}
 
 	// --- quarantine, checked before anything else is compared. A capture
@@ -654,7 +680,14 @@ func Build(in BuildInput) (Summary, error) {
 
 	// --- pixel, per checkpoint, by name union so a checkpoint that
 	// appeared or vanished is its own verdict rather than a silent skip.
+	// Skipped entirely when geometry was downgraded to wire-only: a
+	// per-checkpoint % across different screens is the "precise and
+	// meaningless number" geometryCheck describes, so we compute none and
+	// let GeometryNote explain the empty pixel plane.
 	for _, name := range checkpointUnion(in.A.Manifest, in.B.Manifest) {
+		if s.GeometryNote != "" {
+			break
+		}
 		cpA, okA := findCheckpoint(in.A.Manifest, name)
 		cpB, okB := findCheckpoint(in.B.Manifest, name)
 		switch {

@@ -172,15 +172,28 @@ export default function RetraceItemScreen({
           {app}/{flow}
         </h1>
         <Badge tone={tone}>{verdictLabel(summary.verdict)}</Badge>
-        <span
-          className="item__runs"
-          title={`${summary.a.runId || 'no reference'} → ${summary.b.runId || 'no run'}`}
-        >
-          {summary.b.runId ? <>ran {formatWhen(summary.b.manifest?.finishedAt, summary.b.runId)}</> : 'no run'}
+        <span className="item__runs">
+          {/* Which run is which, spelled out — the left/reference side is the
+              committed baseline, the right/candidate is the run under review
+              (e.g. the one just synced from CI). Hiding the reference in a
+              title= tooltip left reviewers unsure whether they were looking
+              at the baseline or the new capture. */}
+          <span className="item__run item__run--a">
+            reference: {summary.a.runId || 'none'}
+          </span>
+          <span className="item__run-arrow"> → </span>
+          <span className="item__run item__run--b">
+            candidate: {summary.b.runId ? formatWhen(summary.b.manifest?.finishedAt, summary.b.runId) : 'no run'}
+          </span>
         </span>
       </header>
 
-      <CaptureBanner capture={summary.capture} detail />
+      {/* For a quarantined flow the dedicated quarantine block below already
+          states "not compared" with per-side reasons — rendering the capture
+          banner too just repeated it. Show the banner only for the compared
+          verdicts, where it flags a suspect/degraded capture the planes below
+          don't otherwise announce. */}
+      {summary.verdict !== 'quarantined' ? <CaptureBanner capture={summary.capture} detail /> : null}
 
       <EvidenceSection client={client} app={app} flow={flow} registerVideo={registerVideo} onVideoCountChange={setVideoCount} />
 
@@ -203,7 +216,11 @@ export default function RetraceItemScreen({
         </p>
       ) : null}
 
-      {summary.gates.length > 0 ? (
+      {/* Gates for a quarantined flow ARE the quarantine reason (the "no
+          reference / self-reference" sentence), which the quarantine block
+          below already states — so only render this list for compared
+          verdicts, where a gate is a genuine budget failure. */}
+      {summary.gates.length > 0 && summary.verdict !== 'quarantined' ? (
         <ul className="item__gates">
           {summary.gates.map((g) => (
             <li key={g}>{g}</li>
@@ -215,14 +232,15 @@ export default function RetraceItemScreen({
         <>
           <div className="item__quarantine">
             <p>
-              This flow was not compared. The per-checkpoint diff below is empty because the
-              comparison never ran, not because nothing changed — but the run still captured its
-              screenshots, shown below.
+              This flow was not compared: the candidate run under review could not be diffed against
+              the committed reference. The per-checkpoint diff below is empty because the comparison
+              never ran, not because nothing changed — the run's own captured screenshots are shown
+              below.
             </p>
             <ul>
               {summary.quarantined.map((q) => (
                 <li key={`${q.side}:${q.reason}`}>
-                  side {q.side}: {q.reason}
+                  {q.side === 'a' ? 'reference' : 'candidate'}: {q.reason}
                 </li>
               ))}
             </ul>
@@ -254,6 +272,12 @@ export default function RetraceItemScreen({
         <>
           <section className="item__plane">
             <h2>shots</h2>
+            {summary.geometryNote ? (
+              <p className="item__geometry-note">
+                Pixel comparison skipped — {summary.geometryNote} The wire verdict below stands on
+                the client-side calls, which are screen-independent.
+              </p>
+            ) : null}
             {summary.checkpoints.length === 0 ? (
               <p className="item__none">This flow captured no checkpoints.</p>
             ) : (
@@ -289,6 +313,7 @@ export default function RetraceItemScreen({
               selectedField={selectedField}
               onSelectField={onSelectField}
               onReveal={reveal}
+              unexpectedStatuses={summary.unexpectedStatuses}
             />
           </section>
 

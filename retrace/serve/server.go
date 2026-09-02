@@ -27,6 +27,27 @@ type server struct {
 	// stack's one Cfg. See depsForApp and Sources' own doc comment for why
 	// this is swapped as a whole *Sources rather than mutated in place.
 	sources *Sources
+	// syncCfg carries the repo.yaml sync defaults (repo + filters) so the
+	// sync routes can fall back to them when a request names no repo, and
+	// GET /api/sync/config can hand them to the UI to prefill. Zero value
+	// (no repo) is the pre-repo.yaml behavior: every sync request must name
+	// its own repo. Set only by NewWithSourcesAndSync.
+	syncCfg SyncConfig
+}
+
+// SyncConfig is the repo-wide sync default a standalone `retrace serve`
+// reads from retrace.repo.yaml (retrace/repoconfig) and exposes at
+// GET /api/sync/config, so the Browse-&-sync panel can prefill the repo and
+// filters instead of making a human retype what the config already declares.
+// Every field is optional; an empty Repo means "no configured default".
+type SyncConfig struct {
+	Repo      string   `json:"repo"`
+	Workflows []string `json:"workflows,omitempty"`
+	Branch    string   `json:"branch,omitempty"`
+	Actor     string   `json:"actor,omitempty"`
+	Event     string   `json:"event,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Since     string   `json:"since,omitempty"`
 }
 
 // New builds the review server's HTTP surface: the /api control plane plus
@@ -42,7 +63,7 @@ type server struct {
 // the SAFE zero value there — loopback-only, never "no allow-list, so allow
 // anything".
 func New(d Deps) http.Handler {
-	return buildServer(d, nil)
+	return buildServer(d, nil, SyncConfig{})
 }
 
 // NewWithSources is New, plus a Sources aggregating one or more additional
@@ -54,11 +75,20 @@ func New(d Deps) http.Handler {
 // repo-scoped config) is completely unaffected by this function's
 // existence.
 func NewWithSources(d Deps, sources *Sources) http.Handler {
-	return buildServer(d, sources)
+	return buildServer(d, sources, SyncConfig{})
 }
 
-func buildServer(d Deps, sources *Sources) http.Handler {
-	s := &server{d: d, sources: sources}
+// NewWithSourcesAndSync is NewWithSources plus the repo.yaml sync defaults,
+// so the sync routes can fall back to a configured repo and GET
+// /api/sync/config can prefill the panel. `retrace serve` uses this when it
+// finds a retrace.repo.yaml with a `repo:`; every other caller keeps using
+// New / NewWithSources with no configured repo, unchanged.
+func NewWithSourcesAndSync(d Deps, sources *Sources, sync SyncConfig) http.Handler {
+	return buildServer(d, sources, sync)
+}
+
+func buildServer(d Deps, sources *Sources, sync SyncConfig) http.Handler {
+	s := &server{d: d, sources: sources, syncCfg: sync}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	// /api/* goes to the mux and NOTHING else does. Mounting the UI inside

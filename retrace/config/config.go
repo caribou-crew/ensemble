@@ -130,9 +130,18 @@ type Config struct {
 	HopRequire       []RequiredRoute   `yaml:"hop_require"`
 	Masks            map[string][]Rect `yaml:"masks"`
 	Thresholds       Thresholds        `yaml:"thresholds"`
-	OpenAPI          string            `yaml:"openapi"`
-	Redact           RedactSection     `yaml:"redact"`
-	Deviations       string            `yaml:"deviations"`
+	// GeometryMismatch decides what happens when the two runs were captured
+	// on different screens. "" / "strict" (default): quarantine the whole
+	// run — a mismatched pair is treated as a harness mistake. "wire-only":
+	// skip the pixel plane (a cross-screen % is meaningless) but still
+	// compare wire/hop and produce a real verdict, recording the mismatch as
+	// a note. Use "wire-only" when device sizes legitimately differ between
+	// environments (CI emulator vs local) but the client-side wire is what
+	// the flow asserts.
+	GeometryMismatch string        `yaml:"geometry_mismatch"`
+	OpenAPI          string        `yaml:"openapi"`
+	Redact           RedactSection `yaml:"redact"`
+	Deviations       string        `yaml:"deviations"`
 	// Gates holds the per-plane CI budget (percent of checkpoints/calls
 	// allowed to differ before the run fails). Plane keys are "pixel",
 	// "wire", "hop", "perf". A plane with no entry (or an entry whose

@@ -234,3 +234,13 @@
   cursor: pointer;
   text-align: left;
 }
+
+.sync-panel__pull-latest {
+  background: var(--accent-glow);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.sync-panel__pull-latest:hover:not(:disabled) {
+  background: var(--accent-border);
+}

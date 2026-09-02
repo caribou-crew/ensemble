@@ -45,16 +45,15 @@ afterEach(() => {
   container.remove();
 });
 
-function renderQueue(items: Item[], empty: EmptyReason, showPassing = false) {
+function renderQueue(items: Item[], empty: EmptyReason, showPassing = false, selected: string | null = null) {
   act(() =>
     root.render(
       <QueueList
         items={items}
         empty={empty}
-        selected={null}
+        selected={selected}
         showPassing={showPassing}
         onShowPassingChange={() => {}}
-        onSelect={() => {}}
         onOpen={() => {}}
       />,
     ),
@@ -97,18 +96,25 @@ describe('the empty review queue says WHICH kind of empty it is', () => {
 });
 
 describe('QueueList rows', () => {
-  it('shows the gate count on a healthy row, which is where gates used to be absent', () => {
-    // R-W's consumer side: `item.gates.length` on a row with nothing wrong.
+  it('renders a healthy changed row without a gate count, where gates used to be absent', () => {
+    // R-W's consumer side: `item.gates.length` is read on every row (Row and
+    // reasonCode both touch it), and a healthy row's Gates is the empty array,
+    // not null — so this must not throw and must not invent a reason. The
+    // gate count now lives folded into the details cell and only appears
+    // alongside a reason code, so a clean changed row shows neither.
     const text = renderQueue([item({ score: 2, verdict: 'changed' })], '');
-    expect(text).toContain('0 gates');
+    expect(text).toContain('web');
+    expect(text).toContain('checkout');
+    expect(text).not.toMatch(/\d+ gate/);
   });
 
-  it('banners a broken capture on the queue row — the first of the two report surfaces', () => {
-    // The brief requires EVERY report surface to banner a non-ok CaptureTrust,
-    // and the queue row is where a reviewer decides whether to open the flow
-    // at all. The fixture is asymmetric on purpose: side a is ok and side b is
-    // broken, so a swap, an inversion or a deletion each change the output.
-    // Every capture fixture in this suite used to be {a: ok, b: ok}.
+  it('does not inline-banner capture trust in the queue row — that moved to the detail page', () => {
+    // The queue is one line per app/flow: app, flow, latest verdict, a short
+    // reason. The full CaptureTrust banner (reference/this-run summaries) used
+    // to render under every row and buried the table; it now lives only on the
+    // flow's detail page. This pins that the row does NOT reproduce the banner
+    // prose even for a broken capture — a regression back to the wall of text
+    // would fail here. The fixture is asymmetric on purpose (a ok, b broken).
     const text = renderQueue(
       [
         item({
@@ -122,10 +128,12 @@ describe('QueueList rows', () => {
       ],
       '',
     );
-    expect(text).toContain('this run');
-    expect(text).toContain('broken');
-    expect(text).toContain('the proxy died 12s in');
-    expect(text).not.toContain('reference');
+    // The row is present…
+    expect(text).toContain('web');
+    expect(text).toContain('checkout');
+    // …but the capture-banner prose is not inlined into the queue.
+    expect(text).not.toContain('the proxy died 12s in');
+    expect(text).not.toContain('this run');
   });
 
   it('paints a not-compared row as a call for attention, not as a non-event', () => {
@@ -179,14 +187,38 @@ describe('QueueList rows', () => {
     }
   });
 
-  it('collapses score-zero rows under a disclosure rather than listing them', () => {
+  it('lists passing rows in the same table, not collapsed under a disclosure', () => {
+    // Seeing the passing rows IS the point — they prove the flow is green.
+    // They render in the one worst-first table with a visible `pass` verdict,
+    // no "N passing" disclosure to expand.
     const text = renderQueue(
       [item({ flow: 'cart', score: 1100, verdict: 'failed', gates: ['status 500'] }), item()],
       '',
     );
-    expect(text).toContain('1 passing');
-    expect(text).toContain('cart');
-    expect(container.querySelector('.queue-row__flowname')?.textContent).toBe('cart');
+    expect(text).not.toContain('passing'); // no disclosure control
+    expect(text).toContain('cart'); // the failing row
+    expect(text).toContain('pass'); // the passing row's verdict is shown
+    // Both rows are present as real rows (2 flow-name cells).
+    expect(container.querySelectorAll('.queue-row__flowname').length).toBe(2);
+  });
+
+  it('sorts rows when a column header is clicked', () => {
+    // Default order is the server's (worst first). Clicking the app header
+    // sorts alphabetically by app; the rendered flow-name cells follow.
+    renderQueue(
+      [
+        item({ app: 'zeta', flow: 'card-views', score: 1, verdict: 'changed' }),
+        item({ app: 'alpha', flow: 'card-views', score: 1000, verdict: 'failed', gates: ['x'] }),
+      ],
+      '',
+    );
+    const appHeader = Array.from(container.querySelectorAll('.queue-table__sort')).find((b) =>
+      b.textContent?.startsWith('app'),
+    ) as HTMLButtonElement | undefined;
+    expect(appHeader).toBeDefined();
+    act(() => appHeader!.click());
+    const apps = Array.from(container.querySelectorAll('.queue-row__app')).map((c) => c.textContent);
+    expect(apps).toEqual(['alpha', 'zeta']);
   });
 
   // App/framework and flow are separate COLUMNS — a repo recording several

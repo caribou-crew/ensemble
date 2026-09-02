@@ -160,7 +160,13 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
-	opts.AssertRequests = *assertRequests
+	// Observe requests ALWAYS, not only under --assert-requests: the
+	// observed hops are what we persist as the run's wire.jsonl below, which
+	// is what lets a shots-less mobile flow (Android RN/native card screens
+	// are FLAG_SECURE, so no screenshots exist) still sync as a real,
+	// wire-comparable run. AssertRequests only adds the request-diff REPORT
+	// when the flag is set; observation itself is cheap.
+	opts.AssertRequests = true
 	bundle, err := replay.LoadBundle(r.Dir, cfg.Dir, opts.Rules)
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
@@ -260,6 +266,23 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		unused = append(unused, rl.srv.UnusedExchanges()...)
 	}
 
+	// Persist the observed wire as the run's wire.jsonl, so a replay is a
+	// real, syncable run even when no shots exist — the case for Android
+	// RN/native card flows, whose PCI views are FLAG_SECURE and cannot be
+	// screenshotted. retrace sync then treats such a run as wire-comparable
+	// against the committed reference, instead of finding nothing to ingest.
+	// Best-effort: a write failure must not fail the replay itself (the
+	// in-memory verdict is authoritative), but it is named on stderr.
+	var observed []trace.Hop
+	for _, rl := range replayLns {
+		observed = append(observed, rl.srv.ObservedHops()...)
+	}
+	if len(observed) > 0 {
+		if werr := writeObservedWire(p.WirePath, observed); werr != nil {
+			fmt.Fprintf(stderr, "retrace: replay: could not write %s (%v) — the run will not sync as wire-comparable\n", p.WirePath, werr)
+		}
+	}
+
 	// --assert-requests: compute BEFORE the report is built, so its
 	// findings can ride in the same document, but it never changes what a
 	// plain `retrace replay` reports — Extra/RequestDiff stay nil (omitted
@@ -352,6 +375,26 @@ func requireLoopback(addr string) error {
 	}
 	if !loopback {
 		return fmt.Errorf("--listen %s is not a loopback address — a replay server answers with recorded traffic, which carries whatever the bundle recorded (tokens, cookies, personal data), so it binds 127.0.0.1 only; reach it from another host with an SSH tunnel (`ssh -L 9000:127.0.0.1:9000 host`) or a port-forward, not by widening the bind", addr)
+	}
+	return nil
+}
+
+// writeObservedWire writes the hops a replay actually observed to the run's
+// wire.jsonl, in the same NDJSON-of-trace.Hop format a recording produces.
+// The hops come from the replay bundle, already redacted at record time, so
+// they pass through unchanged. This is what makes a shots-less replay
+// (FLAG_SECURE mobile card flows) sync as a real, wire-comparable run.
+func writeObservedWire(path string, hops []trace.Hop) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := trace.NewWriter(f)
+	for _, h := range hops {
+		if err := w.Write(h); err != nil {
+			return err
+		}
 	}
 	return nil
 }

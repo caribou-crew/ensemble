@@ -17,6 +17,7 @@ import type {
   QueueResponse,
   RunsResponse,
   SyncCandidatesResponse,
+  SyncConfigResponse,
   SyncResult,
   SyncSelection,
 } from './retraceTypes';
@@ -124,6 +125,11 @@ export interface RetraceClient {
   videoUrl(app: string, flow: string, name: string): string;
   reportUrl(app: string, flow: string): string;
   evidence(app: string, flow: string): Promise<Evidence>;
+  /** The server's configured sync defaults (repo.yaml's `repo:` + `sync:`),
+   * so the panel can prefill the repo instead of asking. Empty repo means no
+   * configured default. Only the standalone `retrace serve` populates it;
+   * ensemble-ui gets an empty object (its repos come from ensemble.yaml). */
+  syncConfig(): Promise<SyncConfigResponse>;
   /** `repo` is required against retrace-ui's basePath ("/api") — retrace.yaml
    * carries no sync default. It's meaningless (and ignored) against
    * ensemble's basePath ("/api/retrace"), whose sync routes read repo(s)
@@ -207,6 +213,9 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
     },
     evidence(app, flow) {
       return request<Evidence>(`${basePath}/evidence/${seg(app)}/${seg(flow)}${withInstance('')}`);
+    },
+    syncConfig() {
+      return request<SyncConfigResponse>(`${basePath}/sync/config${withInstance('')}`);
     },
     syncCandidates(repo, filters = {}) {
       const params = new URLSearchParams({ ...(repo ? { repo } : {}), ...compact(filters) });

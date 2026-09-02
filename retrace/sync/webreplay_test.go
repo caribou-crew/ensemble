@@ -70,6 +70,53 @@ func itoa(n int64) string {
 	return string(buf[i:])
 }
 
+func TestWireOnlyReplayBundleIsMergedAsARealRun(t *testing.T) {
+	// The FLAG_SECURE mobile case: an Android RN/native card flow whose PCI
+	// views cannot be screenshotted, so the replay bundle has wire.jsonl but
+	// NO shots/. It must still sync as a real, wire-comparable run.
+	fakeGH(t)
+	now := time.Date(2026, 9, 1, 23, 45, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 7, "workflowName": "E2E Android", "headSha": "abc1234", "headBranch": "main", "event": "push", "url": "https://github.com/org/repo/actions/runs/7", "createdAt": "2026-09-01T22:00:00Z", "status": "completed"}]`)
+	root := t.TempDir()
+	t.Setenv("GH_FAKE_DOWNLOAD_SRC", root)
+	runDir := filepath.Join(root, "7", "uxt-rn-android", "card-views", "20260901T221845Z-abc1234")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A wire.jsonl with one hop — no shots dir at all.
+	if err := os.WriteFile(filepath.Join(runDir, "wire.jsonl"),
+		[]byte(`{"schema":"ensemble/1","seq":1,"to":"edge","method":"GET","path":"/api/v1/cards/x/showpan","status":200}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stageActor(t, 7, "octocat")
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 1 || res.Synced[0] != "uxt-rn-android/card-views/20260901T221845Z-abc1234" {
+		t.Fatalf("Synced = %v, want the wire-only run", res.Synced)
+	}
+	dest := filepath.Join(runs.RunsRoot(cwd), "uxt-rn-android", "card-views", "20260901T221845Z-abc1234")
+	m, err := runs.ReadManifest(filepath.Join(dest, "manifest.json"))
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if !m.Wire.Recorded {
+		t.Error("Wire.Recorded = false, want true — the run carries a wire plane")
+	}
+	if len(m.Checkpoints) != 0 {
+		t.Errorf("Checkpoints = %+v, want none (shots are FLAG_SECURE-blocked)", m.Checkpoints)
+	}
+	if m.Capture.Status != trace.VerdictOK {
+		t.Errorf("Capture.Status = %q, want ok — a wire-only run is diffable", m.Capture.Status)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "wire.jsonl")); err != nil {
+		t.Errorf("wire.jsonl did not travel with the synced run: %v", err)
+	}
+}
+
 func TestWebReplayBundleIsMergedAsPixelOnlyRun(t *testing.T) {
 	fakeGH(t)
 	now := time.Date(2026, 8, 28, 23, 45, 0, 0, time.UTC)
@@ -222,15 +269,25 @@ func TestZeroShotReplayIsQuarantinedNotOk(t *testing.T) {
 	}
 }
 
-func TestAssessPixelOnly(t *testing.T) {
-	if got := assessPixelOnly(0); got.Status != trace.VerdictFailed {
-		t.Errorf("0 shots: Status = %q, want %q", got.Status, trace.VerdictFailed)
+func TestAssessReplay(t *testing.T) {
+	// Neither shots nor wire → fail closed (nothing to diff).
+	if got := assessReplay(0, false); got.Status != trace.VerdictFailed {
+		t.Errorf("no shots/no wire: Status = %q, want %q", got.Status, trace.VerdictFailed)
 	}
-	got := assessPixelOnly(3)
+	// Shots only (browser/Playwright) → ok.
+	if got := assessReplay(3, false); got.Status != trace.VerdictOK || got.Summary == "" {
+		t.Errorf("3 shots: got %+v, want ok with summary", got)
+	}
+	// Wire only (FLAG_SECURE mobile) → ok, judged on the wire plane.
+	got := assessReplay(0, true)
 	if got.Status != trace.VerdictOK {
-		t.Errorf("3 shots: Status = %q, want %q", got.Status, trace.VerdictOK)
+		t.Errorf("wire-only: Status = %q, want %q", got.Status, trace.VerdictOK)
 	}
 	if got.Summary == "" {
-		t.Error("3 shots: Summary is empty")
+		t.Error("wire-only: Summary is empty")
+	}
+	// Both → ok.
+	if got := assessReplay(5, true); got.Status != trace.VerdictOK {
+		t.Errorf("shots+wire: Status = %q, want %q", got.Status, trace.VerdictOK)
 	}
 }

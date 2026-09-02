@@ -137,6 +137,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdCheck(args[1:], stdout, stderr)
 	case "sync":
 		return cmdSync(args[1:], stdout, stderr)
+	case "status":
+		return cmdStatus(args[1:], stdout, stderr)
 	default:
 		return fail(stderr, "unknown command %q\n\n%s", args[0], usage)
 	}

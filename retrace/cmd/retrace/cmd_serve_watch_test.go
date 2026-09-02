@@ -239,7 +239,7 @@ func TestServeWatchSyncsEachRootWithItsOwnAppsOnly(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("staging download fixture: %v", err)
 		}
-		manifest := fmt.Sprintf(`{"app":%q,"flow":%q}`, entry.app, entry.flow)
+		manifest := fmt.Sprintf(`{"schema":"retrace/1","app":%q,"flow":%q,"runId":"20260827T090000Z-aaa1111","mode":"standalone","capture":{"status":"ok","summary":"ok"},"wire":{"recorded":true},"groups":[]}`, entry.app, entry.flow)
 		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o644); err != nil {
 			t.Fatalf("writing fixture manifest.json: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestServeWatchSurvivesASyncFailureAndRecoversOnALaterTick(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatalf("staging download fixture: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{"app":"app-web","flow":"login"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "manifest.json"), []byte(`{"schema":"retrace/1","app":"app-web","flow":"login","runId":"20260827T090000Z-aaa1111","mode":"standalone","capture":{"status":"ok","summary":"ok"},"wire":{"recorded":true},"groups":[]}`), 0o644); err != nil {
 		t.Fatalf("writing fixture manifest.json: %v", err)
 	}
 	t.Setenv("GH_FAKE_DOWNLOAD_SRC", downloadRoot)

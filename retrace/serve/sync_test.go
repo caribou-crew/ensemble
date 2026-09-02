@@ -85,7 +85,15 @@ func stageDownload(t *testing.T, databaseID int64, app, flow, runID string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("staging download fixture: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"app":"`+app+`","flow":"`+flow+`"}`), 0o644); err != nil {
+	// A real retrace manifest, not a bare {app,flow} stub: sync ingest now
+	// requires runs.ReadManifest to parse it (the guard that keeps Maestro
+	// artifact-manifests out), so a stub would be skipped as non-retrace.
+	m := runs.Manifest{
+		App: app, Flow: flow, RunID: runID, Mode: runs.ModeStandalone,
+		Capture: runs.CaptureTrust{Status: "ok", Summary: "capture looks complete"},
+		Wire:    runs.Counts{Recorded: true},
+	}
+	if err := runs.WriteManifest(runs.Paths{RunDir: dir, ManifestPath: filepath.Join(dir, "manifest.json")}, &m); err != nil {
 		t.Fatalf("writing fixture manifest.json: %v", err)
 	}
 }

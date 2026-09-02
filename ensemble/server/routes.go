@@ -119,6 +119,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/retrace/instances", s.handleRetraceInstances)
 	mux.HandleFunc("GET /api/retrace/queue", s.handleRetraceQueue)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}", s.handleRetraceItem)
+	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs", s.handleRetraceRuns)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceItemAtRun)
 	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/{side}/{name}", s.handleRetraceShot)
 	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleRetraceShotAtRun)

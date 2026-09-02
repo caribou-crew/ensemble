@@ -576,7 +576,6 @@ export default function App() {
               selected={highlightKey}
               showPassing={showPassing}
               onShowPassingChange={setShowPassing}
-              onSelect={(next) => setHighlightKey(keyOf(next))}
               onOpen={openSurface}
             />
           </>

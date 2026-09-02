@@ -109,6 +109,24 @@
   color: var(--text-tertiary);
 }
 
+/* The compact reason cell. Truncates to one line so a not-compared/failed
+   row stays a single table row; the full text is the cell's title= tooltip
+   and the expand-on-select detail region below. max-width forces the
+   ellipsis (a table cell will otherwise grow to fit its content). */
+.queue-row__detail {
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  max-width: 28rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-row__gatecount {
+  color: var(--text-quaternary, var(--text-tertiary));
+  opacity: 0.75;
+}
+
 .queue-row__when {
   font-family: var(--font-mono);
   white-space: nowrap;
@@ -183,5 +201,22 @@
 
 .queue-empty__setup code {
   font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.queue-table__sort {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.queue-table__sort:hover {
+  color: var(--text-primary);
+}
+.queue-table__sort--active {
   color: var(--text-primary);
 }

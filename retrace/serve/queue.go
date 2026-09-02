@@ -252,10 +252,14 @@ func BuildQueue(d Deps) ([]Item, error) {
 // retrace app, as opposed to a raw artifact tree a workflow merged in
 // (loose screenshots/logs keyed by run timestamp, not by app). The
 // distinction is concrete: a real app has either a committed reference
-// bundle for some flow, or at least one run carrying a retrace
-// manifest.json. A merged artifact tree has neither — its "flows" are
-// timestamp dirs with no manifest — so every row it could produce is a
-// quarantined "no reference" non-finding. Filtering here (rather than at
+// bundle for some flow, or at least one run whose manifest.json parses as a
+// retrace manifest (runs.ReadManifest — schema "retrace/1"). A merged
+// artifact tree has neither: a Maestro debug bundle carries its own
+// manifest.json (schema maestro-schemas/artifact-manifest), which os.Stat
+// cannot tell from a retrace one but ReadManifest rejects — so testing for
+// mere presence admitted `tests/<timestamp>/<flow>` Maestro dumps as apps
+// and buried the queue in quarantined "no reference" rows. Every row such a
+// tree could produce is a non-finding. Filtering here (rather than at
 // ingest time) keeps a stale artifact dir already on disk from polluting
 // the queue too, and applies equally to the single-root and repo.yaml
 // multi-root paths since both run through BuildQueue.
@@ -275,8 +279,8 @@ func appIsReal(d Deps, root, app string, flows []string) bool {
 			if err != nil {
 				continue
 			}
-			if _, err := os.Stat(p.ManifestPath); err == nil {
-				return true // a run with a retrace manifest exists
+			if _, err := runs.ReadManifest(p.ManifestPath); err == nil {
+				return true // a run with a real retrace manifest exists
 			}
 		}
 	}
@@ -570,5 +574,9 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 	return diff.Build(diff.BuildInput{
 		App: app, Flow: flow, A: a, B: b, Cfg: cfg, Options: opts,
 		WantImages: true, OutDir: outDir,
+		// Honor the project's geometry policy: "wire-only" lets a run whose
+		// device size differs from the reference still produce a wire verdict
+		// instead of quarantining (see config.GeometryMismatch).
+		GeometryMismatchWireOnly: cfg != nil && cfg.GeometryMismatch == "wire-only",
 	})
 }

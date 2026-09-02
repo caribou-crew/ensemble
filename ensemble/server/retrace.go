@@ -173,6 +173,20 @@ func (s *server) handleRetraceItemAtRun(w http.ResponseWriter, r *http.Request) 
 	serve.WriteItemAtRun(w, d, app, flow, r.PathValue("runId"))
 }
 
+// handleRetraceRuns is the per-flow RUNS LIST (every run of a surface,
+// newest first) — the drill-down the queue row opens. Its absence is why
+// clicking a flow in ensemble-ui showed "no runs" even for a flow whose
+// runs exist on disk: with no route, the path fell through to the SPA
+// fallback and the UI read HTML where it expected a runs array. Mirrors
+// retrace/serve's own GET /queue/{app}/{flow}/runs.
+func (s *server) handleRetraceRuns(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.retraceFlowFrom(w, r)
+	if !ok {
+		return
+	}
+	serve.WriteRuns(w, d, app, flow)
+}
+
 func (s *server) handleRetraceShot(w http.ResponseWriter, r *http.Request) {
 	d, app, flow, ok := s.retraceFlowFrom(w, r)
 	if !ok {

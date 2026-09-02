@@ -121,7 +121,16 @@ func stageDownload(t *testing.T, databaseID int64, app, flow, runID string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("staging download fixture: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"app":"`+app+`","flow":"`+flow+`"}`), 0o644); err != nil {
+	// Write a REAL retrace manifest (stamped schema + capture status), not a
+	// bare {app,flow} stub: sync ingest now requires runs.ReadManifest to
+	// parse it, so a stub would (correctly) be skipped as a non-retrace
+	// manifest — the same guard that keeps a Maestro artifact-manifest out.
+	m := runs.Manifest{
+		App: app, Flow: flow, RunID: runID, Mode: runs.ModeStandalone,
+		Capture: runs.CaptureTrust{Status: "ok", Summary: "capture looks complete"},
+		Wire:    runs.Counts{Recorded: true},
+	}
+	if err := runs.WriteManifest(runs.Paths{RunDir: dir, ManifestPath: filepath.Join(dir, "manifest.json")}, &m); err != nil {
 		t.Fatalf("writing fixture manifest.json: %v", err)
 	}
 }
@@ -209,6 +218,46 @@ func TestReSyncingIsIdempotent(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatal("second sync modified an already-synced run's manifest.json")
+	}
+}
+
+func TestMaestroArtifactDumpIsSkippedNotSyncedAsTestsApp(t *testing.T) {
+	// The long-term guard: a mobile E2E artifact that includes Maestro's
+	// ~/.maestro/tests/ tree carries a manifest.json at
+	// tests/<timestamp>/<cell>/manifest.json whose schema is Maestro's, not
+	// retrace's. Before the ingest guard, syncOneRun derived app=tests,
+	// flow=<timestamp> from its path and created a junk row. Now
+	// runs.ReadManifest rejects the schema and the dump is skipped.
+	fakeGH(t)
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	writeRunListJSON(t, `[{"databaseId": 42, "workflowName": "E2E Android", "headSha": "abc1234", "url": "https://github.com/org/repo/actions/runs/42", "createdAt": "2026-09-01T10:00:00Z", "status": "completed"}]`)
+
+	root := t.TempDir()
+	t.Setenv("GH_FAKE_DOWNLOAD_SRC", root)
+	// tests/<timestamp>/<cell>/manifest.json with the Maestro schema.
+	dir := filepath.Join(root, "42", "tests", "2026-09-01_205134", "card-views-retrace-android")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("staging maestro fixture: %v", err)
+	}
+	maestro := `{"$schema":"https://storage.googleapis.com/maestro-schemas/artifact-manifest/v1.schema.json","entries":[{"kind":"MAESTRO_LOG","relativePath":"logs/maestro.log"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(maestro), 0o644); err != nil {
+		t.Fatalf("writing maestro manifest: %v", err)
+	}
+
+	cwd := t.TempDir()
+	res, err := Run(Options{Cwd: cwd, From: "github", Repo: "org/repo", Now: fixedNow(t, now)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Synced) != 0 {
+		t.Fatalf("Synced = %v, want none — a Maestro dump is not a retrace run", res.Synced)
+	}
+	// No `tests` app on disk.
+	if _, statErr := os.Stat(filepath.Join(runs.RunsRoot(cwd), "tests")); statErr == nil {
+		t.Fatal("a `tests` app directory was created from a Maestro artifact dump")
+	}
+	if len(res.Skipped) == 0 {
+		t.Fatal("the Maestro manifest was neither synced nor skipped — it should be skipped with a reason")
 	}
 }
 

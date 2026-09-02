@@ -1226,3 +1226,43 @@ func TestBuildQueueSkipsADirectoryWithNoManifestAndNoReference(t *testing.T) {
 		t.Fatalf("the surviving item is %s/%s, want web/login", items[0].App, items[0].Flow)
 	}
 }
+
+// TestBuildQueueSkipsAMaestroArtifactManifest pins the tightened appIsReal:
+// presence of a file named manifest.json is not enough — a Maestro debug
+// bundle carries its own manifest.json (schema maestro-schemas/
+// artifact-manifest) that os.Stat cannot tell from a retrace one. Testing
+// only for presence admitted `retrace sync`'d `tests/<timestamp>/<flow>`
+// Maestro dumps as apps and buried the queue in quarantined "no reference"
+// rows. A dir is a real app only if a manifest.json parses as a retrace
+// manifest (runs.ReadManifest — schema "retrace/1").
+func TestBuildQueueSkipsAMaestroArtifactManifest(t *testing.T) {
+	cwd := t.TempDir()
+	recordRun(t, cwd, "web", "login", runA, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+	acceptRef(t, cwd, "web", "login", runA)
+	recordRun(t, cwd, "web", "login", runB, map[string][]byte{"login": shotPNG(t, white)},
+		[]trace.Hop{hop(1, "GET", "/login", 200, `{"ok":true}`)})
+
+	// A synced Maestro artifact tree: app "tests", timestamp-keyed "flow",
+	// with a manifest.json that is Maestro's artifact-manifest schema — not
+	// retrace's. This is the exact shape that polluted the dashboard.
+	maestroFlow := filepath.Join(runs.RunsRoot(cwd), "tests", "2026-09-01_185100", "card-views-retrace-native-ios")
+	if err := os.MkdirAll(maestroFlow, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	maestroManifest := `{"$schema":"https://storage.googleapis.com/maestro-schemas/artifact-manifest/v1.schema.json","entries":[{"kind":"MAESTRO_LOG","relativePath":"logs/maestro.log"}]}`
+	if err := os.WriteFile(filepath.Join(maestroFlow, "manifest.json"), []byte(maestroManifest), 0o644); err != nil {
+		t.Fatalf("writing maestro manifest: %v", err)
+	}
+
+	items, err := BuildQueue(deps(t, cwd))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (the maestro artifact dir must be filtered out): %+v", len(items), items)
+	}
+	if items[0].App != "web" || items[0].Flow != "login" {
+		t.Fatalf("the surviving item is %s/%s, want web/login", items[0].App, items[0].Flow)
+	}
+}

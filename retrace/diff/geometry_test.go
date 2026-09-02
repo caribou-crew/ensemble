@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -148,6 +149,37 @@ func TestAGeometryRefusalQuarantinesTheWholeComparison(t *testing.T) {
 	}
 	if len(s.Checkpoints) != 0 || len(s.Wire.Paired) != 0 {
 		t.Errorf("a refused comparison computed a plane: checkpoints=%d paired=%d", len(s.Checkpoints), len(s.Wire.Paired))
+	}
+}
+
+func TestGeometryMismatchWireOnlyDowngradesToAWireVerdict(t *testing.T) {
+	// The opt-in for "the device sizes differ between environments but the
+	// client-side wire is what the flow asserts" (e.g. a CI emulator vs a
+	// local one). Geometry mismatch no longer quarantines the whole run: the
+	// pixel plane is skipped (a cross-screen % is meaningless), a note
+	// records why, and the wire plane still produces a real verdict.
+	cfg := baseConfig(t)
+	aRef := sideAt(screen(1206, 2622), "cart")
+	bRef := sideAt(screen(1178, 2556), "cart")
+	aRef.Dir, bRef.Dir = t.TempDir(), t.TempDir()
+	// Identical wire on both sides — the flow's real assertion, which should
+	// pass across the geometry difference.
+	writeWireFile(t, aRef.Dir, []trace.Hop{hop(1, "GET", "/cart", 200, "", `{"ok":true}`)})
+	writeWireFile(t, bRef.Dir, []trace.Hop{hop(1, "GET", "/cart", 200, "", `{"ok":true}`)})
+
+	s := mustBuild(t, BuildInput{App: "app", Flow: "flow", A: aRef, B: bRef, Cfg: cfg, GeometryMismatchWireOnly: true, AllowDegraded: true})
+
+	if s.Verdict == "quarantined" {
+		t.Fatalf("verdict = quarantined, want a real wire verdict — the opt-in should downgrade, not refuse")
+	}
+	if s.GeometryNote == "" {
+		t.Error("GeometryNote is empty — the skipped pixel plane must be explained")
+	}
+	if len(s.Checkpoints) != 0 {
+		t.Errorf("pixel plane was computed across a geometry mismatch: %d checkpoints", len(s.Checkpoints))
+	}
+	if len(s.Wire.Paired) != 1 {
+		t.Fatalf("wire was not compared: paired=%d, want 1 — the whole point of the opt-in", len(s.Wire.Paired))
 	}
 }
 

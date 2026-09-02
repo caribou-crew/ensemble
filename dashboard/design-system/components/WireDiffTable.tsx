@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Badge } from '../primitives';
-import type { Entry, FieldDiff, HeaderDiff, Section } from '../diffTypes';
+import type { Entry, FieldDiff, HeaderDiff, Section, StatusFinding } from '../diffTypes';
 import './WireDiffTable.css';
 
 export const entryKey = (e: Entry) => `${e.method} ${e.normalizedPath} #${e.seqB || e.seqA}`;
@@ -256,11 +256,13 @@ function EntryRows({
   selectedField,
   onSelectField,
   onReveal,
+  unexpectedStatus,
 }: {
   entry: Entry;
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
   onReveal?: RevealFields;
+  unexpectedStatus?: StatusFinding;
 }) {
   const entryK = entryKey(entry);
   const [open, setOpen] = useState(false);
@@ -298,6 +300,13 @@ function EntryRows({
               {entry.statusChange.a} → {entry.statusChange.b}
             </Badge>
           ) : null}
+          {/* A status the diff flagged as unexpected (e.g. 502) — badged even
+              when both sides carry it, so statusChange is absent (identical)
+              yet the call is not fine. Without this the 5xx shows only in a
+              detached gate line and the row reads as "identical". */}
+          {unexpectedStatus ? (
+            <Badge tone="red">status {unexpectedStatus.status}</Badge>
+          ) : null}
           {/* A bare "moved" badge names the fact but not the story: a
               reviewer scanning the candidate column for where a call ended
               up has to go find its row. The concrete posA→posB mapping is
@@ -310,7 +319,7 @@ function EntryRows({
           {entry.truncated ? <Badge tone="amber">truncated</Badge> : null}
         </td>
         <td className="wire-row__counts">
-          {changes > 0 ? `${changes} changed` : 'identical'}
+          {changes > 0 ? `${changes} changed` : unexpectedStatus ? `identical shape · status ${unexpectedStatus.status}` : 'identical'}
           {entry.bodyTolerated.length > 0 ? ` · ${entry.bodyTolerated.length} tolerated` : ''}
         </td>
       </tr>
@@ -412,11 +421,17 @@ export default function WireDiffTable({
   selectedField,
   onSelectField,
   onReveal,
+  unexpectedStatuses = [],
 }: {
   sections: Section[];
   selectedField: string | null;
   onSelectField: (entry: Entry, field: FieldDiff) => void;
   onReveal?: RevealFields;
+  // Unexpected HTTP statuses (e.g. a 502) the diff flagged. Threaded in so a
+  // bad status is badged ON its wire row — a call that 5xx'd on BOTH sides
+  // diffs as `identical` (no statusChange), so without this the only sign of
+  // the 502 is a disconnected gate line and the row reads as fine.
+  unexpectedStatuses?: StatusFinding[];
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -476,6 +491,9 @@ export default function WireDiffTable({
                       selectedField={selectedField}
                       onSelectField={onSelectField}
                       onReveal={onReveal}
+                      unexpectedStatus={unexpectedStatuses.find(
+                        (u) => u.seq === entry.seqB || u.seq === entry.seqA,
+                      )}
                     />
                   ))}
               </table>

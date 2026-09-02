@@ -153,6 +153,41 @@ export default function RetraceSyncPanel({
     };
   }, [requireRepo, client]);
 
+  // When requireRepo is true, the server may STILL have a configured default
+  // (retrace.repo.yaml's `repo:`, exposed at /sync/config). Prefill the repo
+  // box from it and load candidates immediately, so the reviewer doesn't
+  // retype what the config already declares. If no default is configured
+  // (empty repo), the manual form stays exactly as before.
+  useEffect(() => {
+    if (!requireRepo) return;
+    let cancelled = false;
+    client
+      .syncConfig()
+      .then((cfg) => {
+        if (cancelled || !cfg.repo) return;
+        setRepo(cfg.repo);
+        setLoading(true);
+        return client
+          .syncCandidates(cfg.repo)
+          .then((res) => {
+            if (!cancelled) setCandidates(res.candidates);
+          })
+          .catch((err) => {
+            if (!cancelled) setError(retraceMessageOf(err, 'could not list candidates'));
+          })
+          .finally(() => {
+            if (!cancelled) setLoading(false);
+          });
+      })
+      .catch(() => {
+        // No /sync/config (older server) or a transient error — fall back to
+        // the manual repo form, unchanged.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requireRepo, client]);
+
   const load = async (e: FormEvent) => {
     e.preventDefault();
     const trimmed = repo.trim();
@@ -243,6 +278,50 @@ export default function RetraceSyncPanel({
     }
   };
 
+  // One-click "pull latest": sync the most recent runs across the
+  // configured workflows in a single call (no per-CI-run drilling), then
+  // refresh the queue underneath — which shows one row per app/flow at its
+  // latest verdict. This is the common reviewer action ("just get me the
+  // latest of everything"), distinct from openCandidate's pull-one-run path.
+  const [pullingLatest, setPullingLatest] = useState(false);
+  const pullLatest = async () => {
+    setError(null);
+    setPullingLatest(true);
+    try {
+      // Selecting the freshest candidate per workflow name gives "latest of
+      // each lane" without asking the reviewer to pick runs. hasArtifacts
+      // rows only — a run with nothing to pull can't contribute a lane.
+      const byWorkflow = new Map<string, SyncCandidate>();
+      for (const c of list) {
+        if (!c.hasArtifacts) continue;
+        const prev = byWorkflow.get(c.workflowName);
+        if (!prev || c.createdAt > prev.createdAt) byWorkflow.set(c.workflowName, c);
+      }
+      const picks = [...byWorkflow.values()];
+      if (picks.length === 0) {
+        setError('no runs with artifacts to pull — try refreshing');
+        return;
+      }
+      const res = await client.sync(
+        requireRepo ? repo.trim() : undefined,
+        picks.map((c) => ({ repo: c.repo, databaseId: c.databaseId })),
+      );
+      onSynced();
+      if (res.synced.length === 0) {
+        const reason = res.skipped[0]?.reason;
+        setError(reason ? `pull latest produced no new flows: ${reason}` : 'pull latest produced no new flows — everything may already be synced');
+        return;
+      }
+      // Land back on the refreshed queue rather than a chooser: the queue is
+      // the "latest per lane" view the reviewer wanted.
+      onClose();
+    } catch (err) {
+      setError(retraceMessageOf(err, 'pull latest failed'));
+    } finally {
+      setPullingLatest(false);
+    }
+  };
+
   if (detail) {
     return (
       <div className="picker sync-panel" role="dialog" aria-label="sync from GitHub Actions">
@@ -320,6 +399,15 @@ export default function RetraceSyncPanel({
               />
               <button type="button" onClick={() => void refresh()} disabled={refreshing || loading}>
                 {refreshing ? <Spinner /> : '↻ refresh'}
+              </button>
+              <button
+                type="button"
+                className="sync-panel__pull-latest"
+                onClick={() => void pullLatest()}
+                disabled={pullingLatest || refreshing || loading}
+                title="Pull the latest run of each workflow and refresh the queue"
+              >
+                {pullingLatest ? <Spinner /> : '⇩ pull latest'}
               </button>
             </div>
             <ul className="sync-panel__candidates">

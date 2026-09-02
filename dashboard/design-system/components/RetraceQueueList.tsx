@@ -1,5 +1,5 @@
+import { useState } from 'react';
 import { Badge } from '../primitives';
-import CaptureBanner from './CaptureBanner';
 import type { EmptyReason, Item } from '../retraceTypes';
 import { verdictTone, verdictLabel } from '../retraceTone';
 import './RetraceQueueList.css';
@@ -24,6 +24,37 @@ export function partitionQueue(items: Item[]): { needsAttention: Item[]; passing
 }
 
 /**
+ * One row per app/flow, latest run wins.
+ *
+ * A dashboard that aggregates more than one runs root (retrace serve across
+ * two .retrace-ref trees, or ensemble's multi-instance config) can emit the
+ * same app/flow twice with different verdicts — the same key rendered as two
+ * rows, which is both a duplicate-key React warning and exactly the "why is
+ * uxt-rn-ios here twice" confusion. Collapse to the newest run per key
+ * (runId is a sortable UTC timestamp prefix), so the queue is what a reviewer
+ * expects: each flow once, showing its latest verdict. The dropped older
+ * duplicate is still reachable in that flow's runs list on the detail page.
+ */
+export function dedupeByKey(items: Item[]): Item[] {
+  const latest = new Map<string, Item>();
+  for (const it of items) {
+    const k = keyOf(it);
+    const prev = latest.get(k);
+    if (!prev || (it.runId ?? '') > (prev.runId ?? '')) latest.set(k, it);
+  }
+  // Preserve the server's worst-first order using the first appearance of each key.
+  const seen = new Set<string>();
+  const out: Item[] = [];
+  for (const it of items) {
+    const k = keyOf(it);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(latest.get(k)!);
+  }
+  return out;
+}
+
+/**
  * The rows actually ON SCREEN, in the order they are rendered.
  *
  * This is what `j`/`k` walk. Walking the raw server list instead put the
@@ -33,8 +64,12 @@ export function partitionQueue(items: Item[]): { needsAttention: Item[]; passing
  * mutation) fired against it.
  */
 export function visibleRows(items: Item[], showPassing: boolean): Item[] {
-  const { needsAttention, passing } = partitionQueue(items);
-  return showPassing ? [...needsAttention, ...passing] : needsAttention;
+  // All rows are on screen now (needs-attention then passing, one table), so
+  // keyboard nav walks the full deduped set. showPassing is retained in the
+  // signature for call-site compatibility but no longer hides rows.
+  void showPassing;
+  const { needsAttention, passing } = partitionQueue(dedupeByKey(items));
+  return [...needsAttention, ...passing];
 }
 
 // The one-line counts strip. Only planes with something to say appear: "0
@@ -64,89 +99,168 @@ function countsStrip(item: Item): string {
  * android x3, say) needs the HOST/FRAMEWORK to scan as its own column, not
  * be read out of a slash-joined string one row at a time.
  */
+// The short, scannable reason for the DETAILS column — a code, not a
+// sentence, so every row stays one line and the column reads like a column.
+// The full sentence is the row's title= tooltip and the expand-on-select
+// region. Codes are derived from the capture TrustReason.Code the server
+// already sends (capture-not-assessed, capture-broken, …) and the shape of
+// the gate text, never re-litigated here.
+function reasonCode(item: Item): string {
+  if (item.verdict === 'pass') return '';
+  if (item.verdict === 'changed') return ''; // the counts strip already says what changed
+  // quarantined / failed: prefer the machine-readable capture reason code.
+  const codes = [item.capture.a, item.capture.b]
+    .filter((t) => t && t.status !== 'ok')
+    .flatMap((t) => (t.reasons ?? []).map((r) => r.code))
+    .filter(Boolean);
+  if (codes.includes('capture-broken')) return 'capture broken';
+  if (codes.includes('capture-not-assessed')) {
+    // Distinguish the two shapes that land here, from the gate sentence.
+    const g = item.gates[0] ?? '';
+    if (/comparing a run against itself|run under review/.test(g)) return 'self-reference only';
+    return 'no reference yet';
+  }
+  return codes[0] ?? 'not compared';
+}
+
+// The full reason for the tooltip and the expand-on-select region — the
+// first gate carries BuildQueue's whole sentence; fall back to the capture
+// summary.
+function detailSummary(item: Item): string {
+  if (item.gates.length > 0) return item.gates[0];
+  const sides = [item.capture.a, item.capture.b].filter((t) => t && t.status !== 'ok');
+  if (sides.length > 0) return sides[0].summary;
+  return '';
+}
+
 function Row({
   item,
   selected,
-  onSelect,
   onOpen,
 }: {
   item: Item;
   selected: boolean;
-  onSelect: () => void;
   onOpen: () => void;
 }) {
   const strip = countsStrip(item);
+  const code = reasonCode(item);
+  const detail = detailSummary(item);
+  const gateCount = item.gates.length;
+  // One line per app/flow, and clicking it opens the detail page — the row
+  // is a link, not an accordion. The full reason lives on the detail screen
+  // (images / video / wire); here it is a short code plus a title= tooltip.
   return (
-    <>
-      <tr
-        className={`queue-row${selected ? ' queue-row--selected' : ''}`}
-        aria-current={selected ? 'true' : undefined}
-        role="button"
-        tabIndex={0}
-        onClick={onSelect}
-        onDoubleClick={onOpen}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onSelect();
-          }
-        }}
-      >
-        <td className="queue-row__app">{item.app}</td>
-        <td className="queue-row__flowname">{item.flow}</td>
-        <td className="queue-row__verdict">
-          <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
-        </td>
-        <td className="queue-row__gates">
-          {item.gates.length} {item.gates.length === 1 ? 'gate' : 'gates'}
-        </td>
-        <td className="queue-row__counts">{strip}</td>
-      </tr>
-      <tr className="queue-row__detail-row">
-        <td colSpan={5}>
-          <CaptureBanner capture={item.capture} />
-          {item.gates.length > 0 ? (
-            <ul className="queue-row__reasons">
-              {item.gates.map((g) => (
-                <li key={g}>{g}</li>
-              ))}
-            </ul>
-          ) : null}
-        </td>
-      </tr>
-    </>
+    <tr
+      className={`queue-row${selected ? ' queue-row--selected' : ''}`}
+      aria-current={selected ? 'true' : undefined}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <td className="queue-row__app">{item.app}</td>
+      <td className="queue-row__flowname">{item.flow}</td>
+      <td className="queue-row__verdict">
+        <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
+      </td>
+      <td className="queue-row__counts">{strip}</td>
+      <td className="queue-row__detail" title={detail}>
+        {code}
+        {code && gateCount > 0 ? (
+          <span className="queue-row__gatecount"> · {gateCount} gate{gateCount === 1 ? '' : 's'}</span>
+        ) : null}
+      </td>
+    </tr>
   );
+}
+
+type SortKey = 'default' | 'app' | 'flow' | 'verdict';
+type SortDir = 'asc' | 'desc';
+
+// Verdict severity for sorting — worst first when descending, matching the
+// server's own worst-first intent. `score` already ranks failed/quarantined
+// above changed above pass, so it is the honest sort key for the verdict
+// column rather than an alphabetical one (which would put "changed" before
+// "pass" before "failed", meaningless to a reviewer).
+function verdictRank(item: Item): number {
+  return item.score;
+}
+
+function sortItemsBy(items: Item[], key: SortKey, dir: SortDir): Item[] {
+  if (key === 'default') return items; // server worst-first order, untouched
+  const sign = dir === 'asc' ? 1 : -1;
+  const cmp = (a: Item, b: Item): number => {
+    switch (key) {
+      case 'app':
+        return a.app.localeCompare(b.app) || a.flow.localeCompare(b.flow);
+      case 'flow':
+        return a.flow.localeCompare(b.flow) || a.app.localeCompare(b.app);
+      case 'verdict':
+        return verdictRank(a) - verdictRank(b) || keyOf(a).localeCompare(keyOf(b));
+    }
+  };
+  return [...items].sort((a, b) => sign * cmp(a, b));
 }
 
 function QueueTable({
   items,
   selected,
-  onSelect,
   onOpen,
 }: {
   items: Item[];
   selected: string | null;
-  onSelect: (item: Item) => void;
   onOpen: (item: Item) => void;
 }) {
+  // Default = the server's worst-first order. Clicking a header sorts by that
+  // column; clicking the active header again flips direction; a third click
+  // returns to the default order (so a reviewer is never stuck in a sort).
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'default', dir: 'asc' });
+  const cycle = (key: SortKey) =>
+    setSort((s) =>
+      s.key !== key ? { key, dir: 'asc' } : s.dir === 'asc' ? { key, dir: 'desc' } : { key: 'default', dir: 'asc' },
+    );
+  const arrow = (key: SortKey) => (sort.key !== key ? '' : sort.dir === 'asc' ? ' ▲' : ' ▼');
+  const rows = sortItemsBy(items, sort.key, sort.dir);
+
+  const Th = ({ col, label, sortKey }: { col: string; label: string; sortKey?: SortKey }) =>
+    sortKey ? (
+      <th className={col}>
+        <button
+          type="button"
+          className={`queue-table__sort${sort.key === sortKey ? ' queue-table__sort--active' : ''}`}
+          onClick={() => cycle(sortKey)}
+          aria-label={`sort by ${label}`}
+        >
+          {label}
+          {arrow(sortKey)}
+        </button>
+      </th>
+    ) : (
+      <th className={col}>{label}</th>
+    );
+
   return (
     <table className="queue-table">
       <thead>
         <tr>
-          <th className="queue-table__col-app">app</th>
-          <th className="queue-table__col-flow">flow</th>
-          <th className="queue-table__col-verdict">verdict</th>
-          <th className="queue-table__col-gates">gates</th>
-          <th className="queue-table__col-counts">what changed</th>
+          <Th col="queue-table__col-app" label="app" sortKey="app" />
+          <Th col="queue-table__col-flow" label="flow" sortKey="flow" />
+          <Th col="queue-table__col-verdict" label="verdict" sortKey="verdict" />
+          <Th col="queue-table__col-counts" label="what changed" />
+          <Th col="queue-table__col-detail" label="details" />
         </tr>
       </thead>
       <tbody>
-        {items.map((item) => (
+        {rows.map((item) => (
           <Row
             key={keyOf(item)}
             item={item}
             selected={selected === keyOf(item)}
-            onSelect={() => onSelect(item)}
             onOpen={() => onOpen(item)}
           />
         ))}
@@ -222,7 +336,6 @@ export default function RetraceQueueList({
   selected,
   showPassing,
   onShowPassingChange,
-  onSelect,
   onOpen,
 }: {
   items: Item[];
@@ -232,36 +345,27 @@ export default function RetraceQueueList({
   // because keyboard navigation has to know which rows are on screen.
   showPassing: boolean;
   onShowPassingChange: (next: boolean) => void;
-  onSelect: (item: Item) => void;
   onOpen: (item: Item) => void;
 }) {
-  const { needsAttention, passing } = partitionQueue(items);
+  // Retained for call-site compatibility; the queue no longer collapses
+  // passing rows, so these no longer gate anything.
+  void showPassing;
+  void onShowPassingChange;
+  const { needsAttention, passing } = partitionQueue(dedupeByKey(items));
 
   if (items.length === 0) {
     return <Empty reason={empty} />;
   }
 
+  // One list, worst first: needs-attention rows on top, passing rows right
+  // below in the same table — no collapse. Seeing the passing rows IS the
+  // point (they prove the flow is green), so they are not hidden behind a
+  // disclosure. verticalTone on each row's badge still distinguishes them.
+  const rows = [...needsAttention, ...passing];
+
   return (
     <div className="queue">
-      {needsAttention.length === 0 ? <Empty reason={empty} /> : null}
-      {needsAttention.length > 0 ? (
-        <QueueTable items={needsAttention} selected={selected} onSelect={onSelect} onOpen={onOpen} />
-      ) : null}
-      {passing.length > 0 ? (
-        <div className="queue__passing">
-          <button
-            type="button"
-            className="queue__disclosure"
-            aria-expanded={showPassing}
-            onClick={() => onShowPassingChange(!showPassing)}
-          >
-            {showPassing ? '▾' : '▸'} {passing.length} passing
-          </button>
-          {showPassing ? (
-            <QueueTable items={passing} selected={selected} onSelect={onSelect} onOpen={onOpen} />
-          ) : null}
-        </div>
-      ) : null}
+      <QueueTable items={rows} selected={selected} onOpen={onOpen} />
     </div>
   );
 }
