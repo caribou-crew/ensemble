@@ -95,6 +95,15 @@ export interface ServiceState {
   /** Resolved working directory this service's process (or docker build context) runs
    * from. Empty for a service that has never started. */
   dir?: string;
+  /** `build:`/`run:` commands verbatim — often the only place a wrapper script's real
+   * target (a checkout elsewhere, a different repo) is named, since dir itself is
+   * commonly just the script's own directory. Empty for a service that has never
+   * started, or that has no `build:` step. */
+  build?: string;
+  run?: string;
+  /** Env actually used to launch this service's current placement, resolved through
+   * variant selection. Does not include the OS environment the process also inherits. */
+  env?: Record<string, string>;
   /** How far this service's checkout is behind its own remote branch and behind the
    * configured default branch — absent unless `freshness:` is configured AND the service is
    * eligible (its own git repo, distinct from the one containing ensemble.yaml). Populated by

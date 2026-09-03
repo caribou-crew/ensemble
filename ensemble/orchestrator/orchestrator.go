@@ -78,6 +78,19 @@ type ServiceState struct {
 	// Config.Dir (see resolveDir), not the raw yaml value. Set when the
 	// service (re)starts; empty for a service that has never started.
 	Dir string `json:"dir,omitempty"`
+	// Build/Run are config.Service's `build:`/`run:` commands verbatim —
+	// often the only place a wrapper script's real target (a checkout
+	// elsewhere, a different repo) is named, since Dir itself is commonly
+	// just the script's own directory. Set alongside Dir; empty for a
+	// service that has never started, or that has no `build:` step.
+	Build string `json:"build,omitempty"`
+	Run   string `json:"run,omitempty"`
+	// Env is the env map actually used to launch this service's current
+	// placement — config.Service.Env (native) or
+	// config.DockerPlacement.Env (docker), resolved through variant
+	// selection. Does not include the OS environment the process also
+	// inherits (see envSlice). Set alongside Dir.
+	Env map[string]string `json:"env,omitempty"`
 	// Version fingerprints what this service is running, taken once when it
 	// became healthy — not at read time. A fingerprint describes the process
 	// actually serving traffic, and a source directory edited after start no
@@ -1113,6 +1126,13 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		s.Variant = variant
 		s.Kind = svc.Kind
 		s.Dir = resolveDir(o.cfg.Dir, svc.Dir)
+		s.Build = svc.Build
+		s.Run = svc.Run
+		if placement == "docker" && svc.Docker != nil {
+			s.Env = svc.Docker.Env
+		} else {
+			s.Env = svc.Env
+		}
 		s.PID = 0 // stale from a previous placement until the native branch below sets it
 		// A fresh start owes nothing to how the previous run ended.
 		s.ExitCode = nil

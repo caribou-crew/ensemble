@@ -88,13 +88,25 @@ function statusTooltip(s: ServiceState): string {
 }
 
 /** Hover card for a service's name: everything identifying, in one place, including the
-    working directory — otherwise not shown anywhere in this table. */
+    working directory, build/run commands, and resolved env — otherwise not shown
+    anywhere in this table. Build/run matter beyond the obvious "how does this start":
+    most services are `tools/services/scripts/*.sh` wrappers, and dir alone only names
+    where the wrapper lives — the actual checkout it cds into (a different repo, in the
+    common case) is named nowhere else in the dashboard. */
 function nameTooltip(s: ServiceState): string {
+  const envLines = s.env
+    ? Object.entries(s.env)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `  ${k}=${v}`)
+    : [];
   return [
     s.variant ? `variant: ${s.variant}` : null,
     `kind: ${s.kind || 'service'}`,
     `placement: ${s.placement}`,
     s.dir ? `dir: ${s.dir}` : null,
+    s.build ? `build: ${s.build}` : null,
+    s.run ? `run: ${s.run}` : null,
+    envLines.length ? ['env:', ...envLines].join('\n') : null,
   ]
     .filter((line): line is string => line !== null)
     .join('\n');
