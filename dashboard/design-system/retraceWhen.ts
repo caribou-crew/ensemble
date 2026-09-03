@@ -50,3 +50,46 @@ export function formatWhen(iso: string | undefined, runId: string): string {
     timeStyle: 'short',
   });
 }
+
+/**
+ * A human-readable local date+time for when a run was SYNCED (`Source.syncedAt`)
+ * — distinct from formatWhen (when the run itself happened) and with no
+ * runId-stamp fallback: a runId's timestamp is when the flow ran, which is
+ * not an honest stand-in for when `retrace sync` pulled it, so an absent or
+ * unparseable syncedAt renders as "—" rather than a plausible-looking wrong
+ * date. There is no case where iso is present but not a real timestamp
+ * (source.json is only ever written by `retrace sync`, which always stamps
+ * a real time.Now()) — the zero-cutoff guard is defensive, matching
+ * formatWhen's own stance on a Go zero-time value that could reach here.
+ */
+export function formatSyncedAt(iso: string | undefined): string {
+  const ms = realMs(iso);
+  if (Number.isNaN(ms)) return '—';
+  return new Date(ms).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+/** Default staleness threshold for isStale: a day. Not configurable —
+ * see isStale's own doc comment for why this is a fixed constant rather
+ * than a setting. */
+export const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a run is old enough that a reviewer should be told, right on the
+ * queue row, rather than discovering it only after opening the flow. Reuses
+ * whenMs's own iso-then-runId-stamp resolution so "stale" always agrees
+ * with what formatWhen renders — a row's own displayed timestamp and its
+ * staleness badge computed from two different sources would be confusing
+ * in exactly the case a reviewer is most likely to double-check it.
+ *
+ * `now` is a parameter (defaulting to the real clock) so a test can pin it
+ * without stubbing Date.now globally, the same shape whenMs's own callers
+ * already use for sinceParam's tests.
+ */
+export function isStale(iso: string | undefined, runId: string, now: number = Date.now(), thresholdMs: number = STALE_THRESHOLD_MS): boolean {
+  const ms = whenMs(iso, runId);
+  if (Number.isNaN(ms)) return false;
+  return now - ms > thresholdMs;
+}

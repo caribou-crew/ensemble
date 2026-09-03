@@ -56,7 +56,7 @@
   width: 5rem;
 }
 .queue-table__col-source {
-  width: 7rem;
+  width: 16rem;
 }
 .queue-table__col-when {
   width: 13rem;
@@ -130,6 +130,71 @@
 .queue-row__when {
   font-family: var(--font-mono);
   white-space: nowrap;
+}
+
+.queue-row__stale {
+  margin-left: 0.4rem;
+}
+
+.queue-row__source {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+}
+
+.queue-row__sha {
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.queue-row__workflow-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.queue-row__workflow-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.queue-row__synced-at {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.queue-row__sync-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.queue-row__sync-check-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  line-height: 1;
+}
+.queue-row__sync-check-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+.queue-row__sync-check-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.queue-row__sync-status {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.queue-row__sync-status--pulled {
+  color: var(--status-green);
+}
+.queue-row__sync-status--error {
+  color: var(--status-red);
 }
 
 .queue-row__open {

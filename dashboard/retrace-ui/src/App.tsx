@@ -10,6 +10,7 @@ import RetraceItemScreen from '@ensemble/design-system/components/RetraceItemScr
 import RetraceSyncPanel from '@ensemble/design-system/components/RetraceSyncPanel';
 import { createRetraceClient, type QueueFilter } from '@ensemble/design-system/retraceClient';
 import { formatWhen } from '@ensemble/design-system/retraceWhen';
+import { pickLatestPerWorkflow } from '@ensemble/design-system/syncCandidates';
 import {
   api,
   leafFieldName,
@@ -285,6 +286,12 @@ export default function App() {
   const [secretGate, setSecretGate] = useState<SecretFinding[] | null>(null);
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const [showSyncPanel, setShowSyncPanel] = useState(false);
+  // "check all" — the header's one-click counterpart to opening the sync
+  // panel and pressing "pull latest" by hand. Its own busy flag, not
+  // `busy`: that one gates the filesystem-mutating verbs (accept/reject/
+  // rule/redact) and disables keyboard shortcuts while they run — a network
+  // pull is a different kind of wait and must not swallow j/k navigation.
+  const [checkingAll, setCheckingAll] = useState(false);
   // The queue-level keyboard highlight: which row j/k has landed on. A
   // HIGHLIGHT, not navigation — arrows move it, enter opens it.
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
@@ -371,6 +378,51 @@ export default function App() {
       setActionError(messageOf(err, `${label} failed`));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // The header's one-click "check all": pull the latest run of every
+  // configured CI workflow without making the reviewer open the sync panel
+  // and press "pull latest" by hand. Shares pickLatestPerWorkflow with that
+  // panel's own button (RetraceSyncPanel.tsx) so "latest" means the same
+  // thing from either entry point.
+  //
+  // retrace.repo.yaml's `repo:` default is what makes one click possible at
+  // all — with no default configured there is no repo to list candidates
+  // for, and nothing here can ask the reviewer to type one, so it falls
+  // back to the exact same sync panel a manual "sync" click opens.
+  const checkAll = async () => {
+    if (checkingAll) return;
+    setCheckingAll(true);
+    setActionError(null);
+    setNotice(null);
+    try {
+      const cfg = await client.syncConfig();
+      if (!cfg.repo) {
+        setShowSyncPanel(true);
+        return;
+      }
+      const candidates = await client.syncCandidates(cfg.repo);
+      const picks = pickLatestPerWorkflow(candidates.candidates);
+      if (picks.length === 0) {
+        setNotice('check all found no CI runs with artifacts to pull');
+        return;
+      }
+      const res = await client.sync(
+        cfg.repo,
+        picks.map((c) => ({ repo: c.repo, databaseId: c.databaseId })),
+      );
+      if (res.synced.length === 0) {
+        const reason = res.skipped[0]?.reason;
+        setNotice(reason ? `check all found nothing new: ${reason}` : 'check all found nothing new — already up to date');
+        return;
+      }
+      setVersion((v) => v + 1);
+      setNotice(`check all pulled ${res.synced.length} new run${res.synced.length === 1 ? '' : 's'}`);
+    } catch (err) {
+      setActionError(messageOf(err, 'check all failed'));
+    } finally {
+      setCheckingAll(false);
     }
   };
 
@@ -511,6 +563,15 @@ export default function App() {
           onSurface={backToSurface}
         />
         {busy ? <Spinner /> : null}
+        <button
+          type="button"
+          className="app-header__check-all"
+          onClick={() => void checkAll()}
+          disabled={checkingAll}
+          title="Pull the latest run of every configured CI workflow and refresh the queue"
+        >
+          {checkingAll ? <Spinner /> : '⇩ check all'}
+        </button>
         <button type="button" className="app-header__sync" onClick={() => setShowSyncPanel(true)}>
           sync
         </button>
@@ -567,7 +628,9 @@ export default function App() {
               selected={highlightKey}
               showPassing={showPassing}
               onShowPassingChange={setShowPassing}
+              client={client}
               onOpen={openSurface}
+              onSynced={() => setVersion((v) => v + 1)}
             />
           </>
         ) : null}

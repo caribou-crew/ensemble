@@ -1,8 +1,62 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { EmptyReason, Item } from '../retraceTypes';
+import type { RetraceClient } from '../retraceClient';
+import type { EmptyReason, Item, SyncCandidate, SyncResult } from '../retraceTypes';
 import QueueList from './RetraceQueueList';
+
+const source = (over: Partial<NonNullable<Item['source']>> = {}): NonNullable<Item['source']> => ({
+  schema: 'retrace-source/1',
+  kind: 'ci',
+  workflow: 'e2e',
+  runUrl: 'https://github.com/acme/widgets/actions/runs/555',
+  sha: 'deadbeefcafefeed0123456789abcdef01234567',
+  headBranch: 'main',
+  event: 'push',
+  actor: 'octocat',
+  syncedAt: '2026-08-21T10:12:00Z',
+  ...over,
+});
+
+const syncCandidate = (over: Partial<SyncCandidate> = {}): SyncCandidate => ({
+  repo: 'acme/widgets',
+  databaseId: 999,
+  workflowName: 'e2e',
+  headBranch: 'main',
+  actor: 'octocat',
+  event: 'push',
+  status: 'completed',
+  conclusion: 'success',
+  createdAt: '2026-08-22T00:00:00Z',
+  url: 'https://github.com/acme/widgets/actions/runs/999',
+  hasArtifacts: true,
+  localRuns: [],
+  ...over,
+});
+
+/** Every RetraceClient method throws unless a test overrides it — a row that
+ * reaches for a method it shouldn't (any of them, for a local row with no
+ * sync button at all) fails loudly instead of silently doing nothing. */
+function fakeClient(over: Partial<RetraceClient> = {}): RetraceClient {
+  const unused = (name: string) => () => {
+    throw new Error(`not used by this test: ${name}`);
+  };
+  return {
+    queue: unused('queue'),
+    item: unused('item'),
+    itemAtRun: unused('itemAtRun'),
+    runs: unused('runs'),
+    shotUrl: unused('shotUrl'),
+    shotUrlAtRun: unused('shotUrlAtRun'),
+    videoUrl: unused('videoUrl'),
+    reportUrl: unused('reportUrl'),
+    evidence: unused('evidence'),
+    syncConfig: unused('syncConfig'),
+    syncCandidates: unused('syncCandidates'),
+    sync: unused('sync'),
+    ...over,
+  } as RetraceClient;
+}
 
 const item = (over: Partial<Item> = {}): Item => ({
   app: 'web',
@@ -46,16 +100,28 @@ afterEach(() => {
   container.remove();
 });
 
-function renderQueue(items: Item[], empty: EmptyReason, showPassing = false, selected: string | null = null) {
+function renderQueue(
+  items: Item[],
+  empty: EmptyReason,
+  opts: {
+    showPassing?: boolean;
+    selected?: string | null;
+    client?: RetraceClient;
+    onOpen?: () => void;
+    onSynced?: () => void;
+  } = {},
+) {
   act(() =>
     root.render(
       <QueueList
         items={items}
         empty={empty}
-        selected={selected}
-        showPassing={showPassing}
+        selected={opts.selected ?? null}
+        showPassing={opts.showPassing ?? false}
         onShowPassingChange={() => {}}
-        onOpen={() => {}}
+        client={opts.client ?? fakeClient()}
+        onOpen={opts.onOpen ?? (() => {})}
+        onSynced={opts.onSynced ?? (() => {})}
       />,
     ),
   );
@@ -280,5 +346,134 @@ describe('QueueList rows', () => {
       'newer',
       'older',
     ]);
+  });
+
+  it('marks a row stale once its last-ran time is over a day old, and not before', () => {
+    const now = Date.parse('2026-08-22T10:00:00Z');
+    const real = Date.now;
+    Date.now = () => now;
+    try {
+      renderQueue(
+        [
+          item({ app: 'web', flow: 'fresh', when: '2026-08-21T11:00:00Z' }), // 23h old
+          item({ app: 'web', flow: 'old', when: '2026-08-21T09:00:00Z' }), // 25h old
+        ],
+        '',
+      );
+      const rows = Array.from(container.querySelectorAll('tbody tr'));
+      const fresh = rows.find((r) => r.querySelector('.queue-row__flowname')?.textContent === 'fresh');
+      const old = rows.find((r) => r.querySelector('.queue-row__flowname')?.textContent === 'old');
+      expect(fresh?.querySelector('.queue-row__stale')).toBeNull();
+      expect(old?.querySelector('.queue-row__stale')?.textContent).toBe('stale');
+    } finally {
+      Date.now = real;
+    }
+  });
+
+  it('shows a locally recorded row as "local" with no CI details and no sync button', () => {
+    renderQueue([item({ source: undefined })], '');
+    const cell = container.querySelector('.queue-row__source');
+    expect(cell?.textContent).toContain('local');
+    expect(cell?.querySelector('.queue-row__sync-check-btn')).toBeNull();
+    expect(cell?.querySelector('.queue-row__workflow-link')).toBeNull();
+  });
+
+  it('shows a CI-sourced row\'s workflow, short SHA, and synced time, right on the queue row', () => {
+    renderQueue([item({ source: source() })], '');
+    const cell = container.querySelector('.queue-row__source');
+    expect(cell?.textContent).toContain('e2e');
+    expect(cell?.textContent).toContain(source().sha.slice(0, 7));
+    expect(cell?.textContent).not.toContain(source().sha); // the FULL sha is not dumped inline
+    expect(cell?.textContent).toContain('synced');
+    expect(cell?.textContent).toContain('2026');
+  });
+
+  it('links the workflow name to the actual GitHub Actions run, opening in a new tab', () => {
+    renderQueue([item({ source: source({ runUrl: 'https://github.com/acme/widgets/actions/runs/777' }) })], '');
+    const link = container.querySelector('.queue-row__workflow-link') as HTMLAnchorElement | null;
+    expect(link?.getAttribute('href')).toBe('https://github.com/acme/widgets/actions/runs/777');
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('does not open the flow when the GitHub Actions link is clicked — the row is a separate click target', () => {
+    let opened = false;
+    renderQueue([item({ source: source() })], '', { onOpen: () => { opened = true; } });
+    const link = container.querySelector('.queue-row__workflow-link') as HTMLAnchorElement | null;
+    // jsdom/happy-dom follows the navigation itself when a real click fires on
+    // an <a>; what this test pins is that OUR onClick handler stops the click
+    // from bubbling to the row, not that navigation is prevented.
+    act(() => link!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+    expect(opened).toBe(false);
+  });
+
+  describe('the inline "check for a newer run" button', () => {
+    it('is absent for a locally recorded row — there is no workflow to check', () => {
+      renderQueue([item({ source: undefined })], '');
+      expect(container.querySelector('.queue-row__sync-check-btn')).toBeNull();
+    });
+
+    it('reports "up to date" when the freshest CI candidate is already pulled for this flow', async () => {
+      const candidates: SyncCandidate[] = [
+        syncCandidate({ databaseId: 1000, localRuns: ['web/checkout/20260822T000000Z-ccc'] }),
+      ];
+      const client = fakeClient({
+        syncCandidates: async (repo, filters) => {
+          expect(repo).toBe('acme/widgets');
+          expect(filters?.workflows).toEqual(['e2e']);
+          return { candidates };
+        },
+      });
+      let synced = false;
+      renderQueue([item({ source: source() })], '', { client, onSynced: () => { synced = true; } });
+      const btn = container.querySelector('.queue-row__sync-check-btn') as HTMLButtonElement;
+      await act(async () => {
+        btn.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.queue-row__sync-status')?.textContent).toBe('up to date');
+      expect(synced).toBe(false); // nothing changed, so the queue is not refetched
+    });
+
+    it('pulls a newer run when one exists, then tells the caller to refresh the queue', async () => {
+      const candidates: SyncCandidate[] = [syncCandidate({ databaseId: 1001, localRuns: [] })];
+      const result: SyncResult = { synced: ['web/checkout/20260822T010000Z-ddd'], skipped: [] };
+      let syncedWith: unknown = null;
+      const client = fakeClient({
+        syncCandidates: async () => ({ candidates }),
+        sync: async (repo, selections) => {
+          syncedWith = { repo, selections };
+          return result;
+        },
+      });
+      let synced = false;
+      renderQueue([item({ source: source() })], '', { client, onSynced: () => { synced = true; } });
+      const btn = container.querySelector('.queue-row__sync-check-btn') as HTMLButtonElement;
+      await act(async () => {
+        btn.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(syncedWith).toEqual({ repo: 'acme/widgets', selections: [{ repo: 'acme/widgets', databaseId: 1001 }] });
+      expect(container.querySelector('.queue-row__sync-status')?.textContent).toBe('pulled');
+      expect(synced).toBe(true); // the caller must refetch — this row's own data just moved
+    });
+
+    it('surfaces a failed check inline, on the row, rather than silently doing nothing', async () => {
+      const client = fakeClient({
+        syncCandidates: async () => {
+          throw new Error('GitHub says no');
+        },
+      });
+      renderQueue([item({ source: source() })], '', { client });
+      const btn = container.querySelector('.queue-row__sync-check-btn') as HTMLButtonElement;
+      await act(async () => {
+        btn.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.queue-row__sync-status--error')?.textContent).toBe('check failed');
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeCandidates, sinceParam } from './syncCandidates';
+import { mergeCandidates, pickLatestPerWorkflow, repoFromRunUrl, sinceParam } from './syncCandidates';
 
 interface C {
   databaseId: number;
@@ -41,5 +41,54 @@ describe('mergeCandidates', () => {
     const merged = mergeCandidates(existing, fresh);
     expect(merged).toHaveLength(1);
     expect(merged[0]).toBe(fresh[0]);
+  });
+});
+
+interface W {
+  databaseId: number;
+  createdAt: string;
+  workflowName: string;
+  hasArtifacts: boolean;
+}
+const w = (over: Partial<W> = {}): W => ({
+  databaseId: 1,
+  createdAt: '2026-08-28T20:00:00Z',
+  workflowName: 'e2e',
+  hasArtifacts: true,
+  ...over,
+});
+
+describe('pickLatestPerWorkflow', () => {
+  it('picks the freshest candidate per workflow name, one lane per workflow', () => {
+    const picks = pickLatestPerWorkflow([
+      w({ databaseId: 1, workflowName: 'e2e', createdAt: '2026-08-28T20:00:00Z' }),
+      w({ databaseId: 2, workflowName: 'e2e', createdAt: '2026-08-28T22:00:00Z' }), // newer, same lane
+      w({ databaseId: 3, workflowName: 'unit', createdAt: '2026-08-28T21:00:00Z' }),
+    ]);
+    expect(picks.map((c) => c.databaseId).sort()).toEqual([2, 3]);
+  });
+
+  it('skips a candidate with nothing to pull — it cannot contribute a lane', () => {
+    const picks = pickLatestPerWorkflow([w({ databaseId: 1, hasArtifacts: false })]);
+    expect(picks).toHaveLength(0);
+  });
+
+  it('returns nothing for an empty candidate list', () => {
+    expect(pickLatestPerWorkflow([])).toEqual([]);
+  });
+});
+
+describe('repoFromRunUrl', () => {
+  it('extracts owner/repo from a GitHub Actions run URL', () => {
+    expect(repoFromRunUrl('https://github.com/acme/widgets/actions/runs/12345')).toBe('acme/widgets');
+  });
+
+  it('extracts owner/repo even with a trailing /attempts/N', () => {
+    expect(repoFromRunUrl('https://github.com/acme/widgets/actions/runs/12345/attempts/2')).toBe('acme/widgets');
+  });
+
+  it('is null for anything that is not a GitHub Actions run URL — a defensive parse failure, not a path this app expects', () => {
+    expect(repoFromRunUrl('https://example.com/not-github')).toBeNull();
+    expect(repoFromRunUrl('')).toBeNull();
   });
 });

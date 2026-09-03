@@ -104,6 +104,29 @@ describe('instance scoping', () => {
   });
 });
 
+describe('syncCandidates', () => {
+  it('carries no workflows param when none are given', async () => {
+    const calls = captureFetch(fakeResponse({ candidates: [] }));
+    await client.syncCandidates('acme/widgets');
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.searchParams.has('workflows')).toBe(false);
+  });
+
+  it('joins the workflows filter as a comma-separated query param, matching the server\'s splitCSV', async () => {
+    const calls = captureFetch(fakeResponse({ candidates: [] }));
+    await client.syncCandidates('acme/widgets', { workflows: ['e2e', 'unit'] });
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.searchParams.get('workflows')).toBe('e2e,unit');
+  });
+
+  it('omits workflows for an empty array rather than sending an empty param', async () => {
+    const calls = captureFetch(fakeResponse({ candidates: [] }));
+    await client.syncCandidates('acme/widgets', { workflows: [] });
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.searchParams.has('workflows')).toBe(false);
+  });
+});
+
 describe('listRetraceInstances', () => {
   it('fetches {basePath}/instances', async () => {
     const calls = captureFetch(fakeResponse({ instances: [{ key: 'web', label: 'Web' }] }));

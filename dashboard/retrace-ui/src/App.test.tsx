@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { CaptureTrust, Counts, Item, Summary } from './api/types';
+import type { SyncCandidate, SyncConfigResponse, SyncResult } from '@ensemble/design-system/retraceTypes';
 
 // --- fixtures -----------------------------------------------------------
 
@@ -147,6 +148,13 @@ function stubServer(opts: {
   runs?: unknown[];
   evidence?: { videos: string[]; hasReport: boolean };
   posts?: Record<string, unknown>;
+  // The "check all" header button's surface. Undefined means "this test
+  // never exercises check all" — a request against any of these three
+  // routes without one configured is a fixture bug, not a real server
+  // response, so it 404s rather than silently answering { ok: true }.
+  syncConfig?: SyncConfigResponse;
+  syncCandidates?: SyncCandidate[];
+  syncResult?: SyncResult;
 } = {}) {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -159,6 +167,15 @@ function stubServer(opts: {
       let body: unknown = { ok: true };
       if (url === '/api/queue' || url.startsWith('/api/queue?')) {
         body = { items: opts.queue ?? QUEUE, empty: opts.empty ?? '' };
+      } else if (url === '/api/sync/config') {
+        if (!opts.syncConfig) return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', text: () => Promise.resolve('{}') });
+        body = opts.syncConfig;
+      } else if (url.startsWith('/api/sync/candidates')) {
+        if (!opts.syncCandidates) return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', text: () => Promise.resolve('{}') });
+        body = { candidates: opts.syncCandidates };
+      } else if (url === '/api/sync' && method === 'POST') {
+        if (!opts.syncResult) return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', text: () => Promise.resolve('{}') });
+        body = opts.syncResult;
       } else if (url.startsWith('/api/evidence/')) {
         body = opts.evidence ?? { videos: [], hasReport: false };
       } else if (method === 'GET' && /\/runs$/.test(url.split('?')[0])) {
@@ -350,6 +367,91 @@ describe('the keyboard dispatch', () => {
     });
     expect(container.querySelector('.item')).toBeNull();
     expect(container.querySelector('.queue')).not.toBeNull();
+  });
+});
+
+// --- the check-all header button -----------------------------------------
+
+async function clickCheckAll() {
+  const btn = document.querySelector('.app-header__check-all') as HTMLButtonElement;
+  await act(async () => {
+    btn.click();
+    // The handler awaits three fetches in sequence (config, candidates,
+    // sync) — one microtask flush per await is not enough to drain all
+    // three, so flush a few times rather than guessing the exact count.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+}
+
+describe('the check-all header button', () => {
+  it('opens the sync panel instead of guessing, when no repo default is configured', async () => {
+    stubServer({ syncConfig: { repo: '' } });
+    await mount();
+    expect(container.querySelector('[aria-label="sync from GitHub Actions"]')).toBeNull();
+    await clickCheckAll();
+    expect(container.querySelector('[aria-label="sync from GitHub Actions"]')).not.toBeNull();
+    expect(notice()).toBeNull();
+    expect(container.querySelector('.problem')).toBeNull();
+  });
+
+  it('pulls the latest run of every workflow in one click when a repo default IS configured', async () => {
+    const calls = stubServer({
+      syncConfig: { repo: 'acme/widgets' },
+      syncCandidates: [
+        {
+          repo: 'acme/widgets',
+          databaseId: 42,
+          workflowName: 'e2e',
+          headBranch: 'main',
+          actor: 'octocat',
+          event: 'push',
+          status: 'completed',
+          conclusion: 'success',
+          createdAt: '2026-08-22T00:00:00Z',
+          url: 'https://github.com/acme/widgets/actions/runs/42',
+          hasArtifacts: true,
+          localRuns: [],
+        },
+      ],
+      syncResult: { synced: ['web/checkout/20260822T000000Z-ccc'], skipped: [] },
+    });
+    await mount();
+    await clickCheckAll();
+
+    expect(container.querySelector('[aria-label="sync from GitHub Actions"]')).toBeNull();
+    expect(notice()).toMatch(/pulled 1 new run/);
+    // The POST body carries the freshest candidate's own identity, not a
+    // reviewer-typed one — this is the one-click path, nobody typed anything.
+    const post = calls.find((c) => c.url === '/api/sync' && c.method === 'POST');
+    expect(post).toBeDefined();
+    // And the queue was re-fetched, since check-all changed what's on disk.
+    expect(calls.filter((c) => c.url === '/api/queue' || c.url.startsWith('/api/queue?')).length).toBeGreaterThan(1);
+  });
+
+  it('says so, rather than nothing, when every workflow is already up to date', async () => {
+    stubServer({
+      syncConfig: { repo: 'acme/widgets' },
+      syncCandidates: [
+        {
+          repo: 'acme/widgets',
+          databaseId: 42,
+          workflowName: 'e2e',
+          headBranch: 'main',
+          actor: 'octocat',
+          event: 'push',
+          status: 'completed',
+          conclusion: 'success',
+          createdAt: '2026-08-22T00:00:00Z',
+          url: 'https://github.com/acme/widgets/actions/runs/42',
+          hasArtifacts: true,
+          localRuns: ['web/checkout/20260822T000000Z-ccc'],
+        },
+      ],
+      syncResult: { synced: [], skipped: [] },
+    });
+    await mount();
+    await clickCheckAll();
+    expect(notice()).toMatch(/already up to date/);
   });
 });
 

@@ -136,7 +136,7 @@ export interface RetraceClient {
    * from ensemble.yaml's own retrace: block server-side, so omit it there. */
   syncCandidates(
     repo?: string,
-    filters?: { branch?: string; actor?: string; event?: string; status?: string; since?: string },
+    filters?: { workflows?: string[]; branch?: string; actor?: string; event?: string; status?: string; since?: string },
   ): Promise<SyncCandidatesResponse>;
   sync(repo: string | undefined, selections: SyncSelection[]): Promise<SyncResult>;
 }
@@ -218,7 +218,12 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
       return request<SyncConfigResponse>(`${basePath}/sync/config${withInstance('')}`);
     },
     syncCandidates(repo, filters = {}) {
-      const params = new URLSearchParams({ ...(repo ? { repo } : {}), ...compact(filters) });
+      const { workflows, ...rest } = filters;
+      const params = new URLSearchParams({
+        ...(repo ? { repo } : {}),
+        ...(workflows && workflows.length > 0 ? { workflows: workflows.join(',') } : {}),
+        ...compact(rest),
+      });
       const qs = params.toString();
       return request<SyncCandidatesResponse>(`${basePath}/sync/candidates${withInstance(qs ? `?${qs}` : '')}`);
     },

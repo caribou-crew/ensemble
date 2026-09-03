@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Badge } from '../primitives';
+import { Badge, Spinner } from '../primitives';
+import { retraceMessageOf, type RetraceClient } from '../retraceClient';
 import type { EmptyReason, Item } from '../retraceTypes';
 import { verdictTone, verdictLabel } from '../retraceTone';
-import { formatWhen, whenMs } from '../retraceWhen';
+import { formatSyncedAt, formatWhen, isStale, whenMs } from '../retraceWhen';
+import { pickLatestPerWorkflow, repoFromRunUrl } from '../syncCandidates';
 import './RetraceQueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;
@@ -134,14 +136,109 @@ function detailSummary(item: Item): string {
   return '';
 }
 
+type CheckState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'up-to-date' }
+  | { phase: 'pulled' }
+  | { phase: 'error'; message: string };
+
+/**
+ * The inline "is there a newer run of THIS flow's own workflow" check — the
+ * queue's one-row counterpart to RetraceSyncPanel's "pull latest", scoped to
+ * one workflow instead of every configured one. Reads the repo straight off
+ * the row's own `source.runUrl` (see repoFromRunUrl's own doc comment for
+ * why that beats a server-configured default), so this works identically in
+ * retrace-ui and in a multi-repo ensemble aggregate with no extra plumbing.
+ *
+ * Renders nothing for a locally recorded row (`item.source` absent) — there
+ * is no workflow to check a local run against.
+ */
+function SyncCheckButton({
+  client,
+  item,
+  onSynced,
+}: {
+  client: RetraceClient;
+  item: Item;
+  onSynced: () => void;
+}) {
+  const [state, setState] = useState<CheckState>({ phase: 'idle' });
+  const source = item.source;
+  if (!source) return null;
+
+  const check = async () => {
+    setState({ phase: 'checking' });
+    const repo = repoFromRunUrl(source.runUrl);
+    if (!repo) {
+      setState({ phase: 'error', message: `could not tell which repo ${source.runUrl} belongs to` });
+      return;
+    }
+    try {
+      const res = await client.syncCandidates(repo, { workflows: [source.workflow], branch: source.headBranch });
+      const [freshest] = pickLatestPerWorkflow(res.candidates);
+      // No candidate at all, or the freshest one is already pulled for THIS
+      // flow — either way there is nothing new to fetch.
+      const alreadyPulled =
+        freshest && freshest.localRuns.some((p) => p.startsWith(`${item.app}/${item.flow}/`));
+      if (!freshest || alreadyPulled) {
+        setState({ phase: 'up-to-date' });
+        return;
+      }
+      const result = await client.sync(repo, [{ repo: freshest.repo, databaseId: freshest.databaseId }]);
+      if (result.synced.length === 0) {
+        setState({ phase: 'up-to-date' });
+        return;
+      }
+      setState({ phase: 'pulled' });
+      onSynced();
+    } catch (err) {
+      setState({ phase: 'error', message: retraceMessageOf(err, 'check failed') });
+    }
+  };
+
+  return (
+    <span className="queue-row__sync-check">
+      <button
+        type="button"
+        className="queue-row__sync-check-btn"
+        disabled={state.phase === 'checking'}
+        // The row itself is a click target that opens the flow — this button
+        // lives inside that row, so its click must never bubble into onOpen.
+        onClick={(e) => {
+          e.stopPropagation();
+          void check();
+        }}
+        title={`check ${source.workflow} for a newer run and pull it`}
+        aria-label={`check ${item.app}/${item.flow} for a newer run`}
+      >
+        {state.phase === 'checking' ? <Spinner /> : '↻'}
+      </button>
+      {state.phase === 'up-to-date' ? <span className="queue-row__sync-status">up to date</span> : null}
+      {state.phase === 'pulled' ? (
+        <span className="queue-row__sync-status queue-row__sync-status--pulled">pulled</span>
+      ) : null}
+      {state.phase === 'error' ? (
+        <span className="queue-row__sync-status queue-row__sync-status--error" title={state.message}>
+          check failed
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function Row({
   item,
   selected,
+  client,
   onOpen,
+  onSynced,
 }: {
   item: Item;
   selected: boolean;
+  client: RetraceClient;
   onOpen: () => void;
+  onSynced: () => void;
 }) {
   const strip = countsStrip(item);
   const code = reasonCode(item);
@@ -169,7 +266,38 @@ function Row({
       <td className="queue-row__verdict">
         <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
       </td>
-      <td className="queue-row__when">{formatWhen(item.when, item.runId)}</td>
+      <td className="queue-row__when">
+        {formatWhen(item.when, item.runId)}
+        {isStale(item.when, item.runId) ? (
+          <span className="queue-row__stale">
+            <Badge tone="amber">stale</Badge>
+          </span>
+        ) : null}
+      </td>
+      <td className="queue-row__source">
+        {item.source ? (
+          <>
+            <Badge tone="blue">CI</Badge>
+            <code className="queue-row__sha" title={item.source.sha}>
+              {item.source.sha.slice(0, 7)}
+            </code>
+            <a
+              className="queue-row__workflow-link"
+              href={item.source.runUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title={`open ${item.source.workflow} in GitHub Actions`}
+            >
+              {item.source.workflow} ↗
+            </a>
+            <span className="queue-row__synced-at">synced {formatSyncedAt(item.source.syncedAt)}</span>
+            <SyncCheckButton client={client} item={item} onSynced={onSynced} />
+          </>
+        ) : (
+          <Badge tone="neutral">local</Badge>
+        )}
+      </td>
       <td className="queue-row__counts">{strip}</td>
       <td className="queue-row__detail" title={detail}>
         {code}
@@ -214,11 +342,15 @@ function sortItemsBy(items: Item[], key: SortKey, dir: SortDir): Item[] {
 function QueueTable({
   items,
   selected,
+  client,
   onOpen,
+  onSynced,
 }: {
   items: Item[];
   selected: string | null;
+  client: RetraceClient;
   onOpen: (item: Item) => void;
+  onSynced: () => void;
 }) {
   // Default = the server's worst-first order. Clicking a header sorts by that
   // column; clicking the active header again flips direction; a third click
@@ -256,6 +388,7 @@ function QueueTable({
           <Th col="queue-table__col-flow" label="flow" sortKey="flow" />
           <Th col="queue-table__col-verdict" label="verdict" sortKey="verdict" />
           <Th col="queue-table__col-when" label="last ran" sortKey="when" />
+          <Th col="queue-table__col-source" label="source" />
           <Th col="queue-table__col-counts" label="what changed" />
           <Th col="queue-table__col-detail" label="details" />
         </tr>
@@ -266,7 +399,9 @@ function QueueTable({
             key={keyOf(item)}
             item={item}
             selected={selected === keyOf(item)}
+            client={client}
             onOpen={() => onOpen(item)}
+            onSynced={onSynced}
           />
         ))}
       </tbody>
@@ -341,7 +476,9 @@ export default function RetraceQueueList({
   selected,
   showPassing,
   onShowPassingChange,
+  client,
   onOpen,
+  onSynced,
 }: {
   items: Item[];
   empty: EmptyReason;
@@ -350,7 +487,12 @@ export default function RetraceQueueList({
   // because keyboard navigation has to know which rows are on screen.
   showPassing: boolean;
   onShowPassingChange: (next: boolean) => void;
+  client: RetraceClient;
   onOpen: (item: Item) => void;
+  // Called after a row's own inline sync check successfully pulls a newer
+  // run — the caller owns the queue's data (this component is handed items
+  // as a prop, not fetched here), so it is the one that must refetch.
+  onSynced: () => void;
 }) {
   // Retained for call-site compatibility; the queue no longer collapses
   // passing rows, so these no longer gate anything.
@@ -370,7 +512,7 @@ export default function RetraceQueueList({
 
   return (
     <div className="queue">
-      <QueueTable items={rows} selected={selected} onOpen={onOpen} />
+      <QueueTable items={rows} selected={selected} client={client} onOpen={onOpen} onSynced={onSynced} />
     </div>
   );
 }

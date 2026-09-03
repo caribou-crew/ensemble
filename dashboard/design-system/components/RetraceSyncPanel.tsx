@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Badge, Spinner } from '../primitives';
 import { useAsync } from '../useAsync';
-import { mergeCandidates, sinceParam } from '../syncCandidates';
+import { mergeCandidates, pickLatestPerWorkflow, sinceParam } from '../syncCandidates';
 import { retraceMessageOf, type RetraceClient } from '../retraceClient';
 import type { SyncCandidate } from '../retraceTypes';
 import RetraceItemScreen from './RetraceItemScreen';
@@ -289,15 +289,8 @@ export default function RetraceSyncPanel({
     setPullingLatest(true);
     try {
       // Selecting the freshest candidate per workflow name gives "latest of
-      // each lane" without asking the reviewer to pick runs. hasArtifacts
-      // rows only — a run with nothing to pull can't contribute a lane.
-      const byWorkflow = new Map<string, SyncCandidate>();
-      for (const c of list) {
-        if (!c.hasArtifacts) continue;
-        const prev = byWorkflow.get(c.workflowName);
-        if (!prev || c.createdAt > prev.createdAt) byWorkflow.set(c.workflowName, c);
-      }
-      const picks = [...byWorkflow.values()];
+      // each lane" without asking the reviewer to pick runs.
+      const picks = pickLatestPerWorkflow(list);
       if (picks.length === 0) {
         setError('no runs with artifacts to pull — try refreshing');
         return;

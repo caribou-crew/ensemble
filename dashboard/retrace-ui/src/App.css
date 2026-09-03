@@ -32,6 +32,21 @@ body {
   margin-bottom: 0;
 }
 
+.app-header__check-all {
+  background: none;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+.app-header__check-all:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .app-header__sync {
   margin-left: auto;
   background: none;

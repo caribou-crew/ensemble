@@ -15,6 +15,10 @@ interface HasCreatedAt {
 interface HasIdentity extends HasCreatedAt {
   databaseId: number;
 }
+interface HasWorkflow extends HasIdentity {
+  workflowName: string;
+  hasArtifacts: boolean;
+}
 
 /**
  * A `since` value for the NEXT candidates fetch that only asks for runs
@@ -52,4 +56,40 @@ export function mergeCandidates<T extends HasIdentity>(existing: readonly T[], f
   const byId = new Map(existing.map((c) => [c.databaseId, c]));
   for (const c of fresh) byId.set(c.databaseId, c);
   return Array.from(byId.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+/**
+ * "Latest of each lane": the freshest `hasArtifacts` candidate per workflow
+ * name. Shared by RetraceSyncPanel's one-click "pull latest" and the queue's
+ * own one-click "check all" header button — both want the exact same
+ * picture of "the newest run per workflow", and a second hand-rolled copy of
+ * this reduction is how the two buttons would quietly drift apart on what
+ * "latest" means. A run with nothing to pull can't contribute a lane, so
+ * `hasArtifacts` rows only.
+ */
+export function pickLatestPerWorkflow<T extends HasWorkflow>(candidates: readonly T[]): T[] {
+  const byWorkflow = new Map<string, T>();
+  for (const c of candidates) {
+    if (!c.hasArtifacts) continue;
+    const prev = byWorkflow.get(c.workflowName);
+    if (!prev || c.createdAt > prev.createdAt) byWorkflow.set(c.workflowName, c);
+  }
+  return [...byWorkflow.values()];
+}
+
+/**
+ * The repo a CI run's own web URL points at — `Source.runUrl` (the sidecar
+ * `retrace sync` stamps onto every pulled run) already names it, so a
+ * per-row "check for a newer run" never has to ask the reviewer or guess at
+ * a server-configured default: it reads the repo the row's OWN last sync
+ * actually came from. Correct even for a dashboard aggregating several
+ * repos (ensemble.yaml's multi-repo case), where a server-side default
+ * would be ambiguous. null for anything that isn't a
+ * `github.com/<owner>/<repo>/actions/runs/...` URL — a locally recorded
+ * run's Source is absent in the first place (see Source's own doc comment),
+ * so this is a defensive parse failure, not a path this app expects to hit.
+ */
+export function repoFromRunUrl(url: string): string | null {
+  const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\//.exec(url);
+  return m ? m[1] : null;
 }
