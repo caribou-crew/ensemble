@@ -96,7 +96,9 @@ describe('ServicesView: freshness', () => {
   });
 
   it('triggers POST /api/freshness/check and refreshes when "Check freshness" is clicked', async () => {
-    const checkSpy = vi.spyOn(api, 'freshnessCheck').mockResolvedValue(SERVICES);
+    const checkSpy = vi
+      .spyOn(api, 'freshnessCheck')
+      .mockResolvedValue({ services: SERVICES, configured: true });
     root = createRoot(container);
     await act(async () => {
       root.render(createElement(ServicesView));
@@ -108,5 +110,41 @@ describe('ServicesView: freshness', () => {
       button!.click();
     });
     expect(checkSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a results drawer explaining what the check did', async () => {
+    vi.spyOn(api, 'freshnessCheck').mockResolvedValue({ services: SERVICES, configured: true });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(ServicesView));
+    });
+
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Check freshness');
+    await act(async () => {
+      button!.click();
+    });
+
+    const body = container.querySelector('.freshness-drawer__body');
+    expect(body, 'expected a freshness results drawer').toBeTruthy();
+    expect(body!.textContent).toContain('Checked 3 eligible services');
+    expect(body!.textContent).toContain('unknown: FAILED');
+    expect(body!.textContent).toContain('1 service not eligible');
+    expect(body!.textContent).toContain('clean');
+  });
+
+  it('explains itself when freshness: is not configured at all', async () => {
+    vi.spyOn(api, 'freshnessCheck').mockResolvedValue({ services: SERVICES, configured: false });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(ServicesView));
+    });
+
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Check freshness');
+    await act(async () => {
+      button!.click();
+    });
+
+    const body = container.querySelector('.freshness-drawer__body');
+    expect(body!.textContent).toContain("isn't configured");
   });
 });

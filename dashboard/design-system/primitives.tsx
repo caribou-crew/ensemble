@@ -51,17 +51,21 @@ export function Spinner() {
  * always-rendered-but-hidden — otherwise its text silently joins the trigger's textContent
  * (breaking anything that reads cell text, sighted copy-paste included).
  *
- * Horizontally centered on the trigger by default, but a trigger near the left/right edge of
- * the viewport (the leftmost column of a wide table, say) would center a bubble half off
- * screen — clamped back on screen via `--tooltip-shift`, measured post-mount and applied
- * before paint (useLayoutEffect) so there's no visible jump. */
+ * `side="top"`/`"bottom"` center the bubble horizontally on the trigger; `"right"` anchors it
+ * to the trigger's right instead, for a trigger that's always hard against the left edge of
+ * its container (a table's leftmost column, say) — centering would routinely push half the
+ * bubble off screen there, and `--tooltip-shift` alone doesn't fix a bubble whose natural
+ * width already exceeds the space to the left of the trigger. `--tooltip-shift` still applies
+ * on top of whichever side, clamping the rare remaining overflow (e.g. `right` near the RIGHT
+ * edge) — measured post-mount and applied before paint (useLayoutEffect) so there's no visible
+ * jump. */
 export function Tooltip({
   content,
   side = 'top',
   children,
 }: {
   content: ReactNode;
-  side?: 'top' | 'bottom';
+  side?: 'top' | 'bottom' | 'right';
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);

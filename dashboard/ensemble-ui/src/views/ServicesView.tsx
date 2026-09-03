@@ -9,6 +9,7 @@ import { Badge, Spinner, Tooltip } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
 import type {
+  FreshnessCheckResult,
   FreshnessState,
   GatewayStatus,
   ServiceState,
@@ -16,6 +17,7 @@ import type {
   TopologyNode,
   WiringWarning,
 } from '../api/types';
+import FreshnessDrawer from '../components/FreshnessDrawer';
 import InlineError from '../components/InlineError';
 import LogsDrawer from '../components/LogsDrawer';
 import { usePendingRefresh } from '../usePendingRefresh';
@@ -383,7 +385,7 @@ function ServiceRow({
   return (
     <tr className="services-table__row">
       <td className="services-table__name">
-        <Tooltip content={nameTooltip(state)}>
+        <Tooltip content={nameTooltip(state)} side="right">
           <span className="services-table__name-label">{state.name}</span>
         </Tooltip>
         {warnings.length > 0 && (
@@ -572,13 +574,15 @@ export default function ServicesView() {
   const [sort, setSort] = useState<SortState | null>(null);
   const [checkingFreshness, setCheckingFreshness] = useState(false);
   const [freshnessError, setFreshnessError] = useState<string | null>(null);
+  const [freshnessResult, setFreshnessResult] = useState<FreshnessCheckResult | null>(null);
   const [logsFor, setLogsFor] = useState<string | null>(null);
 
   async function handleFreshnessCheck() {
     setCheckingFreshness(true);
     setFreshnessError(null);
     try {
-      await api.freshnessCheck();
+      const result = await api.freshnessCheck();
+      setFreshnessResult(result);
       await refresh();
     } catch (err) {
       setFreshnessError(messageOf(err, 'freshness check failed'));
@@ -659,32 +663,42 @@ export default function ServicesView() {
   return (
     <div className="services-view">
       <div className="services-view__toolbar">
-        <button
-          type="button"
-          className="services-view__freshness-btn"
-          disabled={checkingFreshness}
-          onClick={() => void handleFreshnessCheck()}
+        <Tooltip
+          side="bottom"
+          content={
+            "Runs `git fetch` for every service whose `dir:` is its own separate git repository " +
+            "(distinct from the repo containing ensemble.yaml), then compares HEAD to its own " +
+            "remote branch and to the configured default branch. Results open in a drawer here " +
+            "— a no-op if `freshness:` isn't configured in ensemble.yaml."
+          }
         >
-          {checkingFreshness ? (
-            <Spinner />
-          ) : (
-            <svg
-              className="services-view__freshness-icon"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.3v3.2h-3.2"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          )}
-          Check freshness
-        </button>
+          <button
+            type="button"
+            className="services-view__freshness-btn"
+            disabled={checkingFreshness}
+            onClick={() => void handleFreshnessCheck()}
+          >
+            {checkingFreshness ? (
+              <Spinner />
+            ) : (
+              <svg
+                className="services-view__freshness-icon"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.3v3.2h-3.2"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+            Check freshness
+          </button>
+        </Tooltip>
         {freshnessError && <InlineError message={freshnessError} />}
       </div>
       <table className="services-table">
@@ -741,6 +755,7 @@ export default function ServicesView() {
         </tbody>
       </table>
       <LogsDrawer name={logsFor} onClose={() => setLogsFor(null)} />
+      <FreshnessDrawer result={freshnessResult} onClose={() => setFreshnessResult(null)} />
     </div>
   );
 }

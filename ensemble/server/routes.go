@@ -599,10 +599,17 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 // `ensemble freshness --check` (if ever added) both go through this rather
 // than waiting for the next scheduled poll. Returns the resulting status
 // payload's services, the same shape GET /api/status uses, so a caller
-// doesn't need a second round trip to see the fresh result.
+// doesn't need a second round trip to see the fresh result — plus
+// `configured`, since "no freshness: key at all" and "configured but every
+// service is ineligible" both otherwise look identical to a caller as zero
+// services carrying a Freshness field, and the dashboard needs to tell
+// those apart to explain what the button just did.
 func (s *server) handleFreshnessCheck(w http.ResponseWriter, r *http.Request) {
 	s.Orch.TriggerFreshnessCheck(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"services": s.Orch.States()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"services":   s.Orch.States(),
+		"configured": s.Cfg.Freshness != nil,
+	})
 }
 
 // --- seed ---

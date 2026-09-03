@@ -4,6 +4,7 @@
 // it (SSE reconnection, polling, etc. land in later tasks).
 
 import type {
+  FreshnessCheckResult,
   GatewayStatus,
   Hop,
   LatencyRule,
@@ -291,11 +292,11 @@ export const api = {
   /** Triggers an immediate freshness pass over every eligible service,
    * outside the normal poll schedule, and returns the resulting status —
    * the Services tab's "check now" control. */
-  freshnessCheck(): Promise<ServiceState[]> {
-    return request<{ services: ServiceState[] }>(
+  freshnessCheck(): Promise<FreshnessCheckResult> {
+    return request<FreshnessCheckResult>(
       "/api/freshness/check",
       jsonInit("POST"),
-    ).then((r) => r.services);
+    );
   },
 
   // --- inspector (Task 3.5): databases/schema/rows. Every one of these

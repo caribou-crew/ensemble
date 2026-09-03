@@ -102,6 +102,15 @@ export interface ServiceState {
   freshness?: FreshnessState;
 }
 
+/** POST /api/freshness/check's response — the resulting services (same shape GET
+ * /api/status's `services` field uses) plus whether `freshness:` is configured at all, since
+ * a stack with the block configured but zero eligible services looks identical, in
+ * `services` alone, to one with no `freshness:` block whatsoever. */
+export interface FreshnessCheckResult {
+  services: ServiceState[];
+  configured: boolean;
+}
+
 /** One service's git-freshness snapshot — mirrors
  * ensemble/orchestrator.FreshnessState's JSON shape exactly. */
 export interface FreshnessState {

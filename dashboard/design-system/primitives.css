@@ -71,7 +71,7 @@
   left: 50%;
   bottom: calc(100% + 7px);
   transform: translateX(calc(-50% + var(--tooltip-shift)));
-  min-width: max-content;
+  width: max-content;
   max-width: 320px;
   padding: 0.45rem 0.65rem;
   border-radius: 6px;
@@ -92,6 +92,12 @@
 .ds-tooltip--bottom .ds-tooltip__bubble {
   bottom: auto;
   top: calc(100% + 7px);
+}
+.ds-tooltip--right .ds-tooltip__bubble {
+  left: calc(100% + 7px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%) translateX(var(--tooltip-shift));
 }
 @keyframes ds-tooltip-in {
   from {
