@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,6 +11,19 @@ import (
 
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
+
+// recentCreatedAt returns an RFC3339 timestamp comfortably inside sync's
+// DefaultSince (7-day) lookback window, computed fresh at test-run time.
+// A hardcoded date here is a ticking time bomb: it silently ages out of
+// the window and every test using it starts failing the day real time
+// crosses it — exactly what happened on 2026-09-03 to a fixture dated
+// 2026-08-27. These tests drive sync through the real HTTP handler with
+// no injected clock, so unlike retrace/sync's own unit tests (which fix
+// Now alongside a fixed fixture date) there's no way to freeze time here
+// — the fixture has to chase it instead.
+func recentCreatedAt() string {
+	return time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+}
 
 // fakeGH puts a minimal `gh` on PATH for the duration of the test — the
 // same three subcommands retrace/sync's own test double answers (run list,
@@ -129,7 +143,7 @@ func TestGetSyncCandidatesRequiresRepo(t *testing.T) {
 
 func TestGetSyncCandidatesListsWithoutDownloading(t *testing.T) {
 	fakeGH(t)
-	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "headBranch": "main", "event": "push", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"}]`)
+	writeRunListJSON(t, fmt.Sprintf(`[{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "headBranch": "main", "event": "push", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed", "conclusion": "success"}]`, recentCreatedAt()))
 	ts, _ := newSyncServer(t)
 
 	r := get(t, ts, "/api/sync/candidates?repo=org/repo")
@@ -155,10 +169,10 @@ func TestGetSyncCandidatesListsWithoutDownloading(t *testing.T) {
 // UI can iterate it with no special case.
 func TestGetSyncCandidatesReportsLocalRunsForAnAlreadyPulledCandidate(t *testing.T) {
 	fakeGH(t)
-	writeRunListJSON(t, `[
-		{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"},
-		{"databaseId": 2, "workflowName": "Retrace Web", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": "2026-08-27T11:00:00Z", "status": "completed", "conclusion": "success"}
-	]`)
+	writeRunListJSON(t, fmt.Sprintf(`[
+		{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed", "conclusion": "success"},
+		{"databaseId": 2, "workflowName": "Retrace Web", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": %q, "status": "completed", "conclusion": "success"}
+	]`, recentCreatedAt(), recentCreatedAt()))
 	ts, cwd := newSyncServer(t)
 
 	p := recordRun(t, cwd, "web", "checkout", "20260827T090000Z-aaa1111", map[string][]byte{"cart": shotPNG(t, white)}, nil)
@@ -208,7 +222,7 @@ func TestPostSyncRequiresRepo(t *testing.T) {
 
 func TestPostSyncPullsSelectedCandidates(t *testing.T) {
 	fakeGH(t)
-	writeRunListJSON(t, `[{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`)
+	writeRunListJSON(t, fmt.Sprintf(`[{"databaseId": 1, "workflowName": "Retrace Web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt()))
 	stageDownload(t, 1, "web", "checkout", "20260827T090000Z-aaa1111")
 	ts, cwd := newSyncServer(t)
 
@@ -233,7 +247,7 @@ func TestPostSyncPullsSelectedCandidates(t *testing.T) {
 // source), which is exactly what this routing fixes.
 func TestPostSyncRoutesEachAppToItsOwnRoot(t *testing.T) {
 	fakeGH(t)
-	writeRunListJSON(t, `[{"databaseId": 7, "workflowName": "E2E Android", "headSha": "feac1c8", "url": "https://github.com/org/repo/actions/runs/7", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"}]`)
+	writeRunListJSON(t, fmt.Sprintf(`[{"databaseId": 7, "workflowName": "E2E Android", "headSha": "feac1c8", "url": "https://github.com/org/repo/actions/runs/7", "createdAt": %q, "status": "completed", "conclusion": "success"}]`, recentCreatedAt()))
 	// One artifact (databaseID 7) carries BOTH apps' run dirs.
 	stageDownload(t, 7, "uxt-web", "card-views", "20260827T090000Z-feac1c8")
 	stageDownload(t, 7, "uxt-rn-android", "card-views", "20260827T090000Z-feac1c8")

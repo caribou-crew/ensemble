@@ -12,9 +12,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/retrace/sync"
 )
+
+// recentCreatedAt returns an RFC3339 timestamp comfortably inside sync's
+// DefaultSince (7-day) lookback window, computed fresh at test-run time.
+// A hardcoded date here is a ticking time bomb: it silently ages out of
+// the window and every test using it starts failing the day real time
+// crosses it — exactly what happened on 2026-09-03 to a fixture dated
+// 2026-08-27. This package drives the real built binary, which always
+// uses the real wall clock (sync.Options.Now has no CLI flag to override
+// it, by design) — unlike retrace/sync's own unit tests, which inject a
+// fixed Now alongside a fixed fixture date, there's no way to freeze time
+// here, so the fixture has to chase it instead.
+func recentCreatedAt() string {
+	return time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+}
 
 // fakeGHOnPath mirrors retrace/sync's own test double (that package's
 // tests can't be imported from here — package main). It answers `gh run
@@ -91,7 +106,8 @@ func TestSyncJSONRoundTripsThroughSyncResult(t *testing.T) {
 	fakeGHOnPath(t)
 
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
@@ -137,7 +153,8 @@ func TestSyncDryRunListsWithoutPulling(t *testing.T) {
 	fakeGHOnPath(t)
 
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace-web", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
@@ -184,7 +201,8 @@ func TestSyncHonorsRepoConfigRoots(t *testing.T) {
 	}
 
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-ci", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace-ci", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
@@ -252,7 +270,8 @@ func TestSyncListPrintsCandidatesAsJSON(t *testing.T) {
 	fakeGHOnPath(t)
 
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace-web", "headBranch": "main", "event": "push", "status": "completed", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace-web", "headBranch": "main", "event": "push", "status": "completed", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)

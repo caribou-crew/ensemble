@@ -225,7 +225,8 @@ func TestServeWatchSyncsEachRootWithItsOwnAppsOnly(t *testing.T) {
 	// shape design.md D4 exists for: without the allowlist, either root's
 	// sync would merge the other's app too.
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace", "headSha": "aaa1111", "url": "https://github.com/acme/sample-app/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace", "headSha": "aaa1111", "url": "https://github.com/acme/sample-app/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
@@ -363,7 +364,8 @@ func TestServeWatchSurvivesASyncFailureAndRecoversOnALaterTick(t *testing.T) {
 
 	cwd := t.TempDir()
 	runListPath := filepath.Join(t.TempDir(), "runs.json")
-	if err := os.WriteFile(runListPath, []byte(`[{"databaseId": 1, "workflowName": "retrace", "headSha": "aaa1111", "url": "https://github.com/acme/sample-app/actions/runs/1", "createdAt": "2026-08-27T10:00:00Z", "status": "completed"}]`), 0o644); err != nil {
+	runListJSON := fmt.Appendf(nil, `[{"databaseId": 1, "workflowName": "retrace", "headSha": "aaa1111", "url": "https://github.com/acme/sample-app/actions/runs/1", "createdAt": %q, "status": "completed"}]`, recentCreatedAt())
+	if err := os.WriteFile(runListPath, runListJSON, 0o644); err != nil {
 		t.Fatalf("writing run list fixture: %v", err)
 	}
 	t.Setenv("GH_FAKE_RUN_LIST_JSON", runListPath)
