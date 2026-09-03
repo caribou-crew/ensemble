@@ -75,6 +75,9 @@ export interface Item {
   runId: string;
   /** Absent when no reference run resolved. */
   refRunId?: string;
+  /** When the reviewed run finished — see RunRow.when's own doc comment for
+   * the fallback chain and the zero-time case. */
+  when: string;
   counts: Counts;
   capture: { a: CaptureTrust; b: CaptureTrust };
   gates: string[];

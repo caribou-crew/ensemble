@@ -28,6 +28,7 @@ const item = (app: string, flow: string, over: Partial<Item> = {}): Item => ({
   verdict: 'pass',
   score: 0,
   runId: '20260821T101000Z-bbbbbbb',
+  when: '2026-08-21T10:10:00Z',
   counts: zeroCounts,
   capture: { a: okTrust, b: okTrust },
   gates: [],

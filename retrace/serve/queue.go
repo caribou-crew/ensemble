@@ -25,14 +25,19 @@ import (
 // Item is one flow's line in the review queue. Every field crosses the wire
 // (global-constraints.md), so every one carries an explicit camelCase tag.
 type Item struct {
-	App      string             `json:"app"`
-	Flow     string             `json:"flow"`
-	Verdict  string             `json:"verdict"` // diff.Summary.Verdict
-	Score    float64            `json:"score"`   // worst-first sort key
-	RunID    string             `json:"runId"`
-	RefRunID string             `json:"refRunId,omitempty"`
-	Counts   diff.Counts        `json:"counts"`
-	Capture  diff.CaptureBanner `json:"capture"`
+	App      string  `json:"app"`
+	Flow     string  `json:"flow"`
+	Verdict  string  `json:"verdict"` // diff.Summary.Verdict
+	Score    float64 `json:"score"`   // worst-first sort key
+	RunID    string  `json:"runId"`
+	RefRunID string  `json:"refRunId,omitempty"`
+	// When the reviewed run finished (Manifest.FinishedAt, falling back to
+	// StartedAt) — see whenOf. Zero time when the run was never summarised
+	// (brokenItem), same as RunRow.When; the UI then falls back to parsing
+	// the runId's own timestamp stamp.
+	When    time.Time          `json:"when"`
+	Counts  diff.Counts        `json:"counts"`
+	Capture diff.CaptureBanner `json:"capture"`
 	// Gates is never omitempty, and itemGates never returns nil (R-W).
 	// Summary.Gates — the same field name, one route over on the same REST
 	// surface — carries a bare tag like every other array field on that
@@ -369,6 +374,7 @@ func itemOf(s diff.Summary) Item {
 		Score:    ScoreOf(s),
 		RunID:    s.B.RunID,
 		RefRunID: s.A.RunID,
+		When:     whenOf(s.B.Manifest),
 		Counts:   s.Counts,
 		Capture:  s.Capture,
 		Gates:    itemGates(s),

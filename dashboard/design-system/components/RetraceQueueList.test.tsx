@@ -10,6 +10,7 @@ const item = (over: Partial<Item> = {}): Item => ({
   verdict: 'pass',
   score: 0,
   runId: '20260821T101000Z-bbbbbbb',
+  when: '2026-08-21T10:10:00Z',
   counts: {
     checkpoints: 1,
     pixelChanged: 0,
@@ -229,5 +230,55 @@ describe('QueueList rows', () => {
     renderQueue([item({ app: 'ios-native', flow: 'checkout', score: 1, verdict: 'changed' })], '');
     expect(container.querySelector('.queue-row__app')?.textContent).toBe('ios-native');
     expect(container.querySelector('.queue-row__flowname')?.textContent).toBe('checkout');
+  });
+
+  // The top-level queue is the one screen a reviewer looks at without
+  // opening anything — "when did this last run" has to read straight off
+  // this row, or every check-in starts with a click into the surface just
+  // to find that one fact.
+  it('shows when the flow last ran, right on the queue row — no click-in required', () => {
+    renderQueue([item({ when: '2026-08-21T10:10:00Z' })], '');
+    const cell = container.querySelector('.queue-row__when');
+    expect(cell?.textContent).toContain('2026');
+    // formatWhen renders a real clock time, not just a date — "last ran"
+    // means the timestamp, not merely which day.
+    expect(cell?.textContent).toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it('falls back to the runId\'s own timestamp when the manifest never recorded one', () => {
+    // Go's zero time.Time marshals to "0001-01-01T00:00:00Z" — a non-empty
+    // ISO string that Date.parse happily accepts, so formatWhen's own
+    // zero-cutoff fallback is what keeps this from rendering "Dec 31, 1".
+    renderQueue([item({ when: '0001-01-01T00:00:00Z', runId: '20260821T101000Z-bbbbbbb' })], '');
+    const cell = container.querySelector('.queue-row__when');
+    expect(cell?.textContent).toContain('2026');
+    expect(cell?.textContent).not.toMatch(/\b1\b/);
+  });
+
+  it('sorts by last-ran when that column header is clicked', () => {
+    renderQueue(
+      [
+        item({ app: 'web', flow: 'older', when: '2026-08-20T09:00:00Z', score: 1, verdict: 'changed' }),
+        item({ app: 'web', flow: 'newer', when: '2026-08-22T09:00:00Z', score: 1, verdict: 'changed' }),
+      ],
+      '',
+    );
+    const clickWhenHeader = () => {
+      const whenHeader = Array.from(container.querySelectorAll('.queue-table__sort')).find((b) =>
+        b.textContent?.startsWith('last ran'),
+      ) as HTMLButtonElement | undefined;
+      expect(whenHeader).toBeDefined();
+      act(() => whenHeader!.click());
+    };
+    clickWhenHeader();
+    expect(Array.from(container.querySelectorAll('.queue-row__flowname')).map((c) => c.textContent)).toEqual([
+      'older',
+      'newer',
+    ]);
+    clickWhenHeader();
+    expect(Array.from(container.querySelectorAll('.queue-row__flowname')).map((c) => c.textContent)).toEqual([
+      'newer',
+      'older',
+    ]);
   });
 });

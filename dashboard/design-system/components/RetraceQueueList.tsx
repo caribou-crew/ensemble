@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Badge } from '../primitives';
 import type { EmptyReason, Item } from '../retraceTypes';
 import { verdictTone, verdictLabel } from '../retraceTone';
+import { formatWhen, whenMs } from '../retraceWhen';
 import './RetraceQueueList.css';
 
 export const keyOf = (item: { app: string; flow: string }) => `${item.app}/${item.flow}`;
@@ -168,6 +169,7 @@ function Row({
       <td className="queue-row__verdict">
         <Badge tone={verdictTone(item.verdict)}>{verdictLabel(item.verdict)}</Badge>
       </td>
+      <td className="queue-row__when">{formatWhen(item.when, item.runId)}</td>
       <td className="queue-row__counts">{strip}</td>
       <td className="queue-row__detail" title={detail}>
         {code}
@@ -179,7 +181,7 @@ function Row({
   );
 }
 
-type SortKey = 'default' | 'app' | 'flow' | 'verdict';
+type SortKey = 'default' | 'app' | 'flow' | 'verdict' | 'when';
 type SortDir = 'asc' | 'desc';
 
 // Verdict severity for sorting — worst first when descending, matching the
@@ -202,6 +204,8 @@ function sortItemsBy(items: Item[], key: SortKey, dir: SortDir): Item[] {
         return a.flow.localeCompare(b.flow) || a.app.localeCompare(b.app);
       case 'verdict':
         return verdictRank(a) - verdictRank(b) || keyOf(a).localeCompare(keyOf(b));
+      case 'when':
+        return whenMs(a.when, a.runId) - whenMs(b.when, b.runId) || keyOf(a).localeCompare(keyOf(b));
     }
   };
   return [...items].sort((a, b) => sign * cmp(a, b));
@@ -251,6 +255,7 @@ function QueueTable({
           <Th col="queue-table__col-app" label="app" sortKey="app" />
           <Th col="queue-table__col-flow" label="flow" sortKey="flow" />
           <Th col="queue-table__col-verdict" label="verdict" sortKey="verdict" />
+          <Th col="queue-table__col-when" label="last ran" sortKey="when" />
           <Th col="queue-table__col-counts" label="what changed" />
           <Th col="queue-table__col-detail" label="details" />
         </tr>

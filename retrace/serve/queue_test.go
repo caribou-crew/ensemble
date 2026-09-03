@@ -293,7 +293,7 @@ func TestEveryFieldTheWorstRowCarriesIsPopulated(t *testing.T) {
 	}
 	// And the walk is measuring what it thinks it is: the fields that carry
 	// data are all present, not omitted into vacuous success.
-	for _, key := range []string{"app", "flow", "verdict", "score", "runId", "counts", "capture", "gates"} {
+	for _, key := range []string{"app", "flow", "verdict", "score", "runId", "when", "counts", "capture", "gates"} {
 		if _, ok := row[key]; !ok {
 			t.Fatalf("the failing row has no %q — the tags are the REST contract: %s", key, b)
 		}
@@ -692,6 +692,26 @@ func TestAPassingItemSerialisesGatesAsAnEmptyArray(t *testing.T) {
 	}
 	if bytes.Contains(fb, []byte(`"gates":[]`)) {
 		t.Fatalf("the failing row %s/%s serialises an EMPTY gates array — a red row with no reason: %s", failing.App, failing.Flow, fb)
+	}
+}
+
+// The queue row carries WHEN the reviewed run finished, so a reviewer reads
+// "last ran" straight off the top-level list without opening the flow — see
+// whenOf, the same helper RunRow.When already uses for the runs-list
+// drill-down; Item.When is that same fact one level up.
+func TestItemCarriesWhenTheReviewedRunFinished(t *testing.T) {
+	items, err := BuildQueue(deps(t, threeFlowProject(t)))
+	if err != nil {
+		t.Fatalf("BuildQueue: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatalf("threeFlowProject produced no items")
+	}
+	// items[0] is worst-first: web/cart, whose B side is runB — every
+	// recordRun in this file stamps the same fixed FinishedAt.
+	want := time.Date(2026, 8, 21, 10, 0, 5, 0, time.UTC)
+	if !items[0].When.Equal(want) {
+		t.Fatalf("items[0] (%s/%s) When = %v, want %v", items[0].App, items[0].Flow, items[0].When, want)
 	}
 }
 
