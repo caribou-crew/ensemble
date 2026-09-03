@@ -223,3 +223,45 @@ func TestPostSyncPullsSelectedCandidates(t *testing.T) {
 		t.Errorf("manifest.json missing after sync: %v", err)
 	}
 }
+
+// TestPostSyncRoutesEachAppToItsOwnRoot is the multi-root fix: when the
+// server is built with Sources (a retrace.repo.yaml mapping apps to
+// different roots), one artifact carrying two apps' run dirs must land each
+// app's run under the ROOT that app maps to — not all under the serve
+// process's single cwd. Writing them to one cwd orphans the app whose
+// reference lives in the other root (the queue shows it quarantined with no
+// source), which is exactly what this routing fixes.
+func TestPostSyncRoutesEachAppToItsOwnRoot(t *testing.T) {
+	fakeGH(t)
+	writeRunListJSON(t, `[{"databaseId": 7, "workflowName": "E2E Android", "headSha": "feac1c8", "url": "https://github.com/org/repo/actions/runs/7", "createdAt": "2026-08-27T10:00:00Z", "status": "completed", "conclusion": "success"}]`)
+	// One artifact (databaseID 7) carries BOTH apps' run dirs.
+	stageDownload(t, 7, "uxt-web", "card-views", "20260827T090000Z-feac1c8")
+	stageDownload(t, 7, "uxt-rn-android", "card-views", "20260827T090000Z-feac1c8")
+
+	rootWeb := t.TempDir()          // uxt-web lives here (the default/serve cwd)
+	rootMobile := t.TempDir()       // uxt-rn-android lives under a different root
+	defaultDeps := deps(t, rootWeb)
+	byRoot := map[string]Deps{rootWeb: defaultDeps, rootMobile: deps(t, rootMobile)}
+	appRoot := map[string]string{"uxt-web": rootWeb, "uxt-rn-android": rootMobile}
+	sources, err := NewSources(byRoot, appRoot)
+	if err != nil {
+		t.Fatalf("NewSources: %v", err)
+	}
+	ts := httptest.NewServer(NewWithSourcesAndSync(defaultDeps, &sources, SyncConfig{Repo: "org/repo"}))
+	t.Cleanup(ts.Close)
+
+	r := post(t, ts, "/api/sync", `{"repo":"org/repo","selections":[{"repo":"org/repo","databaseId":7}]}`)
+	mustOK(t, r, "POST /api/sync")
+
+	// uxt-web's run must land under rootWeb; uxt-rn-android's under rootMobile.
+	if _, err := os.Stat(filepath.Join(rootWeb, ".retrace", "runs", "uxt-web", "card-views", "20260827T090000Z-feac1c8", "manifest.json")); err != nil {
+		t.Errorf("uxt-web run not under its own root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootMobile, ".retrace", "runs", "uxt-rn-android", "card-views", "20260827T090000Z-feac1c8", "manifest.json")); err != nil {
+		t.Errorf("uxt-rn-android run not under its own root: %v", err)
+	}
+	// The mobile app must NOT have been written to the web root (the bug).
+	if _, err := os.Stat(filepath.Join(rootWeb, ".retrace", "runs", "uxt-rn-android")); err == nil {
+		t.Errorf("uxt-rn-android leaked into the web root — per-root routing failed")
+	}
+}

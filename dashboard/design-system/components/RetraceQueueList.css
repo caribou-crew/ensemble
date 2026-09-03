@@ -56,7 +56,7 @@
   width: 5rem;
 }
 .queue-table__col-source {
-  width: 16rem;
+  width: 20rem;
 }
 .queue-table__col-when {
   width: 13rem;
@@ -94,6 +94,7 @@
 .queue-row__app {
   font-family: var(--font-mono);
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .queue-row__flowname {
@@ -136,22 +137,25 @@
   margin-left: 0.4rem;
 }
 
-.queue-row__source {
+.queue-row__source-inner {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.35rem;
   font-size: 0.75rem;
+  min-width: 0;
 }
 
 .queue-row__sha {
   font-family: var(--font-mono);
   color: var(--text-tertiary);
+  flex-shrink: 0;
 }
 
 .queue-row__workflow-link {
   color: var(--text-secondary);
   text-decoration: none;
+  flex-shrink: 0;
 }
 .queue-row__workflow-link:hover {
   color: var(--text-primary);
@@ -161,12 +165,17 @@
 .queue-row__synced-at {
   color: var(--text-tertiary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .queue-row__sync-check {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  flex-shrink: 0;
 }
 
 .queue-row__sync-check-btn {

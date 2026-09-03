@@ -134,17 +134,47 @@ func (s *server) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 		since = parsed
 	}
-	res, err := sync.Run(sync.Options{
-		Cwd: s.deps().Cwd, From: "github",
+	base := sync.Options{
+		From:  "github",
 		Repos: repos, Workflows: body.Workflows,
 		Branch: body.Branch, Actor: body.Actor, Event: body.Event, Status: body.Status,
 		Since: since, Selections: body.Selections,
-	})
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+	}
+
+	// Multi-root (retrace.repo.yaml): run the sync once PER ROOT, each with
+	// that root's Cwd and app allowlist, so an app's runs land under the
+	// root holding its own .retrace-ref/ rather than all under the serve
+	// process's single cwd. Writing every app's runs to one cwd orphans
+	// every app whose reference lives in another root, which the queue then
+	// shows as quarantined/no-source — the exact failure this routing
+	// fixes. Mirrors the per-root watchTarget list `--watch` already uses.
+	// Single-root (sources == nil): one sync at the default cwd, unchanged.
+	sources := s.currentSources()
+	if sources == nil {
+		base.Cwd = s.deps().Cwd
+		res, err := sync.Run(base)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+
+	merged := sync.Result{Synced: []string{}, Skipped: []sync.SkipReason{}}
+	for _, t := range sources.RootTargets() {
+		o := base
+		o.Cwd = t.Root
+		o.Apps = t.Apps
+		res, err := sync.Run(o)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		merged.Synced = append(merged.Synced, res.Synced...)
+		merged.Skipped = append(merged.Skipped, res.Skipped...)
+	}
+	writeJSON(w, http.StatusOK, merged)
 }
 
 // reposFrom resolves the repo(s) a request named: repos (comma-separated)

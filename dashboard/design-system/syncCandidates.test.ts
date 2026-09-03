@@ -49,12 +49,14 @@ interface W {
   createdAt: string;
   workflowName: string;
   hasArtifacts: boolean;
+  conclusion: string;
 }
 const w = (over: Partial<W> = {}): W => ({
   databaseId: 1,
   createdAt: '2026-08-28T20:00:00Z',
   workflowName: 'e2e',
   hasArtifacts: true,
+  conclusion: 'success',
   ...over,
 });
 
@@ -71,6 +73,19 @@ describe('pickLatestPerWorkflow', () => {
   it('skips a candidate with nothing to pull — it cannot contribute a lane', () => {
     const picks = pickLatestPerWorkflow([w({ databaseId: 1, hasArtifacts: false })]);
     expect(picks).toHaveLength(0);
+  });
+
+  it('skips a failed run even with artifacts — it has logs but no replay bundle to pull', () => {
+    const picks = pickLatestPerWorkflow([w({ databaseId: 1, conclusion: 'failure', hasArtifacts: true })]);
+    expect(picks).toHaveLength(0);
+  });
+
+  it('a newer FAILED run does not shadow an older SUCCESS in the same lane', () => {
+    const picks = pickLatestPerWorkflow([
+      w({ databaseId: 1, workflowName: 'e2e', createdAt: '2026-08-28T20:00:00Z', conclusion: 'success' }),
+      w({ databaseId: 2, workflowName: 'e2e', createdAt: '2026-08-28T22:00:00Z', conclusion: 'failure' }), // newer but failed
+    ]);
+    expect(picks.map((c) => c.databaseId)).toEqual([1]);
   });
 
   it('returns nothing for an empty candidate list', () => {

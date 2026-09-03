@@ -275,6 +275,7 @@ function Row({
         ) : null}
       </td>
       <td className="queue-row__source">
+        <div className="queue-row__source-inner">
         {item.source ? (
           <>
             <Badge tone="blue">CI</Badge>
@@ -297,6 +298,7 @@ function Row({
         ) : (
           <Badge tone="neutral">local</Badge>
         )}
+        </div>
       </td>
       <td className="queue-row__counts">{strip}</td>
       <td className="queue-row__detail" title={detail}>

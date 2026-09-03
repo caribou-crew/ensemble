@@ -18,6 +18,7 @@ interface HasIdentity extends HasCreatedAt {
 interface HasWorkflow extends HasIdentity {
   workflowName: string;
   hasArtifacts: boolean;
+  conclusion: string;
 }
 
 /**
@@ -65,12 +66,16 @@ export function mergeCandidates<T extends HasIdentity>(existing: readonly T[], f
  * picture of "the newest run per workflow", and a second hand-rolled copy of
  * this reduction is how the two buttons would quietly drift apart on what
  * "latest" means. A run with nothing to pull can't contribute a lane, so
- * `hasArtifacts` rows only.
+ * `hasArtifacts` rows only. A failed run is excluded too: it uploads
+ * artifacts (logs/debug bundles) but no replay bundle, so picking it as the
+ * lane's "latest" only yields a bundle-less pull ("no manifest / no
+ * pixel-replay shots"). Only a succeeded run carries a promotable bundle.
  */
 export function pickLatestPerWorkflow<T extends HasWorkflow>(candidates: readonly T[]): T[] {
   const byWorkflow = new Map<string, T>();
   for (const c of candidates) {
     if (!c.hasArtifacts) continue;
+    if (c.conclusion !== 'success') continue;
     const prev = byWorkflow.get(c.workflowName);
     if (!prev || c.createdAt > prev.createdAt) byWorkflow.set(c.workflowName, c);
   }

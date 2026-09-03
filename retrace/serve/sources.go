@@ -84,6 +84,37 @@ func (s Sources) Roots() []Deps {
 	return out
 }
 
+// RootTargets returns each distinct root directory paired with the app
+// keys mapped to it, sorted by root for determinism. It is the on-demand
+// sync analog of the per-root watchTarget list cmd_serve.go builds for
+// `--watch`: a sync must run once per root with that root's Cwd and app
+// allowlist, so each app's runs land under the root holding its own
+// .retrace-ref/ (design.md D4) rather than all under the serve process's
+// single cwd — which would orphan every app whose reference lives in a
+// different root, quarantining it. Apps are the same allowlist
+// repoconfig.Config.AppsIn produces; a root with no apps is omitted.
+func (s Sources) RootTargets() []RootTarget {
+	byRoot := make(map[string][]string, len(s.byRoot))
+	for app, root := range s.appRoot {
+		byRoot[root] = append(byRoot[root], app)
+	}
+	out := make([]RootTarget, 0, len(byRoot))
+	for root, apps := range byRoot {
+		sort.Strings(apps)
+		out = append(out, RootTarget{Root: root, Apps: apps})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Root < out[j].Root })
+	return out
+}
+
+// RootTarget is one project root plus the app keys mapped to it — what a
+// per-root on-demand sync needs to write each app's runs under the root
+// holding its own reference. See Sources.RootTargets.
+type RootTarget struct {
+	Root string
+	Apps []string
+}
+
 // withConfig returns a Sources identical to s except that root's Deps
 // carries cfg instead of its current Cfg — see Sources' own doc comment
 // for why this returns a new value rather than mutating s.byRoot in
