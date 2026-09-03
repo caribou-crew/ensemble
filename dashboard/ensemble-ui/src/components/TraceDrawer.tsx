@@ -9,6 +9,7 @@ import TopologyGraph from "./TopologyGraph";
 import InlineError from "./InlineError";
 import HopDetail from "./HopDetail";
 import { useTracePoll, HopTimingPanel } from "./TraceWaterfall";
+import Drawer from "./Drawer";
 import "./TraceDrawer.css";
 
 export default function TraceDrawer({
@@ -54,43 +55,37 @@ export default function TraceDrawer({
     [hops, selectedHop],
   );
 
-  if (!traceId) return null;
-
   return (
-    <div className="trace-drawer">
-      <button
-        type="button"
-        className="trace-drawer__backdrop"
-        onClick={onClose}
-        aria-label="close trace"
-      />
-      <div className="trace-drawer__panel" role="dialog" aria-label={`trace ${traceId}`}>
-        <div className="trace-drawer__header">
+    <Drawer
+      open={traceId !== null}
+      onClose={onClose}
+      classPrefix="trace-drawer"
+      ariaLabel={`trace ${traceId}`}
+      header={
+        <>
           <Badge tone="blue">trace {traceId}</Badge>
           {error && <InlineError message={error} className="trace-drawer__error" />}
-          <button type="button" className="trace-drawer__close" onClick={onClose} aria-label="close">
-            ×
-          </button>
+        </>
+      }
+    >
+      {!layout ? (
+        <div className="trace-drawer__loading">
+          <Spinner />
+          <span>loading trace…</span>
         </div>
-        {!layout ? (
-          <div className="trace-drawer__loading">
-            <Spinner />
-            <span>loading trace…</span>
+      ) : (
+        <>
+          <div className="trace-drawer__graph">
+            <TopologyGraph layout={layout} showLegend={false} selectedHop={selectedHop} onSelectHop={setSelectedHop} />
           </div>
-        ) : (
-          <>
-            <div className="trace-drawer__graph">
-              <TopologyGraph layout={layout} showLegend={false} selectedHop={selectedHop} onSelectHop={setSelectedHop} />
+          {hops && <HopTimingPanel hops={hops} selectedHop={selectedHop} onSelectHop={setSelectedHop} />}
+          {selectedHopData && (
+            <div className="trace-drawer__detail">
+              <HopDetail hop={selectedHopData} onClose={() => setSelectedHop(null)} />
             </div>
-            {hops && <HopTimingPanel hops={hops} selectedHop={selectedHop} onSelectHop={setSelectedHop} />}
-            {selectedHopData && (
-              <div className="trace-drawer__detail">
-                <HopDetail hop={selectedHopData} onClose={() => setSelectedHop(null)} />
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+          )}
+        </>
+      )}
+    </Drawer>
   );
 }

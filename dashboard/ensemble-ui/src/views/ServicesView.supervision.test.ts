@@ -7,8 +7,8 @@ import type { ServiceState, Topology } from '../api/types';
 
 // Supervision states (audit-hardening group 5): a process that ended on its own renders as
 // "exited" (clean) or "crashed" (non-zero/signal) with the exit detail in the badge — both
-// distinct from operator "stopped" — and every row offers a log pane fed by the SSE follow
-// (GET /api/services/{name}/logs/stream).
+// distinct from operator "stopped" — and every row can open a log drawer fed by the SSE
+// follow (GET /api/services/{name}/logs/stream).
 
 /** Minimal EventSource stand-in: jsdom has none, and subscribeServiceLog needs only
     addEventListener('log', ...) + close(). Frames are pushed by hand via emit(). */
@@ -89,11 +89,18 @@ describe('ServicesView: supervision states and log pane', () => {
       expect(labels).toContain('Start');
       expect(labels).not.toContain('Stop');
     }
-    // The crash's log tail (lastErr) is one hover away on the status badge.
-    expect(web?.querySelector('span[title="panic: boom"]')).toBeTruthy();
+    // The crash's log tail (lastErr) is one hover/focus away on the status badge's tooltip.
+    const statusTooltip = web?.querySelectorAll('td')[1]?.querySelector('.ds-tooltip') as
+      | HTMLElement
+      | undefined;
+    expect(statusTooltip, 'expected a tooltip wrapper on the status badge').toBeTruthy();
+    await act(async () => {
+      statusTooltip!.focus();
+    });
+    expect(statusTooltip!.querySelector('.ds-tooltip__bubble')?.textContent).toContain('panic: boom');
   });
 
-  it('opens a per-service log pane following the SSE stream', async () => {
+  it('opens a per-service log drawer following the SSE stream', async () => {
     await render();
 
     const logsButton = Array.from(rowFor(container, 'web')?.querySelectorAll('button') ?? []).find(
@@ -110,16 +117,14 @@ describe('ServicesView: supervision states and log pane', () => {
     await act(async () => {
       FakeEventSource.instances[0].emit('log', 'boot line 1\nboot line 2');
     });
-    const pane = container.querySelector('.services-table__log');
+    const pane = container.querySelector('.log-pane');
     expect(pane?.textContent).toContain('boot line 1');
     expect(pane?.textContent).toContain('boot line 2');
 
-    // Toggling again closes the pane.
+    // Closing the drawer removes the log pane.
     await act(async () => {
-      Array.from(rowFor(container, 'web')?.querySelectorAll('button') ?? [])
-        .find((b) => b.textContent === 'Hide logs')!
-        .click();
+      (container.querySelector('.logs-drawer__close') as HTMLButtonElement).click();
     });
-    expect(container.querySelector('.services-table__log')).toBeNull();
+    expect(container.querySelector('.log-pane')).toBeNull();
   });
 });

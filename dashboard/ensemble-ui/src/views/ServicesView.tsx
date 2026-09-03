@@ -4,11 +4,10 @@
 // ServicePanel already covers this per-node in a graph context; this view
 // is the "just show me the list" counterpart the graph doesn't serve well
 // once a stack has more than a handful of services.
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, Spinner } from '@ensemble/design-system';
+import { useCallback, useEffect, useState } from 'react';
+import { Badge, Spinner, Tooltip } from '@ensemble/design-system';
 import { useAsync } from '@ensemble/design-system/useAsync';
 import { api, messageOf } from '../api/client';
-import { subscribeServiceLog } from '../api/sse';
 import type {
   FreshnessState,
   GatewayStatus,
@@ -18,6 +17,7 @@ import type {
   WiringWarning,
 } from '../api/types';
 import InlineError from '../components/InlineError';
+import LogsDrawer from '../components/LogsDrawer';
 import { usePendingRefresh } from '../usePendingRefresh';
 import './ServicesView.css';
 
@@ -53,6 +53,56 @@ function kindTone(kind: string | undefined): 'amber' | 'neutral' {
   return kind ? 'amber' : 'neutral';
 }
 
+/** Explains the amber-vs-gray kind badge on hover — the color alone doesn't say whether it
+    means "this is fake" or just "this is labeled". */
+function kindTooltip(kind: string | undefined): string {
+  return kind
+    ? `kind: ${kind}\n\nLabeled via this service's \`kind:\` config — a hint that it isn't a fully real backing (e.g. a stub or mock standing in for one).`
+    : 'kind: service\n\nThe default, unlabeled kind — a real backing running its own code, not a stub or mock.';
+}
+
+const PLACEMENT_EXPLAIN: Record<string, string> = {
+  native: 'native\n\nRuns as a directly supervised OS process on this machine.',
+  docker: 'docker\n\nRuns as a docker container.',
+  passthrough: 'passthrough\n\nNo local backing — requests forward straight to a real upstream.',
+};
+
+const STATUS_EXPLAIN: Record<string, string> = {
+  healthy: 'Started and currently passing its health check.',
+  unhealthy: 'Running, but its health check is currently failing.',
+  starting: 'Process launched; waiting on its health check to pass.',
+  building: "Running its configured `build:` step before starting.",
+  stopped: 'Stopped by an explicit Stop — will not auto-restart.',
+  failed: 'Never came up healthy — the start itself failed.',
+  exited: 'Ran, then exited on its own with a clean (zero) exit code.',
+  crashed: 'Ran, then exited on its own with a non-zero exit code or a signal.',
+};
+
+/** Status badge tooltip: the general meaning of the status word, plus lastErr (a crash's log
+    tail) when there is one — so the reason is one hover away without opening the log drawer. */
+function statusTooltip(s: ServiceState): string {
+  const base = STATUS_EXPLAIN[s.status] ?? s.status;
+  return s.lastErr ? `${base}\n\n${s.lastErr}` : base;
+}
+
+/** Hover card for a service's name: everything identifying, in one place, including the
+    working directory — otherwise not shown anywhere in this table. */
+function nameTooltip(s: ServiceState): string {
+  return [
+    s.variant ? `variant: ${s.variant}` : null,
+    `kind: ${s.kind || 'service'}`,
+    `placement: ${s.placement}`,
+    s.dir ? `dir: ${s.dir}` : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
+}
+
+const WIRING_EXPLAIN =
+  "Wiring warning\n\nAn env var on this service references another service's real port directly " +
+  "instead of its proxy port — traffic sent there bypasses interception, so that hop won't be " +
+  'captured for tracing/replay.';
+
 function formatRSS(kb: number | undefined): string {
   if (!kb) return '—';
   if (kb < 1024) return `${kb} KB`;
@@ -73,22 +123,34 @@ function FreshnessCell({ freshness }: { freshness: FreshnessState | undefined })
   }
   if (!freshness.checkedAt || freshness.error) {
     return (
-      <span title={freshness.error || 'never checked'}>
+      <Tooltip
+        content={`unknown\n\n${freshness.error || 'This service has never been successfully checked for git freshness.'}`}
+      >
         <Badge tone="neutral">unknown</Badge>
-      </span>
+      </Tooltip>
     );
   }
   if (freshness.behindBranch === 0 && freshness.behindDefault === 0) {
     return <span className="services-table__dash">—</span>;
   }
-  const detail = `branch ${freshness.branch} — checked ${new Date(freshness.checkedAt).toLocaleString()}`;
+  const checkedAt = `checked ${new Date(freshness.checkedAt).toLocaleString()}`;
   return (
-    <span className="services-table__freshness" title={detail}>
-      {freshness.behindBranch > 0 && <Badge tone="amber">↓{freshness.behindBranch}</Badge>}
+    <span className="services-table__freshness">
+      {freshness.behindBranch > 0 && (
+        <Tooltip
+          content={`${freshness.behindBranch} commit${freshness.behindBranch === 1 ? '' : 's'} behind this service's own remote branch (${freshness.branch})\n\n${checkedAt}`}
+        >
+          <Badge tone="amber">↓{freshness.behindBranch}</Badge>
+        </Tooltip>
+      )}
       {freshness.behindDefault > 0 && (
-        <Badge tone="amber">
-          {freshness.defaultBranch} ↓{freshness.behindDefault}
-        </Badge>
+        <Tooltip
+          content={`${freshness.behindDefault} commit${freshness.behindDefault === 1 ? '' : 's'} behind the configured default branch (${freshness.defaultBranch})\n\n${checkedAt}`}
+        >
+          <Badge tone="amber">
+            {freshness.defaultBranch} ↓{freshness.behindDefault}
+          </Badge>
+        </Tooltip>
       )}
     </span>
   );
@@ -235,41 +297,6 @@ function useServicesPoll() {
 
 type Action = 'start' | 'restart' | 'stop' | 'flip' | 'variant';
 
-/** Lines kept in a log pane's buffer — a follow of a chatty service must not grow the DOM
-    unbounded, and an SSE reconnect replays the tail (see subscribeServiceLog), so trimming
-    from the top is always safe. */
-const LOG_PANE_MAX_LINES = 2000;
-
-/** One service's live log: subscribes to the SSE follow on mount (the server replays a
-    ~200-line tail first, then streams appended lines — build output included), pins the
-    scroll to the bottom as text arrives, and unsubscribes on unmount/close. */
-function LogPane({ name }: { name: string }) {
-  const [text, setText] = useState('');
-  const preRef = useRef<HTMLPreElement>(null);
-
-  useEffect(() => {
-    setText('');
-    return subscribeServiceLog(name, (chunk) => {
-      setText((prev) => {
-        const next = prev ? `${prev}\n${chunk}` : chunk;
-        const lines = next.split('\n');
-        return lines.length > LOG_PANE_MAX_LINES ? lines.slice(-LOG_PANE_MAX_LINES).join('\n') : next;
-      });
-    });
-  }, [name]);
-
-  useEffect(() => {
-    const el = preRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [text]);
-
-  return (
-    <pre ref={preRef} className="services-table__log">
-      {text || '(no log output yet)'}
-    </pre>
-  );
-}
-
 /** Flip's control shape depends on how many placements a service declares: nothing to flip
     to (0 or 1), a single "Flip to X" button (exactly 2 — the original native/docker case,
     generalized to whichever two placements are declared), or a target-picking select (3,
@@ -325,16 +352,17 @@ function ServiceRow({
   placements,
   warnings,
   onAction,
+  onOpenLogs,
 }: {
   state: ServiceState;
   variants: string[];
   placements: string[];
   warnings: WiringWarning[];
   onAction: (action: Action, extra?: string) => Promise<void>;
+  onOpenLogs: (name: string) => void;
 }) {
   const [busy, setBusy] = useState<Action | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
-  const [logsOpen, setLogsOpen] = useState(false);
 
   async function run(action: Action, extra?: string) {
     setBusy(action);
@@ -353,31 +381,33 @@ function ServiceRow({
   const stopped = ['stopped', 'failed', 'exited', 'crashed'].includes(state.status);
 
   return (
-    <>
     <tr className="services-table__row">
       <td className="services-table__name">
-        {state.name}
+        <Tooltip content={nameTooltip(state)}>
+          <span className="services-table__name-label">{state.name}</span>
+        </Tooltip>
         {warnings.length > 0 && (
-          <span
-            className="services-table__wiring-warning"
-            title={warnings.map((w) => w.message).join('\n')}
-          >
-            <Badge tone="red">wiring</Badge>
+          <span className="services-table__wiring-warning">
+            <Tooltip content={`${WIRING_EXPLAIN}\n\n${warnings.map((w) => w.message).join('\n')}`}>
+              <Badge tone="red">wiring</Badge>
+            </Tooltip>
           </span>
         )}
       </td>
       <td>
-        {/* A crash's lastErr carries the log tail — surfaced as the badge tooltip so the
-            reason is one hover away without opening the log pane. */}
-        <span title={state.lastErr || undefined}>
+        <Tooltip content={statusTooltip(state)}>
           <Badge tone={statusTone(state.status)}>{statusLabel(state)}</Badge>
-        </span>
+        </Tooltip>
       </td>
       <td>
-        <Badge tone="neutral">{state.placement}</Badge>
+        <Tooltip content={PLACEMENT_EXPLAIN[state.placement]}>
+          <Badge tone="neutral">{state.placement}</Badge>
+        </Tooltip>
       </td>
       <td>
-        <Badge tone={kindTone(state.kind)}>{state.kind || 'service'}</Badge>
+        <Tooltip content={kindTooltip(state.kind)}>
+          <Badge tone={kindTone(state.kind)}>{state.kind || 'service'}</Badge>
+        </Tooltip>
       </td>
       <td className="services-table__variant">
         {variants.length > 0 ? (
@@ -425,20 +455,12 @@ function ServiceRow({
           disabled={busy !== null}
           onFlip={(target) => void run('flip', target)}
         />
-        <button type="button" onClick={() => setLogsOpen((v) => !v)}>
-          {logsOpen ? 'Hide logs' : 'Logs'}
+        <button type="button" onClick={() => onOpenLogs(state.name)}>
+          Logs
         </button>
         {rowError && <InlineError message={rowError} className="services-table__row-error" />}
       </td>
     </tr>
-    {logsOpen && (
-      <tr className="services-table__log-row">
-        <td colSpan={11}>
-          <LogPane name={state.name} />
-        </td>
-      </tr>
-    )}
-    </>
   );
 }
 
@@ -456,7 +478,9 @@ function StubRow({ node }: { node: TopologyNode }) {
         <span className="services-table__dash">—</span>
       </td>
       <td>
-        <Badge tone="amber">stub</Badge>
+        <Tooltip content={"stub\n\nA `stubs:` entry — a canned/mocked responder, not an orchestrator-supervised service. No lifecycle actions, ports, or variants of its own."}>
+          <Badge tone="amber">stub</Badge>
+        </Tooltip>
       </td>
       <td className="services-table__variant">
         <span className="services-table__dash">—</span>
@@ -509,10 +533,14 @@ function GatewayRow({
         <Badge tone={statusTone(node.status)}>{node.status}</Badge>
       </td>
       <td>
-        <Badge tone="neutral">{activeTarget}</Badge>
+        <Tooltip content={"Current flip target\n\n\"local\" routes to this gateway's own local handling; anything else names one of its declared upstreams."}>
+          <Badge tone="neutral">{activeTarget}</Badge>
+        </Tooltip>
       </td>
       <td>
-        <Badge tone="amber">gateway</Badge>
+        <Tooltip content={"gateway\n\nA `gateways:` entry — a static proxy listener that routes locally or forwards to a declared upstream (flip below). Not an orchestrator-supervised service."}>
+          <Badge tone="amber">gateway</Badge>
+        </Tooltip>
       </td>
       <td className="services-table__variant">
         <span className="services-table__dash">—</span>
@@ -544,6 +572,7 @@ export default function ServicesView() {
   const [sort, setSort] = useState<SortState | null>(null);
   const [checkingFreshness, setCheckingFreshness] = useState(false);
   const [freshnessError, setFreshnessError] = useState<string | null>(null);
+  const [logsFor, setLogsFor] = useState<string | null>(null);
 
   async function handleFreshnessCheck() {
     setCheckingFreshness(true);
@@ -695,6 +724,7 @@ export default function ServicesView() {
               placements={placementsByName.get(s.name) ?? []}
               warnings={warningsByService.get(s.name) ?? []}
               onAction={(action, extra) => handleAction(s.name, action, extra)}
+              onOpenLogs={setLogsFor}
             />
           ))}
           {stubNodes.map((n) => (
@@ -710,6 +740,7 @@ export default function ServicesView() {
           ))}
         </tbody>
       </table>
+      <LogsDrawer name={logsFor} onClose={() => setLogsFor(null)} />
     </div>
   );
 }

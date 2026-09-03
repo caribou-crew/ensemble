@@ -92,6 +92,9 @@ export interface ServiceState {
    * "service" (a real, unlabeled backing). Named kind, not type, to avoid colliding with
    * config.Database's `type:` (a validated engine enum — postgres, redis, etc). */
   kind?: string;
+  /** Resolved working directory this service's process (or docker build context) runs
+   * from. Empty for a service that has never started. */
+  dir?: string;
   /** How far this service's checkout is behind its own remote branch and behind the
    * configured default branch — absent unless `freshness:` is configured AND the service is
    * eligible (its own git repo, distinct from the one containing ensemble.yaml). Populated by

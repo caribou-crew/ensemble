@@ -44,7 +44,7 @@ const DEFINITION = 'src/api/client.ts';
 const ALLOWED: { file: string; line: string; reason: string }[] = [
   {
     file: 'src/views/ServicesView.tsx',
-    line: "title={warnings.map((w) => w.message).join('\\n')}",
+    line: "<Tooltip content={`${WIRING_EXPLAIN}\\n\\n${warnings.map((w) => w.message).join('\\n')}`}>",
     reason:
       "WiringWarning.message is our own control plane's prose (config.WiringWarning's own " +
       '`message` field, structured API data describing a proxy-wiring mismatch) — never a ' +

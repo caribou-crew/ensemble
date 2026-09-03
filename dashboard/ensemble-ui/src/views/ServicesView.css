@@ -74,6 +74,11 @@
   font-weight: 600;
 }
 
+.services-table__name-label {
+  border-bottom: 1px dotted var(--border-hairline-strong);
+  cursor: default;
+}
+
 .services-table__wiring-warning {
   display: inline-block;
   margin-left: 0.4rem;
@@ -166,8 +171,8 @@
 }
 
 .services-table__actions button {
-  border: 1px solid var(--border-hairline-strong);
-  background: var(--bg-raised);
+  border: 1px solid transparent;
+  background: none;
   color: var(--text-secondary);
   border-radius: 6px;
   padding: 0.25rem 0.55rem;
@@ -177,7 +182,8 @@
 
 .services-table__actions button:hover:not(:disabled) {
   color: var(--text-primary);
-  border-color: var(--accent-strong);
+  border-color: var(--border-hairline-strong);
+  background: var(--bg-raised);
 }
 
 .services-table__actions button:disabled {
@@ -199,20 +205,3 @@
   color: var(--text-tertiary);
 }
 
-.services-table__log-row td {
-  padding: 0;
-}
-
-.services-table__log {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-inset, var(--bg-secondary));
-  color: var(--text-secondary);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 0.72rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
-}

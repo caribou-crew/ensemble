@@ -1,0 +1,14 @@
+.log-pane {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 0.6rem 0.85rem;
+  background: var(--bg-inset, var(--bg-secondary));
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

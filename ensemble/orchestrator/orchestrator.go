@@ -73,6 +73,11 @@ type ServiceState struct {
 	// "service". Named Kind, not Type, to avoid colliding with the
 	// database Type enum (postgres/redis/...).
 	Kind string `json:"kind,omitempty"`
+	// Dir is the resolved working directory this service's process (or
+	// docker build context) runs from — config.Service.Dir resolved against
+	// Config.Dir (see resolveDir), not the raw yaml value. Set when the
+	// service (re)starts; empty for a service that has never started.
+	Dir string `json:"dir,omitempty"`
 	// Version fingerprints what this service is running, taken once when it
 	// became healthy — not at read time. A fingerprint describes the process
 	// actually serving traffic, and a source directory edited after start no
@@ -1107,6 +1112,7 @@ func (o *Orchestrator) startServiceAs(ctx context.Context, name string, svc conf
 		s.ProxyPort = svc.Proxy
 		s.Variant = variant
 		s.Kind = svc.Kind
+		s.Dir = resolveDir(o.cfg.Dir, svc.Dir)
 		s.PID = 0 // stale from a previous placement until the native branch below sets it
 		// A fresh start owes nothing to how the previous run ended.
 		s.ExitCode = nil

@@ -71,7 +71,12 @@ describe('ServicesView: wiring warning badge', () => {
     const badge = edgeRow!.querySelector('.services-table__wiring-warning');
     expect(badge, 'expected a wiring-warning badge on edge').toBeTruthy();
     expect(badge!.textContent).toContain('wiring');
-    expect(badge!.getAttribute('title')).toBe(WARNING.message);
+
+    const tooltip = badge!.querySelector('.ds-tooltip') as HTMLElement;
+    await act(async () => {
+      tooltip.focus();
+    });
+    expect(tooltip.querySelector('.ds-tooltip__bubble')?.textContent).toContain(WARNING.message);
 
     expect(catalogRow!.querySelector('.services-table__wiring-warning')).toBeFalsy();
   });
