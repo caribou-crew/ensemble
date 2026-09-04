@@ -129,17 +129,24 @@ jobs:
           BINARY=retrace node scripts/prepare-npm-binary.mjs
 
       # retrace-js and retrace-playwright are plain TS libraries (no
-      # prebuilt binary to stage) — version them the same way, then build,
-      # so npm publish below ships a dist/ that matches this release tag.
-      # retrace-playwright depends on retrace-js via "workspace:*"; building
-      # through its "..." selector (which pulls in its dependencies) builds
-      # retrace-js first in the same command.
+      # prebuilt binary to stage) — build first, THEN version. Building
+      # must come first: retrace-playwright's "workspace:*" dependency on
+      # retrace-js is what makes pnpm's "..." filter selector (below) treat
+      # retrace-js as a workspace dependency and build it too, in the right
+      # order; prepare-npm-ts-packages.mjs rewrites that same field to a
+      # concrete version for npm publish, which would make the filter
+      # selector stop matching it and silently skip its build if run first
+      # (this order was tested: builds cleanly; the reverse order fails
+      # tsc with "Cannot find module '@caribou-crew/retrace-js'" because
+      # retrace-js's dist/ never gets built). npm publish reads
+      # package.json fresh at publish time, so bumping the version after
+      # building is fine — nothing re-reads it mid-build.
       - name: Build and version the TS packages
         run: |
           set -euo pipefail
+          pnpm --filter "@caribou-crew/retrace-playwright..." run build
           export RELEASE_VERSION="${{ inputs.version }}"
           node scripts/prepare-npm-ts-packages.mjs
-          pnpm --filter "@caribou-crew/retrace-playwright..." run build
 
       - name: Publish npm packages
         run: |
