@@ -2,6 +2,8 @@ package serve
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -61,6 +63,41 @@ func TestGetOnePairServesItsPersistedSummary(t *testing.T) {
 
 	ts := newServer(t, cwd)
 	path := "/api/pairs/web/login/" + runB + "/" + pr.PairID
+	body := mustOK(t, get(t, ts, path), "GET "+path)
+	summary, ok := body["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("no summary in response: %#v", body)
+	}
+	if summary["verdict"] != "changed" {
+		t.Errorf("verdict = %v, want changed", summary["verdict"])
+	}
+}
+
+// TestGetOnePairServesItsPersistedSummaryWhenBIsAReferenceBundle covers
+// pairDirFor's refs.BundleDir branch (runB == runs.RefRunID) end-to-end
+// through the actual HTTP route, not just at the pairs.List level — Task 1's
+// TestListAlsoDiscoversAPairingPersistedUnderAReferenceBundle (retrace/pairs)
+// proves List finds a bundle-rooted pairing, but nothing confirmed GET
+// /api/pairs/{appB}/{flowB}/reference/{pairId} resolves one.
+func TestGetOnePairServesItsPersistedSummaryWhenBIsAReferenceBundle(t *testing.T) {
+	cwd := t.TempDir()
+	appA, appB, flow := "admin", "web", "login"
+
+	bundleDir := filepath.Join(runs.RefsRoot(cwd), appB, flow, runs.RefRunID)
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := diff.RunRef{Kind: "bundle", Manifest: runs.Manifest{App: appA}}
+	b := diff.RunRef{Kind: "bundle", Manifest: runs.Manifest{App: appB}}
+	s := diff.Summary{Schema: diff.SummarySchema, Flow: flow, Verdict: "changed", A: a, B: b}
+	dir := pairs.DirFor(bundleDir, a)
+	pr, err := pairs.Persist(dir, s, time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("pairs.Persist: %v", err)
+	}
+
+	ts := newServer(t, cwd)
+	path := "/api/pairs/" + appB + "/" + flow + "/" + runs.RefRunID + "/" + pr.PairID
 	body := mustOK(t, get(t, ts, path), "GET "+path)
 	summary, ok := body["summary"].(map[string]any)
 	if !ok {

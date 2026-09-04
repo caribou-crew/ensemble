@@ -889,10 +889,14 @@ func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sum, err := pairs.ReadSummary(dir)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		writeErr(w, http.StatusNotFound, fmt.Sprintf(
 			"no persisted cross-app diff at %s/%s/%s/%s — run `retrace diff` with -a/-b naming two different apps first",
 			appB, flowB, runB, pairID))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"summary": sum})
@@ -911,8 +915,12 @@ func (s *server) handlePairShot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sum, err := pairs.ReadSummary(dir)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		writeErr(w, http.StatusNotFound, fmt.Sprintf("no persisted cross-app diff at %s/%s/%s/%s", appB, flowB, runB, pairID))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeShotImage(w, sum, dir, appB, flowB, side, name)
