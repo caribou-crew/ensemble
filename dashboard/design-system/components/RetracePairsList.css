@@ -1,0 +1,18 @@
+.pairs__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.pairs__table th,
+.pairs__table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+}
+.pairs__row {
+  cursor: pointer;
+}
+.pairs__row:hover {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.pairs__none {
+  padding: 1rem 0;
+}
