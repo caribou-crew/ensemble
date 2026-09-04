@@ -155,28 +155,60 @@ func ReadSummary(dir string) (diff.Summary, error) {
 	return s, nil
 }
 
-// List walks runsRoot for every persisted cross-app diff —
-// <app>/<flow>/<runId>/diffs/<pairId>/pair.json — newest first. There is no
-// index file; this is the same "discover by walking directories"
-// convention runs.ListApps/ListFlows/ListRuns already use.
+// List walks cwd for every persisted cross-app diff, newest first — both
+// under <cwd>/.retrace/runs/<app>/<flow>/<runId>/diffs/<pairId>/pair.json
+// (a pairing keyed to a specific candidate run) AND under
+// <cwd>/.retrace-ref/<app>/<flow>/reference/diffs/<pairId>/pair.json (a
+// pairing whose B side itself resolved to "reference" — DirFor documents
+// this bDir as valid, and resolveSide in cmd_diff.go treats -a/-b
+// symmetrically, so `--b reference` is a real, if unadvertised, case).
+// There is no index file; this is the same "discover by walking
+// directories" convention runs.ListApps/ListFlows/ListRuns already use.
 //
-// A run with no diffs/ subfolder (the overwhelming common case) is skipped
-// with no error. A malformed pair.json is skipped too, not fatal: one
-// corrupt directory must not take down the whole listing.
-func List(runsRoot string) ([]Pair, error) {
-	apps, err := runs.ListAppsErr(runsRoot)
+// A run (or bundle) with no diffs/ subfolder (the overwhelming common case)
+// is skipped with no error. A malformed pair.json is skipped too, not
+// fatal: one corrupt directory must not take down the whole listing.
+func List(cwd string) ([]Pair, error) {
+	runsRoot := runs.RunsRoot(cwd)
+	out, err := listUnder(runsRoot, func(app, flow string) []string {
+		return runs.ListRuns(runsRoot, app, flow)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("pairs: cannot read the runs root %s: %w", runsRoot, err)
 	}
+
+	// The refs root has no run-id level to list — a bundle's directory is
+	// always the single literal runs.RefRunID ("reference") — so the
+	// run-id lister here is a constant slice rather than runs.ListRuns.
+	refsRoot := runs.RefsRoot(cwd)
+	refPairs, err := listUnder(refsRoot, func(app, flow string) []string {
+		return []string{runs.RefRunID}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pairs: cannot read the refs root %s: %w", refsRoot, err)
+	}
+	out = append(out, refPairs...)
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ComputedAt.After(out[j].ComputedAt) })
+	return out, nil
+}
+
+// listUnder walks one root (either the runs root or the refs root) for
+// every app/flow it lists, calling runIDsFor to name the run-id-shaped
+// subdirectories to check for a diffs/ folder under. Shared by List's two
+// passes so the "find a diffs/ folder, read every pair.json in it,
+// skip what's malformed" logic exists in exactly one place.
+func listUnder(root string, runIDsFor func(app, flow string) []string) ([]Pair, error) {
+	apps, err := runs.ListAppsErr(root)
+	if err != nil {
+		return nil, err
+	}
 	out := []Pair{}
 	for _, app := range apps {
-		for _, flow := range runs.ListFlows(runsRoot, app) {
-			for _, runID := range runs.ListRuns(runsRoot, app, flow) {
-				p, err := runs.PathsFor(runsRoot, app, flow, runID)
-				if err != nil {
-					continue
-				}
-				entries, err := os.ReadDir(filepath.Join(p.RunDir, "diffs"))
+		for _, flow := range runs.ListFlows(root, app) {
+			for _, runID := range runIDsFor(app, flow) {
+				diffsDir := filepath.Join(root, app, flow, runID, "diffs")
+				entries, err := os.ReadDir(diffsDir)
 				if err != nil {
 					continue
 				}
@@ -184,7 +216,7 @@ func List(runsRoot string) ([]Pair, error) {
 					if !e.IsDir() {
 						continue
 					}
-					pr, err := Read(filepath.Join(p.RunDir, "diffs", e.Name()))
+					pr, err := Read(filepath.Join(diffsDir, e.Name()))
 					if err != nil {
 						continue
 					}
@@ -193,6 +225,5 @@ func List(runsRoot string) ([]Pair, error) {
 			}
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].ComputedAt.After(out[j].ComputedAt) })
 	return out, nil
 }

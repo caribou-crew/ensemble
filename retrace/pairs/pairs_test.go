@@ -122,7 +122,7 @@ func TestListWalksEveryRunsDiffsSubfolderNewestFirstAndSkipsAMalformedOne(t *tes
 		t.Fatalf("runs.Create: %v", err)
 	}
 
-	got, err := List(runsRoot)
+	got, err := List(root)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -134,8 +134,43 @@ func TestListWalksEveryRunsDiffsSubfolderNewestFirstAndSkipsAMalformedOne(t *tes
 	}
 }
 
+// TestListAlsoDiscoversAPairingPersistedUnderAReferenceBundle: DirFor
+// documents that bDir may be a reference bundle directory (B itself
+// resolved to "reference" — resolveSide in cmd_diff.go treats -a/-b
+// symmetrically, so this is a real case, not a hypothetical one). That
+// directory lives under .retrace-ref, entirely outside the runs root, so
+// List must walk both roots or a pairing persisted this way would be
+// permanently invisible to the listing despite being individually
+// fetchable.
+func TestListAlsoDiscoversAPairingPersistedUnderAReferenceBundle(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+	bundleDir := filepath.Join(runs.RefsRoot(root), "mobile", "checkout", runs.RefRunID)
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := diff.Summary{Verdict: "pass",
+		A: diff.RunRef{Kind: "bundle", Manifest: runs.Manifest{App: "web"}},
+		B: diff.RunRef{Kind: "bundle", Manifest: runs.Manifest{App: "mobile"}}}
+	if _, err := Persist(DirFor(bundleDir, s.A), s, now); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	got, err := List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("List returned %d pairs, want 1 (the bundle-rooted pairing): %+v", len(got), got)
+	}
+	if got[0].AppA != "web" || got[0].AppB != "mobile" || got[0].RunB != "reference" {
+		t.Errorf("List = %+v, want appA=web appB=mobile runB=reference", got[0])
+	}
+}
+
 func TestListOnARootWithNoRunsReturnsEmptyNotNil(t *testing.T) {
-	got, err := List(runs.RunsRoot(t.TempDir()))
+	got, err := List(t.TempDir())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
