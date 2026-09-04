@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRetraceClient, RetraceApiError } from '../retraceClient';
-import type { ItemResponse, SyncCandidate } from '../retraceTypes';
+import type { BranchCandidate, ItemResponse, SyncCandidate } from '../retraceTypes';
 import SyncPanel from './RetraceSyncPanel';
 
 const client = createRetraceClient('/api');
@@ -37,6 +37,15 @@ function candidate(overrides: Partial<SyncCandidate> = {}): SyncCandidate {
     url: 'https://github.com/org/repo/actions/runs/1',
     hasArtifacts: true,
     localRuns: [],
+    ...overrides,
+  };
+}
+
+function branch(overrides: Partial<BranchCandidate> = {}): BranchCandidate {
+  return {
+    name: 'e2e/checkout-fix',
+    lastRunAt: '2026-09-01T12:00:00Z',
+    lastEvent: 'workflow_dispatch',
     ...overrides,
   };
 }
@@ -289,6 +298,73 @@ describe('RetraceSyncPanel', () => {
 
     expect(container.textContent).toContain('no valid artifacts found to download');
     expect(container.querySelector('.sync-panel__detail')).toBeFalsy();
+  });
+});
+
+describe('choose source (branch picker)', () => {
+  it('fetches branches only once the picker is opened, not on initial load', async () => {
+    vi.spyOn(client, 'syncCandidates').mockResolvedValue({ candidates: [candidate({ databaseId: 1 })] });
+    const branchesSpy = vi.spyOn(client, 'syncBranches').mockResolvedValue({ branches: [] });
+    renderPanel();
+    await enterRepo('org/repo');
+    expect(branchesSpy).not.toHaveBeenCalled();
+
+    await act(async () => (container.querySelector('.sync-panel__source-toggle') as HTMLButtonElement).click());
+    await flush();
+    expect(branchesSpy).toHaveBeenCalledWith('org/repo');
+  });
+
+  it('lists fetched branches as chips', async () => {
+    vi.spyOn(client, 'syncCandidates').mockResolvedValue({ candidates: [candidate({ databaseId: 1 })] });
+    vi.spyOn(client, 'syncBranches').mockResolvedValue({
+      branches: [branch({ name: 'main' }), branch({ name: 'e2e/checkout-fix' })],
+    });
+    renderPanel();
+    await enterRepo('org/repo');
+
+    await act(async () => (container.querySelector('.sync-panel__source-toggle') as HTMLButtonElement).click());
+    await flush();
+
+    expect(container.textContent).toContain('main');
+    expect(container.textContent).toContain('e2e/checkout-fix');
+  });
+
+  it('picking a branch pulls the latest run on it and refreshes the queue', async () => {
+    vi.spyOn(client, 'syncCandidates')
+      .mockResolvedValueOnce({ candidates: [candidate({ databaseId: 1 })] })
+      .mockResolvedValueOnce({ candidates: [candidate({ databaseId: 2, headBranch: 'e2e/checkout-fix' })] });
+    vi.spyOn(client, 'syncBranches').mockResolvedValue({ branches: [branch({ name: 'e2e/checkout-fix' })] });
+    const syncSpy = vi.spyOn(client, 'sync').mockResolvedValue({ synced: ['web/checkout/run-e2e'], skipped: [] });
+    const onClose = vi.fn();
+    const onSynced = vi.fn();
+    renderPanel(onClose, onSynced);
+    await enterRepo('org/repo');
+
+    await act(async () => (container.querySelector('.sync-panel__source-toggle') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => (container.querySelector('.filter-chip') as HTMLButtonElement).click());
+    await flush();
+
+    expect(client.syncCandidates).toHaveBeenLastCalledWith('org/repo', { branch: 'e2e/checkout-fix', since: '30d' });
+    expect(syncSpy).toHaveBeenCalledWith('org/repo', [{ repo: 'org/repo', databaseId: 2 }]);
+    expect(onSynced).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('a branch with nothing pullable shows the existing inline error', async () => {
+    vi.spyOn(client, 'syncCandidates')
+      .mockResolvedValueOnce({ candidates: [candidate({ databaseId: 1 })] })
+      .mockResolvedValueOnce({ candidates: [] });
+    vi.spyOn(client, 'syncBranches').mockResolvedValue({ branches: [branch({ name: 'e2e/checkout-fix' })] });
+    renderPanel();
+    await enterRepo('org/repo');
+
+    await act(async () => (container.querySelector('.sync-panel__source-toggle') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => (container.querySelector('.filter-chip') as HTMLButtonElement).click());
+    await flush();
+
+    expect(container.textContent).toContain('no runs with artifacts on e2e/checkout-fix');
   });
 });
 

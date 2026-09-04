@@ -3,7 +3,7 @@ import { Badge, Spinner } from '../primitives';
 import { useAsync } from '../useAsync';
 import { mergeCandidates, pickLatestPerWorkflow, sinceParam } from '../syncCandidates';
 import { retraceMessageOf, type RetraceClient } from '../retraceClient';
-import type { SyncCandidate } from '../retraceTypes';
+import type { BranchCandidate, SyncCandidate } from '../retraceTypes';
 import RetraceItemScreen from './RetraceItemScreen';
 import './RetraceSyncPanel.css';
 
@@ -128,6 +128,10 @@ export default function RetraceSyncPanel({
   const [chooser, setChooser] = useState<RunRef[] | null>(null);
   const [detail, setDetail] = useState<RunRef | null>(null);
   const [filterText, setFilterText] = useState('');
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+  const [branches, setBranches] = useState<BranchCandidate[] | null>(null);
+  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [pullingBranch, setPullingBranch] = useState<string | null>(null);
 
   // requireRepo === false means the server already knows which repo(s) to
   // list, so the panel loads on mount rather than waiting on a form submit
@@ -278,6 +282,28 @@ export default function RetraceSyncPanel({
     }
   };
 
+  // Shared tail of "pull these picks and report the outcome" — pullLatest
+  // and pullLatestFrom both reduce their own candidate list down to picks,
+  // then hand them here, so the sync call and its empty/error/success
+  // handling can't drift between the two entry points.
+  const pullPicks = async (picks: SyncCandidate[], label: string) => {
+    const res = await client.sync(
+      requireRepo ? repo.trim() : undefined,
+      picks.map((c) => ({ repo: c.repo, databaseId: c.databaseId })),
+    );
+    onSynced();
+    if (res.synced.length === 0) {
+      const reason = res.skipped[0]?.reason;
+      setError(
+        reason ? `${label} produced no new flows: ${reason}` : `${label} produced no new flows — everything may already be synced`,
+      );
+      return;
+    }
+    // Land back on the refreshed queue rather than a chooser: the queue is
+    // the "latest per lane" view the reviewer wanted.
+    onClose();
+  };
+
   // One-click "pull latest": sync the most recent runs across the
   // configured workflows in a single call (no per-CI-run drilling), then
   // refresh the queue underneath — which shows one row per app/flow at its
@@ -295,23 +321,51 @@ export default function RetraceSyncPanel({
         setError('no runs with artifacts to pull — try refreshing');
         return;
       }
-      const res = await client.sync(
-        requireRepo ? repo.trim() : undefined,
-        picks.map((c) => ({ repo: c.repo, databaseId: c.databaseId })),
-      );
-      onSynced();
-      if (res.synced.length === 0) {
-        const reason = res.skipped[0]?.reason;
-        setError(reason ? `pull latest produced no new flows: ${reason}` : 'pull latest produced no new flows — everything may already be synced');
-        return;
-      }
-      // Land back on the refreshed queue rather than a chooser: the queue is
-      // the "latest per lane" view the reviewer wanted.
-      onClose();
+      await pullPicks(picks, 'pull latest');
     } catch (err) {
       setError(retraceMessageOf(err, 'pull latest failed'));
     } finally {
       setPullingLatest(false);
+    }
+  };
+
+  // "Choose source": lazily fetches the configured branch allowlist
+  // (server-filtered — see handleSyncBranches) the first time the picker
+  // opens, so a reviewer who never opens it never pays for the call.
+  const toggleSourcePicker = () => {
+    const opening = !sourcePickerOpen;
+    setSourcePickerOpen(opening);
+    if (opening && branches === null && !loadingBranches) {
+      setLoadingBranches(true);
+      setError(null);
+      client
+        .syncBranches(requireRepo ? repo.trim() : undefined)
+        .then((res) => setBranches(res.branches))
+        .catch((err) => setError(retraceMessageOf(err, 'could not list branches')))
+        .finally(() => setLoadingBranches(false));
+    }
+  };
+
+  // Pulling "latest from branch X": scopes the existing candidates call to
+  // just that branch, with a wide window (an infrequently-dispatched
+  // branch may not have run in the panel's default lookback), then reduces
+  // and pulls exactly as pullLatest does — no separate pull mechanism.
+  const pullLatestFrom = async (branchName: string) => {
+    setError(null);
+    setPullingBranch(branchName);
+    try {
+      const res = await client.syncCandidates(requireRepo ? repo.trim() : undefined, { branch: branchName, since: '30d' });
+      const picks = pickLatestPerWorkflow(res.candidates);
+      if (picks.length === 0) {
+        setError(`no runs with artifacts on ${branchName} — try refreshing`);
+        return;
+      }
+      await pullPicks(picks, `pull latest from ${branchName}`);
+      setSourcePickerOpen(false);
+    } catch (err) {
+      setError(retraceMessageOf(err, `pull latest from ${branchName} failed`));
+    } finally {
+      setPullingBranch(null);
     }
   };
 
@@ -402,6 +456,47 @@ export default function RetraceSyncPanel({
               >
                 {pullingLatest ? <Spinner /> : '⇩ pull latest'}
               </button>
+              {/* .filter-chip is defined in RetraceQueueFilters.css, loaded
+                  globally wherever this app renders — reused here rather
+                  than a second copy of the same toggle-button style. */}
+              <div className="sync-panel__source">
+                <button
+                  type="button"
+                  className="sync-panel__source-toggle"
+                  onClick={toggleSourcePicker}
+                  aria-expanded={sourcePickerOpen}
+                  disabled={pullingLatest || refreshing || loading}
+                >
+                  choose source ▾
+                </button>
+                {sourcePickerOpen ? (
+                  <div className="sync-panel__source-popover" role="group" aria-label="choose a branch to pull latest from">
+                    {loadingBranches ? (
+                      <p className="loading">
+                        <Spinner /> loading branches…
+                      </p>
+                    ) : branches && branches.length > 0 ? (
+                      branches.map((b) => (
+                        <button
+                          key={b.name}
+                          type="button"
+                          className="filter-chip"
+                          disabled={pullingBranch !== null}
+                          onClick={() => void pullLatestFrom(b.name)}
+                        >
+                          {pullingBranch === b.name ? <Spinner /> : b.name}
+                          <span className="sync-panel__branch-meta">
+                            {' '}
+                            · {b.lastEvent} · {b.lastRunAt}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="sync-panel__empty">No branches found for the configured workflow(s).</p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             </div>
             <ul className="sync-panel__candidates">
               {visible.map((c) => {
