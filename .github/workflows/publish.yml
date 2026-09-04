@@ -28,14 +28,22 @@ jobs:
         with:
           ref: v${{ inputs.version }}
 
+      # pnpm/action-setup must run before actions/setup-node so the latter's
+      # `cache: pnpm` has a pnpm to find — needed to build the TS packages
+      # (adapters/js, adapters/playwright) below; the Go-binary npm packages
+      # need neither.
+      - uses: pnpm/action-setup@v4
+
       # npm trusted publishing needs npm CLI >= 11.5.1; the version bundled
       # with actions/setup-node's Node lags behind, so upgrade explicitly
       # rather than gate this workflow on whatever ships with today's LTS.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: pnpm
           registry-url: "https://registry.npmjs.org"
       - run: npm install -g npm@^11.5.1
+      - run: pnpm install --frozen-lockfile
 
       # Makes the release goreleaser already built visible — see
       # .goreleaser.yaml's `release: draft: true`. Everything before this
@@ -92,17 +100,22 @@ jobs:
       #
       #   1. From a machine with npm CLI >= 11.5.1 and publish rights on
       #      the @caribou-crew org: `npm login`, then `npm publish
-      #      --access public` from each npm/<name> and npm/<name>-<platform>
-      #      directory once, to reserve the name.
+      #      --access public` from each npm/<name>, npm/<name>-<platform>,
+      #      adapters/js, and adapters/playwright directory once, to reserve
+      #      the name. adapters/js and adapters/playwright need `pnpm
+      #      --filter "@caribou-crew/retrace-playwright..." run build` first
+      #      (they have no prebuilt binary to stage, unlike the npm/*
+      #      packages).
       #   2. On npmjs.com, open that package's Settings -> Trusted
       #      Publisher -> add GitHub Actions: Organization/user
       #      "caribou-crew", Repository "ensemble", Workflow filename
       #      "publish.yml" (just the filename, not the full path), Allowed
       #      actions "npm publish".
-      #   3. Repeat for all 14 packages (npm/ensemble + 6 platforms,
-      #      npm/retrace + 6 platforms). The win32 packages were added
-      #      after the first releases, so they need this one-time setup
-      #      before the first publish that includes them.
+      #   3. Repeat for all 16 packages (npm/ensemble + 6 platforms,
+      #      npm/retrace + 6 platforms, adapters/js, adapters/playwright).
+      #      The win32 and adapters/* packages were added after the first
+      #      releases, so each needs this one-time setup before the first
+      #      publish that includes it.
       #
       # After that, this job needs no npm credentials at all — the
       # `id-token: write` permission above is the entire auth story, and
@@ -115,6 +128,19 @@ jobs:
           BINARY=ensemble node scripts/prepare-npm-binary.mjs
           BINARY=retrace node scripts/prepare-npm-binary.mjs
 
+      # retrace-js and retrace-playwright are plain TS libraries (no
+      # prebuilt binary to stage) — version them the same way, then build,
+      # so npm publish below ships a dist/ that matches this release tag.
+      # retrace-playwright depends on retrace-js via "workspace:*"; building
+      # through its "..." selector (which pulls in its dependencies) builds
+      # retrace-js first in the same command.
+      - name: Build and version the TS packages
+        run: |
+          set -euo pipefail
+          export RELEASE_VERSION="${{ inputs.version }}"
+          node scripts/prepare-npm-ts-packages.mjs
+          pnpm --filter "@caribou-crew/retrace-playwright..." run build
+
       - name: Publish npm packages
         run: |
           set -euo pipefail
@@ -123,7 +149,8 @@ jobs:
                      npm/ensemble-win32-arm64 npm/ensemble-win32-x64 npm/ensemble \
                      npm/retrace-darwin-arm64 npm/retrace-darwin-x64 \
                      npm/retrace-linux-arm64 npm/retrace-linux-x64 \
-                     npm/retrace-win32-arm64 npm/retrace-win32-x64 npm/retrace; do
+                     npm/retrace-win32-arm64 npm/retrace-win32-x64 npm/retrace \
+                     adapters/js adapters/playwright; do
             name=$(node -p "require('./$pkg/package.json').name")
             # Re-running this workflow (e.g. after fixing one package's
             # trusted-publisher setup) must not fail on the packages a prior
