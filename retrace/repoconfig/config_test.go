@@ -100,6 +100,42 @@ func TestLoadRejectsEmptyApps(t *testing.T) {
 	}
 }
 
+func TestLoadParsesSyncBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := writeRepoYAML(t, dir, `
+apps:
+  uxt-web: { root: . }
+sync:
+  branch: main
+  branches: ["main", "e2e/*"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"main", "e2e/*"}
+	if len(cfg.Sync.Branches) != len(want) || cfg.Sync.Branches[0] != want[0] || cfg.Sync.Branches[1] != want[1] {
+		t.Fatalf("Sync.Branches = %v, want %v", cfg.Sync.Branches, want)
+	}
+}
+
+func TestLoadWithNoBranchesKeyLeavesBranchesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := writeRepoYAML(t, dir, `
+apps:
+  uxt-web: { root: . }
+sync:
+  branch: main
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Sync.Branches) != 0 {
+		t.Fatalf("Sync.Branches = %v, want empty when the key is omitted", cfg.Sync.Branches)
+	}
+}
+
 func TestLoadRejectsANonExistentRoot(t *testing.T) {
 	dir := t.TempDir()
 	path := writeRepoYAML(t, dir, `

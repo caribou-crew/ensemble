@@ -47,9 +47,16 @@ type AppEntry struct {
 type SyncDefaults struct {
 	Workflows []string `yaml:"workflows"`
 	Branch    string   `yaml:"branch"`
-	Actor     string   `yaml:"actor"`
-	Event     string   `yaml:"event"`
-	Status    string   `yaml:"status"`
+	// Branches is a glob allowlist (path.Match, same mechanism Workflows
+	// already uses) naming which branches the dashboard's "Choose source"
+	// picker offers. Distinct from Branch: Branch is the single exact-match
+	// default `--watch` and the plain "pull latest" button use; Branches
+	// only governs what the picker shows. Empty means no filter — every
+	// branch discovered is offered. See docs/retrace-repo-config.md.
+	Branches []string `yaml:"branches"`
+	Actor    string   `yaml:"actor"`
+	Event    string   `yaml:"event"`
+	Status   string   `yaml:"status"`
 	// Since bounds how far back a sync looks (e.g. "7d", "24h"), the same
 	// string shape retrace/sync.ParseSince accepts. Empty means that
 	// package's own default.

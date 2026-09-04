@@ -25,6 +25,7 @@ apps:
 sync:                              # optional; defaults for --watch
   workflows: ["Retrace *"]
   branch: main
+  branches: ["main", "e2e/*"]     # optional; dashboard's branch-picker allowlist
   since: 24h
 ```
 
@@ -41,6 +42,13 @@ sync:                              # optional; defaults for --watch
   `event`, `status`, `since` — the same filters `retrace sync` itself
   takes as flags. A CLI flag always wins over the matching `sync:` key
   when both are set.
+- `sync.branches` is separate from `sync.branch`: `branch` is the single
+  exact-match default `--watch` and the dashboard's plain "pull latest"
+  button use; `branches` is a glob allowlist (`path.Match` — an exact name
+  with no glob metacharacter matches only itself, e.g. `"main"`, or a
+  pattern like `"e2e/*"`) naming which branches the dashboard's "Choose
+  source" picker offers as alternatives. Omitted or empty: the picker
+  offers every branch it discovers, unfiltered.
 
 A root that does not exist as a directory, or an empty `apps:`, is
 refused at startup, naming the offending app key — the same "fail at
