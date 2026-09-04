@@ -63,7 +63,7 @@ func List(o Options) ([]Candidate, error) {
 		return nil, errors.New("sync: the \"gh\" CLI is not on PATH — install it (https://cli.github.com) and run `gh auth login`, or set GH_TOKEN/GITHUB_TOKEN, before retrying")
 	}
 	workflows := o.effectiveWorkflows()
-	if err := validateWorkflowPatterns(workflows); err != nil {
+	if err := validateGlobPatterns(workflows); err != nil {
 		return nil, err
 	}
 
@@ -79,7 +79,7 @@ func List(o Options) ([]Candidate, error) {
 			return nil, err
 		}
 		for _, r := range list {
-			if !matchesWorkflow(r.WorkflowName, workflows) {
+			if !matchesGlob(r.WorkflowName, workflows) {
 				continue
 			}
 			if r.CreatedAt.Before(cutoff) {

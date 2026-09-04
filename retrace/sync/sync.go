@@ -51,6 +51,14 @@ type Options struct {
 	Workflows []string
 	// Branch narrows sync to runs off this branch (gh run list --branch).
 	Branch string
+	// Branches narrows ListBranches's output to branch names matching one
+	// of these glob patterns (path.Match, same mechanism as Workflows).
+	// Distinct from Branch: Branch is a single exact-match filter Run/List
+	// pass straight to `gh run list --branch`, narrowing what is fetched in
+	// the first place; Branches is applied in Go, after fetching, against
+	// every branch ListBranches discovers. Empty means no filter — every
+	// branch found is returned. Unused by Run and List.
+	Branches []string
 	// Actor narrows sync to runs triggered by this GitHub user (gh run
 	// list --user).
 	Actor string

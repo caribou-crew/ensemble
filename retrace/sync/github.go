@@ -53,7 +53,7 @@ func runGitHub(o Options) (Result, error) {
 		return Result{}, errors.New("sync: the \"gh\" CLI is not on PATH — install it (https://cli.github.com) and run `gh auth login`, or set GH_TOKEN/GITHUB_TOKEN, before retrying")
 	}
 	workflows := o.effectiveWorkflows()
-	if err := validateWorkflowPatterns(workflows); err != nil {
+	if err := validateGlobPatterns(workflows); err != nil {
 		return Result{}, err
 	}
 
@@ -65,7 +65,7 @@ func runGitHub(o Options) (Result, error) {
 			return Result{}, err
 		}
 		for _, r := range list {
-			if !matchesWorkflow(r.WorkflowName, workflows) {
+			if !matchesGlob(r.WorkflowName, workflows) {
 				continue
 			}
 			if o.hasSelections() {
@@ -118,11 +118,13 @@ func listGitHubRuns(o Options, repo string) ([]ghRun, error) {
 	return list, nil
 }
 
-// matchesWorkflow reports whether name satisfies patterns — every pattern
-// is tried as a path.Match glob (so an exact name with no glob
-// metacharacter just matches itself), and an empty patterns list means
-// "no workflow filter", matching everything.
-func matchesWorkflow(name string, patterns []string) bool {
+// matchesGlob reports whether name satisfies patterns — every pattern is
+// tried as a path.Match glob (so an exact name with no glob metacharacter
+// just matches itself), and an empty patterns list means "no filter",
+// matching everything. Shared by workflow-name filtering (Run, List) and
+// branch-name filtering (ListBranches) — both are "does this name match
+// one of these globs" with no other logic worth a second copy.
+func matchesGlob(name string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return true
 	}
@@ -134,13 +136,12 @@ func matchesWorkflow(name string, patterns []string) bool {
 	return false
 }
 
-// validateWorkflowPatterns rejects a malformed glob up front, so a
-// typo'd pattern fails the sync loudly instead of silently matching
-// nothing.
-func validateWorkflowPatterns(patterns []string) error {
+// validateGlobPatterns rejects a malformed glob up front, so a typo'd
+// pattern fails the sync loudly instead of silently matching nothing.
+func validateGlobPatterns(patterns []string) error {
 	for _, p := range patterns {
 		if _, err := path.Match(p, ""); err != nil {
-			return fmt.Errorf("sync: invalid workflow pattern %q: %w", p, err)
+			return fmt.Errorf("sync: invalid glob pattern %q: %w", p, err)
 		}
 	}
 	return nil
