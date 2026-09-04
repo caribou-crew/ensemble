@@ -47,6 +47,9 @@ function fakeClient(runs: RunRow[]): RetraceClient {
     syncCandidates: unused,
     syncBranches: unused,
     sync: unused,
+    pairs: unused,
+    pair: unused,
+    pairShotUrl: unused,
   };
 }
 
