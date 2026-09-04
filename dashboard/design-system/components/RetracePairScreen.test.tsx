@@ -18,7 +18,17 @@ function pairSummary(): Summary {
     a: { runId: 'reference', kind: 'bundle', dir: '/a', manifest: { app: 'web' } as never },
     b: { runId: '20260904T120000Z-abc1234', kind: 'run', dir: '/b', manifest: { app: 'mobile' } as never },
     quarantined: [],
-    checkpoints: [],
+    checkpoints: [
+      {
+        name: 'home',
+        verdict: 'changed',
+        diffPct: 1.5,
+        diffPctFine: 1.5,
+        numDiff: 10,
+        images: { a: 'a.png', b: 'b.png', diff: 'diff.png', overlay: 'overlay.png' },
+        at: '2026-09-04T12:00:00Z',
+      },
+    ],
     wire: { paired: [], missing: [], extra: [] },
     sections: [],
     hops: { newRoutes: [], goneRoutes: [], serviceCounts: [], routeFailures: [] } as never,
@@ -96,5 +106,14 @@ describe('RetracePairScreen', () => {
 
     expect(calls).toContain('/api/pairs/mobile/wallet-home/20260904T120000Z-abc1234/web__reference');
     expect(container.textContent).toContain('web → mobile');
+
+    // Verify that resolveShotUrl routed through pairShotUrl (not shotUrl).
+    // The cross-app pair view must use pairShotUrl which produces
+    // /api/pairs/.../shots/<side>/<name> URLs, not the same-app shotUrl which
+    // would produce /api/shots/.../... paths.
+    const pairShotImg = container.querySelector(
+      'img[src*="/api/pairs/mobile/wallet-home/20260904T120000Z-abc1234/web__reference/shots/a/home"]',
+    );
+    expect(pairShotImg).not.toBeNull();
   });
 });
