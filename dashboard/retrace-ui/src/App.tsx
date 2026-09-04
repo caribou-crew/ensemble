@@ -385,6 +385,9 @@ export default function App() {
   };
   const openPairs = () => {
     setView('pairs');
+    setApp(null);
+    setFlow(null);
+    setRun(null);
     clearTransient();
   };
   const openPair = (p: PairItem) => {
@@ -392,6 +395,9 @@ export default function App() {
     setPairFlowB(p.flowB);
     setPairRunB(p.runB);
     setPairId(p.pairId);
+    setApp(null);
+    setFlow(null);
+    setRun(null);
     clearTransient();
   };
   const closePair = () => {
@@ -488,7 +494,7 @@ export default function App() {
       setShowHelp((v) => !v);
       return;
     }
-    if (picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
+    if (view === 'pairs' || picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
       if (action === 'back') {
         setPicker(null);
         setRedactPicker(null);

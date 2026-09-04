@@ -1216,4 +1216,34 @@ describe('cross-app compare view', () => {
 
     expect(text()).toContain('web → mobile');
   });
+
+  it('clears app/flow/run on entry, so accept/reject cannot fire underneath the read-only view', async () => {
+    // Regression for a mutation reachable from a supposedly read-only
+    // screen: opening the cross-app view from an already-open run left
+    // `level` still reading 'run' underneath `view === 'pairs'`, so the
+    // global 'a'/'r' shortcuts (gated on `level` alone) could silently
+    // promote or reject the run the viewer thought was merely persisted
+    // behind the pairs listing.
+    const calls = stubServer({
+      posts: {
+        accept: { ok: true, bundle: { dir: 'x', files: [], bytes: 0, runId: 'x', captureStatus: 'ok', unmatchedMasks: [] as string[] } },
+      },
+    });
+    await mount();
+    await openAFlow(calls); // drills to run level: app/flow/run are all set
+
+    const pairsBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'cross-app')!;
+    await act(async () => {
+      pairsBtn.click();
+    });
+    // The header control now honestly reads "back to queue" — it no longer
+    // lands wherever app/flow/run happened to be.
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === '← queue')).toBe(true);
+
+    calls.length = 0;
+    await press('a');
+    await press('r');
+    expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
+    expect(notice()).toBeNull();
+  });
 });
