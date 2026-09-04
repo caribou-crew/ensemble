@@ -16,6 +16,7 @@ import type {
   ItemResponse,
   QueueResponse,
   RunsResponse,
+  SyncBranchesResponse,
   SyncCandidatesResponse,
   SyncConfigResponse,
   SyncResult,
@@ -138,6 +139,12 @@ export interface RetraceClient {
     repo?: string,
     filters?: { workflows?: string[]; branch?: string; actor?: string; event?: string; status?: string; since?: string },
   ): Promise<SyncCandidatesResponse>;
+  /** Branches that have actually triggered a matching workflow recently —
+   * the sync panel's "Choose source" picker. Unlike syncCandidates, an
+   * omitted `workflows` filter falls back to the server's configured
+   * default rather than "every workflow", so the picker only ever shows
+   * branches relevant to what this dashboard tracks. */
+  syncBranches(repo?: string, filters?: { workflows?: string[]; since?: string }): Promise<SyncBranchesResponse>;
   sync(repo: string | undefined, selections: SyncSelection[]): Promise<SyncResult>;
 }
 
@@ -226,6 +233,16 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
       });
       const qs = params.toString();
       return request<SyncCandidatesResponse>(`${basePath}/sync/candidates${withInstance(qs ? `?${qs}` : '')}`);
+    },
+    syncBranches(repo, filters = {}) {
+      const { workflows, ...rest } = filters;
+      const params = new URLSearchParams({
+        ...(repo ? { repo } : {}),
+        ...(workflows && workflows.length > 0 ? { workflows: workflows.join(',') } : {}),
+        ...compact(rest),
+      });
+      const qs = params.toString();
+      return request<SyncBranchesResponse>(`${basePath}/sync/branches${withInstance(qs ? `?${qs}` : '')}`);
     },
     sync(repo, selections) {
       return request<SyncResult>(

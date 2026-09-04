@@ -127,6 +127,30 @@ describe('syncCandidates', () => {
   });
 });
 
+describe('syncBranches', () => {
+  it('hits the branches endpoint with the given repo', async () => {
+    const calls = captureFetch(fakeResponse({ branches: [] }));
+    await client.syncBranches('acme/widgets');
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.pathname).toBe('/api/sync/branches');
+    expect(url.searchParams.get('repo')).toBe('acme/widgets');
+  });
+
+  it('joins the workflows filter as a comma-separated query param', async () => {
+    const calls = captureFetch(fakeResponse({ branches: [] }));
+    await client.syncBranches('acme/widgets', { workflows: ['Retrace *'] });
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.searchParams.get('workflows')).toBe('Retrace *');
+  });
+
+  it('carries since through to the query string', async () => {
+    const calls = captureFetch(fakeResponse({ branches: [] }));
+    await client.syncBranches('acme/widgets', { since: '30d' });
+    const url = new URL(calls[0].url, 'http://x');
+    expect(url.searchParams.get('since')).toBe('30d');
+  });
+});
+
 describe('listRetraceInstances', () => {
   it('fetches {basePath}/instances', async () => {
     const calls = captureFetch(fakeResponse({ instances: [{ key: 'web', label: 'Web' }] }));

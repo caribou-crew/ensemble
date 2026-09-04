@@ -275,6 +275,18 @@ export interface SyncCandidatesResponse {
   candidates: SyncCandidate[];
 }
 
+/** One branch ListBranches (Go) found: its name and its most recent
+ * qualifying run's timestamp and triggering event. */
+export interface BranchCandidate {
+  name: string;
+  lastRunAt: string;
+  lastEvent: string;
+}
+
+export interface SyncBranchesResponse {
+  branches: BranchCandidate[];
+}
+
 /** GET {basePath}/sync/config — the repo.yaml sync defaults the standalone
  * `retrace serve` exposes so the Browse-&-sync panel prefills the repo and
  * filters. Empty `repo` means no configured default (the panel asks). */
