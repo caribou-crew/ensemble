@@ -15,6 +15,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/diff/pixel"
+	"github.com/caribou-crew/ensemble/retrace/pairs"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -58,6 +59,9 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sync/candidates", s.handleSyncCandidates)
 	mux.HandleFunc("GET /api/sync/branches", s.handleSyncBranches)
 	mux.HandleFunc("POST /api/sync", s.handleSync)
+	mux.HandleFunc("GET /api/pairs", s.handlePairs)
+	mux.HandleFunc("GET /api/pairs/{appB}/{flowB}/{runB}/{pairId}", s.handlePair)
+	mux.HandleFunc("GET /api/pairs/{appB}/{flowB}/{runB}/{pairId}/shots/{side}/{name}", s.handlePairShot)
 }
 
 // --- health -------------------------------------------------------------
@@ -854,4 +858,62 @@ func masksFor(cfg *config.Config, flow string) func(string) []pixel.Rect {
 	return func(checkpoint string) []pixel.Rect {
 		return pixel.RectsFrom(cfg.MasksFor(flow, checkpoint))
 	}
+}
+
+// --- pairs (cross-app diffs) --------------------------------------------
+
+func (s *server) handlePairs(w http.ResponseWriter, r *http.Request) {
+	if sources := s.currentSources(); sources != nil {
+		items, err := sources.ListPairs()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"pairs": items})
+		return
+	}
+	items, err := ListPairs(s.deps())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pairs": items})
+}
+
+func (s *server) handlePair(w http.ResponseWriter, r *http.Request) {
+	appB, flowB, runB, pairID := r.PathValue("appB"), r.PathValue("flowB"), r.PathValue("runB"), r.PathValue("pairId")
+	d := s.depsForApp(appB)
+	dir, err := pairDirFor(d, appB, flowB, runB, pairID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sum, err := pairs.ReadSummary(dir)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf(
+			"no persisted cross-app diff at %s/%s/%s/%s — run `retrace diff` with -a/-b naming two different apps first",
+			appB, flowB, runB, pairID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": sum})
+}
+
+func (s *server) handlePairShot(w http.ResponseWriter, r *http.Request) {
+	appB, flowB, runB, pairID := r.PathValue("appB"), r.PathValue("flowB"), r.PathValue("runB"), r.PathValue("pairId")
+	side, name := r.PathValue("side"), r.PathValue("name")
+	if !validShotRequest(w, side, name) {
+		return
+	}
+	d := s.depsForApp(appB)
+	dir, err := pairDirFor(d, appB, flowB, runB, pairID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sum, err := pairs.ReadSummary(dir)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Sprintf("no persisted cross-app diff at %s/%s/%s/%s", appB, flowB, runB, pairID))
+		return
+	}
+	writeShotImage(w, sum, dir, appB, flowB, side, name)
 }

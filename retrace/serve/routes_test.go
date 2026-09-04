@@ -967,7 +967,11 @@ func registeredRoutes(t *testing.T) [][2]string {
 
 // fill substitutes a real app/flow/side/name for a pattern's wildcards.
 func fill(pattern string) string {
-	r := strings.NewReplacer("{app}", "web", "{flow}", "search", "{runId}", "20260821T101000Z-bbbbbbb", "{side}", "a", "{name}", "results", "{path...}", "index.html")
+	r := strings.NewReplacer(
+		"{app}", "web", "{flow}", "search", "{runId}", "20260821T101000Z-bbbbbbb",
+		"{side}", "a", "{name}", "results", "{path...}", "index.html",
+		"{appB}", "mobile", "{flowB}", "checkout", "{runB}", "20260821T101000Z-bbbbbbb", "{pairId}", "web__reference",
+	)
 	return r.Replace(pattern)
 }
 
