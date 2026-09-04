@@ -128,10 +128,17 @@ func crossAppPairFixture(t *testing.T, aRoot, aApp, bRoot, bApp, flow string) (p
 	acceptRef(t, aRoot, aApp, flow, runA)
 	recordRun(t, bRoot, bApp, flow, runB, map[string][]byte{"shot": bPNG}, nil)
 
-	a := diff.RunRef{Kind: "bundle", Manifest: runs.Manifest{
+	// Dir is deliberately a stale, nonexistent absolute path — exactly the
+	// shape of the bug this fixture regression-tests (a path some OTHER
+	// machine's `retrace diff` process observed, baked into summary.json).
+	// An empty Dir would only catch a regression to "if sum.X.Dir == ''";
+	// this catches any regression back to trusting the persisted path at
+	// all, since reading through it would 404 or read garbage, not serve
+	// the real PNG bytes asserted below.
+	a := diff.RunRef{Kind: "bundle", Dir: "/nonexistent/stale/path/from/another/machine/a", Manifest: runs.Manifest{
 		App: aApp, Checkpoints: []runs.Checkpoint{{Name: "shot", File: "shots/shot.png", Width: 40, Height: 40}},
 	}}
-	b := diff.RunRef{Kind: "run", RunID: runB, Manifest: runs.Manifest{
+	b := diff.RunRef{Kind: "run", RunID: runB, Dir: "/nonexistent/stale/path/from/another/machine/b", Manifest: runs.Manifest{
 		App: bApp, Checkpoints: []runs.Checkpoint{{Name: "shot", File: "shots/shot.png", Width: 40, Height: 40}},
 	}}
 	s := diff.Summary{Schema: diff.SummarySchema, Flow: flow, Verdict: "changed", A: a, B: b}
