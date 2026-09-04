@@ -48,7 +48,19 @@ export default function RetracePairsList({
       </thead>
       <tbody>
         {pairs.map((p) => (
-          <tr key={pairKey(p)} className="pairs__row" onClick={() => onOpen(p)}>
+          <tr
+            key={pairKey(p)}
+            className="pairs__row"
+            role="button"
+            tabIndex={0}
+            onClick={() => onOpen(p)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onOpen(p);
+              }
+            }}
+          >
             <td>
               {p.appA} → {p.appB}
             </td>
@@ -58,7 +70,10 @@ export default function RetracePairsList({
               <Badge tone={verdictTone(p.verdict)}>{verdictLabel(p.verdict)}</Badge>
             </td>
             <td>{p.counts.pixelChanged}</td>
-            <td>{p.counts.wireChanged + p.counts.wireMissing + p.counts.wireExtra}</td>
+            <td>
+              {p.counts.wireChanged + p.counts.wireMissing + p.counts.wireExtra}
+              {p.counts.wireMoved > 0 ? ` (+${p.counts.wireMoved} reordered)` : ''}
+            </td>
             <td>{p.counts.hopNew + p.counts.hopGone}</td>
           </tr>
         ))}

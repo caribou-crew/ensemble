@@ -70,4 +70,38 @@ describe('RetracePairsList', () => {
     });
     expect(container.textContent).toContain('No cross-app diffs yet');
   });
+
+  it('displays wireMoved count when present', async () => {
+    const pair = pairItem({
+      counts: {
+        checkpoints: 2,
+        pixelChanged: 0,
+        wirePaired: 3,
+        wireChanged: 0,
+        wireMoved: 2,
+        wireMissing: 0,
+        wireExtra: 0,
+        violations: 0,
+        hopNew: 0,
+        hopGone: 0,
+        unexpectedStatuses: 0,
+        conformance: 0,
+      },
+    });
+    await act(async () => {
+      root.render(<RetracePairsList pairs={[pair]} onOpen={vi.fn()} />);
+    });
+    const row = container.querySelector('.pairs__row') as HTMLElement;
+    expect(row.textContent).toContain('0 (+2 reordered)');
+  });
+
+  it('row has keyboard accessibility attributes', async () => {
+    const pair = pairItem();
+    await act(async () => {
+      root.render(<RetracePairsList pairs={[pair]} onOpen={vi.fn()} />);
+    });
+    const row = container.querySelector('.pairs__row') as HTMLElement;
+    expect(row.getAttribute('role')).toBe('button');
+    expect(row.getAttribute('tabindex')).toBe('0');
+  });
 });
