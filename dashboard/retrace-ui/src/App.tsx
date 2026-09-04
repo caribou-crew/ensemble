@@ -8,7 +8,10 @@ import RetraceRunsList from '@ensemble/design-system/components/RetraceRunsList'
 import RetraceBreadcrumb from '@ensemble/design-system/components/RetraceBreadcrumb';
 import RetraceItemScreen from '@ensemble/design-system/components/RetraceItemScreen';
 import RetraceSyncPanel from '@ensemble/design-system/components/RetraceSyncPanel';
+import RetracePairsList from '@ensemble/design-system/components/RetracePairsList';
+import RetracePairScreen from '@ensemble/design-system/components/RetracePairScreen';
 import { createRetraceClient, type QueueFilter } from '@ensemble/design-system/retraceClient';
+import type { PairItem } from '@ensemble/design-system/retraceTypes';
 import { formatWhen } from '@ensemble/design-system/retraceWhen';
 import { pickLatestPerWorkflow } from '@ensemble/design-system/syncCandidates';
 import {
@@ -269,6 +272,17 @@ export default function App() {
   // them survives a refresh (the Go side's SPA fallback) and lands on the
   // right level.
   const [run, setRun] = useUrlParam('run');
+  // The cross-app compare view — a completely separate navigation axis
+  // from queue/surface/run. view === 'pairs' shows the listing; the four
+  // pairAppB/pairFlowB/pairRunB/pairId params (set together, cleared
+  // together) additionally open one persisted pairing's detail screen.
+  // Same URL-as-state discipline as everything else here: a deep link
+  // survives a refresh via the Go side's SPA fallback.
+  const [view, setView] = useUrlParam('view');
+  const [pairAppB, setPairAppB] = useUrlParam('pairAppB');
+  const [pairFlowB, setPairFlowB] = useUrlParam('pairFlowB');
+  const [pairRunB, setPairRunB] = useUrlParam('pairRunB');
+  const [pairId, setPairId] = useUrlParam('pairId');
   const [version, setVersion] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
   // Owned here, not inside RetraceQueueList: j/k must walk the rows that are
@@ -337,6 +351,9 @@ export default function App() {
     return (await client.itemAtRun(app, flow, run)).summary;
   }, [level, app, flow, run, version]);
 
+  // Fetches the pairs listing, only while that view is open.
+  const pairsList = useAsync(() => (view === 'pairs' ? client.pairs() : Promise.resolve(null)), [view, version]);
+
   // --- navigation. Every transition writes URL params (via useUrlParam), so
   // the level is always derivable from the URL and every view is a deep
   // link. Notice/error/selection are flow-scoped and cleared on any move.
@@ -365,6 +382,28 @@ export default function App() {
   const backToSurface = () => {
     setRun(null);
     clearTransient();
+  };
+  const openPairs = () => {
+    setView('pairs');
+    clearTransient();
+  };
+  const openPair = (p: PairItem) => {
+    setPairAppB(p.appB);
+    setPairFlowB(p.flowB);
+    setPairRunB(p.runB);
+    setPairId(p.pairId);
+    clearTransient();
+  };
+  const closePair = () => {
+    setPairAppB(null);
+    setPairFlowB(null);
+    setPairRunB(null);
+    setPairId(null);
+    clearTransient();
+  };
+  const closePairs = () => {
+    setView(null);
+    closePair();
   };
 
   const mutate = async (label: string, fn: () => Promise<string>) => {
@@ -572,6 +611,13 @@ export default function App() {
         >
           {checkingAll ? <Spinner /> : '⇩ check all'}
         </button>
+        <button
+          type="button"
+          className="app-header__pairs"
+          onClick={view === 'pairs' ? closePairs : openPairs}
+        >
+          {view === 'pairs' ? '← queue' : 'cross-app'}
+        </button>
         <button type="button" className="app-header__sync" onClick={() => setShowSyncPanel(true)}>
           sync
         </button>
@@ -584,7 +630,26 @@ export default function App() {
       {notice ? <p className="notice">{notice}</p> : null}
 
       <main className="app-main">
-        {level === 'run' ? (
+        {view === 'pairs' ? (
+          pairAppB && pairFlowB && pairRunB && pairId ? (
+            <RetracePairScreen
+              client={client}
+              appB={pairAppB}
+              flowB={pairFlowB}
+              runB={pairRunB}
+              pairId={pairId}
+              onBack={closePair}
+            />
+          ) : pairsList.loading ? (
+            <p className="loading">
+              <Spinner /> loading cross-app diffs…
+            </p>
+          ) : pairsList.error ? (
+            <Problem message={pairsList.error.message} />
+          ) : pairsList.data ? (
+            <RetracePairsList pairs={pairsList.data.pairs} onOpen={openPair} />
+          ) : null
+        ) : level === 'run' ? (
           item.loading ? (
             <p className="loading">
               <Spinner /> loading {app}/{flow}…

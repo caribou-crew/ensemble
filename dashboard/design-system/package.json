@@ -25,7 +25,9 @@
     "./components/RetraceRunsList": "./components/RetraceRunsList.tsx",
     "./components/RetraceBreadcrumb": "./components/RetraceBreadcrumb.tsx",
     "./components/RetraceItemScreen": "./components/RetraceItemScreen.tsx",
-    "./components/RetraceSyncPanel": "./components/RetraceSyncPanel.tsx"
+    "./components/RetraceSyncPanel": "./components/RetraceSyncPanel.tsx",
+    "./components/RetracePairsList": "./components/RetracePairsList.tsx",
+    "./components/RetracePairScreen": "./components/RetracePairScreen.tsx"
   },
   "scripts": {
     "test": "tsc --noEmit -p tsconfig.json && vitest run"

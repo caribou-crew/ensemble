@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import type { CaptureTrust, Counts, Item, Summary } from './api/types';
-import type { SyncCandidate, SyncConfigResponse, SyncResult } from '@ensemble/design-system/retraceTypes';
+import type { PairItem, SyncCandidate, SyncConfigResponse, SyncResult } from '@ensemble/design-system/retraceTypes';
 
 // --- fixtures -----------------------------------------------------------
 
@@ -155,6 +155,8 @@ function stubServer(opts: {
   syncConfig?: SyncConfigResponse;
   syncCandidates?: SyncCandidate[];
   syncResult?: SyncResult;
+  pairs?: PairItem[];
+  pairItemSummary?: Summary;
 } = {}) {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -176,6 +178,10 @@ function stubServer(opts: {
       } else if (url === '/api/sync' && method === 'POST') {
         if (!opts.syncResult) return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', text: () => Promise.resolve('{}') });
         body = opts.syncResult;
+      } else if (url === '/api/pairs' || url.startsWith('/api/pairs?')) {
+        body = { pairs: opts.pairs ?? [] };
+      } else if (/\/api\/pairs\/[^/]+\/[^/]+\/[^/]+\/[^/]+$/.test(url.split('?')[0])) {
+        body = { summary: opts.pairItemSummary ?? summary() };
       } else if (url.startsWith('/api/evidence/')) {
         body = opts.evidence ?? { videos: [], hasReport: false };
       } else if (method === 'GET' && /\/runs$/.test(url.split('?')[0])) {
@@ -1163,5 +1169,51 @@ describe('evidence (video + report)', () => {
     });
     expect(video.playbackRate).toBe(4);
     expect(fourX.className).toContain('item__video-speed-btn--active');
+  });
+});
+
+describe('cross-app compare view', () => {
+  it('lists persisted pairs and opens one into RetracePairScreen', async () => {
+    const pairRow: PairItem = {
+      appA: 'web',
+      flowA: 'checkout',
+      runA: 'reference',
+      appB: 'mobile',
+      flowB: 'checkout',
+      runB: '20260904T120000Z-abc1234',
+      pairId: 'web__reference',
+      computedAt: '2026-09-04T12:00:00Z',
+      verdict: 'changed',
+      counts: zeroCounts,
+    };
+    // RetracePairScreen labels the app column from the nested manifests
+    // (`data.a.manifest.app` / `data.b.manifest.app`), not the top-level
+    // `Summary.app` field, so the B side's manifest needs its own
+    // override for "web → mobile" to appear.
+    const pairSummaryBase = summary();
+    stubServer({
+      pairs: [pairRow],
+      pairItemSummary: {
+        ...pairSummaryBase,
+        b: { ...pairSummaryBase.b, manifest: { ...pairSummaryBase.b.manifest, app: 'mobile' } },
+      },
+    });
+    await mount();
+
+    const pairsBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'cross-app')!;
+    expect(pairsBtn).toBeTruthy();
+    await act(async () => {
+      pairsBtn.click();
+    });
+
+    expect(text()).toContain('mobile');
+
+    const row = container.querySelector('.pairs__row') as HTMLElement;
+    expect(row).toBeTruthy();
+    await act(async () => {
+      row.click();
+    });
+
+    expect(text()).toContain('web → mobile');
   });
 });
