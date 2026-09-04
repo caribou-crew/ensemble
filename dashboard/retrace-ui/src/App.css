@@ -47,8 +47,19 @@ body {
   opacity: 0.6;
 }
 
-.app-header__sync {
+.app-header__pairs {
   margin-left: auto;
+  background: none;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+}
+
+.app-header__sync {
   background: none;
   border: 1px solid var(--border-hairline);
   border-radius: 4px;

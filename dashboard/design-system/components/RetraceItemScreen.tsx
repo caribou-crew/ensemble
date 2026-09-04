@@ -144,6 +144,8 @@ export default function RetraceItemScreen({
   resolveShotUrl,
   onReveal,
   onBack,
+  label,
+  backLabel,
 }: {
   client: RetraceClient;
   app: string;
@@ -157,6 +159,13 @@ export default function RetraceItemScreen({
   // run-detail view embeds this inside its own chrome (which has its own
   // back affordance), so it omits this and the button does not render.
   onBack?: () => void;
+  // Optional display-only overrides: `app` is also used for real API calls
+  // (evidence/video/report — see EvidenceSection), so a caller whose header
+  // needs to show something that is NOT a real app id (RetracePairScreen's
+  // "web → mobile") must not feed that string into `app` itself. Both
+  // default to today's exact behavior when omitted.
+  label?: string;
+  backLabel?: string;
 }) {
   // Collapsed by default: a flow with a dozen+ checkpoints, most of which
   // passed, otherwise means a long scroll past every unchanged screen to
@@ -211,13 +220,11 @@ export default function RetraceItemScreen({
     <div className="item">
       {onBack ? (
         <button type="button" className="item__back" onClick={onBack}>
-          ← back to queue
+          ← back to {backLabel ?? 'queue'}
         </button>
       ) : null}
       <header className="item__header">
-        <h1>
-          {app}/{flow}
-        </h1>
+        <h1>{label ?? `${app}/${flow}`}</h1>
         <Badge tone={tone}>{verdictLabel(summary.verdict)}</Badge>
         <span className="item__runs">
           {/* Which run is which, spelled out — the left/reference side is the

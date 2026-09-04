@@ -107,6 +107,15 @@ describe('RetracePairScreen', () => {
     expect(calls).toContain('/api/pairs/mobile/wallet-home/20260904T120000Z-abc1234/web__reference');
     expect(container.textContent).toContain('web → mobile');
 
+    // The composed "web → mobile" label must be display-only: EvidenceSection
+    // fetches through the REAL app id (appB = "mobile"), never the arrow
+    // string — feeding the arrow string into a real API call is exactly what
+    // silently 400'd and permanently hid the evidence section before this fix
+    // (RetraceItemScreen's `app` prop is now the real id; `label` carries the
+    // display string instead).
+    expect(calls).toContain('/api/evidence/mobile/wallet-home');
+    expect(calls.some((u) => u.startsWith('/api/evidence/') && u !== '/api/evidence/mobile/wallet-home')).toBe(false);
+
     // Verify that resolveShotUrl routed through pairShotUrl (not shotUrl).
     // The cross-app pair view must use pairShotUrl which produces
     // /api/pairs/.../shots/<side>/<name> URLs, not the same-app shotUrl which

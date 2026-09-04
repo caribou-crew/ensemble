@@ -73,6 +73,23 @@ func (s Sources) ListPairs() ([]PairItem, error) {
 	return items, nil
 }
 
+// sideDirFor resolves app/flow/run to the directory holding that side's own
+// captured shots — a run directory, or (run == runs.RefRunID) the app's
+// committed reference bundle. Shared by pairDirFor (B) and handlePairShot's
+// A-side resolution, so neither ever serves a filesystem path read out of a
+// persisted data file — only app/flow/run values re-validated the same way
+// every other route validates a request-supplied path component.
+func sideDirFor(d Deps, app, flow, run string) (string, error) {
+	if run == runs.RefRunID {
+		return refs.BundleDir(d.Cwd, app, flow)
+	}
+	p, err := runs.PathsFor(runs.RunsRoot(d.Cwd), app, flow, run)
+	if err != nil {
+		return "", err
+	}
+	return p.RunDir, nil
+}
+
 // pairDirFor resolves {appB}/{flowB}/{runB}/{pairId} to the directory a
 // persisted cross-app diff lives in. runB is either a real run id or the
 // literal "reference" (runs.RefRunID) — B can resolve to a reference bundle
@@ -85,19 +102,9 @@ func pairDirFor(d Deps, appB, flowB, runB, pairID string) (string, error) {
 	if err := runs.ValidateComponents(appB, flowB, runB, pairID); err != nil {
 		return "", err
 	}
-	var bDir string
-	if runB == runs.RefRunID {
-		dir, err := refs.BundleDir(d.Cwd, appB, flowB)
-		if err != nil {
-			return "", err
-		}
-		bDir = dir
-	} else {
-		p, err := runs.PathsFor(runs.RunsRoot(d.Cwd), appB, flowB, runB)
-		if err != nil {
-			return "", err
-		}
-		bDir = p.RunDir
+	bDir, err := sideDirFor(d, appB, flowB, runB)
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(bDir, "diffs", pairID), nil
 }

@@ -46,8 +46,10 @@ export default function RetracePairScreen({
   return (
     <RetraceItemScreen
       client={client}
-      app={`${data.a.manifest.app || '?'} → ${data.b.manifest.app || '?'}`}
+      app={appB}
       flow={flowB}
+      label={`${data.a.manifest.app || '?'} → ${data.b.manifest.app || '?'}`}
+      backLabel="cross-app diffs"
       summary={data}
       selectedField={null}
       onSelectField={() => {}}

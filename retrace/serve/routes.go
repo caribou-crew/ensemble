@@ -923,5 +923,30 @@ func (s *server) handlePairShot(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// sum.A.Dir/sum.B.Dir are whatever the CLI's own process observed when
+	// the diff was computed — a path that may be relative to a different
+	// machine's cwd, or may since have moved (a synced run, a re-cloned
+	// repo). Re-resolve both sides the same validated way pairDirFor
+	// already resolves B, rather than trusting a filesystem path read out
+	// of a data file.
+	pr, err := pairs.Read(dir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	aDir, err := sideDirFor(s.depsForApp(pr.AppA), pr.AppA, pr.FlowA, pr.RunA)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sum.A.Dir = aDir
+	bDir, err := sideDirFor(d, appB, flowB, runB)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sum.B.Dir = bDir
+
 	writeShotImage(w, sum, dir, appB, flowB, side, name)
 }
