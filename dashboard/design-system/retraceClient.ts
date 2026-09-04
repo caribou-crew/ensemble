@@ -14,6 +14,7 @@
 import type {
   Evidence,
   ItemResponse,
+  PairsResponse,
   QueueResponse,
   RunsResponse,
   SyncBranchesResponse,
@@ -126,6 +127,20 @@ export interface RetraceClient {
   videoUrl(app: string, flow: string, name: string): string;
   reportUrl(app: string, flow: string): string;
   evidence(app: string, flow: string): Promise<Evidence>;
+  /** Every persisted cross-app diff (retrace/pairs) — the listing for the
+   * cross-app compare view. Never triggers a computation; reads only what
+   * `retrace diff -a/-b` already persisted. */
+  pairs(): Promise<PairsResponse>;
+  /** One persisted cross-app diff's full Summary. */
+  pair(appB: string, flowB: string, runB: string, pairId: string): Promise<ItemResponse>;
+  pairShotUrl(
+    appB: string,
+    flowB: string,
+    runB: string,
+    pairId: string,
+    side: 'a' | 'b' | 'diff' | 'overlay',
+    name: string,
+  ): string;
   /** The server's configured sync defaults (repo.yaml's `repo:` + `sync:`),
    * so the panel can prefill the repo instead of asking. Empty repo means no
    * configured default. Only the standalone `retrace serve` populates it;
@@ -220,6 +235,18 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
     },
     evidence(app, flow) {
       return request<Evidence>(`${basePath}/evidence/${seg(app)}/${seg(flow)}${withInstance('')}`);
+    },
+    pairs() {
+      return request<PairsResponse>(`${basePath}/pairs${withInstance('')}`);
+    },
+    pair(appB, flowB, runB, pairId) {
+      return request<ItemResponse>(`${basePath}/pairs/${seg(appB)}/${seg(flowB)}/${seg(runB)}/${seg(pairId)}${withInstance('')}`);
+    },
+    pairShotUrl(appB, flowB, runB, pairId, side, name) {
+      if (name === '') {
+        throw new Error(`no ${side}-side image for this checkpoint in ${appB}/${flowB}`);
+      }
+      return `${basePath}/pairs/${seg(appB)}/${seg(flowB)}/${seg(runB)}/${seg(pairId)}/shots/${seg(side)}/${seg(name)}${withInstance('')}`;
     },
     syncConfig() {
       return request<SyncConfigResponse>(`${basePath}/sync/config${withInstance('')}`);

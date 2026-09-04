@@ -159,3 +159,29 @@ describe('listRetraceInstances', () => {
     expect(result.instances).toEqual([{ key: 'web', label: 'Web' }]);
   });
 });
+
+describe('pairs', () => {
+  it('lists persisted cross-app diffs', async () => {
+    const calls = captureFetch(fakeResponse({ pairs: [] }));
+    await client.pairs();
+    expect(calls[0].url).toBe('/api/pairs');
+  });
+
+  it('fetches one pairing by appB/flowB/runB/pairId', async () => {
+    const calls = captureFetch(fakeResponse({ summary: {} }));
+    await client.pair('mobile', 'checkout', '20260904T120000Z-abc1234', 'web__reference');
+    expect(calls[0].url).toBe('/api/pairs/mobile/checkout/20260904T120000Z-abc1234/web__reference');
+  });
+
+  it('builds a pairing shot URL for one of the four comparison panes', () => {
+    expect(client.pairShotUrl('mobile', 'checkout', '20260904T120000Z-abc1234', 'web__reference', 'overlay', 'home')).toBe(
+      '/api/pairs/mobile/checkout/20260904T120000Z-abc1234/web__reference/shots/overlay/home',
+    );
+  });
+
+  it('throws rather than building a pairing shot URL for a side the summary never wrote', () => {
+    expect(() =>
+      client.pairShotUrl('mobile', 'checkout', '20260904T120000Z-abc1234', 'web__reference', 'diff', ''),
+    ).toThrow(/no diff-side image/);
+  });
+});

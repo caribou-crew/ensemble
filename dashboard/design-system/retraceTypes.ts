@@ -316,3 +316,24 @@ export interface Evidence {
   videos: string[];
   hasReport: boolean;
 }
+
+/** One persisted cross-app diff (retrace/pairs.Pair on the wire), the
+ * browsable counterpart to `retrace diff -a <appA>@<selA> -b <appB>@<selB>`.
+ * Never computed by the dashboard — the CLI persisted it, and this is a
+ * read of what's on disk. */
+export interface PairItem {
+  appA: string;
+  flowA: string;
+  runA: string;
+  appB: string;
+  flowB: string;
+  runB: string;
+  pairId: string;
+  computedAt: string;
+  verdict: 'pass' | 'changed' | 'failed' | 'quarantined';
+  counts: Counts;
+}
+
+export interface PairsResponse {
+  pairs: PairItem[];
+}
