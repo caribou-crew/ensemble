@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -334,5 +335,81 @@ func TestWithSeveralRootsTheMissingReferenceIsExplainedPerRoot(t *testing.T) {
 	}
 	if strings.Contains(solo.stderr, first+": ") {
 		t.Errorf("a single-root refusal prefixes the only root it searched:\n%s", solo.stderr)
+	}
+}
+
+// TestCrossAppDiffPersistsAPairingUnderSideBsRunDirectory: the dashboard's
+// cross-app compare view (docs/superpowers/specs/2026-09-04-cross-app-compare-view-design.md)
+// never recomputes a diff — it only reads what the CLI already persisted.
+// This is the CLI half of that contract: a cross-app `retrace diff` must
+// leave a pair.json and a summary.json behind, in a pairing directory
+// alongside side B's own run, that `retrace serve` can discover with no
+// index file.
+func TestCrossAppDiffPersistsAPairingUnderSideBsRunDirectory(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	webRepo, mobileRepo := t.TempDir(), t.TempDir()
+	writeConfig(t, webRepo, "app: web\n")
+	writeConfig(t, mobileRepo, "app: mobile\n")
+
+	webRunID := runOnce(t, bin, webRepo, "web", "checkout", upstream.URL)
+	mobileRunID := runOnce(t, bin, mobileRepo, "mobile", "checkout", upstream.URL)
+
+	res := runRetrace(t, bin, webRepo, "fetch",
+		"diff", "--flow", "checkout", "--json",
+		"--root", webRepo, "--root", mobileRepo,
+		"--a", "web@latest", "--b", "mobile@latest")
+	if res.code != 0 && res.code != 1 {
+		t.Fatalf("exit = %d, want 0 or 1 (a real comparison)\nstdout: %s\nstderr: %s", res.code, res.stdout, res.stderr)
+	}
+
+	pairDir := filepath.Join(runs.RunsRoot(mobileRepo), "mobile", "checkout", mobileRunID, "diffs", "web__"+webRunID)
+	pairJSON, err := os.ReadFile(filepath.Join(pairDir, "pair.json"))
+	if err != nil {
+		t.Fatalf("no pair.json persisted at %s: %v", pairDir, err)
+	}
+	var pair struct{ AppA, AppB, RunA, RunB, Verdict string }
+	if err := json.Unmarshal(pairJSON, &pair); err != nil {
+		t.Fatalf("pair.json is not valid JSON: %v\n%s", err, pairJSON)
+	}
+	if pair.AppA != "web" || pair.AppB != "mobile" {
+		t.Errorf("pair.json apps = %q/%q, want web/mobile", pair.AppA, pair.AppB)
+	}
+	if pair.RunA != webRunID || pair.RunB != mobileRunID {
+		t.Errorf("pair.json runs = %q/%q, want %q/%q", pair.RunA, pair.RunB, webRunID, mobileRunID)
+	}
+	if _, err := os.Stat(filepath.Join(pairDir, "summary.json")); err != nil {
+		t.Errorf("no summary.json persisted at %s: %v", pairDir, err)
+	}
+}
+
+// TestSameAppDiffPersistsNoPairing: the persistence behavior added for
+// cross-app diffs must not change a same-app `retrace diff` at all — no
+// pair.json, no diffs/ directory, images written exactly where they always
+// were (directly under the run, not nested under diffs/<pairId>).
+func TestSameAppDiffPersistsNoPairing(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "app: web\n")
+	runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+	runID := runOnce(t, bin, cwd, "web", "checkout", upstream.URL)
+
+	res := runRetrace(t, bin, cwd, "fetch", "diff", "--flow", "checkout", "--app", "web")
+	if res.code != 0 && res.code != 1 {
+		t.Fatalf("exit = %d\nstderr: %s", res.code, res.stderr)
+	}
+
+	runDir := filepath.Join(runs.RunsRoot(cwd), "web", "checkout", runID)
+	if _, err := os.Stat(filepath.Join(runDir, "diffs")); !os.IsNotExist(err) {
+		t.Errorf("a same-app diff left a diffs/ directory at %s behind: %v", runDir, err)
 	}
 }

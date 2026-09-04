@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/pairs"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -94,9 +96,24 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "diff: %v", err)
 	}
 
+	// A CROSS-APP comparison — the two sides' own manifests name different
+	// apps, which only --root's app@selector syntax can produce (see
+	// resolveSide's doc comment). Its generated images and its Summary are
+	// persisted into a pairing directory alongside side B's own run/bundle,
+	// so `retrace serve` can discover and render it later with no
+	// recomputation — see retrace/pairs and
+	// docs/superpowers/specs/2026-09-04-cross-app-compare-view-design.md.
+	// A same-app diff is unaffected: outDir still defaults to b.Dir and
+	// nothing is persisted.
+	crossApp := a.Manifest.App != "" && b.Manifest.App != "" && a.Manifest.App != b.Manifest.App
+
 	outDir := *out
 	if outDir == "" {
-		outDir = b.Dir
+		if crossApp {
+			outDir = pairs.DirFor(b.Dir, a)
+		} else {
+			outDir = b.Dir
+		}
 	}
 
 	s, err := diff.Build(diff.BuildInput{
@@ -106,6 +123,12 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	})
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
+	}
+
+	if crossApp {
+		if _, perr := pairs.Persist(outDir, s, time.Now()); perr != nil {
+			return fail(stderr, "diff: persisting the cross-app pairing: %v", perr)
+		}
 	}
 
 	if *asJSON {
