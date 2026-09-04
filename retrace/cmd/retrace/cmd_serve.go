@@ -204,6 +204,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			Repo:      repoCfg.Repo,
 			Workflows: repoCfg.Sync.Workflows,
 			Branch:    repoCfg.Sync.Branch,
+			Branches:  repoCfg.Sync.Branches,
 			Actor:     repoCfg.Sync.Actor,
 			Event:     repoCfg.Sync.Event,
 			Status:    repoCfg.Sync.Status,

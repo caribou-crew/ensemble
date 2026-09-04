@@ -94,6 +94,57 @@ func (s *server) handleSyncCandidates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, syncCandidatesResponse{Candidates: out})
 }
 
+// syncBranchesResponse is GET /api/sync/branches's body. Branches is never
+// null, matching every other list response in this package.
+type syncBranchesResponse struct {
+	Branches []sync.BranchCandidate `json:"branches"`
+}
+
+// handleSyncBranches lists the branches that have actually triggered a
+// matching workflow recently, for the sync panel's "Choose source"
+// picker. Unlike handleSyncCandidates (a manual browse a reviewer
+// free-text-filters afterward), this endpoint drives a small, curated
+// chip list — so, unlike handleSyncCandidates, an omitted "workflows"
+// query param DOES fall back to the repo.yaml config default
+// (s.syncCfg.Workflows): without that, every workflow the repo has ever
+// run would clutter a picker meant to answer one question ("which
+// branches run THIS workflow"). s.syncCfg.Branches is always applied —
+// that filter has no per-request override, since this endpoint exists to
+// serve the configured picker, not an ad hoc query.
+func (s *server) handleSyncBranches(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	repos := reposFrom(q.Get("repo"), q.Get("repos"))
+	if len(repos) == 0 && s.syncCfg.Repo != "" {
+		repos = []string{s.syncCfg.Repo}
+	}
+	if len(repos) == 0 {
+		writeErr(w, http.StatusBadRequest, "sync needs a repo — pass ?repo=org/repo or ?repos=org/a,org/b")
+		return
+	}
+	workflows := splitCSV(q.Get("workflows"))
+	if len(workflows) == 0 {
+		workflows = s.syncCfg.Workflows
+	}
+	since := sync.DefaultBranchSince
+	if v := q.Get("since"); v != "" {
+		parsed, err := sync.ParseSince(v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		since = parsed
+	}
+	branches, err := sync.ListBranches(sync.Options{
+		From: "github", Repos: repos, Workflows: workflows,
+		Branches: s.syncCfg.Branches, Since: since,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, syncBranchesResponse{Branches: branches})
+}
+
 // syncRequest is POST /api/sync's body. Every field List's query params
 // also carry travels here too, alongside Selections — this package has no
 // config to remember a prior candidates call's filters by, so a caller

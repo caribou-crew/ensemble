@@ -132,6 +132,82 @@ func newSyncServer(t *testing.T) (*httptest.Server, string) {
 	return newServer(t, cwd), cwd
 }
 
+func newSyncServerWithConfig(t *testing.T, cwd string, cfg SyncConfig) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(NewWithSourcesAndSync(deps(t, cwd), nil, cfg))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestGetSyncBranchesRequiresRepo(t *testing.T) {
+	fakeGH(t)
+	ts, _ := newSyncServer(t)
+	r := get(t, ts, "/api/sync/branches")
+	if r.status != 400 {
+		t.Fatalf("status = %d, want 400\n%s", r.status, r.body)
+	}
+}
+
+func TestGetSyncBranchesListsDistinctBranches(t *testing.T) {
+	fakeGH(t)
+	writeRunListJSON(t, fmt.Sprintf(`[
+		{"databaseId": 1, "workflowName": "Retrace Web", "headBranch": "main", "event": "push", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed", "conclusion": "success"},
+		{"databaseId": 2, "workflowName": "Retrace Web", "headBranch": "e2e/checkout-fix", "event": "workflow_dispatch", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": %q, "status": "completed", "conclusion": "success"}
+	]`, recentCreatedAt(), recentCreatedAt()))
+	ts, _ := newSyncServer(t)
+
+	r := get(t, ts, "/api/sync/branches?repo=org/repo")
+	body := mustOK(t, r, "GET /api/sync/branches")
+	branches, ok := body["branches"].([]any)
+	if !ok || len(branches) != 2 {
+		t.Fatalf("branches = %v, want 2 entries", body["branches"])
+	}
+	names := map[string]bool{}
+	for _, b := range branches {
+		names[b.(map[string]any)["name"].(string)] = true
+	}
+	if !names["main"] || !names["e2e/checkout-fix"] {
+		t.Fatalf("branches = %v, want main and e2e/checkout-fix", branches)
+	}
+}
+
+func TestGetSyncBranchesAppliesConfiguredBranchFilter(t *testing.T) {
+	fakeGH(t)
+	writeRunListJSON(t, fmt.Sprintf(`[
+		{"databaseId": 1, "workflowName": "Retrace Web", "headBranch": "main", "event": "push", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed", "conclusion": "success"},
+		{"databaseId": 2, "workflowName": "Retrace Web", "headBranch": "dependabot/bump-x", "event": "push", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": %q, "status": "completed", "conclusion": "success"}
+	]`, recentCreatedAt(), recentCreatedAt()))
+	cwd := t.TempDir()
+	ts := newSyncServerWithConfig(t, cwd, SyncConfig{Repo: "org/repo", Branches: []string{"main", "e2e/*"}})
+
+	r := get(t, ts, "/api/sync/branches")
+	body := mustOK(t, r, "GET /api/sync/branches")
+	branches, ok := body["branches"].([]any)
+	if !ok || len(branches) != 1 {
+		t.Fatalf("branches = %v, want 1 entry (main only) — repo also comes from config here, with no ?repo= query", body["branches"])
+	}
+	if branches[0].(map[string]any)["name"] != "main" {
+		t.Fatalf("branches = %v, want [main]", branches)
+	}
+}
+
+func TestGetSyncBranchesFallsBackToConfiguredWorkflows(t *testing.T) {
+	fakeGH(t)
+	writeRunListJSON(t, fmt.Sprintf(`[
+		{"databaseId": 1, "workflowName": "Retrace Web", "headBranch": "main", "event": "push", "headSha": "aaa1111", "url": "https://github.com/org/repo/actions/runs/1", "createdAt": %q, "status": "completed", "conclusion": "success"},
+		{"databaseId": 2, "workflowName": "Some Other CI", "headBranch": "unrelated-branch", "event": "push", "headSha": "bbb2222", "url": "https://github.com/org/repo/actions/runs/2", "createdAt": %q, "status": "completed", "conclusion": "success"}
+	]`, recentCreatedAt(), recentCreatedAt()))
+	cwd := t.TempDir()
+	ts := newSyncServerWithConfig(t, cwd, SyncConfig{Repo: "org/repo", Workflows: []string{"Retrace *"}})
+
+	r := get(t, ts, "/api/sync/branches")
+	body := mustOK(t, r, "GET /api/sync/branches")
+	branches, ok := body["branches"].([]any)
+	if !ok || len(branches) != 1 || branches[0].(map[string]any)["name"] != "main" {
+		t.Fatalf("branches = %v, want [main] only — unrelated-branch only ran \"Some Other CI\", not the configured \"Retrace *\"", body["branches"])
+	}
+}
+
 func TestGetSyncCandidatesRequiresRepo(t *testing.T) {
 	fakeGH(t)
 	ts, _ := newSyncServer(t)
@@ -252,8 +328,8 @@ func TestPostSyncRoutesEachAppToItsOwnRoot(t *testing.T) {
 	stageDownload(t, 7, "uxt-web", "card-views", "20260827T090000Z-feac1c8")
 	stageDownload(t, 7, "uxt-rn-android", "card-views", "20260827T090000Z-feac1c8")
 
-	rootWeb := t.TempDir()          // uxt-web lives here (the default/serve cwd)
-	rootMobile := t.TempDir()       // uxt-rn-android lives under a different root
+	rootWeb := t.TempDir()    // uxt-web lives here (the default/serve cwd)
+	rootMobile := t.TempDir() // uxt-rn-android lives under a different root
 	defaultDeps := deps(t, rootWeb)
 	byRoot := map[string]Deps{rootWeb: defaultDeps, rootMobile: deps(t, rootMobile)}
 	appRoot := map[string]string{"uxt-web": rootWeb, "uxt-rn-android": rootMobile}

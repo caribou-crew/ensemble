@@ -44,6 +44,7 @@ type SyncConfig struct {
 	Repo      string   `json:"repo"`
 	Workflows []string `json:"workflows,omitempty"`
 	Branch    string   `json:"branch,omitempty"`
+	Branches  []string `json:"branches,omitempty"`
 	Actor     string   `json:"actor,omitempty"`
 	Event     string   `json:"event,omitempty"`
 	Status    string   `json:"status,omitempty"`
