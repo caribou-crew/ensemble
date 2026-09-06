@@ -41,6 +41,8 @@ Usage:
   ensemble latency arm-all --enabled=true|false [--api-url URL] [--json]
   ensemble traffic [--since N] [--errors-only] [--follow] [--api-url URL] [--json]
   ensemble trace <traceId> [--export har|curl|raw] [--api-url URL] [--json]
+  ensemble mcp [--api-url URL]  (read-only MCP server over stdio)
+  ensemble doctor --target NAME --path /... [--expect a,b] [--timeout DURATION] [--api-url URL] [--json]
   ensemble --version
 
 Env:
@@ -96,6 +98,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdTraffic(args[1:], stdout, stderr)
 	case "trace":
 		return cmdTrace(args[1:], stdout, stderr)
+	case "mcp":
+		return cmdMCP(args[1:], stdout, stderr)
+	case "doctor":
+		return cmdDoctor(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "ensemble: unknown command %q\n", args[0])
 		fmt.Fprint(stderr, usage)

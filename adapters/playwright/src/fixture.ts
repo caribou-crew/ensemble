@@ -96,6 +96,10 @@ export async function performCheckpoint(
   await fs.writeFile(path.join(dir, `${name}.png`), buf);
   if (options?.trim) {
     await fs.writeFile(path.join(dir, `${name}.trim`), '');
+  } else {
+    // A repeated name replaces its screenshot, so its trim request must
+    // describe the replacement too.
+    await fs.rm(path.join(dir, `${name}.trim`), { force: true });
   }
 }
 

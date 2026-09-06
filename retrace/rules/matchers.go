@@ -8,6 +8,7 @@ package rules
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/internal/jsonbody"
 )
 
 var (
@@ -78,21 +80,20 @@ var named = map[string]func(any) bool{
 	// model as uuid/iso8601: the recorded value asserts shape, not content.
 	"redacted": func(v any) bool { s, ok := v.(string); return ok && s == trace.Redacted },
 	// Accepts a JSON number too — a body field carries 1760, a header "1760".
-	// Also accepts Go's own integer kinds: every value that reaches Classify
-	// from encoding/json arrives as float64, but a Go-side caller (a test,
-	// a future in-process consumer) may hand this a real int — accept it
-	// rather than silently failing a comparison that is obviously an integer.
+	// JSON bodies retain json.Number whenever float64 would lose precision.
+	// Integer shape has no machine-range restriction, matching integer strings
+	// and Go's uint64 values; never round a json.Number to decide its shape.
 	"integer": func(v any) bool {
 		switch t := v.(type) {
 		case float64:
-			return t == float64(int64(t))
+			return !math.IsInf(t, 0) && t == math.Trunc(t)
 		case float32:
-			return float64(t) == float64(int64(t))
+			f := float64(t)
+			return !math.IsInf(f, 0) && f == math.Trunc(f)
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 			return true
 		case json.Number:
-			_, err := t.Int64()
-			return err == nil
+			return jsonbody.IsInteger(t)
 		case string:
 			return integerRe.MatchString(t)
 		}

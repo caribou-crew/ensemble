@@ -117,19 +117,20 @@ type Counts struct {
 
 // Summary is the one document every consumer reads.
 type Summary struct {
-	Schema             string               `json:"schema"`
-	App                string               `json:"app"`
-	Flow               string               `json:"flow"`
-	A                  RunRef               `json:"a"`
-	B                  RunRef               `json:"b"`
-	Verdict            string               `json:"verdict"` // "pass" | "changed" | "failed" | "quarantined"
-	Checkpoints        []CheckpointVerdict  `json:"checkpoints"`
-	Wire               Wire                 `json:"wire"`
-	Sections           []Section            `json:"sections"`
-	Hops               HopDiff              `json:"hops"`
-	UnexpectedStatuses []StatusFinding      `json:"unexpectedStatuses"`
-	Perf               PerfResult           `json:"perf"`
-	Conformance        []ConformanceFinding `json:"conformance"`
+	Schema             string                `json:"schema"`
+	App                string                `json:"app"`
+	Flow               string                `json:"flow"`
+	A                  RunRef                `json:"a"`
+	B                  RunRef                `json:"b"`
+	Provenance         *ComparisonProvenance `json:"provenance,omitempty"`
+	Verdict            string                `json:"verdict"` // "pass" | "changed" | "failed" | "quarantined"
+	Checkpoints        []CheckpointVerdict   `json:"checkpoints"`
+	Wire               Wire                  `json:"wire"`
+	Sections           []Section             `json:"sections"`
+	Hops               HopDiff               `json:"hops"`
+	UnexpectedStatuses []StatusFinding       `json:"unexpectedStatuses"`
+	Perf               PerfResult            `json:"perf"`
+	Conformance        []ConformanceFinding  `json:"conformance"`
 	// OpenAPIConfigured says whether a spec was configured for this run, so
 	// an empty Conformance can be read. Without it, "no spec configured" and
 	// "spec configured and every call conformed" are the same empty array —
@@ -338,6 +339,7 @@ type CaptureBanner struct {
 type BuildInput struct {
 	App, Flow  string
 	A, B       RunRef
+	Provenance *ComparisonProvenance
 	Cfg        *config.Config
 	Options    Options
 	WantImages bool
@@ -581,6 +583,32 @@ func writePNG(path string, img *image.RGBA) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
+// readComparedHops tightens the permissive storage reader at the comparison
+// boundary. A partial stream is useful for inspection, but cannot support a
+// clean verdict. Counts come from the captured raw streams, before diff folds
+// relays. Zero/absent counts retain compatibility with older recordings.
+func readComparedHops(ref RunRef, plane string) ([]trace.Hop, error) {
+	path := filepath.Join(ref.Dir, plane+".jsonl")
+	hops, skipped, err := runs.ReadHops(path)
+	if err != nil {
+		return nil, fmt.Errorf("diff: Build: reading %s: %w", path, err)
+	}
+	if skipped > 0 {
+		return nil, fmt.Errorf("diff: Build: %s contains %d corrupt hop records — the recording cannot be fully compared", path, skipped)
+	}
+	counts := ref.Manifest.Wire
+	if plane == "hops" {
+		counts = runs.Counts{}
+		if ref.Manifest.Hops != nil {
+			counts = *ref.Manifest.Hops
+		}
+	}
+	if counts.Recorded && len(hops) < counts.Calls {
+		return nil, fmt.Errorf("diff: Build: %s contains %d calls, but its manifest recorded %d — the recording is missing or incomplete", path, len(hops), counts.Calls)
+	}
+	return hops, nil
+}
+
 // Build produces the one document every consumer reads: the CLI's text
 // report, --json, the review queue, the static export, and any agent.
 func Build(in BuildInput) (Summary, error) {
@@ -606,7 +634,7 @@ func Build(in BuildInput) (Summary, error) {
 			return Summary{}, fmt.Errorf("side %s resolved to nothing comparable (kind %q, reason recorded by whoever resolved it) — there is no comparison to report, and reporting one would say \"nothing differed\" about a diff that never ran; resolve it, or tell the operator why it could not be resolved", side.label, side.ref.Kind)
 		}
 	}
-	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B}
+	s := Summary{Schema: SummarySchema, App: in.App, Flow: in.Flow, A: in.A, B: in.B, Provenance: in.Provenance}
 	s.Capture = CaptureBanner{A: in.A.Manifest.Capture, B: in.B.Manifest.Capture}
 	// Set BEFORE the quarantine exits: this is a fact about configuration,
 	// not about what got computed, and reporting false here for a run that
@@ -749,13 +777,13 @@ func Build(in BuildInput) (Summary, error) {
 	dataKeyB, _ := reckey.ResolveDataKey(runs.Paths{RunDir: in.B.Dir}, in.Cfg.Dir)
 
 	// --- wire, from each side's client-edge hops
-	hopsA, _, err := runs.ReadHops(filepath.Join(in.A.Dir, "wire.jsonl"))
+	hopsA, err := readComparedHops(in.A, "wire")
 	if err != nil {
-		return Summary{}, fmt.Errorf("diff: Build: reading %s wire.jsonl: %w", in.A.Dir, err)
+		return Summary{}, err
 	}
-	hopsB, _, err := runs.ReadHops(filepath.Join(in.B.Dir, "wire.jsonl"))
+	hopsB, err := readComparedHops(in.B, "wire")
 	if err != nil {
-		return Summary{}, fmt.Errorf("diff: Build: reading %s wire.jsonl: %w", in.B.Dir, err)
+		return Summary{}, err
 	}
 	hopsA = decryptHops(hopsA, dataKeyA)
 	hopsB = decryptHops(hopsB, dataKeyB)
@@ -764,13 +792,13 @@ func Build(in BuildInput) (Summary, error) {
 
 	// --- hops, from the full chain; absent on a standalone run, and that
 	// is reported as "not captured", never as "no differences".
-	chainA, _, err := runs.ReadHops(filepath.Join(in.A.Dir, "hops.jsonl"))
+	chainA, err := readComparedHops(in.A, "hops")
 	if err != nil {
-		return Summary{}, fmt.Errorf("diff: Build: reading %s hops.jsonl: %w", in.A.Dir, err)
+		return Summary{}, err
 	}
-	chainB, _, err := runs.ReadHops(filepath.Join(in.B.Dir, "hops.jsonl"))
+	chainB, err := readComparedHops(in.B, "hops")
 	if err != nil {
-		return Summary{}, fmt.Errorf("diff: Build: reading %s hops.jsonl: %w", in.B.Dir, err)
+		return Summary{}, err
 	}
 	chainA = decryptHops(chainA, dataKeyA)
 	chainB = decryptHops(chainB, dataKeyB)
@@ -1302,6 +1330,22 @@ func ExitCode(s Summary) int {
 // RenderText prints the human-facing report. Wide values are never
 // truncated — a report an agent must read is not a dashboard.
 func RenderText(w io.Writer, s Summary) {
+	if p := s.Provenance; p != nil {
+		for _, side := range []struct {
+			label string
+			p     SideProvenance
+		}{{"A", p.A}, {"B", p.B}} {
+			git := side.p.RecordedGit.SHA
+			if git == "" {
+				git = "unrecorded"
+			}
+			fmt.Fprintf(w, "SIDE %s: %s/%s/%s (%s, selector %q) in %s; recorded git %s branch=%q dirty=%t\n",
+				side.label, side.p.App, side.p.Flow, side.p.RunID, side.p.Kind, side.p.Selector,
+				side.p.Root, git, side.p.RecordedGit.Branch, side.p.RecordedGit.Dirty)
+		}
+		fmt.Fprintf(w, "COMPARISON CONFIG (%s): %s sha256:%s\n",
+			p.ComparisonConfig.Scope, p.ComparisonConfig.Dir, p.ComparisonConfig.Fingerprint)
+	}
 	if s.Verdict == "quarantined" {
 		fmt.Fprintln(w, "QUARANTINED: this comparison was refused because a side's capture was not trusted")
 		for _, q := range s.Quarantined {

@@ -52,6 +52,9 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/traffic/stream", s.handleTrafficStream)
 	mux.HandleFunc("GET /api/traffic/history", s.handleTrafficHistory)
+	mux.HandleFunc("GET /api/observability/requests", s.handleObservationRequests)
+	mux.HandleFunc("GET /api/observability/traces/{traceId}", s.handleObservationTrace)
+	mux.HandleFunc("POST /api/doctor", s.withAnnotation(s.handleDoctor))
 
 	mux.HandleFunc("GET /api/traces/{traceId}", s.handleTrace)
 	mux.HandleFunc("GET /api/traces/{traceId}/export", s.handleTraceExport)

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -115,13 +114,9 @@ func TestHelperPostsMarkers(t *testing.T) {
 // read as 1.
 func buildRetrace(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "retrace")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	bin, err := testRetraceBinary()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return bin
 }

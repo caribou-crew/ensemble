@@ -111,3 +111,29 @@ func TestResolveInboundMintsFreshWhenNeitherPresent(t *testing.T) {
 		t.Fatalf("incoming span id = %q, want empty", spanID)
 	}
 }
+
+func TestResolveInboundInvalidTraceparentDoesNotSuppressFallback(t *testing.T) {
+	for _, invalid := range []string{
+		"garbage",
+		"00-00000000000000000000000000000000-b7ad6b7169203331-01",
+		"00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+	} {
+		t.Run(invalid, func(t *testing.T) {
+			for _, fallback := range []string{"", "company-correlation-id-123"} {
+				ctx, spanID := ResolveInbound(invalid, "retrace-run=run-7", fallback)
+				if spanID != "" {
+					t.Errorf("invalid traceparent supplied a claimed incoming span: %q", spanID)
+				}
+				if fallback != "" && ctx.TraceID != fallback {
+					t.Errorf("trace id = %q, want fallback %q", ctx.TraceID, fallback)
+				}
+				if fallback == "" && !traceparentRe.MatchString(ctx.Traceparent()) {
+					t.Errorf("fresh traceparent = %q", ctx.Traceparent())
+				}
+				if ctx.Session() != "run-7" {
+					t.Errorf("session baggage lost: %q", ctx.Session())
+				}
+			}
+		})
+	}
+}

@@ -29,6 +29,12 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		// the newest run eligible to stand in for one. See resolveSide.
 		aSel          = fs.String("a", "reference", "side A selector: \"reference\", \"latest\", an exact run id, or a git sha prefix")
 		bSel          = fs.String("b", "latest", "side B selector: \"latest\", an exact run id, or a git sha prefix")
+		aRoot         explicitStringFlag
+		bRoot         explicitStringFlag
+		aApp          explicitStringFlag
+		bApp          explicitStringFlag
+		aCommit       explicitStringFlag
+		bCommit       explicitStringFlag
 		asJSON        = fs.Bool("json", false, "emit the Summary as JSON on stdout")
 		images        = fs.Bool("images", true, "write diff/overlay checkpoint images")
 		out           = fs.String("out", "", "where diff/overlay images are written (default: side B's run directory)")
@@ -37,6 +43,12 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		requireWhy    = fs.Bool("require-why", false, "refuse to run when any tolerance in the config carries no `why:`")
 		roots         rootList
 	)
+	fs.Var(&aRoot, "a-root", "repository directory used only to resolve side A")
+	fs.Var(&bRoot, "b-root", "repository directory used only to resolve side B")
+	fs.Var(&aApp, "a-app", "app used only to resolve side A")
+	fs.Var(&bApp, "b-app", "app used only to resolve side B")
+	fs.Var(&aCommit, "a-commit", "require side A's manifest to record this exact full commit SHA")
+	fs.Var(&bCommit, "b-commit", "require side B's manifest to record this exact full commit SHA")
 	fs.Var(&roots, "root", "repository directory to search for runs; repeatable (default: the working directory). With more than one, a selector may name its app: web@latest")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -73,27 +85,49 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 
 	searchRoots := roots.resolve(cwd)
 
-	a, err := resolveSide(searchRoots, appName, *flow, *aSel)
+	a, err := resolveComparisonSide(comparisonSideRequest{
+		Label: "a", Selector: *aSel,
+		Root: aRoot.value, RootSet: aRoot.set,
+		App: aApp.value, AppSet: aApp.set,
+		Commit: aCommit.value, CommitSet: aCommit.set,
+		SearchRoots: searchRoots, LegacyDefaultApp: appName, GlobalApp: *app, Flow: *flow,
+	})
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
 	// "none" means "I could not compare", NEVER "nothing differed". Exit 3
 	// (could not evaluate), naming the verb that fixes it — never a diff
 	// against an empty directory, which would report every call as missing.
-	if a.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle for side a: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(searchRoots, appName, *flow), *flow)
+	if a.Ref.Kind == "none" {
+		return fail(stderr, "diff: no reference bundle for side a: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(a.SearchRoots, a.App, *flow), *flow)
 	}
-	b, err := resolveSide(searchRoots, appName, *flow, *bSel)
+	b, err := resolveComparisonSide(comparisonSideRequest{
+		Label: "b", Selector: *bSel,
+		Root: bRoot.value, RootSet: bRoot.set,
+		App: bApp.value, AppSet: bApp.set,
+		Commit: bCommit.value, CommitSet: bCommit.set,
+		SearchRoots: searchRoots, LegacyDefaultApp: appName, GlobalApp: *app, Flow: *flow,
+	})
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
 	}
-	if b.Kind == "none" {
-		return fail(stderr, "diff: no reference bundle for side b: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(searchRoots, appName, *flow), *flow)
+	if b.Ref.Kind == "none" {
+		return fail(stderr, "diff: no reference bundle for side b: %s\nrun `retrace ref accept --flow %s` once this flow has a good run", noneReason(b.SearchRoots, b.App, *flow), *flow)
 	}
 
-	opts, err := diff.OptionsFor(cfg, a.Manifest, b.Manifest)
+	opts, err := diff.OptionsFor(cfg, a.Ref.Manifest, b.Ref.Manifest)
 	if err != nil {
 		return fail(stderr, "diff: %v", err)
+	}
+	fingerprint, err := cfg.ComparisonFingerprint()
+	if err != nil {
+		return fail(stderr, "diff: fingerprinting comparison config: %v", err)
+	}
+	provenance := &diff.ComparisonProvenance{
+		A: a.provenance(), B: b.provenance(),
+		ComparisonConfig: diff.ComparisonConfigProvenance{
+			Scope: "comparison-time", Dir: cfg.Dir, Fingerprint: fingerprint,
+		},
 	}
 
 	// A CROSS-APP comparison — the two sides' own manifests name different
@@ -105,19 +139,19 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	// docs/superpowers/specs/2026-09-04-cross-app-compare-view-design.md.
 	// A same-app diff is unaffected: outDir still defaults to b.Dir and
 	// nothing is persisted.
-	crossApp := a.Manifest.App != "" && b.Manifest.App != "" && a.Manifest.App != b.Manifest.App
+	crossApp := a.Ref.Manifest.App != "" && b.Ref.Manifest.App != "" && a.Ref.Manifest.App != b.Ref.Manifest.App
 
 	outDir := *out
 	if outDir == "" {
 		if crossApp {
-			outDir = pairs.DirFor(b.Dir, a)
+			outDir = pairs.DirFor(b.Ref.Dir, a.Ref)
 		} else {
-			outDir = b.Dir
+			outDir = b.Ref.Dir
 		}
 	}
 
 	s, err := diff.Build(diff.BuildInput{
-		App: appName, Flow: *flow, A: a, B: b, Cfg: cfg,
+		App: appName, Flow: *flow, A: a.Ref, B: b.Ref, Provenance: provenance, Cfg: cfg,
 		Options: opts, WantImages: *images, OutDir: outDir,
 		AllowDegraded: *allowDegraded,
 	})
@@ -182,6 +216,11 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 // someone comparing a branch against main has — and the diff that came out
 // would be honestly labelled and completely wrong.
 func resolveSide(roots []string, defaultApp, flow, selector string) (diff.RunRef, error) {
+	ref, _, err := resolveSideWithRoot(roots, defaultApp, flow, selector)
+	return ref, err
+}
+
+func resolveSideWithRoot(roots []string, defaultApp, flow, selector string) (diff.RunRef, string, error) {
 	app, sel := splitSelector(selector, defaultApp)
 
 	type hit struct {
@@ -218,29 +257,29 @@ func resolveSide(roots []string, defaultApp, flow, selector string) (diff.RunRef
 		}
 		p, err := runs.PathsFor(runsRoot, app, flow, id)
 		if err != nil {
-			return diff.RunRef{}, err
+			return diff.RunRef{}, "", err
 		}
 		m, err := runs.ReadManifest(p.ManifestPath)
 		if err != nil {
-			return diff.RunRef{}, fmt.Errorf("reading manifest for %s/%s/%s in %s: %w", app, flow, id, root, err)
+			return diff.RunRef{}, "", fmt.Errorf("reading manifest for %s/%s/%s in %s: %w", app, flow, id, root, err)
 		}
 		hits = append(hits, hit{root, diff.RunRef{RunID: id, Kind: "run", Dir: p.RunDir, Manifest: m}})
 	}
 
 	switch {
 	case len(hits) == 1:
-		return hits[0].ref, nil
+		return hits[0].ref, hits[0].root, nil
 	case len(hits) > 1:
 		var where []string
 		for _, h := range hits {
 			where = append(where, fmt.Sprintf("%s (%s)", h.root, h.ref.RunID))
 		}
-		return diff.RunRef{}, fmt.Errorf("%q matches a run in more than one root: %s — name the one you mean with a single --root, or select it by run id",
+		return diff.RunRef{}, "", fmt.Errorf("%q matches a run in more than one root: %s — name the one you mean with a single --root, or select it by run id",
 			selector, strings.Join(where, ", "))
 	case haveNone:
-		return noneRef, nil
+		return noneRef, "", nil
 	}
-	return diff.RunRef{}, fmt.Errorf("no run matches %q for %s/%s in %s", selector, app, flow, strings.Join(roots, ", "))
+	return diff.RunRef{}, "", fmt.Errorf("no run matches %q for %s/%s in %s", selector, app, flow, strings.Join(roots, ", "))
 }
 
 // noneReason re-asks refs.Resolve for the explanation behind a "none", so

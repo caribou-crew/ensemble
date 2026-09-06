@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// retrace-maestro — the executable a Maestro `runScript` step calls, e.g.:
+// retrace-maestro — the Node CLI for host-side marker/evidence commands:
 //
-//   - runScript:
-//       file: node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs
-//       env: { ARGS: "group checkout" }
+//   retrace-maestro group checkout
+//   retrace-maestro attach video recording.mp4
+//
+// Maestro `runScript` uses the separate Rhino/GraalJS entrypoint
+// bin/retrace-maestro.js; it cannot execute this Node module.
 //
 // This IS the single implementation of markerRequest — ../src/index.ts
 // re-exports it (see that file) so the copy the unit tests exercise is the
 // copy Maestro actually runs, rather than a hand-synced duplicate. It stays
-// plain, unbuilt JavaScript (no tsc pass over THIS file) so a Maestro flow
+// plain, unbuilt JavaScript (no tsc pass over THIS file) so invoking the CLI
 // never depends on `pnpm build` having run for this package; a hand-written
 // bin/retrace-maestro.d.mts gives ../src/index.ts (and anything else that
 // imports this file) its types.
@@ -23,7 +25,7 @@ function parseArgv(argv) {
   if (argv[1] === '--end') return { end: true };
   // F-6 (task-17-review.md, original numbering): join ALL remaining
   // arguments, not just argv[1]. Maestro's documented form is
-  // `env: { ARGS: "group add to cart" }`, which main() below splits on
+  // `ARGS="group add to cart"`, which main() below splits on
   // whitespace into ['group', 'add', 'to', 'cart'] — a bare `argv[1]` would
   // silently truncate that to "add", while the honest single-argument form
   // (`group "add to cart"`, argv = ['group', 'add to cart']) correctly
@@ -79,9 +81,9 @@ async function runAttach(argv, env) {
 }
 
 async function main() {
-  // Maestro's runScript passes a single env map, not real argv, hence
-  // ARGS — but process.argv is honoured too, for `node bin/retrace-maestro.mjs
-  // group checkout` direct invocation (and for testing this file itself).
+  // Preserve ARGS for host-side wrappers that pass a single command string;
+  // direct argv takes precedence. Maestro's native entrypoint reads flow
+  // globals instead of process.env.
   const direct = process.argv.slice(2);
   const argv = direct.length > 0 ? direct : (process.env.ARGS ?? '').trim().split(/\s+/).filter(Boolean);
 

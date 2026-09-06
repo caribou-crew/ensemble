@@ -87,16 +87,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # ... set up your iOS build + Maestro CLI here ...
-      - run: retrace run --app ios -- maestro test flows/checkout.yaml
-      # Maestro has no in-process hook to attach evidence automatically —
-      # unlike Playwright's reporter below, this is an explicit step. The
-      # env vars (RETRACE_RUN_DIR / RETRACE_STRICT) are the same handshake
-      # `retrace run` already set for the `maestro test` step above; this
-      # step runs AFTER it, once Maestro has finished writing its own
-      # recording/screenshots.
+      # The flow uses retrace-maestro/bin/retrace-maestro.js for runScript
+      # markers; see adapters/maestro/README.md. Maestro needs explicit -e
+      # forwarding for variables without its own MAESTRO_ prefix.
+      # Attach evidence inside the same child shell so RETRACE_RUN_DIR is
+      # still available, including when the test fails. Use this run's own
+      # artifact folder; there is no assumed ~/.maestro/tests/latest link.
+      # Output flags: https://docs.maestro.dev/troubleshooting/debug-output
       - run: |
-          node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs attach video ~/.maestro/tests/latest/recording.mp4
-          node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs attach report ~/.maestro/tests/latest/
+          retrace run --app ios -- sh -c '
+            maestro_artifacts="$RETRACE_RUN_DIR/maestro-artifacts"
+            mkdir -p "$maestro_artifacts" || exit 1
+            maestro_status=0
+            maestro test \
+              -e RETRACE_MARKER_URL="$RETRACE_MARKER_URL" \
+              -e RETRACE_STRICT=1 \
+              --debug-output "$maestro_artifacts" \
+              --test-output-dir "$maestro_artifacts" \
+              --flatten-debug-output \
+              --format html --output "$maestro_artifacts/index.html" \
+              flows/checkout.yaml || maestro_status=$?
+
+            evidence_status=0
+            node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs \
+              attach report "$maestro_artifacts" || evidence_status=$?
+            # A video exists only if the flow explicitly records one.
+            for video in "$maestro_artifacts"/*.mp4 "$maestro_artifacts"/*.webm; do
+              [ -f "$video" ] || continue
+              node node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs \
+                attach video "$video" || evidence_status=$?
+            done
+            if [ "$maestro_status" -ne 0 ]; then exit "$maestro_status"; fi
+            exit "$evidence_status"
+          '
       - run: retrace export --out ./report --app ios --json
       - uses: actions/upload-artifact@v4
         if: always()

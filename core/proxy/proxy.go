@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -431,6 +432,13 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+	// Connection can nominate additional hop-by-hop fields. Read every
+	// header line before removing Connection itself, in both directions.
+	for _, value := range src.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			dst.Del(strings.TrimSpace(name))
+		}
+	}
 	for _, k := range hopByHopHeaders {
 		dst.Del(k)
 	}
@@ -592,7 +600,13 @@ func (p *Proxy) handler(t Target) http.Handler {
 				return
 			}
 			upstream = up
-			forwardPath = fwd
+			// Routes match and rewrite decoded paths. Escape their result
+			// before building a URL so a path's ?/#/% cannot become URL
+			// syntax. An unchanged path keeps its original escaping too.
+			forwardPath = (&url.URL{Path: fwd}).EscapedPath()
+			if fwd == r.URL.Path {
+				forwardPath = r.URL.EscapedPath()
+			}
 			if r.URL.RawQuery != "" {
 				forwardPath += "?" + r.URL.RawQuery
 			}

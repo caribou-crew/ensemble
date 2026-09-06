@@ -14,7 +14,6 @@ package replay
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/internal/jsonbody"
 	"github.com/caribou-crew/ensemble/retrace/reckey"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -456,13 +456,6 @@ func decodeBody(p trace.Payload) any {
 	if p.Truncated {
 		return nil
 	}
-	s := strings.TrimSpace(p.Body)
-	if s == "" {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return nil
-	}
+	v, _ := jsonbody.Decode(p.Body)
 	return v
 }

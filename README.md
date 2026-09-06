@@ -19,6 +19,10 @@ Run your entire backend stack locally — observed. Two products, one core:
 Successor to [mezzo](https://github.com/caribou-crew/mezzo): mocks that are
 actual recorded dataflow instead of hand-maintained fixtures.
 
+For agent and E2E workflows, see [read-only MCP observability](docs/agent-observability.md),
+[comparison across checkouts or repositories](docs/comparing-migrations.md), and
+[probing the proxy chain with the stack doctor](docs/stack-doctor.md).
+
 ## Status
 
 **Greenfield, in active build. Both `ensemble` and `retrace` run end-to-end.**
@@ -1100,7 +1104,7 @@ recordings captured in CI rather than locally.
 Like `ensemble`, every command takes `--json`; `ENSEMBLE_API` is read for the
 `--ensemble` default.
 
-**Recordings are secret-safe by default.** Redaction happens at capture,
+**Recordings redact common credentials by default.** Redaction happens at capture,
 never post-hoc, and the defaults cover the places credentials actually
 travel: sensitive headers, secret-keyed query parameters, and — when a
 body parses as JSON — any object key on the same secret list
@@ -1108,8 +1112,17 @@ body parses as JSON — any object key on the same secret list
 nesting depth, in both requests and responses. Your own `redact:` rules
 layer on top (destroy or `encrypt` per field), and a stack that
 legitimately records fixture credentials can opt the body defaults off
-with `redact: { body_defaults: off }`. Redacting never breaks replay: a
-recorded `[redacted]` value matches any live value (the built-in
+with `redact: { body_defaults: off }`.
+
+JSON truncated by the capture limit or still encoded on arrival cannot be
+inspected reliably. When body redaction is enabled, those captured bodies
+are dropped and the capture is marked degraded; the live request and response
+bytes still pass through unchanged. Re-record with complete, uncompressed
+JSON before using that capture as a reference. Plain text and other non-JSON
+formats are not covered by JSON field redaction, and existing recordings are
+not rewritten by this protection.
+
+For replay, a recorded `[redacted]` value matches any live value (the built-in
 `redacted` matcher), asserting "something secret was here" rather than
 its content. And because a reference bundle is made to be committed,
 `retrace ref accept` scans the staged exchanges for anything that slipped

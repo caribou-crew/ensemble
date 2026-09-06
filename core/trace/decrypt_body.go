@@ -23,8 +23,8 @@ func DecryptBody(body string, dataKey []byte) (out string, ok bool) {
 	if body == "" {
 		return body, true
 	}
-	var v any
-	if err := json.Unmarshal([]byte(body), &v); err != nil {
+	v, valid := decodeJSON(body)
+	if !valid {
 		return body, true
 	}
 	v, changed, ok := decryptTreeValue(v, dataKey)
@@ -55,8 +55,7 @@ func decryptTreeValue(v any, dataKey []byte) (result any, changed bool, ok bool)
 		if err != nil {
 			return v, false, false
 		}
-		var decoded any
-		if err := json.Unmarshal([]byte(plain), &decoded); err == nil {
+		if decoded, valid := decodeJSON(plain); valid {
 			return decoded, true, true
 		}
 		return plain, true, true

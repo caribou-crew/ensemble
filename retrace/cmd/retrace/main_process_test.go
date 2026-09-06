@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -25,14 +23,7 @@ func TestBinaryExitCodesPropagateThroughOSExit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping go-build subprocess test in -short mode")
 	}
-	bin := filepath.Join(t.TempDir(), "retrace")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	bin := buildRetrace(t)
 
 	cases := []struct {
 		name string

@@ -252,12 +252,15 @@ func (s *Session) Close() error {
 		return fmt.Errorf("capture: rebuilding the redactor at close: %w", err)
 	}
 	red.SetBodyDefaults(!s.redactBodyDefaultsOff)
-	written := 0
-	writeErr := writeHops(s.Paths.HopsPath, s.hops, red, func(trace.Hop) bool { return true }, &written)
-	wire := 0
+	written, writeErr := writeHops(s.Paths.HopsPath, s.hops, red, func(trace.Hop) bool { return true })
 	if writeErr == nil {
-		writeErr = writeHops(s.Paths.WirePath, s.hops, red, isClientEdge, &wire)
+		_, writeErr = writeHops(s.Paths.WirePath, s.hops, red, isClientEdge)
 	}
+	// Both files must redact the original input: feeding the already
+	// sanitized full chain into the wire write would encrypt fields twice.
+	// Afterward retain only the sanitized hops that actually reached disk,
+	// including the written prefix when a later write failed.
+	s.hops = written
 
 	// EndSession runs even when the writes above failed — see above. Both
 	// errors matter: the write failure is surfaced to the caller below, and
@@ -271,9 +274,9 @@ func (s *Session) Close() error {
 		return writeErr // the recording (whatever wrote) is already on disk; never lose it over a teardown error
 	}
 	s.endReport, s.ended = rep, true
-	if rep.Hops > written {
+	if rep.Hops > len(written) {
 		s.trustNotes = append(s.trustNotes,
-			fmt.Sprintf("%d hop(s) arrived after the drain window and are missing from this recording", rep.Hops-written))
+			fmt.Sprintf("%d hop(s) arrived after the drain window and are missing from this recording", rep.Hops-len(written)))
 		// A recording known to be short is not "ok" whatever ensemble says
 		// about its own session — the verdict on disk describes THIS file.
 		s.endReport.Verdict = s.endReport.Verdict.Worse(trace.VerdictSuspect)
@@ -287,13 +290,14 @@ func (s *Session) Close() error {
 // exactly the client edge.
 func isClientEdge(h trace.Hop) bool { return h.From == "" }
 
-func writeHops(path string, hops []trace.Hop, red *trace.Redactor, keep func(trace.Hop) bool, n *int) error {
+func writeHops(path string, hops []trace.Hop, red *trace.Redactor, keep func(trace.Hop) bool) ([]trace.Hop, error) {
 	f, err := os.Create(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	w := trace.NewWriter(f)
+	var written []trace.Hop
 	for _, h := range hops {
 		if !keep(h) {
 			continue
@@ -305,12 +309,13 @@ func writeHops(path string, hops []trace.Hop, red *trace.Redactor, keep func(tra
 			// with its bodies dropped and the failure named on Err.
 			rh = trace.DegradeHop(rh, rerr)
 		}
+		rh.Schema = trace.SchemaVersion
 		if err := w.Write(rh); err != nil {
-			return err
+			return written, err
 		}
-		*n++
+		written = append(written, rh)
 	}
-	return nil
+	return written, nil
 }
 
 // bodyLimit normalizes Options.MaxBody. Zero means "the caller did not
@@ -345,5 +350,16 @@ func (s *Session) EndDroppedHops() uint64 {
 }
 
 func (s *Session) TrustNotes() []string {
-	return append([]string(nil), s.trustNotes...)
+	notes := append([]string(nil), s.trustNotes...)
+	if s.externalHops {
+		// External clocks and call counts cannot vouch for retrace's wire
+		// capture. A proven redaction failure is negative evidence only;
+		// pass its standardized note through the existing assessment seam.
+		for _, h := range s.hops {
+			if trace.HasRedactionFailure(h) {
+				notes = append(notes, h.Err)
+			}
+		}
+	}
+	return notes
 }

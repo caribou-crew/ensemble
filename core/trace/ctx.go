@@ -33,15 +33,23 @@ type Ctx struct {
 // traceparent yields a fresh root context (new trace id and span id) —
 // the proxy stamps context at the first hop that lacks it.
 func ParseCtx(traceparent, baggage string) Ctx {
+	ctx, _ := parseCtx(traceparent, baggage)
+	return ctx
+}
+
+// parseCtx also reports whether the caller supplied a valid parent. A
+// newly minted span must never be mistaken for an inbound span or prevent
+// ResolveInbound from consulting the configured correlation fallback.
+func parseCtx(traceparent, baggage string) (Ctx, bool) {
 	ctx := Ctx{Flags: "01", Baggage: parseBaggage(baggage)}
 	if m := traceparentPattern.FindStringSubmatch(traceparent); m != nil &&
 		m[1] != strings.Repeat("0", 32) && m[2] != strings.Repeat("0", 16) {
 		ctx.TraceID, ctx.SpanID, ctx.Flags = m[1], m[2], m[3]
-		return ctx
+		return ctx, true
 	}
 	ctx.TraceID = randHex(16)
 	ctx.SpanID = randHex(8)
-	return ctx
+	return ctx, false
 }
 
 // NewCtx returns a fresh root context.
@@ -56,8 +64,8 @@ func NewCtx() Ctx { return ParseCtx("", "") }
 // structure of its own to extract a real incomingSpanID from; else a wholly
 // fresh trace is minted, exactly as ParseCtx alone does.
 func ResolveInbound(traceparent, baggage, customHeaderValue string) (ctx Ctx, incomingSpanID string) {
-	ctx = ParseCtx(traceparent, baggage)
-	if traceparent != "" {
+	ctx, validParent := parseCtx(traceparent, baggage)
+	if validParent {
 		return ctx, ctx.SpanID
 	}
 	if customHeaderValue != "" {

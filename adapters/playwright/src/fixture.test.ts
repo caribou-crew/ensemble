@@ -95,6 +95,21 @@ describe('checkpoint', () => {
     await expect(fs.stat(path.join(runDir, 'shots', 'cart.trim'))).rejects.toThrow();
   });
 
+  it.each([
+    ['false', { trim: false }],
+    ['omitted', undefined],
+  ] as const)('clears an earlier trim request when the replacement has trim %s', async (_label, options) => {
+    await withRun();
+    await performCheckpoint(fakePage(), 'cart', { trim: true });
+
+    const replacement = Buffer.from('replacement-page-png');
+    const page = { ...fakePage(), screenshot: async () => replacement };
+    await performCheckpoint(page, 'cart', options);
+
+    expect(await fs.readFile(path.join(runDir, 'shots', 'cart.png'))).toEqual(replacement);
+    await expect(fs.stat(path.join(runDir, 'shots', 'cart.trim'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('records the viewport, not the size of the shot it took', async () => {
     // The whole reason the adapter writes device.json at all. A
     // selector-scoped checkpoint photographs an element, so a geometry

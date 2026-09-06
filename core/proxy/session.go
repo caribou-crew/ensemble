@@ -62,6 +62,9 @@ func (s *Session) noteDropped() {
 // the traffic provably reached a captured port and was NOT captured, and a
 // recording missing it must say so (protocol-guardrails spec).
 func (s *Session) noteHop(h trace.Hop, updated bool) {
+	if trace.HasRedactionFailure(h) {
+		s.degrade(trace.VerdictDegraded, fmt.Sprintf("hop %d: %s", h.Seq, h.Err))
+	}
 	if h.Unsupported != "" {
 		s.degrade(trace.VerdictDegraded,
 			fmt.Sprintf("unsupported protocol: a %s request to %s was refused with 501 and is not captured", h.Unsupported, h.To))

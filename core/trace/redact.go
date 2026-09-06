@@ -12,6 +12,8 @@ import (
 // JS prototype so ported fixtures stay valid.
 const Redacted = "[redacted]"
 
+const redactionFailurePrefix = "redaction failed: "
+
 // defaultRedactHeaders are always redacted regardless of user config —
 // redaction happens at capture, never post-hoc. Beyond the original four,
 // these are the headers that carry a bearer credential by
@@ -104,6 +106,9 @@ type Redactor struct {
 	// bodyDefaults applies defaultRedactBodyKeys (destroy mode) to JSON body
 	// fields on top of the user key list. On by default — see SetBodyDefaults.
 	bodyDefaults bool
+	// Explicit destroy/encrypt rules still require body inspection when
+	// the caller opts out of built-in body defaults.
+	explicitBodyRedaction bool
 }
 
 // NewRedactor builds a Redactor from rules plus the built-in header list
@@ -138,7 +143,13 @@ func NewRedactor(rules []KeyRule, maxBody int, dataKey []byte) (*Redactor, error
 		}
 		keys[strings.ToLower(r.Key)] = mode
 	}
-	return &Redactor{keys: keys, maxBody: maxBody, dataKey: dataKey, bodyDefaults: true}, nil
+	explicitBodyRedaction := false
+	for _, rule := range rules {
+		if keys[strings.ToLower(rule.Key)] != ModeDisplay {
+			explicitBodyRedaction = true
+		}
+	}
+	return &Redactor{keys: keys, maxBody: maxBody, dataKey: dataKey, bodyDefaults: true, explicitBodyRedaction: explicitBodyRedaction}, nil
 }
 
 // SetBodyDefaults switches the built-in body-field redaction
@@ -179,6 +190,12 @@ func (r *Redactor) apply(mode Mode, v string) (string, error) {
 // FIRST failure is reported; the caller decides how loudly to degrade.
 func (r *Redactor) Payload(p Payload) (Payload, error) {
 	var firstErr error
+	// Inspect the original metadata: a user rule may itself scrub the
+	// content headers below, but that cannot make an unsafe body inspectable.
+	unsafeJSON := ""
+	if r.bodyDefaults || r.explicitBodyRedaction {
+		unsafeJSON = unsafeJSONCapture(p)
+	}
 	if p.Headers != nil {
 		h := make(map[string]string, len(p.Headers))
 		for k, v := range p.Headers {
@@ -210,6 +227,13 @@ func (r *Redactor) Payload(p Payload) (Payload, error) {
 			p.SetCookies = cookies
 		}
 	}
+	if unsafeJSON != "" {
+		p.Body, p.BodyB64, p.Truncated = "", "", true
+		if firstErr == nil {
+			firstErr = fmt.Errorf("trace: cannot redact JSON capture: %s", unsafeJSON)
+		}
+		return p, firstErr
+	}
 	body, err := r.redactBody(p.Body)
 	if err != nil && firstErr == nil {
 		firstErr = err
@@ -231,6 +255,42 @@ func (r *Redactor) Payload(p Payload) (Payload, error) {
 		}
 	}
 	return p, firstErr
+}
+
+// unsafeJSONCapture recognizes captures whose JSON fields cannot be
+// inspected. The proxy caps bytes before redaction and preserves encoded
+// bytes, so neither truncated nor still-encoded JSON may pass through as
+// ordinary non-JSON text. Complete non-JSON and opaque binary payloads
+// keep their existing capture behavior.
+func unsafeJSONCapture(p Payload) string {
+	if p.Body == "" && p.BodyB64 == "" && !p.Truncated {
+		return ""
+	}
+	var contentType, encoding string
+	for name, value := range p.Headers {
+		switch strings.ToLower(name) {
+		case "content-type":
+			contentType, _, _ = strings.Cut(strings.ToLower(value), ";")
+			contentType = strings.TrimSpace(contentType)
+		case "content-encoding":
+			encoding = strings.TrimSpace(value)
+		}
+	}
+	jsonBody := contentType == "application/json" || strings.HasSuffix(contentType, "+json")
+	if p.Truncated {
+		prefix := strings.TrimSpace(p.Body)
+		jsonBody = jsonBody || strings.HasPrefix(prefix, "{") || strings.HasPrefix(prefix, "[")
+	}
+	if !jsonBody {
+		return ""
+	}
+	if p.Truncated {
+		return "body was truncated before its fields could be inspected"
+	}
+	if p.BodyB64 != "" || encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return "body is encoded rather than inspectable JSON text"
+	}
+	return ""
 }
 
 // Hop returns a copy with both payloads scrubbed and query-string secrets
@@ -255,13 +315,20 @@ func (r *Redactor) Hop(h Hop) (Hop, error) {
 func DegradeHop(h Hop, err error) Hop {
 	h.Req.Body, h.Req.BodyB64 = "", ""
 	h.Resp.Body, h.Resp.BodyB64 = "", ""
-	note := "redaction failed: " + err.Error() + "; payload bodies dropped"
+	note := redactionFailurePrefix + err.Error() + "; payload bodies dropped"
 	if h.Err != "" {
 		h.Err += "; " + note
 	} else {
 		h.Err = note
 	}
 	return h
+}
+
+// HasRedactionFailure recognizes DegradeHop's persisted error note, also
+// when appended to a forwarding error. Capture trust must distinguish lost
+// evidence from an ordinary HTTP failure that was faithfully recorded.
+func HasRedactionFailure(h Hop) bool {
+	return strings.HasPrefix(h.Err, redactionFailurePrefix) || strings.Contains(h.Err, "; "+redactionFailurePrefix)
 }
 
 // redactPath scrubs the VALUES of query parameters whose key matches the
@@ -314,8 +381,8 @@ func (r *Redactor) redactBody(body string) (string, error) {
 	if body == "" || !strings.ContainsAny(body, "{[") {
 		return body, nil
 	}
-	var v any
-	if err := json.Unmarshal([]byte(body), &v); err != nil {
+	v, ok := decodeJSON(body)
+	if !ok {
 		return body, nil
 	}
 	v, rerr := r.redactValue(v)

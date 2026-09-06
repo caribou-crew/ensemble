@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/caribou-crew/ensemble/core/trace"
@@ -77,6 +78,47 @@ func TestTrafficHistoryReachesPastTheRing(t *testing.T) {
 	}
 	if !got.HasMore {
 		t.Error("hasMore = false, want true (hops 1-899 remain)")
+	}
+}
+
+// Streaming hops receive their seq at headers time but reach disk only
+// when the stream closes, so completion order can differ from seq order.
+// Paging must keep the newest matching seqs, or the next before cursor
+// permanently skips hops that were displaced by a late-closing stream.
+func TestTrafficHistoryPagesOutOfOrderHops(t *testing.T) {
+	cases := []struct {
+		name  string
+		seqs  []uint64
+		pages [][]uint64
+	}{
+		{"oldest finishes last", []uint64{2, 3, 1}, [][]uint64{{3, 2}, {1}}},
+		{"interleaved completion", []uint64{3, 1, 5, 2, 4}, [][]uint64{{5, 4}, {3, 2}, {1}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			var hops []trace.Hop
+			for _, seq := range c.seqs {
+				hops = append(hops, trace.Hop{Seq: seq, To: "x", Method: "GET", Path: "/p", Status: 200})
+			}
+			writeHopsHistory(t, e, hops)
+
+			query := "?limit=2"
+			for page, want := range c.pages {
+				got := getHistory(t, e, query)
+				var seqs []uint64
+				for _, h := range got.Hops {
+					seqs = append(seqs, h.Seq)
+				}
+				if !slices.Equal(seqs, want) {
+					t.Fatalf("page %d seqs = %v, want %v", page+1, seqs, want)
+				}
+				if wantMore := page < len(c.pages)-1; got.HasMore != wantMore {
+					t.Errorf("page %d hasMore = %v, want %v", page+1, got.HasMore, wantMore)
+				}
+				query = fmt.Sprintf("?limit=2&before=%d", got.Hops[len(got.Hops)-1].Seq)
+			}
+		})
 	}
 }
 
@@ -172,6 +214,37 @@ func TestTrafficHistorySkipsCorruptLines(t *testing.T) {
 }
 
 // --- whole-session HAR export ---
+
+func TestSessionExportRefusesUnreadableOrCorruptHistory(t *testing.T) {
+	for _, kind := range []string{"unreadable", "corrupt"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.rec.Record(trace.Hop{Session: "run-1", Method: "GET", Path: "/live", Status: 200})
+			dir := filepath.Join(e.cfg.Dir, ".ensemble")
+			if kind == "unreadable" {
+				// A regular file in place of the parent directory makes the
+				// history open fail even when tests run as a privileged user.
+				if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				history := writeHopsHistory(t, e, []trace.Hop{{Seq: 2, Session: "run-1", Method: "GET", Path: "/disk", Status: 200}})
+				file, err := os.OpenFile(history, os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.WriteString("{truncated record\n"); err != nil {
+					t.Fatal(err)
+				}
+				file.Close()
+			}
+			resp, body := e.get(t, "/api/sessions/run-1/export?format=har")
+			if resp.StatusCode != http.StatusInternalServerError {
+				t.Errorf("partial history exported as complete: status=%d body=%s", resp.StatusCode, body)
+			}
+		})
+	}
+}
 
 func TestSessionExportUnionOfRingAndDisk(t *testing.T) {
 	e := newTestEnv(t)

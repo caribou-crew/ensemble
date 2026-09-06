@@ -33,6 +33,9 @@ const writeQueueCap = 4096
 
 // RecorderOpts configures hop retention and scrubbing.
 type RecorderOpts struct {
+	// InitialSeq is the last sequence already used by a retained log. The
+	// first new hop receives InitialSeq+1. Zero starts a fresh stream at 1.
+	InitialSeq uint64
 	// Ring is how many hops are kept in memory for replay to late
 	// subscribers. Zero means a default of 1024.
 	Ring int
@@ -108,6 +111,7 @@ func NewRecorder(opts RecorderOpts) *Recorder {
 	}
 	r := &Recorder{
 		opts:     opts,
+		nextSeq:  opts.InitialSeq,
 		subs:     map[chan HopEvent]*subState{},
 		owners:   map[string]string{},
 		ownerCap: 65536,
@@ -243,6 +247,10 @@ func (r *Recorder) Record(h trace.Hop) trace.Hop {
 		h = scrubbed
 	}
 	r.mu.Lock()
+	if r.nextSeq == ^uint64(0) {
+		r.mu.Unlock()
+		panic("proxy: recorder sequence exhausted")
+	}
 	r.nextSeq++
 	h.Seq = r.nextSeq
 	r.ring = append(r.ring, h)

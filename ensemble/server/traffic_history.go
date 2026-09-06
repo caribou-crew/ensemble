@@ -7,6 +7,7 @@ package server
 // dashboard and a whole-session HAR export both need to read it directly.
 
 import (
+	"container/heap"
 	"errors"
 	"fmt"
 	"math"
@@ -93,7 +94,7 @@ func (s *server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// scanHopsFile returns file order (oldest first); the endpoint's
+	// scanHopsFile returns bounded pages in ascending seq order; the endpoint's
 	// contract is newest-first.
 	reverseHops(window)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -115,33 +116,42 @@ func (s *server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("unknown format %q, want har", format))
 		return
 	}
-	writeJSON(w, http.StatusOK, trace.ToHar(s.reachableHops(s.sessionHops(id))))
+	hops, err := s.sessionHops(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, trace.ToHar(s.reachableHops(hops)))
 }
 
 // sessionHops unions every hop with Session == id from the in-memory ring
 // and from disk history, deduped by seq (a hop can be in both — the ring
 // hasn't necessarily rolled it out yet), sorted ascending by seq.
-func (s *server) sessionHops(id string) []trace.Hop {
+func (s *server) sessionHops(id string) ([]trace.Hop, error) {
 	bySeq := map[uint64]trace.Hop{}
 	for _, h := range s.Rec.Snapshot() {
 		if h.Session == id {
 			bySeq[h.Seq] = h
 		}
 	}
-	diskHops, _, _, err := scanHopsFile(s.trafficHistoryPath(), 0, func(h trace.Hop) bool {
+	diskHops, _, corrupt, err := scanHopsFile(s.trafficHistoryPath(), 0, func(h trace.Hop) bool {
 		return h.Session == id
 	})
-	if err == nil {
-		for _, h := range diskHops {
-			bySeq[h.Seq] = h
-		}
+	if err != nil {
+		return nil, fmt.Errorf("cannot export complete session history: %w", err)
+	}
+	if corrupt > 0 {
+		return nil, fmt.Errorf("cannot export complete session history: %d unreadable records", corrupt)
+	}
+	for _, h := range diskHops {
+		bySeq[h.Seq] = h
 	}
 	out := make([]trace.Hop, 0, len(bySeq))
 	for _, h := range bySeq {
 		out = append(out, h)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
-	return out
+	return out, nil
 }
 
 func reverseHops(hops []trace.Hop) {
@@ -150,15 +160,29 @@ func reverseHops(hops []trace.Hop) {
 	}
 }
 
-// scanHopsFile scans path forward once, collecting every hop for which
-// match returns true, in file order (oldest first — Recorder.Record
-// appends in strict seq order, under the same lock that assigns seq, so
-// the file is always seq-monotonic). maxKeep > 0 bounds memory by
-// evicting the oldest kept match once more than maxKeep have been seen —
-// since the file is seq-ascending, what survives is always the newest
-// maxKeep matches; maxKeep <= 0 keeps everything. matched is the total
-// number of hops that satisfied match, independent of eviction, so a
-// caller windowing by maxKeep can tell whether older matches exist.
+// historyHopHeap keeps the lowest seq at the root so a bounded history
+// page can replace its oldest hop when a newer match arrives.
+type historyHopHeap []trace.Hop
+
+func (h historyHopHeap) Len() int           { return len(h) }
+func (h historyHopHeap) Less(i, j int) bool { return h[i].Seq < h[j].Seq }
+func (h historyHopHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *historyHopHeap) Push(v any)        { *h = append(*h, v.(trace.Hop)) }
+func (h *historyHopHeap) Pop() any {
+	last := len(*h) - 1
+	v := (*h)[last]
+	(*h)[last] = trace.Hop{}
+	*h = (*h)[:last]
+	return v
+}
+
+// scanHopsFile scans path forward once, collecting hops for which match
+// returns true. Streaming hops are persisted at close, so file order can
+// differ from seq order. maxKeep > 0 uses a min-heap to retain the highest
+// maxKeep matching seqs in O(maxKeep) memory, returning them in ascending
+// seq order; maxKeep <= 0 keeps everything in file order. matched is the
+// total number of hops that satisfied match, independent of eviction, so
+// a caller windowing by maxKeep can tell whether older matches exist.
 //
 // Malformed lines are skipped and counted (corrupt), never fail the scan.
 // A missing file is not an error — no history recorded yet is a normal
@@ -174,6 +198,7 @@ func scanHopsFile(path string, maxKeep int, match func(trace.Hop) bool) (hops []
 	defer f.Close()
 
 	rd := trace.NewReader(f)
+	var newest historyHopHeap
 	// prevErr guards against a genuine bufio.Scanner-level failure (e.g. a
 	// line over the reader's 16MB cap): trace.Reader.Next() then returns
 	// the exact same stored error on every subsequent call (the Scanner
@@ -192,9 +217,13 @@ func scanHopsFile(path string, maxKeep int, match func(trace.Hop) bool) (hops []
 				continue
 			}
 			matched++
-			hops = append(hops, h)
-			if maxKeep > 0 && len(hops) > maxKeep {
-				hops = hops[1:]
+			if maxKeep <= 0 {
+				hops = append(hops, h)
+			} else if len(newest) < maxKeep {
+				heap.Push(&newest, h)
+			} else if h.Seq > newest[0].Seq {
+				newest[0] = h
+				heap.Fix(&newest, 0)
 			}
 			continue
 		}
@@ -206,6 +235,10 @@ func scanHopsFile(path string, maxKeep int, match func(trace.Hop) bool) (hops []
 			break
 		}
 		prevErr = nerr
+	}
+	if maxKeep > 0 {
+		sort.Sort(newest)
+		hops = []trace.Hop(newest)
 	}
 	return hops, matched, corrupt, nil
 }

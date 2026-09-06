@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/internal/jsonbody"
 	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
@@ -68,8 +69,7 @@ func bodySimilarity(a, b string) float64 {
 }
 
 func canonicalBodyForSimilarity(s string) string {
-	var v any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &v); err == nil {
+	if v, ok := parseBody(trace.Payload{Body: s}); ok {
 		return canonicalJSON(v)
 	}
 	return s
@@ -499,15 +499,7 @@ func parseBody(p trace.Payload) (any, bool) {
 	if p.Truncated {
 		return nil, false
 	}
-	s := strings.TrimSpace(p.Body)
-	if s == "" {
-		return nil, false
-	}
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return nil, false
-	}
-	return v, true
+	return jsonbody.Decode(p.Body)
 }
 
 func diffBodyScope(scope string, aPayload, bPayload trace.Payload, ctx diffCtx, acc *bodyAcc) {

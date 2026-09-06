@@ -13,6 +13,7 @@ import (
 
 	"github.com/caribou-crew/ensemble/core/httpguard"
 	"github.com/caribou-crew/ensemble/core/trace"
+	"github.com/caribou-crew/ensemble/retrace/internal/jsonbody"
 )
 
 // ABSENCE IS NEVER AGREEMENT.
@@ -592,12 +593,6 @@ func reflectCORS(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(raw []byte) any {
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil
-	}
+	v, _ := jsonbody.Decode(string(raw))
 	return v
 }

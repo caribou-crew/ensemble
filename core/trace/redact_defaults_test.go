@@ -61,6 +61,31 @@ func TestBodyDefaultsRedactSecretFields(t *testing.T) {
 	}
 }
 
+func TestBodyRedactionPreservesExactNumbers(t *testing.T) {
+	r := mustRedactor(t, nil, 0)
+	got := mustPayload(t, r, Payload{
+		Body: `{"id":9007199254740993,"ratio":0.1234567890123456789,"password":"secret","items":[18446744073709551615]}`,
+	})
+	for _, exact := range []string{`"id":9007199254740993`, `"ratio":0.1234567890123456789`, `18446744073709551615`} {
+		if !strings.Contains(got.Body, exact) {
+			t.Errorf("redaction changed a non-secret JSON number: want %s in %s", exact, got.Body)
+		}
+	}
+	if strings.Contains(got.Body, "secret") || !strings.Contains(got.Body, Redacted) {
+		t.Errorf("secret redaction was bypassed: %s", got.Body)
+	}
+}
+
+func TestBodyRedactionLeavesTrailingNonJSONDataUntouched(t *testing.T) {
+	r := mustRedactor(t, nil, 0)
+	for _, body := range []string{`{"password":"fixture"} {}`, `{"password":"fixture"} trailing`} {
+		got := mustPayload(t, r, Payload{Body: body})
+		if got.Body != body {
+			t.Errorf("incomplete JSON parsing changed a non-JSON body: %q", got.Body)
+		}
+	}
+}
+
 // TestBodyDefaultsRespectUserRulesAndOptOut: a user rule for the same key
 // wins over the built-in destroy default (here a display carve-out), and
 // SetBodyDefaults(false) — retrace's `redact: { body_defaults: off }` —

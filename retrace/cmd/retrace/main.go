@@ -23,6 +23,7 @@ const usage = `retrace — record / replay / diff / review flows
 Usage:
   retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--proxy-host HOST] [--proxy-port PORT] [--json] [--no-config] [--require-why] [-- <test command>]
   retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail] [--require-why]
+               [--a-root DIR] [--b-root DIR] [--a-app NAME] [--b-app NAME] [--a-commit FULL_SHA] [--b-commit FULL_SHA]
   retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
@@ -85,7 +86,7 @@ Env:
   RETRACE_STRICT      1/true/yes/on = adapters fail loudly when the handshake env is
                       absent (0/false/no/off/unset = quiet no-op; any other value is
                       a startup error, naming the value and the accepted set)
-  RETRACE_RECORDING_KEY  the team key for an `+"`encrypt`"+`-mode redact rule (hex or
+  RETRACE_RECORDING_KEY  the team key for an ` + "`encrypt`" + `-mode redact rule (hex or
                       base64, 32 bytes) — required at capture time for any field
                       configured that way, and read at diff/replay/serve time to
                       decrypt back to the real value. Falls back to the gitignored
@@ -93,7 +94,7 @@ Env:
                       secret of the same name (e.g. GitHub Actions:
                       RETRACE_RECORDING_KEY: ${{ secrets.RETRACE_RECORDING_KEY }})
                       so replay can assert against real values without ever
-                      committing them in plaintext. See `+"`retrace rekey --help`"+`
+                      committing them in plaintext. See ` + "`retrace rekey --help`" + `
                       to generate or rotate it.
   ENSEMBLE_API        default for --ensemble (http://127.0.0.1:4700)
 `

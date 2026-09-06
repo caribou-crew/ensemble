@@ -56,11 +56,13 @@ example). `retrace sync` needs no flag for this: it already copies the
   `@caribou-crew/retrace-playwright/reporter` in `playwright.config.ts` —
   no CI script changes. See `docs/retrace-ci-example.yml`'s `retrace-web`
   job.
-- **Maestro** projects add one explicit CI step after `maestro test`
-  finishes, using the same `retrace-maestro` bin the `group` marker command
-  already uses: `retrace-maestro attach video <path>` / `retrace-maestro
-  attach report <path>`. See `docs/retrace-ci-example.yml`'s
-  `retrace-ios-maestro` job.
+- **Maestro** projects attach evidence after `maestro test` finishes,
+  inside the same shell launched by `retrace run`, so `RETRACE_RUN_DIR`
+  remains available. The Node CLI provides `retrace-maestro attach video
+  <path>` / `retrace-maestro attach report <path>`; flow markers use the
+  separate native `bin/retrace-maestro.js` script. See
+  `docs/retrace-ci-example.yml`'s `retrace-ios-maestro` job, which preserves
+  test failures and attaches videos only when the flow recorded them.
 
 The ensemble dashboard's Retrace tab shows the candidate run's video
 (playable inline) and a link to the full report, when present, in the

@@ -200,9 +200,9 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 	// stack — bearer tokens the redactor didn't know to scrub, session
 	// cookies, customer data — and an unbounded append would fill the disk
 	// of anyone who leaves a stack (or a retry loop) running overnight.
-	hopsFile, err := trace.OpenRotatingFile(hopsPath, hopLogMaxBytes, hopLogKeep)
+	hopsFile, initialSeq, err := openHopHistory(hopsPath, hopLogMaxBytes, hopLogKeep)
 	if err != nil {
-		return fmt.Errorf("open hops log: %w", err)
+		return err
 	}
 	defer hopsFile.Close()
 
@@ -213,8 +213,9 @@ func runUp(ctx context.Context, opts upOptions, stdout, stderr io.Writer) error 
 		return fmt.Errorf("build redactor: %w", err)
 	}
 	rec := proxy.NewRecorder(proxy.RecorderOpts{
-		Redactor: redactor,
-		Writer:   trace.NewWriter(hopsFile),
+		InitialSeq: initialSeq,
+		Redactor:   redactor,
+		Writer:     trace.NewWriter(hopsFile),
 	})
 	// Flush the recorder's write queue before hopsFile closes (defers run
 	// LIFO; hopsFile.Close is deferred above) — hops recorded in the final

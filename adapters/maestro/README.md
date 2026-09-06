@@ -1,20 +1,32 @@
 # @caribou-crew/retrace-maestro
 
 Flow-part markers for [Maestro](https://maestro.mobile.dev) mobile flows,
-which cannot write files or import Node modules for assertions the way a
-Playwright test can. Maestro flows call out via `runScript`, so this package
-ships a plain executable that turns argv + env into one HTTP POST to
-`RETRACE_MARKER_URL`.
+using its native JavaScript `runScript` command. The flow script reads
+Maestro variables and uses its built-in HTTP client to POST markers to
+`RETRACE_MARKER_URL`. A separate Node CLI supports host-side marker commands
+and file evidence.
 
 ## Usage
 
+Pass retrace's handshake into Maestro explicitly. Maestro automatically
+imports shell variables with a `MAESTRO_` prefix; retrace's variables need
+`-e`. The inner shell expands them after `retrace run` sets them:
+
+```sh
+retrace run --flow checkout -- sh -c 'maestro test \
+  -e RETRACE_MARKER_URL="$RETRACE_MARKER_URL" \
+  -e RETRACE_STRICT=1 flows/checkout.yaml'
+```
+
+For a flow at `flows/checkout.yaml`, script paths are relative to that file:
+
 ```yaml
 - runScript:
-    file: node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs
+    file: ../node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.js
     env: { ARGS: "group checkout" }
 # ... steps ...
 - runScript:
-    file: node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.mjs
+    file: ../node_modules/@caribou-crew/retrace-maestro/bin/retrace-maestro.js
     env: { ARGS: "group --end" }
 ```
 
@@ -37,10 +49,32 @@ markerRequest(['group', '--end'], process.env);
 // → { url: 'http://127.0.0.1:PORT/group/end', body: '{}' }
 ```
 
-`bin/retrace-maestro.mjs` is plain, unbuilt JavaScript — it is never a `tsc`
-output, so a Maestro `runScript` step never depends on this package's own
-build having run. Group names must match `^[A-Za-z0-9._-]+$`, same as
-`@caribou-crew/retrace-js` and `@caribou-crew/retrace-playwright`.
+`bin/retrace-maestro.js` runs in both Maestro's Rhino and GraalJS engines.
+It uses ES5 syntax and needs neither Node nor a package build. Group names
+must be non-empty, not start with `.`, and match `^[A-Za-z0-9._-]+$`, same
+as `@caribou-crew/retrace-js` and `@caribou-crew/retrace-playwright`.
+
+The existing `retrace-maestro` executable and `bin/retrace-maestro.mjs`
+remain Node entrypoints. Use them in a host shell for `group checkout`,
+`group --end`, `attach video <path>`, or `attach report <directory>`.
+File evidence commands require `RETRACE_RUN_DIR` in that shell.
+
+See Maestro's [runScript reference](https://docs.maestro.dev/api-reference/commands/runscript),
+[parameters guide](https://docs.maestro.dev/maestro-flows/flow-control-and-logic/parameters-and-constants),
+and [HTTP client guide](https://docs.maestro.dev/advanced/javascript/make-http-s-requests).
+
+## Testing
+
+`pnpm test` covers the native script in an isolated JavaScript context with
+flow globals, plus the existing Node CLI. With Maestro and Java installed,
+also run the actual Rhino/GraalJS engines against a local HTTP marker endpoint:
+
+```sh
+MAESTRO_TEST_CLASSPATH="$HOME/.maestro/lib/*" pnpm test
+```
+
+The real-engine checks are skipped when `MAESTRO_TEST_CLASSPATH` is unset;
+they do not launch a simulator or emulator.
 
 ## Publishing
 

@@ -20,6 +20,7 @@ func buildOpenAPI(version string) map[string]any {
 		"/api/health":   {"get": {Summary: "Liveness and version"}},
 		"/api/status":   {"get": {Summary: "Orchestrator states and proxy ports"}},
 		"/api/topology": {"get": {Summary: "Nodes (services/databases/stubs) and dependency/proxy-wiring edges"}},
+		"/api/doctor":   {"post": {Summary: "Probe a configured proxy with one GET: target, path, optional expect and timeoutMs (default 5000, max 30000); reports observed context and capture evidence"}},
 
 		"/api/services/{name}/restart": {"post": {Summary: "Restart a service, preserving its current placement"}},
 		"/api/services/{name}/flip":    {"post": {Summary: "Flip a service between native and container placement"}},
@@ -30,9 +31,11 @@ func buildOpenAPI(version string) map[string]any {
 
 		"/api/seed/{name}": {"post": {Summary: "Run a named seed's SQL and HTTP steps"}},
 
-		"/api/traffic":         {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session"}},
-		"/api/traffic/stream":  {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since="}},
-		"/api/traffic/history": {"get": {Summary: "Hops persisted to .ensemble/hops.jsonl, newest-first, paginated by before=<seq>&limit=, filterable by errorsOnly/session/method/path/status"}},
+		"/api/traffic":                        {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session"}},
+		"/api/traffic/stream":                 {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since="}},
+		"/api/traffic/history":                {"get": {Summary: "Hops persisted to .ensemble/hops.jsonl, newest-first, paginated by before=<seq>&limit=, filterable by errorsOnly/session/method/path/status"}},
+		"/api/observability/requests":         {"get": {Summary: "Bounded metadata-only live request search: service, path, errorsOnly, minDurationMs, limit (default 20, max 100); explicit ring coverage and loss evidence"}},
+		"/api/observability/traces/{traceId}": {"get": {Summary: "Observed trace explanation with hop references, inclusive timings and evidence limits; limit defaults to 50, max 200"}},
 
 		"/api/traces/{traceId}":        {"get": {Summary: "A trace's hops plus its collapsed logical view"}},
 		"/api/traces/{traceId}/export": {"get": {Summary: "Export a trace as HAR, curl commands, or raw HTTP text"}},

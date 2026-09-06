@@ -128,6 +128,13 @@ func Assess(in AssessInput) runs.CaptureTrust {
 			"the capture listener stopped during the run: "+in.ProxyFailure.Message,
 			"re-run — calls made after it stopped were never recorded")
 	}
+	for _, h := range in.Hops {
+		if trace.HasRedactionFailure(h) {
+			add("redaction-failed", trace.VerdictDegraded,
+				fmt.Sprintf("hop %d: %s", h.Seq, h.Err),
+				"re-record with complete, uncompressed JSON bodies so capture can apply redaction")
+		}
+	}
 
 	// Zero calls is ambiguous on its own: "genuinely quiet" and "the app
 	// never routed through us" look identical. RequestsSeen (markers
@@ -201,6 +208,11 @@ func Assess(in AssessInput) runs.CaptureTrust {
 			"make the named service forward the `baggage` header alongside `traceparent`")
 	}
 	for _, n := range in.Notes {
+		if trace.HasRedactionFailure(trace.Hop{Err: n}) {
+			add("redaction-failed", trace.VerdictDegraded, n,
+				"re-record with complete, uncompressed JSON bodies so capture can apply redaction")
+			continue
+		}
 		add("capture-note", trace.VerdictSuspect, n, "re-run if the recording matters; the artifact may be incomplete")
 	}
 

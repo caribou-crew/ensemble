@@ -44,6 +44,37 @@ func TestResolveRoute(t *testing.T) {
 	}
 }
 
+func TestGatewayPreservesPathDelimitersAndQuery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, r.URL.RequestURI())
+	}))
+	defer upstream.Close()
+	for _, tc := range []struct {
+		name  string
+		route Route
+		want  string
+	}{
+		{"unchanged prefix", Route{Prefix: "/api"}, "/api/a%2Fb%3Fc%23d%25e?q=one%26two"},
+		{"unchanged regex", Route{Regex: regexp.MustCompile(`^/api/`)}, "/api/a%2Fb%3Fc%23d%25e?q=one%26two"},
+		{"strip prefix", Route{Prefix: "/api", StripPrefix: true}, "/a/b%3Fc%23d%25e?q=one%26two"},
+		{"rewrite prefix", Route{Prefix: "/api", Rewrite: "/internal"}, "/internal/a/b%3Fc%23d%25e?q=one%26two"},
+		{"rewrite regex", Route{Regex: regexp.MustCompile(`^/api/`), Rewrite: "/internal/"}, "/internal/a/b%3Fc%23d%25e?q=one%26two"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := tc.route
+			route.Upstream = upstream.URL
+			p := New(NewRecorder(RecorderOpts{}))
+			defer p.Close()
+			request := httptest.NewRequest(http.MethodGet, "http://localhost/api/a%2Fb%3Fc%23d%25e?q=one%26two", nil)
+			response := httptest.NewRecorder()
+			p.handler(Target{Name: "gateway", Routes: []Route{route}}).ServeHTTP(response, request)
+			if response.Code != http.StatusOK || response.Body.String() != tc.want {
+				t.Errorf("upstream path/query: status=%d body=%q, want %q", response.Code, response.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveRouteRegexFallback(t *testing.T) {
 	target := Target{Name: "gw", Routes: []Route{
 		{Prefix: "/products", Upstream: "http://catalog"},

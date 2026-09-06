@@ -1,10 +1,51 @@
 package rules
 
 import (
+	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 )
+
+func TestIntegerMatcherUsesExactValuesWithoutMachineRangeLimits(t *testing.T) {
+	m := Matcher{Kind: KindNamed, Name: "integer"}
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{"uint64 maximum", json.Number("18446744073709551615"), true},
+		{"integer exponent", json.Number("9007199254740993e1"), true},
+		{"decimal integer", json.Number("18446744073709551615.0"), true},
+		{"huge positive exponent", json.Number("1e18446744073709551617"), true},
+		{"zero with huge negative exponent", json.Number("-0.00e-18446744073709551617"), true},
+		{"large float64", float64(1e20), true},
+		{"large float32", float32(1e20), true},
+		{"near integer fraction", json.Number("1.0000000000000000001"), false},
+		{"huge negative exponent", json.Number("1e-18446744073709551617"), false},
+		{"positive infinity", math.Inf(1), false},
+		{"negative infinity", math.Inf(-1), false},
+		{"not a number", math.NaN(), false},
+		{"float32 fraction", float32(1.5), false},
+		{"empty number", json.Number(""), false},
+		{"invalid number", json.Number("1oops"), false},
+		{"JSON null is not a number", json.Number("null"), false},
+		{"JSON string is not a number", json.Number(`"1"`), false},
+		{"whitespace is not a numeric token", json.Number(" 1 "), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Classify(m, tc.value, tc.value, true)
+			want := Violation
+			if tc.want {
+				want = Tolerated
+			}
+			if got != want {
+				t.Fatalf("integer(%v) = %s, want %s", tc.value, got, want)
+			}
+		})
+	}
+}
 
 func TestNamedMatchersAcceptTheirFormatAndRejectOthers(t *testing.T) {
 	cases := []struct {
