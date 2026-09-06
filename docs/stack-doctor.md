@@ -1,5 +1,8 @@
 # Probe the local proxy chain
 
+Try the sample's [public → ops → catalog walkthrough](../sample/docs/observability.md)
+for healthy, missing-target, and injected-latency examples.
+
 Run the doctor after starting the stack, using a GET path that exercises the calls you want to inspect:
 
 ```sh

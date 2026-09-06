@@ -13,7 +13,7 @@ packages:
   # attached, which gives the fixture a SECOND copy of @playwright/test and
   # a `test()` the runner does not recognize.
   #
-  # Its browser suite is deliberately not named `test`: it needs the sample
-  # stack running, so `pnpm -r --if-present test` — what CI runs — must not
-  # pick it up. See sample/clients/web-app/package.json.
+  # Its browser suites are named `e2e` and `e2e:maestro`: they need the
+  # sample stack running. `test` runs only the host-side helper tests, so
+  # `pnpm -r --if-present test` stays independent of a live sample stack.
   - sample/clients/*

@@ -5,7 +5,12 @@
 # whose redaction rules you did not choose):
 #
 #   ensemble up -c ensemble.yaml      # in one terminal, leave it running
+#   retrace rekey --init               # first use only, unless a team key is configured
 #   retrace run                       # in another, from sample/
+#   retrace run --flow checkout-maestro -- pnpm -C clients/web-app run e2e:maestro
+#
+# Playwright remains the default; Maestro is opt-in. See README.md for
+# their checkpoint coverage and the shared fixture recovery setup.
 #
 # The first run has nothing to compare against; `retrace ref accept <id>`
 # promotes it to the reference, and every run after that is a diff.
@@ -165,11 +170,11 @@ fail_on:
 #   TRIAGE: stack (stack-changed)
 #
 # The suite's `beforeEach` re-applies the `baseline` seed (see
-# clients/web-app/tests/checkout.spec.js), so run B really did start from a
-# database run A's writes are no longer in. retrace compares a seed by name
-# AND application time for exactly that reason, so the second run is never
-# "the same stack" as the first — and triage, seeing a stack signal, says
-# `stack` rather than blaming the client.
+# clients/web-app/tools/reset-fixtures.mjs). Baseline inserts missing rows;
+# it does not erase database writes. The setup separately empties the two
+# test carts and verifies them. retrace compares the seed name AND its
+# application time, so repeated setup changes that metadata even when the
+# resulting test fixtures match. Triage reports this as a stack signal.
 #
 # Read the per-call list, not the label: when the only wire entries are
 # `[moved]`, nothing about the traffic changed but its order.

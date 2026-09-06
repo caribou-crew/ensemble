@@ -1,5 +1,8 @@
 # Read-only observability for LLMs
 
+For a runnable example using the brew stack, see the
+[sample doctor/MCP walkthrough](../sample/docs/observability.md).
+
 Start the stack normally, then configure your MCP client to launch:
 
 ```sh

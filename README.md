@@ -22,6 +22,9 @@ actual recorded dataflow instead of hand-maintained fixtures.
 For agent and E2E workflows, see [read-only MCP observability](docs/agent-observability.md),
 [comparison across checkouts or repositories](docs/comparing-migrations.md), and
 [probing the proxy chain with the stack doctor](docs/stack-doctor.md).
+The [brew sample walkthrough](sample/README.md#recording-it-with-retrace) exercises
+both test runners, [doctor/MCP](sample/docs/observability.md), and
+[comparison across commits or repositories](sample/docs/comparisons.md).
 
 ## Status
 
@@ -1048,6 +1051,8 @@ ensemble profiles
 ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
 ensemble traffic [--since N] [--errors-only] [--follow] [--session ID] [--export har]
 ensemble trace <traceId> [--export har|curl|raw]
+ensemble doctor --target NAME --path / [--expect NAME,NAME] [--timeout 5s] [--json]
+ensemble mcp [--api-url http://127.0.0.1:4700]
 ```
 
 `ensemble ready` blocks until the stack's readiness checks resolve (or
@@ -1065,15 +1070,19 @@ or `ensemble traffic --session <id> --export har`), covering every hop
 that carried the session's id across ring and history — the multi-trace
 counterpart to `ensemble trace <traceId> --export har`.
 
-Every command takes `--json`, and every one is a thin client over the REST API,
-so anything the CLI does an agent or script can do over HTTP. `ENSEMBLE_API`
-sets the default endpoint. The control plane binds loopback only.
+Inspection and control commands offer JSON output over the REST API, so an
+agent or script can use the same operations over HTTP. `ensemble mcp` is
+the stdio JSON-RPC bridge for the two read-only observability tools; it does
+not take `--json`. `ENSEMBLE_API` sets the default endpoint. The control
+plane binds loopback only.
 
 ### retrace CLI
 
 ```
 retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--upstream URL] [--json] [-- <test command>]
 retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--out DIR] [--no-fail]
+# Optional side bindings/assertions for diff:
+#   --a-root DIR --b-root DIR --a-app NAME --b-app NAME --a-commit FULL_SHA --b-commit FULL_SHA
 retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] -- <test command>
 retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
 retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
@@ -1101,8 +1110,8 @@ key used by `encrypt`-mode redact rules; `sync` pulls run metadata from a
 CI provider (currently GitHub Actions) for `runs`/`check` to reason about
 recordings captured in CI rather than locally.
 
-Like `ensemble`, every command takes `--json`; `ENSEMBLE_API` is read for the
-`--ensemble` default.
+Use `--json` where listed for structured retrace output. `ENSEMBLE_API` is
+read for the `--ensemble` default.
 
 **Recordings redact common credentials by default.** Redaction happens at capture,
 never post-hoc, and the defaults cover the places credentials actually

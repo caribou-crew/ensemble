@@ -4,20 +4,47 @@
 #
 # Web support is beta and Chromium-only as of writing (see
 # https://docs.maestro.dev/get-started/supported-platform/web-browser).
-# Needs the full sample stack running and seeded first — same prerequisite
-# as the Playwright suite, see ../playwright.config.js and
-# sample/README.md. Run with: maestro test maestro/checkout.yaml
-url: http://127.0.0.1:5173
+# Needs the full sample stack running. The wrapper seeds and clears test
+# carts; direct `maestro test` needs that setup performed separately. See
+# sample/README.md. `pnpm run e2e:maestro` supplies the recording URL and
+# screenshot directory. Direct `maestro test` retains its standalone mode.
+url: "${typeof BREW_APP_URL === 'undefined' ? 'http://127.0.0.1:5173' : BREW_APP_URL}"
 ---
+- runScript:
+    file: ../../../../adapters/maestro/bin/retrace-maestro.js
+    env: { ARGS: "group browse" }
 - launchApp
 - assertVisible: "brew"
 - assertVisible: "menu"
 - assertVisible: "cart"
 - assertVisible: "empty"
+- assertVisible: "espresso"
+- runFlow:
+    when:
+      true: ${typeof BREW_SHOTS_DIR !== 'undefined'}
+    commands:
+      - takeScreenshot: ${BREW_SHOTS_DIR}/catalog
 # assertVisible's text is a full regex match against an element's whole
 # text, not a substring search — "total: .*" rather than "total:" to match
 # the rendered "total: $3.50".
 - tapOn: "add to cart"
 - assertVisible: "total: .*"
+- runFlow:
+    when:
+      true: ${typeof BREW_SHOTS_DIR !== 'undefined'}
+    commands:
+      - takeScreenshot: ${BREW_SHOTS_DIR}/cart
+- runScript:
+    file: ../../../../adapters/maestro/bin/retrace-maestro.js
+    env: { ARGS: "group --end" }
+- runScript:
+    file: ../../../../adapters/maestro/bin/retrace-maestro.js
+    env: { ARGS: "group checkout" }
 - tapOn: "checkout"
 - assertVisible: "order confirmed"
+- assertVisible: "empty"
+# The confirmation contains a new order ID each time. This flow asserts it
+# as text and records the stable catalog/cart views above as pixel evidence.
+- runScript:
+    file: ../../../../adapters/maestro/bin/retrace-maestro.js
+    env: { ARGS: "group --end" }

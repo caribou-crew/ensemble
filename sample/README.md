@@ -35,17 +35,34 @@ ensemble variant order real   # swap the running stack to the JVM backend
 ensemble variant order stub   # swap back
 ```
 
-Both variants implement the identical `/orders` contract, so
+Both variants implement the same `/orders` API shape, so
 `storefront-bff`/`ops-bff` never know (or care) which one they're talking
-to — see `order-stub/main.go`'s doc comment.
+to — see `order-stub/main.go`'s doc comment. Use the
+[variant comparison](docs/comparisons.md#try-the-existing-go-and-java-order-implementations)
+to check their behavior on a recorded flow.
 
 ## Run it
+
+Install Go 1.25+, pnpm, Docker, and the ensemble/retrace CLIs. From the
+repository root, run `pnpm install --frozen-lockfile` and
+`pnpm --filter '@caribou-crew/retrace-playwright...' run build`. Docker must
+be running. Java 17 is needed for the optional Java order variant and for
+Maestro; set `JAVA_HOME` before starting ensemble if your Java launcher
+does not find it automatically.
+
+Start the stack in one terminal and leave it running:
 
 ```sh
 cd sample
 ensemble up -c ensemble.yaml                       # money path, order defaults to the Go stub
-ensemble up -c ensemble.yaml --variant order=real   # + the real order-svc (needs a JDK)
-ensemble seed baseline                              # starter products + users
+```
+
+To start with Java instead, use `ensemble up -c ensemble.yaml --variant
+order=real`. In a second terminal, also from `sample/`:
+
+```sh
+ensemble ready --timeout 60s
+ensemble seed baseline                            # starter products + users
 ```
 
 `web` starts automatically with everything else — open
@@ -87,7 +104,8 @@ the one safe to group by.
 
 ### Seeds
 
-- `baseline` — a handful of starter products + users. The default.
+- `baseline` — inserts missing starter products + users. The default;
+  it does not overwrite existing rows, clear carts, or erase order history.
 - `empty` — truncates products and users (Postgres only; doesn't touch
   MySQL `orders`/`order_items`, which only exist once the `real` order
   variant has connected at least once).
@@ -173,23 +191,40 @@ The same checkout flow, driven by two different test runners against the
 one app — the point is proving retrace can tap into either, not testing the
 app twice (see `adapters/` in design.md §7).
 
-Both need the full stack running and seeded first
-(`ensemble up -c ensemble.yaml && ensemble seed baseline`) — they exercise
-the real backend, not a mock.
+Both need the full stack running. Their shared setup applies the baseline
+seed, checks that every seed step succeeded, empties carts for users `1`
+and `999`, and reads both carts back to verify the cleanup. This recovers
+from a previous checkout that stopped midway, including carts with several
+products. Setup uses the normal edge proxy, outside the recording session.
+It does not erase custom catalog data or order history; start from matching
+fixtures when comparing two versions.
+
+Install Playwright's browser once. Install the Maestro CLI separately if
+you want to use it, with a working Java runtime. From `sample/`:
 
 ```sh
+pnpm -C clients/web-app exec playwright install chromium
 pnpm -C clients/web-app run e2e       # Playwright — tests/checkout.spec.js
-maestro test clients/web-app/maestro/checkout.yaml   # Maestro — web support is beta, Chromium-only
+pnpm -C clients/web-app run e2e:maestro # Maestro — maestro/checkout.yaml, Chromium
 ```
 
-The Playwright suite is **not** named `test`, and `web-app` is a member of
-the repo's pnpm workspace rather than an npm project of its own. Both are
-deliberate: the workspace is what lets it link
-`@caribou-crew/retrace-playwright` by `workspace:*` and share ONE
-`@playwright/test` instance with the fixture (npm's `file:` alternative
-gives the fixture a second copy and a `test()` the runner does not
-recognize), and the name keeps `pnpm -r --if-present test` — what CI runs —
-from launching a browser suite against a stack that is not up.
+`web-app` belongs to the pnpm workspace and links the Playwright adapter
+with `workspace:*`, sharing one `@playwright/test` instance. Its `test`
+script runs only the host-side setup/runner unit tests, so
+`pnpm -r --if-present test` does not need a live stack or launch browsers.
+The browser suites are the explicit `e2e` and `e2e:maestro` commands.
+
+The Maestro wrapper starts its own Vite server on port 5174, passes the
+recording URL and marker handshake to the flow, and closes the server when
+Maestro exits, and requires both screenshots even if Maestro exits zero.
+In a recording, screenshots go into the run's `shots/` and
+JUnit/debug output into `report/`. Standalone output goes under the ignored
+`sample/.retrace/maestro-*` directory. It refuses a partial recording
+handshake instead of silently recording the wrong server.
+
+The raw `maestro test clients/web-app/maestro/checkout.yaml` flow still
+targets the stack's existing port 5173 when no parameters are supplied;
+use the wrapper above for fixture setup and retrace recording.
 
 Maestro's `assertVisible` text is a **full regex match against an
 element's entire text**, not a substring search — `"total: .*"`, not
@@ -204,8 +239,31 @@ parent directories, on purpose.
 
 ```sh
 ensemble up -c ensemble.yaml    # one terminal, leave it running
-retrace run                     # another, from sample/
+# In another terminal, from sample/:
+retrace rekey --init             # first use only, if no team key is already configured
+retrace run                      # Playwright checkout
 ```
+
+The config demonstrates encrypted-field redaction and therefore requires a
+team key even though this flow does not send that field. Use an existing
+`RETRACE_RECORDING_KEY` (hex/base64) or initialize `.retrace/recording.key`
+once. The file contains raw key bytes, is ignored by Git, and must stay
+secret; do not replace a key used by existing recordings.
+
+To record Maestro explicitly without changing the default Playwright flow:
+
+```sh
+retrace run --flow checkout-maestro -- pnpm -C clients/web-app run e2e:maestro
+```
+
+| Runner | Assertions | Recorded checkpoints | Flow groups |
+| --- | --- | --- | --- |
+| Playwright | Checkout, emptied cart, unknown-user rejection | `catalog`, `cart`, `cart-emptied`, `unknown-user-error` | `browse`, `checkout`, `unknown-user` |
+| Maestro | Checkout and emptied cart | `catalog`, `cart` | `browse`, `checkout` |
+
+Maestro asserts the confirmation text but does not screenshot its changing
+order ID. Keep a separate baseline per runner: their checkpoint coverage
+and browser geometry differ. Playwright uses a fixed 1280×720 viewport.
 
 That prints something like:
 
@@ -243,12 +301,39 @@ are no-ops when nothing is recording, so `pnpm -C clients/web-app run e2e`
 behaves exactly as it did before and there is no second copy of the suite
 to keep in sync.
 
-**A clean run reports `changed`, not `pass`.** The browser loads the
+**A clean run can report `changed`.** The browser loads the
 catalog and the cart concurrently, each behind its own CORS preflight, so
 two runs of identical code interleave those calls differently. retrace
 reports the interleaving as `[moved]`. Moves are excluded from the wire
 budget — every gate still passes — but they do reach the verdict. When the
-per-call list is all `[identical]` and `[moved]`, nothing regressed.
+per-call list is all `[identical]` and `[moved]`, the wire content did not
+change under the configured tolerances. Read `retrace diff --json` too:
+both capture verdicts must be `ok`, required evidence must be recorded,
+and gates, pixel results, hop violations, and suppressions still matter.
+Slower Maestro runs can also contain an additional browser `OPTIONS`
+preflight. It remains visible as an extra call; inspect it rather than
+assuming every run must have exactly the same raw request count.
+
+Optional environment settings for the sample test commands:
+
+| Variable | Purpose / default |
+| --- | --- |
+| `ENSEMBLE_API` | Fixture setup control plane, `http://127.0.0.1:4700` |
+| `BREW_SETUP_EDGE_URL` | Fixture cleanup edge, `http://127.0.0.1:9080`; keep this outside the recording proxy |
+| `BREW_TEST_PORT` | Test Vite port: 5174 for recording and Maestro, 5173 for standalone Playwright |
+| `VITE_EDGE_URL` | Standalone app's edge override; recording uses `RETRACE_PROXY_URL` |
+| `JAVA_HOME` | Java installation for Maestro and the optional Java order backend |
+
+These settings configure the sample runners. If the control plane is also
+on a custom port, point the ensemble/retrace CLIs at it using their
+`--api-url` / `--ensemble` options.
+
+## More walkthroughs
+
+- [Trace a request and investigate latency with doctor, REST, and MCP](docs/observability.md).
+- [Compare commits, independent repositories, or Go/Java order variants](docs/comparisons.md),
+  including full commit assertions and a JSON check that requires pixel,
+  wire, and hop evidence.
 
 ## Layout
 
@@ -257,10 +342,12 @@ sample/
 ├── ensemble.yaml              # the reference config for the full stack
 ├── retrace.yaml               # records the Playwright suite as the `checkout` flow
 ├── seeds/                     # baseline.sql, users.sql, empty.sql, bulk.sql
+├── docs/                      # observability and migration comparison walkthroughs
 ├── clients/
 │   └── web-app/                # React/Vite — browse/cart/checkout, no tracing code
 │       ├── tests/               # Playwright spec
-│       └── maestro/             # Maestro web flow (beta)
+│       ├── maestro/             # Maestro web flow (beta)
+│       └── tools/               # shared fixture setup, Maestro wrapper, unit tests
 └── services/
     ├── edge-gw/                # Go   — entry + auth stub + CORS, routes to storefront/catalog
     ├── catalog-svc/            # Go   — Postgres CRUD, calls payments stub

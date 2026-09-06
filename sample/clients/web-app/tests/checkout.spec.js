@@ -12,16 +12,12 @@
 // straight from @playwright/test.
 import { expect } from '@playwright/test';
 import { test } from '@caribou-crew/retrace-playwright';
+import { resetFixtures } from '../tools/reset-fixtures.mjs';
 
-const ENSEMBLE_API = process.env.ENSEMBLE_API || 'http://127.0.0.1:4700';
-
-test.beforeEach(async ({ request }) => {
-  // baseline is idempotent — re-seeding resets products/users to a known
-  // state before each test, independent of what a prior run left behind.
-  // This talks to ensemble's control plane directly, not through the app's
-  // edge, so the seed's own work never lands in a recording as though the
-  // app had made those calls.
-  await request.post(`${ENSEMBLE_API}/api/seed/baseline`);
+test.beforeEach(async () => {
+  // Confirm the seed succeeded and remove both users' leftover cart items,
+  // including when the previous run failed before its cleanup could run.
+  await resetFixtures();
 });
 
 test('browse, add to cart, and check out', async ({ page, retrace }) => {
@@ -73,12 +69,9 @@ test('checking out for an unseeded user id surfaces the backend error', async ({
   await expect(page.locator('.error')).toContainText('unknown user');
   await retrace.checkpoint('unknown-user-error');
 
-  // Empty this cart before leaving. `beforeEach` reseeds Postgres, which is
-  // where products and users live — carts live in DynamoDB and it does not
-  // touch them. User 1's cart self-heals because checkout empties it, but
-  // 999 never checks out successfully, so without this its cart grows by
-  // one item per run and every run's recording differs from the last for a
-  // reason that is not a regression. Found by diffing two consecutive runs.
+  // Exercise the visible remove action as part of the flow. Setup also
+  // clears this cart independently, so a failure here cannot poison the
+  // next recording.
   await page.getByRole('button', { name: 'remove' }).click();
   await expect(page.locator('section', { hasText: 'cart' }).locator('p')).toContainText('empty');
   await retrace.endGroup();

@@ -22,7 +22,8 @@ public class OrderController {
 
     private final OrderRepository repo;
     private final StringRedisTemplate redis;
-    private final HttpClient http = HttpClient.newHttpClient();
+    // The local recording proxies capture HTTP/1.1; avoid the default h2c upgrade.
+    private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Value("${catalog.url}")

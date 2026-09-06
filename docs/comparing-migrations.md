@@ -1,5 +1,9 @@
 # Comparing two checkouts or repositories
 
+The [brew comparison walkthrough](../sample/docs/comparisons.md) includes
+checkout preparation, shared recording keys, stable capture settings, a
+structured evidence check, and the optional Go/Java backend comparison.
+
 Capture the same flow in each repository using its own test command. For example:
 
 ```sh

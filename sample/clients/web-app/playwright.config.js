@@ -17,7 +17,8 @@ import { defineConfig } from '@playwright/test';
 // diff. reuseExistingServer is off for the same reason: an existing server
 // on this port is not necessarily pointed where this run needs it.
 const proxyURL = process.env.RETRACE_PROXY_URL;
-const port = proxyURL ? 5174 : 5173;
+const port = Number(process.env.BREW_TEST_PORT || (proxyURL ? 5174 : 5173));
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('BREW_TEST_PORT must be a port between 1 and 65535');
 
 export default defineConfig({
   testDir: './tests',
@@ -28,6 +29,7 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    viewport: { width: 1280, height: 720 },
   },
   webServer: {
     command: 'pnpm run dev',
