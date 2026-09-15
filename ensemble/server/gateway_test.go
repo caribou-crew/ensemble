@@ -208,3 +208,32 @@ func TestSessionStartWithGatewayEntry(t *testing.T) {
 		t.Errorf("unknown entry status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// A gateway's and a stub's declared listen port ride on their topology node — the only port
+// either has, and the one the dashboard's Services tab shows in its port column. A service
+// node carries none: a service's ports are runtime state on ServiceState, where they can
+// reflect the currently active placement rather than just what config declared.
+func TestTopologyStubAndGatewayCarryListenPort(t *testing.T) {
+	e, gwPort := newGatewayEnv(t)
+	resp, body := e.get(t, "/api/topology")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got server.TopologyResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]server.TopologyNode{}
+	for _, n := range got.Nodes {
+		byName[n.Name] = n
+	}
+	if p := byName["public"].Port; p != gwPort {
+		t.Fatalf("gateway port = %d, want %d", p, gwPort)
+	}
+	if p, want := byName["pay"].Port, e.cfg.Stubs["pay"].Port; p != want {
+		t.Fatalf("stub port = %d, want %d", p, want)
+	}
+	if p := byName["svc"].Port; p != 0 {
+		t.Fatalf("service node carries port %d, want 0 (services report ports on ServiceState)", p)
+	}
+}

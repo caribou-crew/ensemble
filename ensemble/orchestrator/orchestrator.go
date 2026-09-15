@@ -189,6 +189,15 @@ type Orchestrator struct {
 	// name of one of its declared config.Gateway.Upstreams. See
 	// FlipGateway.
 	gatewayActive map[string]string
+	// gatewayBound records when each gateway's CURRENT listener was bound,
+	// the gateway analog of ServiceState.StartedAt. A gateway has no
+	// process, so this is the only uptime it has; a flip rebinds the
+	// listener and therefore restarts the clock, which is the honest
+	// reading — the thing that is up is the listener, and that one is new.
+	// An absent key means "not bound", never "bound at the zero time":
+	// GatewayStatus.BoundAt stays zero and clients render no uptime rather
+	// than an uptime of forever.
+	gatewayBound map[string]time.Time
 	// stubs holds each running config-defined stub, owned the same way
 	// procs/dockerNodes are — started by Up, torn down by Down, and
 	// individually add/remove/restart-able by Reconcile.
@@ -331,6 +340,7 @@ func New(cfg *config.Config, px *proxy.Proxy, opts Opts) *Orchestrator {
 		wiredStop:             map[string]func(){},
 		gatewayStop:           map[string]func(){},
 		gatewayActive:         map[string]string{},
+		gatewayBound:          map[string]time.Time{},
 		stubs:                 map[string]*stub.Stub{},
 		serviceLocks:          map[string]*sync.Mutex{},
 		stopping:              map[string]bool{},
@@ -1480,6 +1490,7 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target str
 	o.mu.Lock()
 	o.gatewayStop[name] = stop
 	o.gatewayActive[name] = target
+	o.gatewayBound[name] = time.Now()
 	o.mu.Unlock()
 	o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (target=%s)", name, gw.Port, target)
 	return nil
@@ -1536,6 +1547,13 @@ func (o *Orchestrator) FlipGateway(ctx context.Context, name, target string) err
 type GatewayStatus struct {
 	Name         string `json:"name"`
 	ActiveTarget string `json:"activeTarget"`
+	// BoundAt is when this gateway's current listener was bound — the
+	// gateway's uptime origin, mirroring ServiceState.StartedAt. Zero for a
+	// configured gateway that is not currently bound (before Up, or after
+	// a wiring failure), which clients MUST render as "no uptime" rather
+	// than as an uptime measured from the zero time. A flip rebinds the
+	// listener and resets it; see gatewayBound.
+	BoundAt time.Time `json:"boundAt,omitzero"`
 }
 
 // Gateways reports every configured gateway's current flip target, sorted
@@ -1555,7 +1573,7 @@ func (o *Orchestrator) Gateways() []GatewayStatus {
 		if target == "" {
 			target = "local"
 		}
-		out = append(out, GatewayStatus{Name: name, ActiveTarget: target})
+		out = append(out, GatewayStatus{Name: name, ActiveTarget: target, BoundAt: o.gatewayBound[name]})
 	}
 	return out
 }
@@ -1567,6 +1585,7 @@ func (o *Orchestrator) unwireGateway(name string) {
 	o.mu.Lock()
 	stop, ok := o.gatewayStop[name]
 	delete(o.gatewayStop, name)
+	delete(o.gatewayBound, name)
 	o.mu.Unlock()
 	if ok {
 		stop()

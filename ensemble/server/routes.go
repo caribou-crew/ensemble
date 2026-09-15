@@ -236,6 +236,13 @@ type TopologyNode struct {
 	// Placements for services. Unset for every other category and for a
 	// gateway with none declared.
 	Upstreams []string `json:"upstreams,omitempty"`
+	// Port is the listen port a "stub" or "gateway" category node declares
+	// in config — the only port either has, and the one a client calls it
+	// on. Unset (0, omitted) for every other category: a service's ports
+	// are runtime state and travel on ServiceState.Port/ProxyPort instead,
+	// where they can reflect the CURRENTLY active placement rather than
+	// just what was declared.
+	Port int `json:"port,omitempty"`
 }
 
 // TopologyEdge is a directed dependency: From calls/depends on To.
@@ -312,7 +319,7 @@ func (s *server) buildTopology() TopologyResponse {
 		// Stubs are config-defined fakes, not orchestrator-supervised nodes
 		// (Task 2.2/2.3 never starts them) — "static" says so rather than
 		// borrowing a lifecycle Status that doesn't apply.
-		nodes = append(nodes, TopologyNode{Name: name, Category: "stub", Status: "static"})
+		nodes = append(nodes, TopologyNode{Name: name, Category: "stub", Status: "static", Port: cfg.Stubs[name].Port})
 	}
 	for _, name := range gwNames {
 		// A gateway is a static listener the proxy binds at Up, not a
@@ -323,7 +330,7 @@ func (s *server) buildTopology() TopologyResponse {
 		for _, gu := range gw.Upstreams {
 			upstreams = append(upstreams, gu.Name)
 		}
-		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true, ExposeInTraffic: gw.ExposeInTraffic, Upstreams: upstreams})
+		nodes = append(nodes, TopologyNode{Name: name, Category: "gateway", Status: "static", Entry: true, ExposeInTraffic: gw.ExposeInTraffic, Upstreams: upstreams, Port: gw.Port})
 	}
 
 	// portToService resolves an env-wired "127.0.0.1:<port>" reference back

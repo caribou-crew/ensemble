@@ -109,13 +109,47 @@ one gateway with the same normalised prefix (trailing `/` ignored).
 
 ### Requirement: Topology surface
 `GET /api/topology` SHALL include each gateway as a node with
-`category: "gateway"`, `status: "static"`, and `entry: true`, and SHALL
-include one edge from the gateway to each distinct route target.
+`category: "gateway"`, `status: "static"`, `entry: true`, and the `port` it
+declares, and SHALL include one edge from the gateway to each distinct route
+target. Stub nodes SHALL likewise carry their declared `port`. Service nodes
+SHALL NOT carry a `port`: a service's ports are runtime state reported on
+`ServiceState`, where they reflect the currently active placement rather than
+only what config declared.
 
 #### Scenario: Gateway node and edges
 - **WHEN** gateway `public` routes to `catalog` twice and `payments` once
 - **THEN** the topology contains node `public` (gateway, entry) and exactly
   the edges `public → catalog` and `public → payments`
+
+#### Scenario: Listen port on the node
+- **WHEN** gateway `public` declares `port: 9000` and stub `pay` declares
+  `port: 9300`
+- **THEN** the topology node for `public` reports `port: 9000` and the node
+  for `pay` reports `port: 9300`, and a service node reports no port
+
+### Requirement: Gateway listener uptime
+Each gateway's current flip target SHALL be reported alongside the time its
+CURRENT listener was bound. Binding a gateway's listener — at `up`, and again
+on each flip, which rebinds it — SHALL set that time; tearing the listener
+down SHALL clear it. A gateway that is not currently bound SHALL report no
+bind time rather than a zero timestamp that reads as an uptime, and clients
+SHALL render that as no uptime. A gateway has no process, so this listener
+uptime is the only uptime it has.
+
+#### Scenario: Uptime from the bind
+- **WHEN** `ensemble up` binds gateway `public`
+- **THEN** `public`'s reported bind time is the moment it was bound, and
+  clients show uptime measured from it
+
+#### Scenario: A flip restarts the clock
+- **WHEN** `public` is flipped from `local` to `qa`, rebinding its listener
+- **THEN** its reported bind time advances to the new listener's bind
+
+#### Scenario: Never bound reports no uptime
+- **WHEN** `public` is configured but its listener has never been bound, or
+  has been torn down
+- **THEN** it reports no bind time, and clients show no uptime rather than an
+  uptime measured from the zero time
 
 ### Requirement: Gateway as session entry
 `POST /api/sessions` SHALL accept a gateway name as `entry`, fronting the

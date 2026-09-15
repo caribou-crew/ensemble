@@ -103,8 +103,9 @@ func (p *servicesPanel) setServices(services []orchestrator.ServiceState) {
 
 // rebuildRows renders services followed by gateways (each internally
 // sorted by name, rather than interleaved) into the table. Gateway rows use
-// "—" for the columns that don't apply — they have no placement, variant,
-// or lifecycle port the way a supervised service does.
+// "—" for the columns that don't apply — they have no placement or variant
+// the way a supervised service does — but DO carry their declared listen
+// port, which is the port a client calls that gateway on.
 func (p *servicesPanel) rebuildRows() {
 	rows := make([]table.Row, 0, len(p.services)+len(p.gateways))
 	for _, s := range p.services {
@@ -115,7 +116,11 @@ func (p *servicesPanel) rebuildRows() {
 		rows = append(rows, table.Row{s.Name, serviceStatusCell(s), s.Placement, s.Variant, port})
 	}
 	for _, g := range p.gateways {
-		rows = append(rows, table.Row{g.Name, "gateway", "—", "—", "—"})
+		port := "—"
+		if g.Port > 0 {
+			port = fmt.Sprintf("%d", g.Port)
+		}
+		rows = append(rows, table.Row{g.Name, "gateway", "—", "—", port})
 	}
 	p.table.SetRows(rows)
 }

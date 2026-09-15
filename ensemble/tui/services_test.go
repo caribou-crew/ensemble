@@ -203,3 +203,28 @@ func TestServicesPanelRendersExitStates(t *testing.T) {
 		t.Errorf("exited row status = %q, want \"exited (exit 0)\"", rows[1][1])
 	}
 }
+
+// The Port column is the one column a gateway row CAN fill: its declared listen port is the
+// port a client calls it on, and it arrives on the topology node the gateway rows are built
+// from. A gateway that declares none keeps the dash.
+func TestServicesPanelGatewayRowShowsListenPort(t *testing.T) {
+	p := newServicesPanel()
+	p.applyStatus(statusMsg{resp: StatusResponse{Services: []orchestrator.ServiceState{}}})
+	p.applyTopology(topologyMsg{resp: server.TopologyResponse{Nodes: []server.TopologyNode{
+		{Name: "public", Category: "gateway", Status: "static", Entry: true, Port: 9000},
+		{Name: "portless", Category: "gateway", Status: "static", Entry: true},
+	}}})
+
+	rows := p.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 gateway rows, got %+v", rows)
+	}
+	// Gateway rows are sorted by name, so "portless" precedes "public".
+	const portCol = 4
+	if rows[1][portCol] != "9000" {
+		t.Fatalf("gateway port column = %q, want \"9000\"", rows[1][portCol])
+	}
+	if rows[0][portCol] != "—" {
+		t.Fatalf("portless gateway port column = %q, want a dash", rows[0][portCol])
+	}
+}

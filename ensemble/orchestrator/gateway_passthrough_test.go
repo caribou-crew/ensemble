@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/proxy"
 	"github.com/caribou-crew/ensemble/ensemble/config"
@@ -159,5 +160,81 @@ func TestOrchestratorGatewaysReportsActiveTarget(t *testing.T) {
 	statuses = o.Gateways()
 	if statuses[0].ActiveTarget != "qa" {
 		t.Fatalf("want ActiveTarget qa after flip, got %q", statuses[0].ActiveTarget)
+	}
+}
+
+// A gateway has no process, so BoundAt — when its current listener was bound — is the only
+// uptime it has. The dashboard's Services tab reads it exactly the way it reads a service's
+// StartedAt.
+func TestOrchestratorGatewaysReportsBindTime(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer local.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	before := time.Now()
+	o, _ := newGatewayPassthroughOrchestrator(t, local, upstream, "qa")
+
+	bound := o.Gateways()[0].BoundAt
+	if bound.IsZero() {
+		t.Fatal("want a BoundAt for a gateway bound at Up, got the zero time")
+	}
+	if bound.Before(before) || bound.After(time.Now()) {
+		t.Fatalf("BoundAt %v outside the window [%v, now] Up ran in", bound, before)
+	}
+
+	// A flip closes the old listener and binds a new one, so the uptime the dashboard shows
+	// is that NEW listener's — reporting the pre-flip time would claim an unbroken bind
+	// that did not happen.
+	time.Sleep(10 * time.Millisecond)
+	if err := o.FlipGateway(context.Background(), "public", "qa"); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	reboundAt := o.Gateways()[0].BoundAt
+	if !reboundAt.After(bound) {
+		t.Fatalf("want BoundAt to advance on a flip (rebind), got %v then %v", bound, reboundAt)
+	}
+}
+
+// The fail-closed half: a gateway that is configured but never bound reports the zero time,
+// which every client renders as "no uptime". Anything else would claim an unbound listener
+// has been up since the epoch.
+func TestOrchestratorGatewaysBindTimeZeroBeforeUp(t *testing.T) {
+	cfg := &config.Config{
+		Dir: t.TempDir(),
+		Gateways: map[string]config.Gateway{
+			"public": {Port: freePort(t), Routes: []config.GatewayRoute{}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	t.Cleanup(px.Close)
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+
+	statuses := o.Gateways()
+	if len(statuses) != 1 {
+		t.Fatalf("want 1 gateway status, got %+v", statuses)
+	}
+	if !statuses[0].BoundAt.IsZero() {
+		t.Fatalf("want the zero time for a never-bound gateway, got %v", statuses[0].BoundAt)
+	}
+}
+
+// Tearing a gateway's listener down clears its bind time rather than leaving the last one
+// behind. Reconcile unwires before rebinding, so a rebind that FAILS must leave the gateway
+// reporting no uptime — a stale time here would report a listener as up for hours when
+// nothing is bound at all.
+func TestOrchestratorGatewayBindTimeClearedOnUnwire(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer local.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+	o, _ := newGatewayPassthroughOrchestrator(t, local, upstream, "qa")
+
+	if o.Gateways()[0].BoundAt.IsZero() {
+		t.Fatal("precondition: want a bound gateway before unwiring")
+	}
+	o.unwireGateway("public")
+	if got := o.Gateways()[0].BoundAt; !got.IsZero() {
+		t.Fatalf("want the zero time after unwiring, got %v", got)
 	}
 }

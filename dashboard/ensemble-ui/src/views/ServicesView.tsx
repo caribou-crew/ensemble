@@ -117,6 +117,37 @@ const WIRING_EXPLAIN =
   "instead of its proxy port — traffic sent there bypasses interception, so that hop won't be " +
   'captured for tracing/replay.';
 
+/** Stubs and gateways are listeners inside ensemble's own proxy process, not processes of
+    their own, so there is no memory attributable to either — the cell stays a dash, and the
+    tooltip says why rather than leaving it looking like a missing reading. */
+const NO_PROCESS_RSS =
+  'No resident memory of its own\n\nThis is a listener inside ensemble\'s proxy process, ' +
+  'not a supervised process, so there is no RSS to attribute to it.';
+
+/** A gateway's listen port is the one port it has: a service splits `port` (its real app
+    port) from `proxy` (the intercept port clients call), but a gateway's single listener is
+    both, so it reports under `port` and leaves `proxy` empty. */
+const NO_PROXY_PORT =
+  'No separate proxy port\n\nThis listener is the port clients call — there is no second, ' +
+  'intercepting port in front of it the way a supervised service has one.';
+
+/** The numeric cell a stub/gateway can never fill, with the reason one hover away. */
+function UnavailableNum({ explain }: { explain: string }) {
+  return (
+    <td className="services-table__num">
+      <Tooltip content={explain}>
+        <span className="services-table__dash">—</span>
+      </Tooltip>
+    </td>
+  );
+}
+
+/** Renders a config-declared listen port. Port 0 is never valid (Validate rejects it), so
+    a zero reads as "not declared" — a dash — rather than as port zero. */
+function portCell(port: number | undefined): string | number {
+  return port ? port : '—';
+}
+
 function formatRSS(kb: number | undefined): string {
   if (!kb) return '—';
   if (kb < 1024) return `${kb} KB`;
@@ -480,7 +511,10 @@ function ServiceRow({
 
 /** A cfg.Stubs entry, rendered from Topology's existing "stub" category — stubs never get a
     ServiceState (they aren't orchestrator-supervised lifecycle nodes the way services are),
-    so this row has no placement/variant/port/rss/uptime/actions, just a name and status. */
+    so this row has no placement/variant/rss/uptime/actions. It does carry the `port:` its
+    config declares — the port a caller actually reaches the stub on, which is otherwise
+    named nowhere in the dashboard. No uptime: a stub is bound at Up with no recorded bind
+    time, and inventing one from "the dashboard first saw it" would be a guess. */
 function StubRow({ node }: { node: TopologyNode }) {
   return (
     <tr className="services-table__row">
@@ -499,9 +533,9 @@ function StubRow({ node }: { node: TopologyNode }) {
       <td className="services-table__variant">
         <span className="services-table__dash">—</span>
       </td>
-      <td className="services-table__num">—</td>
-      <td className="services-table__num">—</td>
-      <td className="services-table__num">—</td>
+      <td className="services-table__num">{portCell(node.port)}</td>
+      <UnavailableNum explain={NO_PROXY_PORT} />
+      <UnavailableNum explain={NO_PROCESS_RSS} />
       <td className="services-table__num">—</td>
       <td>
         <span className="services-table__dash">—</span>
@@ -511,6 +545,11 @@ function StubRow({ node }: { node: TopologyNode }) {
   );
 }
 
+const GATEWAY_UPTIME_EXPLAIN =
+  'How long this gateway\'s CURRENT listener has been bound.\n\nA gateway has no process, so ' +
+  'this is listener uptime, not process uptime — flipping the gateway rebinds the listener ' +
+  'and restarts the clock. A dash means it is not bound at all.';
+
 /** A cfg.Gateways entry, rendered from Topology's existing "gateway" category — gateways are
     static listeners the proxy binds at Up, not orchestrator-supervised nodes, so like stubs
     they never get a ServiceState. Unlike a stub, a gateway CAN carry an action: flipping
@@ -519,10 +558,12 @@ function StubRow({ node }: { node: TopologyNode }) {
 function GatewayRow({
   node,
   activeTarget,
+  boundAt,
   onFlip,
 }: {
   node: TopologyNode;
   activeTarget: string;
+  boundAt: string | undefined;
   onFlip: (target: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -559,10 +600,14 @@ function GatewayRow({
       <td className="services-table__variant">
         <span className="services-table__dash">—</span>
       </td>
-      <td className="services-table__num">—</td>
-      <td className="services-table__num">—</td>
-      <td className="services-table__num">—</td>
-      <td className="services-table__num">—</td>
+      <td className="services-table__num">{portCell(node.port)}</td>
+      <UnavailableNum explain={NO_PROXY_PORT} />
+      <UnavailableNum explain={NO_PROCESS_RSS} />
+      <td className="services-table__num">
+        <Tooltip content={GATEWAY_UPTIME_EXPLAIN}>
+          <span>{formatUptime(boundAt)}</span>
+        </Tooltip>
+      </td>
       <td>
         <span className="services-table__dash">—</span>
       </td>
@@ -670,7 +715,7 @@ export default function ServicesView() {
   const gatewayNodes = (topology?.nodes ?? [])
     .filter((n) => n.category === 'gateway')
     .sort((a, b) => a.name.localeCompare(b.name));
-  const gatewayTargetByName = new Map(gateways.map((g) => [g.name, g.activeTarget]));
+  const gatewayStatusByName = new Map(gateways.map((g) => [g.name, g]));
 
   return (
     <div className="services-view">
@@ -760,7 +805,8 @@ export default function ServicesView() {
             <GatewayRow
               key={n.name}
               node={n}
-              activeTarget={gatewayTargetByName.get(n.name) ?? 'local'}
+              activeTarget={gatewayStatusByName.get(n.name)?.activeTarget ?? 'local'}
+              boundAt={gatewayStatusByName.get(n.name)?.boundAt}
               onFlip={(target) => handleGatewayFlip(n.name, target)}
             />
           ))}

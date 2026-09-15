@@ -171,6 +171,11 @@ export interface TopologyNode {
    * offer, since GatewayStatus.activeTarget alone only says which one is CURRENTLY active.
    * Unset for every other category and for a gateway with none declared. */
   upstreams?: string[];
+  /** "stub" and "gateway" nodes only — the listen port declared in config, which is the
+   * only port either has and the one a client calls it on. Unset for every other category:
+   * a service's ports are runtime state and arrive on ServiceState.port/proxyPort, which
+   * reflect the currently active placement rather than just what was declared. */
+  port?: number;
 }
 
 /** One gateway's current flip target — mirrors ensemble/orchestrator.GatewayStatus's JSON
@@ -179,6 +184,12 @@ export interface TopologyNode {
 export interface GatewayStatus {
   name: string;
   activeTarget: string;
+  /** RFC3339 timestamp of when this gateway's CURRENT listener was bound — its uptime
+   * origin, the gateway analog of ServiceState.startedAt. Absent for a configured gateway
+   * that isn't currently bound (before `up`, or after a wiring failure); render that as no
+   * uptime, never as an uptime measured from the epoch. A flip rebinds the listener and so
+   * resets this. */
+  boundAt?: string;
 }
 
 export interface TopologyEdge {
