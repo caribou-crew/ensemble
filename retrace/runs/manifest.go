@@ -91,6 +91,13 @@ type Manifest struct {
 	// reason: a zero Stack is an empty service map, which compares equal to
 	// every other run that failed to record one.
 	Stack *Stack `json:"stack,omitempty"`
+	// Ensemble is the control plane this run was captured against and the
+	// session it registered there — the join that lets a dashboard on
+	// either side link to the other. Nil in standalone mode, and nil in
+	// every manifest written before this field existed: a zero value would
+	// claim an attachment that never happened. Same absence-is-not-evidence
+	// encoding as Device/Stack/Fixtures.
+	Ensemble *EnsembleLink `json:"ensemble,omitempty"`
 	// Fixtures is set only when this run was captured with `retrace run
 	// --fixtures`: a flow's own accepted reference bundle served as the
 	// upstream while recording, instead of a live one. Nil for every
@@ -371,6 +378,9 @@ func WriteManifest(p Paths, m *Manifest) error {
 	if err := validateStack(m.Stack); err != nil {
 		return err
 	}
+	if err := validateEnsembleLink(m.Ensemble); err != nil {
+		return err
+	}
 	if m.Checkpoints == nil {
 		m.Checkpoints = []Checkpoint{}
 	}
@@ -445,6 +455,9 @@ func ReadManifest(path string) (Manifest, error) {
 		return Manifest{}, err
 	}
 	if err := validateStack(m.Stack); err != nil {
+		return Manifest{}, err
+	}
+	if err := validateEnsembleLink(m.Ensemble); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil

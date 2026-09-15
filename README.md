@@ -779,6 +779,32 @@ fallback for missing trace context; `client_identity_headers` answers "which
 of our **front-ends** started this" and is always read. A stack commonly
 wants one and not the other.
 
+#### Two client apps on one stack
+
+Once a client identity is read, ensemble carries it in trace baggage, so
+every hop of that chain reports the front-end that started it — not just
+the call the app made itself. Separating two apps sharing one stack is then
+a filter rather than a pipeline:
+
+```sh
+ensemble traffic --follow --client app-legacy   # only that app's hops
+ensemble traffic --client app-next --errors-only
+ensemble traffic --client '(none)'              # hops belonging to no client
+```
+
+The same filter is on `GET /api/traffic`, `/api/traffic/history` and
+`/api/traffic/stream` (`?client=`), and in the dashboard's Traffic view as a
+client selector, a `client:` search term, and a two-pane side-by-side mode
+that puts two apps on one shared row axis — where a call one app makes and
+the other does not shows up as a gap rather than something to spot in an
+interleaved list.
+
+A service that forwards neither `baggage` nor `traceparent` breaks the
+chain, and its downstream hops report no client. They are never guessed at:
+they belong to no client, `(none)` selects them, and the side-by-side view
+counts them rather than hiding them. `ensemble doctor` is what diagnoses the
+dropped context itself.
+
 ### Injecting latency
 
 ```sh
@@ -1049,7 +1075,7 @@ ensemble restart <service>
 ensemble variant <service> <name>
 ensemble profiles
 ensemble latency list | set | reset | arm-all | from-datadog | apply <profile>
-ensemble traffic [--since N] [--errors-only] [--follow] [--session ID] [--export har]
+ensemble traffic [--since N] [--errors-only] [--follow] [--session ID] [--client NAME] [--export har]
 ensemble trace <traceId> [--export har|curl|raw]
 ensemble doctor --target NAME --path / [--expect NAME,NAME] [--timeout 5s] [--json]
 ensemble mcp [--api-url http://127.0.0.1:4700]

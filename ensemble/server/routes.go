@@ -671,8 +671,14 @@ func (s *server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	limit := parseInt(q.Get("limit"))
 	errorsOnly := parseBool(q.Get("errorsOnly"))
 	session := q.Get("session")
+	client := q.Get("client")
 
 	hops := s.Rec.Snapshot()
+	// Indexed over the WHOLE ring, not over the window `since` selects: a
+	// hop whose chain began before the cursor must still report the client
+	// that started it, or paging a live stream would keep re-attributing
+	// the same trace differently as its entry hop fell behind the cursor.
+	clients := trace.ClientIndex(hops)
 	out := make([]trace.Hop, 0, len(hops))
 	for _, h := range hops {
 		if h.Seq <= since {
@@ -682,6 +688,9 @@ func (s *server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if session != "" && h.Session != session {
+			continue
+		}
+		if !trace.MatchesClient(h, clients, client) {
 			continue
 		}
 		out = append(out, h)

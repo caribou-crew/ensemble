@@ -61,6 +61,14 @@ type Options struct {
 	// proxy mesh), and does not participate in this field at all.
 	Listeners []config.ListenerEntry
 	Redact    []config.RedactEntry
+	// EnsembleAPI is the control-plane base URL an attached run is talking
+	// to, recorded in the manifest as runs.EnsembleLink so a dashboard on
+	// either side can link to the other. Empty records NO link rather than
+	// a link to nowhere — StartAttached is reachable with a client whose
+	// address the caller never stated (every test fake), and a manifest
+	// claiming an attachment it cannot name is worse than one that admits
+	// it does not know.
+	EnsembleAPI string
 	// RedactBodyDefaultsOff disables core/trace's built-in JSON-body
 	// redaction (the shared secret-key list) — retrace.yaml's
 	// `redact: { body_defaults: off }`. The zero value, on, is the
@@ -163,11 +171,14 @@ type Session struct {
 	// stack is the backend fingerprint read at session start, nil when the
 	// control plane could not answer; stackErr is why. Both nil in standalone
 	// mode, which has no control plane to ask.
-	stack      *runs.Stack
-	stackErr   error
-	endReport  EndReport
-	ended      bool // EndSession actually returned a report — see EndVerdict
-	trustNotes []string
+	stack    *runs.Stack
+	stackErr error
+	// ensembleLink is the control plane this run attached to, nil in
+	// standalone mode and whenever the caller did not name one.
+	ensembleLink *runs.EnsembleLink
+	endReport    EndReport
+	ended        bool // EndSession actually returned a report — see EndVerdict
+	trustNotes   []string
 
 	mu           sync.Mutex
 	proxyFailure *ProxyFailure
@@ -605,3 +616,10 @@ func (s *Session) Stack() *runs.Stack { return s.stack }
 // recorded against a control plane that has no stack to report, and the two
 // call for different fixes.
 func (s *Session) StackUnavailable() error { return s.stackErr }
+
+// EnsembleLink is the control plane and session this run was captured
+// against, or nil when there was none to record — a standalone run, or an
+// attached one whose caller never named the control plane's address. Nil is
+// the manifest's honest "not attached anywhere I can point at"; see
+// runs.EnsembleLink.
+func (s *Session) EnsembleLink() *runs.EnsembleLink { return s.ensembleLink }

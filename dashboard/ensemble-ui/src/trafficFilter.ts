@@ -6,8 +6,9 @@
 // is left as plain free text — a substring match against method+path+route,
 // same as the box did before this grammar existed.
 import type { Hop } from './api/types';
+import { matchesClient, type ClientIndex } from './clientAttribution';
 
-export const COLON_FIELDS = ['status', 'method', 'path', 'session'] as const;
+export const COLON_FIELDS = ['status', 'method', 'path', 'session', 'client'] as const;
 export const COMPARISON_FIELDS = ['size', 'done'] as const;
 export const FILTER_FIELDS = [...COLON_FIELDS, ...COMPARISON_FIELDS] as const;
 export type FilterField = (typeof FILTER_FIELDS)[number];
@@ -26,7 +27,7 @@ export interface FilterToken {
 // Longer operators first so `>=` isn't matched as `>` followed by a
 // literal `=`.
 const COMPARISON_RE = /^(size|done)(>=|<=|>|<)(.+)$/i;
-const COLON_RE = /^(status|method|path|session):(.+)$/i;
+const COLON_RE = /^(status|method|path|session|client):(.+)$/i;
 
 /** Parses one whitespace-delimited word into a FilterToken, or null if it
  * doesn't match a known field's grammar — the caller's cue to treat it as
@@ -124,7 +125,7 @@ function compare(actual: number, op: ComparisonOp, target: number): boolean {
  * case-insensitive substring/prefix match. Comparison tokens with an
  * unparseable value, or a `done` comparison against a hop with no
  * doneMs yet, never match. */
-export function matchesToken(hop: Hop, token: FilterToken): boolean {
+export function matchesToken(hop: Hop, token: FilterToken, clients?: ClientIndex): boolean {
   switch (token.field) {
     case 'status': {
       if (token.op === ':') {
@@ -142,6 +143,14 @@ export function matchesToken(hop: Hop, token: FilterToken): boolean {
       return (hop.path ?? '').toLowerCase().includes(token.value.toLowerCase());
     case 'session':
       return (hop.session ?? '').toLowerCase().startsWith(token.value.toLowerCase());
+    // Exact, and resolved rather than read off hop.client: a downstream hop
+    // carries an identity only if the chain propagated it, and `client:` has
+    // to reach the fan-out or it answers the wrong question. Exact because a
+    // client identity IS an identifier — a prefix match would quietly fold
+    // "app" and "app-next" together, and the charset exists to make grouping
+    // on it safe.
+    case 'client':
+      return matchesClient(hop, clients ?? new Map(), token.value.toLowerCase());
     case 'size': {
       if (token.op === ':') return false;
       const target = parseSizeValue(token.value);
@@ -163,7 +172,12 @@ export function matchesToken(hop: Hop, token: FilterToken): boolean {
  * parse as a token — is ANDed in as a case-insensitive substring match
  * against method, path, and route (to/from), matching the box's
  * pre-grammar behavior. */
-export function hopMatchesQuery(hop: Hop, tokens: FilterToken[], freeText: string): boolean {
+export function hopMatchesQuery(
+  hop: Hop,
+  tokens: FilterToken[],
+  freeText: string,
+  clients?: ClientIndex,
+): boolean {
   const byField = new Map<FilterField, FilterToken[]>();
   for (const t of tokens) {
     const group = byField.get(t.field);
@@ -171,7 +185,7 @@ export function hopMatchesQuery(hop: Hop, tokens: FilterToken[], freeText: strin
     else byField.set(t.field, [t]);
   }
   for (const group of byField.values()) {
-    if (!group.some((t) => matchesToken(hop, t))) return false;
+    if (!group.some((t) => matchesToken(hop, t, clients))) return false;
   }
 
   const needle = freeText.trim().toLowerCase();
@@ -215,6 +229,12 @@ export function valueSuggestions(field: FilterField, hops: Hop[]): string[] {
     if (field === 'status') take(h.status !== undefined ? String(h.status) : undefined);
     else if (field === 'method') take(h.method);
     else if (field === 'session') take(h.session);
+    // The raw field, not the resolved one: a suggestion list is a menu of
+    // values that literally occur, and resolving here would offer a client
+    // whose own hop is not in the window — harmless but confusing, and it
+    // would need the index threaded through a signature whose whole job is
+    // "what is in front of me".
+    else if (field === 'client') take(h.client);
   }
   return out;
 }

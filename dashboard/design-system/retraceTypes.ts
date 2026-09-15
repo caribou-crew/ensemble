@@ -123,6 +123,11 @@ export interface Manifest {
   hops?: RunCounts;
   test: { command: string; exitCode: number; durationMs: number };
   env: { go: string; platform: string; retrace: string };
+  /** The ensemble control plane this run was captured against, and the
+   * session it registered there. Absent for a standalone run and for every
+   * manifest written before the field existed — absence is "not attached",
+   * never "attached to somewhere unnamed". */
+  ensemble?: { api: string; session: string };
 }
 export interface RunRef {
   runId: string;

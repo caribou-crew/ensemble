@@ -12,10 +12,18 @@ import (
 
 // Well-known baggage keys. correlationId is the human-facing join key
 // (pairs with the W3C traceId); retrace-run partitions hops into recording
-// sessions.
+// sessions; client names the front-end application the chain started from.
+//
+// client is carried in baggage for the same reason retrace-run is: the fact
+// is established at the edge and every hop downstream of it needs to report
+// the same answer. A client-identity HEADER only ever reaches the hop the
+// app itself called; propagating the value through trace context is what
+// lets an internal service-to-service hop say which front-end it is
+// ultimately serving. See Hop.Client.
 const (
 	BaggageCorrelationID = "correlationId"
 	BaggageSession       = "retrace-run"
+	BaggageClient        = "client"
 )
 
 var traceparentPattern = regexp.MustCompile(`^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)
@@ -117,6 +125,14 @@ func (c Ctx) CorrelationID() string { return c.Baggage[BaggageCorrelationID] }
 
 // Session returns the retrace-run session id; "" means ambient traffic.
 func (c Ctx) Session() string { return c.Baggage[BaggageSession] }
+
+// Client returns the propagated client identity; "" means no upstream hop
+// established one. The value is NOT validated here — baggage arriving from
+// outside is untrusted input, and the charset rule that makes a client
+// identity safe to group on lives with the proxy that applies it
+// (core/proxy.ValidClient). A caller that will store or display this must
+// validate it first.
+func (c Ctx) Client() string { return c.Baggage[BaggageClient] }
 
 // EnsureCorrelationID returns the existing correlation id or mints and
 // stores one.

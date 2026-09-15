@@ -31,9 +31,9 @@ func buildOpenAPI(version string) map[string]any {
 
 		"/api/seed/{name}": {"post": {Summary: "Run a named seed's SQL and HTTP steps"}},
 
-		"/api/traffic":                        {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session"}},
-		"/api/traffic/stream":                 {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since="}},
-		"/api/traffic/history":                {"get": {Summary: "Hops persisted to .ensemble/hops.jsonl, newest-first, paginated by before=<seq>&limit=, filterable by errorsOnly/session/method/path/status"}},
+		"/api/traffic":                        {"get": {Summary: "Recorded hops, filterable by since/limit/errorsOnly/session/client"}},
+		"/api/traffic/stream":                 {"get": {Summary: "Server-Sent Events stream of hops, replaying from ?since=, filterable by client"}},
+		"/api/traffic/history":                {"get": {Summary: "Hops persisted to .ensemble/hops.jsonl, newest-first, paginated by before=<seq>&limit=, filterable by errorsOnly/session/client/method/path/status"}},
 		"/api/observability/requests":         {"get": {Summary: "Bounded metadata-only live request search: service, path, errorsOnly, minDurationMs, limit (default 20, max 100); explicit ring coverage and loss evidence"}},
 		"/api/observability/traces/{traceId}": {"get": {Summary: "Observed trace explanation with hop references, inclusive timings and evidence limits; limit defaults to 50, max 200"}},
 

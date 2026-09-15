@@ -497,6 +497,21 @@ func (p *Proxy) handler(t Target) http.Handler {
 			hopCtx.Baggage[k] = v
 		}
 		hopCtx.EnsureCorrelationID()
+		// Client identity, established once at the edge and then carried in
+		// baggage — see trace.BaggageClient and Hop.Client. An inherited
+		// value wins over a header on THIS hop: the question the field
+		// answers is which front-end STARTED the chain, and an internal
+		// service re-declaring a different one is a bug or a forgery, not a
+		// new origin. Inherited values are revalidated because baggage is
+		// untrusted input (the loopback-only rule in hostAddrs is what keeps
+		// it forgeable only from this machine, not unforgeable).
+		client := validClientIdentity(hopCtx.Client())
+		if client == "" {
+			client = p.clientIdentity(r.Header)
+		}
+		if client != "" {
+			hopCtx.Baggage[trace.BaggageClient] = client
+		}
 		// Downstream calls made by this service will carry hopCtx's span as
 		// parent — claim it so the next hop can name this service as caller.
 		p.rec.ClaimSpan(hopCtx.SpanID, t.Name)
@@ -526,7 +541,7 @@ func (p *Proxy) handler(t Target) http.Handler {
 			Session:       hopCtx.Session(),
 			From:          from,
 			Attribution:   attribution,
-			Client:        p.clientIdentity(r.Header),
+			Client:        client,
 			To:            t.Name,
 			Method:        r.Method,
 			Path:          r.URL.RequestURI(),

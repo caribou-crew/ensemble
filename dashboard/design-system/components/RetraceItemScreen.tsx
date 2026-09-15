@@ -11,6 +11,7 @@ import type { Entry, FieldDiff } from '../diffTypes';
 import type { Summary, TriageSignals } from '../retraceTypes';
 import { verdictTone, verdictLabel } from '../retraceTone';
 import { formatWhen } from '../retraceWhen';
+import { ensembleTrafficUrl } from '../ensembleTrafficLink';
 import './RetraceItemScreen.css';
 
 /**
@@ -239,6 +240,23 @@ export default function RetraceItemScreen({
           <span className="item__run item__run--b">
             candidate: {summary.b.runId ? formatWhen(summary.b.manifest?.finishedAt, summary.b.runId) : 'no run'}
           </span>
+          {/* A run captured against an ensemble stack and its hops are one
+              object — the run id IS the session every hop carries — so the
+              wire evidence below has a live counterpart a reviewer can open.
+              Absent for a standalone run: there is no control plane to point
+              at, and a link to the default address would show another run's
+              traffic under this run's heading. */}
+          {ensembleTrafficUrl(summary.b.manifest) ? (
+            <a
+              className="item__ensemble-link"
+              href={ensembleTrafficUrl(summary.b.manifest) as string}
+              target="_blank"
+              rel="noreferrer"
+              title="Open this run's hops in the ensemble dashboard's Traffic view"
+            >
+              traffic in ensemble ↗
+            </a>
+          ) : null}
         </span>
       </header>
 

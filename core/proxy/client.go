@@ -143,3 +143,20 @@ func quoteish(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
+// validClientIdentity filters a client identity that arrived by propagation
+// rather than from a header on this request — today, trace.BaggageClient.
+//
+// Unlike clientIdentity's header path there is no FallbackClient outcome and
+// no warning: a malformed header is a misconfiguration in an app the
+// developer owns and must be told about, whereas malformed baggage is either
+// corruption or an injection attempt, and answering it with the fallback
+// bucket would let anything that can reach the proxy park traffic under a
+// real-looking identity. It is dropped, and the hop falls back to its own
+// header — which is the honest report that nothing propagated.
+func validClientIdentity(v string) string {
+	if v == "" || !ValidClient.MatchString(v) {
+		return ""
+	}
+	return v
+}

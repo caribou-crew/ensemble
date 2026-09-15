@@ -16,6 +16,17 @@ import HopDetail from '../components/HopDetail';
 import TraceDrawer from '../components/TraceDrawer';
 import QueryFilterInput from '../components/QueryFilterInput';
 import { hopMatchesQuery, parseFilterToken, type FilterToken } from '../trafficFilter';
+import {
+  buildClientIndex,
+  distinctClients,
+  hasUnattributed,
+  matchesClient,
+  UNATTRIBUTED_CLIENT,
+} from '../clientAttribution';
+import { splitPanes } from '../splitPanes';
+import SplitHopPanes from '../components/SplitHopPanes';
+import { CLIENT_IDENTITY_TITLE } from '../components/attribution';
+import { readParam, useUrlParam, writeParams } from '../urlState';
 import './TrafficView.css';
 
 /** Seed page size for the initial GET /api/traffic — comfortably covers a
@@ -37,6 +48,29 @@ const BOTTOM_SLOP_PX = 24;
  * hop.session id, letting you isolate exactly one session once several are
  * live at once. */
 type SessionFilter = 'all' | 'ambient' | string;
+
+/** 'all' or a resolved client identity — including UNATTRIBUTED_CLIENT for
+ * the hops that belong to none. Mirrors SessionFilter deliberately: the two
+ * controls sit beside each other and answer the same shape of question. */
+type ClientFilter = 'all' | string;
+
+/** What the client selector calls the two buckets that aren't a plain app
+ * name. `core/proxy.FallbackClient` is the literal string "client": a hop
+ * records it when a client-identity header ARRIVED and was malformed, which
+ * is a different fact from no identity at all, and a developer whose header
+ * is wrong needs to see that rather than an empty pane. */
+const FALLBACK_CLIENT = 'client';
+const CLIENT_OPTION_LABELS: Record<string, string> = {
+  [UNATTRIBUTED_CLIENT]: 'no client',
+  [FALLBACK_CLIENT]: 'client (malformed header)',
+};
+function clientLabel(client: string): string {
+  return CLIENT_OPTION_LABELS[client] ?? client;
+}
+const CLIENT_SELECT_TITLE =
+  'Filter by originating client application. ' +
+  CLIENT_IDENTITY_TITLE +
+  ' A hop with no identity of its own inherits its trace\'s; a chain that propagated none belongs to no client.';
 
 /** Matches HopTable's own truncation so a session reads the same wherever
  * it's shown (the per-row badge, this dropdown). */
@@ -177,7 +211,24 @@ export default function TrafficView() {
   // Off by default: a CORS preflight ensemble answers itself is real debugging signal but noisy
   // (one per cross-origin request), so it stays out of the way until asked for.
   const [showPreflight, setShowPreflight] = useState(false);
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>(() => readParam('session') ?? 'all');
+  // A session that arrived in the URL is a deep link — from retrace's
+  // "traffic in ensemble" link, or a pasted one. It is held to a different
+  // rule than a dropdown selection below: a run whose hops are not in the
+  // window must show an EMPTY scope, never silently widen to the whole
+  // stack. Someone who followed a link to one run's traffic and was shown
+  // every client's would read it as that run's.
+  const linkedSessionRef = useRef<string | null>(readParam('session'));
+  // URL-backed so a side-by-side arrangement is a link someone can paste
+  // into a bug report — the whole value of the view is "look at these two
+  // together", which is a thing you hand to another person.
+  const [clientParam, setClientParam] = useUrlParam('client');
+  const [splitParam, setSplitParam] = useUrlParam('split');
+  const [leftParam, setLeftParam] = useUrlParam('splitLeft');
+  const [rightParam, setRightParam] = useUrlParam('splitRight');
+  const clientFilter: ClientFilter = clientParam ?? 'all';
+  const splitMode = splitParam === '1';
+  const [showWithheld, setShowWithheld] = useState(false);
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [following, setFollowing] = useState(true);
   // Off by default: a gateway hop collapses into its target's unless the gateway opted in via
@@ -221,6 +272,30 @@ export default function TrafficView() {
     return out;
   }, [collapsed]);
 
+  // Indexed over the whole visible window, not over `filtered`: a hop
+  // inherits its client from its trace's entry hop, and an entry hop the
+  // current query happens to exclude must still attribute the hops it
+  // explains. Filtering first would make a client's chain disappear the
+  // moment you typed a path filter that matched only its downstream call.
+  const clientIndex = useMemo(() => buildClientIndex(collapsed), [collapsed]);
+
+  const distinctClientList = useMemo(() => distinctClients(collapsed, clientIndex), [collapsed, clientIndex]);
+  const windowHasUnattributed = useMemo(() => hasUnattributed(collapsed, clientIndex), [collapsed, clientIndex]);
+
+  /** Every selectable client bucket, in the order the selector offers them. */
+  const clientOptions = useMemo(
+    () => (windowHasUnattributed ? [...distinctClientList, UNATTRIBUTED_CLIENT] : distinctClientList),
+    [distinctClientList, windowHasUnattributed],
+  );
+
+  // Same stale-selection rule the session dropdown follows, and for the same
+  // reason: a selection whose hops have aged out of the ring would otherwise
+  // keep filtering everything away with no obvious way back.
+  useEffect(() => {
+    if (clientFilter === 'all') return;
+    if (!clientOptions.includes(clientFilter)) setClientParam(null);
+  }, [clientOptions, clientFilter, setClientParam]);
+
   // The dropdown only ever renders once there's more than one session to
   // choose between (see below) — so a stale selection, whether because
   // its session aged out of the ring or because the ring dropped back to
@@ -228,9 +303,36 @@ export default function TrafficView() {
   // filtering with no control left to change it back.
   useEffect(() => {
     if (sessionFilter === 'all' || sessionFilter === 'ambient') return;
+    // Exempt: see linkedSessionRef. The dropdown is forced visible for a
+    // linked session (below), so the user is never stuck with an invisible
+    // filter — which is the only thing this fallback existed to prevent.
+    if (sessionFilter === linkedSessionRef.current) return;
     if (distinctSessions.length <= 1 || !distinctSessions.includes(sessionFilter)) {
       setSessionFilter('all');
     }
+  }, [distinctSessions, sessionFilter]);
+
+  // Keep the URL in step with the control, so a scope reached by clicking is
+  // as shareable as one reached by link.
+  const selectSession = useCallback(
+    (next: SessionFilter) => {
+      setSessionFilter(next);
+      // Stop exempting the linked session once the user steers away from it
+      // themselves — from then on it is an ordinary selection.
+      if (next !== linkedSessionRef.current) linkedSessionRef.current = null;
+      writeParams({ session: next === 'all' ? null : next });
+    },
+    [],
+  );
+
+  /** Sessions the dropdown offers: what is in the window, plus a linked
+   * session that is not (so the scope it produces is escapable). */
+  const sessionOptions = useMemo(() => {
+    const linked = linkedSessionRef.current;
+    if (sessionFilter !== 'all' && sessionFilter === linked && !distinctSessions.includes(linked)) {
+      return [linked, ...distinctSessions];
+    }
+    return distinctSessions;
   }, [distinctSessions, sessionFilter]);
 
   // The word currently in the box, live — before Tab/Space commits it to a
@@ -244,7 +346,7 @@ export default function TrafficView() {
     const tokens = draftToken ? [...pills, draftToken] : pills;
     const freeText = draftToken ? '' : draftText;
     return collapsed.filter((h) => {
-      if (!hopMatchesQuery(h, tokens, freeText)) return false;
+      if (!hopMatchesQuery(h, tokens, freeText, clientIndex)) return false;
       if (errorsOnly && !((h.status ?? 0) >= 400 || h.err)) return false;
       if (!showPreflight && h.preflight) return false;
       if (sessionFilter === 'ambient') {
@@ -252,9 +354,41 @@ export default function TrafficView() {
       } else if (sessionFilter !== 'all' && h.session !== sessionFilter) {
         return false;
       }
+      // Skipped in split mode: the panes ARE the client filter there, and
+      // applying the single-view selection on top would silently empty one
+      // side whenever the two disagreed.
+      if (!splitMode && !matchesClient(h, clientIndex, clientFilter === 'all' ? '' : clientFilter)) return false;
       return true;
     });
-  }, [collapsed, pills, draftToken, draftText, errorsOnly, showPreflight, sessionFilter]);
+  }, [
+    collapsed,
+    pills,
+    draftToken,
+    draftText,
+    errorsOnly,
+    showPreflight,
+    sessionFilter,
+    clientIndex,
+    clientFilter,
+    splitMode,
+  ]);
+
+  // Which client sits in which pane. Defaults to the first two the window
+  // offers so entering split mode shows something immediately rather than
+  // two empty columns and a pair of dropdowns to discover.
+  const leftClient = leftParam ?? clientOptions[0] ?? '';
+  const rightClient = rightParam ?? clientOptions.find((c) => c !== leftClient) ?? '';
+
+  const split = useMemo(
+    () => splitPanes(filtered, clientIndex, leftClient, rightClient),
+    [filtered, clientIndex, leftClient, rightClient],
+  );
+
+  // Revealing withheld hops does not fold them into a pane they don't
+  // belong to — it lists them underneath, labeled. Putting a third client's
+  // call into one of two columns would be exactly the lie the view exists
+  // to avoid.
+  const withheldRows = showWithheld ? split.withheld : [];
 
   // From `collapsed`, not raw `hops` — the detail panel should mirror whatever `to` the table
   // row it was opened from actually shows.
@@ -339,21 +473,49 @@ export default function TrafficView() {
         >
           show CORS preflight
         </button>
-        {distinctSessions.length > 1 && (
+        {(sessionOptions.length > 1 || sessionFilter === linkedSessionRef.current) && (
           <select
             className="traffic-view__session-select"
             value={sessionFilter}
-            onChange={(e) => setSessionFilter(e.target.value)}
+            onChange={(e) => selectSession(e.target.value)}
             title="Filter by session"
           >
             <option value="all">all sessions</option>
             <option value="ambient">ambient</option>
-            {distinctSessions.map((s) => (
+            {sessionOptions.map((s) => (
               <option key={s} value={s}>
                 {sessionLabel(s)}
               </option>
             ))}
           </select>
+        )}
+        {clientOptions.length > 0 && !splitMode && (
+          <select
+            className="traffic-view__client-select"
+            value={clientFilter}
+            onChange={(e) => setClientParam(e.target.value === 'all' ? null : e.target.value)}
+            title={CLIENT_SELECT_TITLE}
+          >
+            <option value="all">all clients</option>
+            {clientOptions.map((c) => (
+              <option key={c} value={c}>
+                {clientLabel(c)}
+              </option>
+            ))}
+          </select>
+        )}
+        {/* Two clients in the window is the entire precondition — offering a
+            side-by-side of one app against nothing would be a control that
+            can only disappoint. */}
+        {clientOptions.length > 1 && (
+          <button
+            type="button"
+            className={`traffic-view__toggle${splitMode ? ' traffic-view__toggle--active' : ''}`}
+            onClick={() => setSplitParam(splitMode ? null : '1')}
+            title="Put two clients side by side on one shared row axis"
+          >
+            {splitMode ? 'merge' : 'split by client'}
+          </button>
         )}
         <span className="traffic-view__count">
           {filtered.length} / {collapsed.length}
@@ -395,9 +557,75 @@ export default function TrafficView() {
           )}
           {historyError ? <span className="traffic-view__load-earlier-error">{historyError}</span> : null}
         </div>
+        {splitMode && (
+          <div className="traffic-view__split-bar">
+            <select
+              className="traffic-view__client-select"
+              value={leftClient}
+              onChange={(e) => setLeftParam(e.target.value)}
+              title={CLIENT_SELECT_TITLE}
+            >
+              {clientOptions.map((c) => (
+                <option key={c} value={c}>
+                  {clientLabel(c)}
+                </option>
+              ))}
+            </select>
+            <span className="traffic-view__split-vs">vs</span>
+            <select
+              className="traffic-view__client-select"
+              value={rightClient}
+              onChange={(e) => setRightParam(e.target.value)}
+              title={CLIENT_SELECT_TITLE}
+            >
+              {clientOptions.map((c) => (
+                <option key={c} value={c}>
+                  {clientLabel(c)}
+                </option>
+              ))}
+            </select>
+            {/* Never a silent drop. "the call I'm looking for went missing"
+                and "the call I'm looking for belongs to no client" are
+                opposite diagnoses, and hiding the count hands you the wrong
+                one. */}
+            {split.withheld.length > 0 && (
+              <button
+                type="button"
+                className={`traffic-view__toggle${showWithheld ? ' traffic-view__toggle--active' : ''}`}
+                onClick={() => setShowWithheld((v) => !v)}
+                title="Hops in view that belong to neither selected client — a third client's, or none at all"
+              >
+                {showWithheld ? 'hide' : 'show'} {split.withheld.length} not in either pane
+              </button>
+            )}
+          </div>
+        )}
         <div className="traffic-view__table" ref={scrollRef} onScroll={handleScroll}>
           {filtered.length === 0 ? (
             <p className="traffic-view__empty">no traffic matches these filters</p>
+          ) : splitMode ? (
+            <>
+              <SplitHopPanes
+                rows={split.rows}
+                leftLabel={clientLabel(leftClient)}
+                rightLabel={clientLabel(rightClient)}
+                selectedSeq={selectedSeq}
+                onSelectHop={(h) => setSelectedSeq(h.seq)}
+              />
+              {withheldRows.length > 0 && (
+                <div className="traffic-view__withheld">
+                  <p className="traffic-view__withheld-label">
+                    belongs to neither pane — shown for completeness, not folded into a column
+                  </p>
+                  <HopTable
+                    hops={withheldRows}
+                    selectedSeq={selectedSeq}
+                    onSelectHop={(h) => setSelectedSeq(h.seq)}
+                    onViewTrace={viewTrace}
+                  />
+                </div>
+              )}
+            </>
           ) : (
             <HopTable
               hops={filtered}

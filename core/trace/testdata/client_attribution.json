@@ -1,0 +1,33 @@
+{
+  "note": "One window of hops plus the expected client attribution for every hop in it. Read by BOTH core/trace's Go test and dashboard/ensemble-ui's clientAttribution test: the rule is implemented twice (the browser partitions its side-by-side panes locally) and this file is what stops the two from drifting. A change to the rule that updates only one language fails the other language's suite.",
+  "window": [
+    { "schema": "ensemble/1", "seq": 1, "traceId": "t1", "client": "app-legacy", "to": "gateway", "method": "GET", "path": "/home", "status": 200, "t": { "start": "2026-09-14T10:00:00Z" } },
+    { "schema": "ensemble/1", "seq": 2, "traceId": "t1", "to": "profile", "method": "GET", "path": "/v1/profile", "status": 200, "t": { "start": "2026-09-14T10:00:01Z" } },
+    { "schema": "ensemble/1", "seq": 3, "traceId": "t1", "to": "wallet", "method": "GET", "path": "/v1/wallet", "status": 200, "t": { "start": "2026-09-14T10:00:02Z" } },
+    { "schema": "ensemble/1", "seq": 4, "traceId": "t2", "client": "app-next", "to": "edge", "method": "GET", "path": "/home", "status": 200, "t": { "start": "2026-09-14T10:00:03Z" } },
+    { "schema": "ensemble/1", "seq": 5, "traceId": "t2", "to": "toolkit-api", "method": "GET", "path": "/v1/profile", "status": 404, "t": { "start": "2026-09-14T10:00:04Z" } },
+    { "schema": "ensemble/1", "seq": 6, "traceId": "t3", "to": "wallet", "method": "GET", "path": "/v1/wallet", "status": 200, "t": { "start": "2026-09-14T10:00:05Z" } },
+    { "schema": "ensemble/1", "seq": 7, "to": "health", "method": "GET", "path": "/healthz", "status": 200, "t": { "start": "2026-09-14T10:00:06Z" } },
+    { "schema": "ensemble/1", "seq": 8, "client": "app-next", "to": "health", "method": "GET", "path": "/healthz", "status": 200, "t": { "start": "2026-09-14T10:00:07Z" } },
+    { "schema": "ensemble/1", "seq": 9, "traceId": "t4", "client": "app-legacy", "to": "gateway", "method": "POST", "path": "/v1/login", "status": 200, "t": { "start": "2026-09-14T10:00:08Z" } },
+    { "schema": "ensemble/1", "seq": 10, "traceId": "t4", "client": "app-next", "to": "risk", "method": "POST", "path": "/v1/risk", "status": 200, "t": { "start": "2026-09-14T10:00:09Z" } },
+    { "schema": "ensemble/1", "seq": 11, "traceId": "t4", "to": "audit", "method": "POST", "path": "/v1/audit", "status": 200, "t": { "start": "2026-09-14T10:00:10Z" } },
+    { "schema": "ensemble/1", "seq": 12, "traceId": "t5", "client": "client", "to": "gateway", "method": "GET", "path": "/home", "status": 200, "t": { "start": "2026-09-14T10:00:11Z" } },
+    { "schema": "ensemble/1", "seq": 13, "traceId": "t5", "to": "profile", "method": "GET", "path": "/v1/profile", "status": 200, "t": { "start": "2026-09-14T10:00:12Z" } }
+  ],
+  "expect": [
+    { "seq": 1, "client": "app-legacy", "attributed": true, "why": "carries its own client identity" },
+    { "seq": 2, "client": "app-legacy", "attributed": true, "why": "inherits through traceId from the entry hop" },
+    { "seq": 3, "client": "app-legacy", "attributed": true, "why": "inherits through traceId from the entry hop" },
+    { "seq": 4, "client": "app-next", "attributed": true, "why": "carries its own client identity" },
+    { "seq": 5, "client": "app-next", "attributed": true, "why": "the failing downstream call still belongs to the client that started it" },
+    { "seq": 6, "client": "", "attributed": false, "why": "its trace's client-carrying hop is outside this window" },
+    { "seq": 7, "client": "", "attributed": false, "why": "no traceId and no client identity" },
+    { "seq": 8, "client": "app-next", "attributed": true, "why": "no traceId, so its own field alone answers; it joins no trace group" },
+    { "seq": 9, "client": "", "attributed": false, "why": "its trace carries two different client identities" },
+    { "seq": 10, "client": "", "attributed": false, "why": "its trace carries two different client identities" },
+    { "seq": 11, "client": "", "attributed": false, "why": "every hop of a conflicting trace is unattributed, not just the disagreeing ones" },
+    { "seq": 12, "client": "client", "attributed": true, "why": "core/proxy.FallbackClient is a real bucket - a malformed header arrived - not the unattributed one" },
+    { "seq": 13, "client": "client", "attributed": true, "why": "inherits the fallback bucket like any other identity" }
+  ]
+}

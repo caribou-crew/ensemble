@@ -138,3 +138,34 @@
   color: var(--text-tertiary);
   font-size: 0.8rem;
 }
+
+.traffic-view__client-select {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.traffic-view__split-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle, #ececef);
+}
+
+.traffic-view__split-vs {
+  color: var(--text-muted, #71717a);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.traffic-view__withheld {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border, #d4d4d8);
+}
+
+.traffic-view__withheld-label {
+  margin: 8px 0 4px;
+  color: var(--text-muted, #71717a);
+  font-size: 11px;
+}

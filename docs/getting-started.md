@@ -105,6 +105,12 @@ legal — but the warning is telling you those hops will bypass capture.
   a hop like any other. "Load earlier" pages back through persisted
   traffic from before the dashboard was open, and any hop expands into
   headers, bodies, timings, and an export (HAR/curl/raw).
+  Two client apps on one stack separate themselves: set
+  `client_identity_headers:` (default `x-source-client`), and each app's
+  hops carry its identity through the whole chain. The Traffic view's client
+  selector narrows to one; **Split by client** puts two side by side on one
+  shared row axis, so a call one app makes and the other does not reads as a
+  gap. From a terminal, `ensemble traffic --follow --client app-legacy`.
 - **Latency** — arm a delay on `api` without touching its code, and watch
   `web`'s timeout handling actually run.
 - **Services** — start/stop/restart, a live log pane per service (build

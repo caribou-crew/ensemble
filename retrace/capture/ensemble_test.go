@@ -53,7 +53,9 @@ type fakeEnsemble struct {
 	late      *trace.Hop // injected on the first poll, then cleared
 	polls     int
 	endCalled bool
-	hopsAtEnd int // len(hops) when EndSession was called — the ordering assertion
+	// registeredID is the SessionRequest.ID StartSession was given.
+	registeredID string
+	hopsAtEnd    int // len(hops) when EndSession was called — the ordering assertion
 	// overreport, when > 0, is what EndSession claims it counted regardless
 	// of how many hops were ever served — the shape of a hop that landed
 	// after the drain window closed. A value, not a sleep.
@@ -96,7 +98,19 @@ func (f *fakeEnsemble) Stack(context.Context) (*runs.Stack, error) {
 }
 
 func (f *fakeEnsemble) StartSession(_ context.Context, req SessionRequest) (string, error) {
+	f.mu.Lock()
+	f.registeredID = req.ID
+	f.mu.Unlock()
 	return "127.0.0.1:0", nil
+}
+
+// RegisteredID is the session id this control plane was actually asked to
+// register — what the manifest's ensemble link must record, rather than a
+// value a reader re-derives.
+func (f *fakeEnsemble) RegisteredID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.registeredID
 }
 
 // SessionHops takes the id the interface declares, and returns a COPY: the

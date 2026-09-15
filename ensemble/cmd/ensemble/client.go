@@ -286,14 +286,15 @@ type TrafficResponse struct {
 }
 
 func (c *Client) Traffic(ctx context.Context, since uint64, limit int, errorsOnly bool) (TrafficResponse, error) {
-	return c.TrafficFiltered(ctx, since, limit, errorsOnly, "")
+	return c.TrafficFiltered(ctx, since, limit, errorsOnly, "", "")
 }
 
-// TrafficFiltered is Traffic plus a session id filter (GET
+// TrafficFiltered is Traffic plus session id and originating-client
+// filters (GET
 // /api/traffic?session=), split out rather than adding a parameter to
 // Traffic so its existing call sites don't all need updating for a filter
 // most of them don't use.
-func (c *Client) TrafficFiltered(ctx context.Context, since uint64, limit int, errorsOnly bool, session string) (TrafficResponse, error) {
+func (c *Client) TrafficFiltered(ctx context.Context, since uint64, limit int, errorsOnly bool, session, client string) (TrafficResponse, error) {
 	q := url.Values{}
 	if since > 0 {
 		q.Set("since", strconv.FormatUint(since, 10))
@@ -306,6 +307,9 @@ func (c *Client) TrafficFiltered(ctx context.Context, since uint64, limit int, e
 	}
 	if session != "" {
 		q.Set("session", session)
+	}
+	if client != "" {
+		q.Set("client", client)
 	}
 	path := "/api/traffic"
 	if enc := q.Encode(); enc != "" {
@@ -321,9 +325,26 @@ func (c *Client) TrafficFiltered(ctx context.Context, since uint64, limit int, e
 // connection closes, at which point the channel is closed. The returned
 // error is set only when the initial connection/handshake fails.
 func (c *Client) TrafficStream(ctx context.Context, since uint64) (<-chan trace.Hop, error) {
+	return c.TrafficStreamFiltered(ctx, since, "")
+}
+
+// TrafficStreamFiltered is TrafficStream narrowed to one originating client
+// application (or, with trace.UnattributedClient, to the hops belonging to
+// none). Filtering happens server-side, so the caller never sees — and
+// never has to re-implement the rules for discarding — another client's
+// traffic.
+//
+// A separate method rather than a parameter on TrafficStream: that
+// signature is the TUI's apiClient interface (ensemble/tui/client.go), and
+// widening it would make every fake in that package implement a filter it
+// has no use for.
+func (c *Client) TrafficStreamFiltered(ctx context.Context, since uint64, client string) (<-chan trace.Hop, error) {
 	q := url.Values{}
 	if since > 0 {
 		q.Set("since", strconv.FormatUint(since, 10))
+	}
+	if client != "" {
+		q.Set("client", client)
 	}
 	path := "/api/traffic/stream"
 	if enc := q.Encode(); enc != "" {

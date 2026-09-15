@@ -102,9 +102,18 @@ func StartAttached(o Options, c EnsembleClient, entry string) (*Session, error) 
 	stack, stackErr := c.Stack(stackCtx)
 	stackCancel()
 
+	// Recorded from what StartSession was actually given, not re-derived
+	// from runID: the two are equal today by this function's own choice,
+	// and a reader who assumed that and was wrong would follow a link to
+	// another run's traffic.
+	var link *runs.EnsembleLink
+	if o.EnsembleAPI != "" {
+		link = &runs.EnsembleLink{API: o.EnsembleAPI, Session: runID}
+	}
+
 	s := &Session{
 		Paths: p, RunID: runID, App: o.App, Flow: o.Flow, Mode: runs.ModeEnsemble, StartedAt: now(),
-		stack: stack, stackErr: stackErr,
+		stack: stack, stackErr: stackErr, ensembleLink: link,
 		ProxyURL:    "http://" + edge,
 		UpstreamURL: strings.TrimRight(o.Upstream, "/"),
 		ens:         c,

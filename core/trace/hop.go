@@ -51,9 +51,19 @@ type Hop struct {
 	Preflight bool `json:"preflight,omitempty"`
 	// Client names the client APPLICATION that sent this request — "web",
 	// "ios", "admin" — read from the first configured client-identity header
-	// present (core/proxy.Proxy.ClientHeaders). It is populated wherever
-	// that header arrives, which in practice is the entry hop: an internal
-	// service-to-service call carries it only if that service forwards it.
+	// present (core/proxy.Proxy.ClientHeaders), or inherited from the
+	// BaggageClient entry an upstream hop put in trace context.
+	//
+	// The baggage half is what makes this field answerable on a whole chain
+	// rather than only at its edge. A client-identity header reaches only
+	// the hop the app itself called; once the proxy has seen one it
+	// propagates the value the same way BaggageSession already propagates a
+	// retrace run id, so an internal service-to-service hop reports the
+	// front-end it is ultimately serving. A service that drops the baggage
+	// header breaks that chain, which is why ResolveClient (client.go)
+	// exists as a read-time fallback over traceId — and why this field, not
+	// that inference, is the one persisted: what the stack actually said
+	// must stay distinguishable from what a reader worked out.
 	//
 	// Distinct from From, and the two answer different questions. From is
 	// "who called THIS hop" — a position in the service graph, free text,

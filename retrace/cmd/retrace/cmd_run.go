@@ -361,6 +361,10 @@ func captureOneFlow(ctx context.Context, p flowRunParams, name string, testCmd [
 		Port:      p.port,
 		Listeners: listeners,
 		Redact:    p.cfg.Redact.Entries,
+		// Recorded only if an attach actually happens — StartStandalone
+		// ignores it, so a standalone run cannot inherit a link to a control
+		// plane it never spoke to.
+		EnsembleAPI: p.ensembleURL,
 		// The body-defaults opt-out travels beside the entry list: user
 		// entries layer on top of the built-in body redaction either way.
 		RedactBodyDefaultsOff: p.cfg.Redact.BodyDefaultsOff(),
@@ -739,6 +743,7 @@ func runFlow(s *capture.Session, o runOptions) (runs.Manifest, error) {
 		Checkpoints: checkpoints,
 		Device:      device,
 		Stack:       s.Stack(),
+		Ensemble:    s.EnsembleLink(),
 		Groups:      groups,
 		Capture:     trust,
 		Fixtures:    fixtureSrc,

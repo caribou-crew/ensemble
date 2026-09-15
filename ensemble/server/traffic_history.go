@@ -35,9 +35,9 @@ func (s *server) trafficHistoryPath() string {
 }
 
 // handleTrafficHistory serves GET /api/traffic/history?before=<seq>&limit=
-// &errorsOnly=&session=&method=&path=&status=: a newest-first page of
-// hops.jsonl older than before, honoring the same errorsOnly/session
-// filters as GET /api/traffic plus method/path/status (the UI's query
+// &errorsOnly=&session=&client=&method=&path=&status=: a newest-first page
+// of hops.jsonl older than before, honoring the same errorsOnly/session/
+// client filters as GET /api/traffic plus method/path/status (the UI's query
 // grammar covers the rest client-side, same as the live view already
 // does). Corrupt lines are skipped and counted, never fail the request; a
 // missing hops.jsonl (nothing recorded yet) is an empty page, not a 404.
@@ -56,6 +56,7 @@ func (s *server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 
 	errorsOnly := parseBool(q.Get("errorsOnly"))
 	session := q.Get("session")
+	client := q.Get("client")
 	method := strings.ToUpper(q.Get("method"))
 	pathFilter := strings.ToLower(q.Get("path"))
 	hasStatus := false
@@ -67,7 +68,20 @@ func (s *server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Client attribution over a single forward pass: the index holds the
+	// traces seen SO FAR, which is exact for any chain that propagated the
+	// identity in baggage (core/proxy writes it onto every such hop, so the
+	// index is not even consulted) and best-effort for a chain that dropped
+	// baggage — hops file order is completion order, and a trace is
+	// recorded inner-first, so an inner hop can be tested before the entry
+	// hop that names its client. Such a hop reads as unattributed, which is
+	// the same answer the documented rule gives for any window that does
+	// not contain its trace's client-carrying hop. The alternative is a
+	// second pass over hops.jsonl per page, which is what this endpoint's
+	// bounded-memory scan exists to avoid.
+	clients := map[string]string{}
 	match := func(h trace.Hop) bool {
+		trace.ObserveClient(clients, h)
 		if h.Seq >= before {
 			return false
 		}
@@ -84,6 +98,9 @@ func (s *server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		if hasStatus && h.Status != status {
+			return false
+		}
+		if !trace.MatchesClient(h, clients, client) {
 			return false
 		}
 		return true

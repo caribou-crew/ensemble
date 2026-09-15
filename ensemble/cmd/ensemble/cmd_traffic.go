@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/caribou-crew/ensemble/core/trace"
 )
 
 func cmdTraffic(args []string, stdout, stderr io.Writer) int {
@@ -20,6 +22,7 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 	errorsOnly := fs.Bool("errors-only", false, "only hops with status>=400 or a transport error")
 	follow := fs.Bool("follow", false, "stream live hops via SSE (blocks until interrupted)")
 	session := fs.String("session", "", "only hops carrying this session id; with --export, export the whole session instead of listing it")
+	client := fs.String("client", "", "only hops originating from this client application (e.g. app-legacy); "+trace.UnattributedClient+" selects hops belonging to no client")
 	export := fs.String("export", "", "with --session, export format: har")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -30,6 +33,14 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 	if *export != "" {
 		if *session == "" {
 			fmt.Fprintln(stderr, "ensemble: traffic: --export requires --session <id>")
+			return 2
+		}
+		// Refused rather than ignored. The export endpoint renders a whole
+		// session, and quietly handing back every client's hops under a
+		// command line that asked for one client's would be a wrong answer
+		// dressed as a filtered one.
+		if *client != "" {
+			fmt.Fprintln(stderr, "ensemble: traffic: --export exports a whole session and cannot be narrowed with --client")
 			return 2
 		}
 		body, err := c.SessionExport(context.Background(), *session, *export)
@@ -44,10 +55,10 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 	if *follow {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return followTraffic(ctx, c, *since, *jsonOut, stdout, stderr)
+		return followTraffic(ctx, c, *since, *client, *jsonOut, stdout, stderr)
 	}
 
-	res, err := c.TrafficFiltered(context.Background(), *since, 0, *errorsOnly, *session)
+	res, err := c.TrafficFiltered(context.Background(), *since, 0, *errorsOnly, *session, *client)
 	if err != nil {
 		fmt.Fprintf(stderr, "ensemble: traffic: %v\n", err)
 		return 1
@@ -62,8 +73,8 @@ func cmdTraffic(args []string, stdout, stderr io.Writer) int {
 // followTraffic streams hops via SSE until ctx is canceled or the stream
 // closes, printing each as it arrives (one JSON object per line with
 // --json, one compact table-less line otherwise).
-func followTraffic(ctx context.Context, c *Client, since uint64, jsonOut bool, stdout, stderr io.Writer) int {
-	ch, err := c.TrafficStream(ctx, since)
+func followTraffic(ctx context.Context, c *Client, since uint64, client string, jsonOut bool, stdout, stderr io.Writer) int {
+	ch, err := c.TrafficStreamFiltered(ctx, since, client)
 	if err != nil {
 		fmt.Fprintf(stderr, "ensemble: traffic: %v\n", err)
 		return 1

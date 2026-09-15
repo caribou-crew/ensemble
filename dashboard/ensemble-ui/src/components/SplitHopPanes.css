@@ -1,0 +1,82 @@
+.split-panes {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.split-panes__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 50%;
+  padding: 4px 8px;
+  text-align: left;
+  font-weight: 600;
+  background: var(--surface-2, #f4f4f5);
+  border-bottom: 1px solid var(--border, #d4d4d8);
+}
+
+.split-panes__row {
+  border-bottom: 1px solid var(--border-subtle, #ececef);
+}
+
+.split-panes__cell {
+  vertical-align: top;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-left: 1px solid var(--border-subtle, #ececef);
+}
+
+.split-panes__cell:hover {
+  background: var(--surface-hover, #f8f8fa);
+}
+
+/* A gap opposite a call is the view's headline signal, so it reads as a
+   deliberate absence rather than as an unstyled blank. */
+.split-panes__cell--empty {
+  cursor: default;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 5px,
+    var(--border-subtle, #ececef) 5px,
+    var(--border-subtle, #ececef) 6px
+  );
+  opacity: 0.35;
+}
+
+.split-panes__cell--selected {
+  background: var(--surface-selected, #e6efff);
+}
+
+.split-panes__line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.split-panes__method {
+  font-weight: 600;
+  min-width: 42px;
+}
+
+.split-panes__path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.split-panes__meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--text-muted, #71717a);
+  font-size: 11px;
+}
+
+.split-panes__to {
+  font-weight: 500;
+}

@@ -320,3 +320,64 @@ func TestTrafficHistoryLimitCapped(t *testing.T) {
 		t.Fatalf("got %d hops, want all 5 (absurd limit should cap, not error)", len(got.Hops))
 	}
 }
+
+// History pages honor the client filter. The propagated-identity case is
+// the one that must be exact: core/proxy writes the identity onto every hop
+// of a chain that forwards baggage, so file order cannot affect the answer.
+func TestTrafficHistoryFiltersByClient(t *testing.T) {
+	e := newTestEnv(t)
+	writeHopsHistory(t, e, []trace.Hop{
+		{Seq: 1, TraceID: "t1", Client: "app-legacy", To: "gateway", Path: "/home", Status: 200},
+		{Seq: 2, TraceID: "t1", Client: "app-legacy", To: "wallet", Path: "/v1/wallet", Status: 200},
+		{Seq: 3, TraceID: "t2", Client: "app-next", To: "edge", Path: "/home", Status: 200},
+		{Seq: 4, TraceID: "t2", Client: "app-next", To: "toolkit-api", Path: "/v1/profile", Status: 404},
+		{Seq: 5, TraceID: "t3", To: "health", Path: "/healthz", Status: 200},
+	})
+
+	got := getHistory(t, e, "?client=app-next")
+	var seqs []uint64
+	for _, h := range got.Hops {
+		seqs = append(seqs, h.Seq)
+	}
+	if !slices.Equal(seqs, []uint64{4, 3}) {
+		t.Fatalf("client=app-next page = %v, want [4 3] newest-first", seqs)
+	}
+
+	orphans := getHistory(t, e, "?client="+trace.UnattributedClient)
+	if len(orphans.Hops) != 1 || orphans.Hops[0].Seq != 5 {
+		t.Fatalf("unattributed page = %+v, want just seq 5", orphans.Hops)
+	}
+}
+
+// The client filter composes with the filters this endpoint already had,
+// rather than replacing them.
+func TestTrafficHistoryClientComposesWithOtherFilters(t *testing.T) {
+	e := newTestEnv(t)
+	writeHopsHistory(t, e, []trace.Hop{
+		{Seq: 1, TraceID: "t1", Client: "app-next", To: "edge", Method: "GET", Path: "/home", Status: 200},
+		{Seq: 2, TraceID: "t1", Client: "app-next", To: "toolkit-api", Method: "GET", Path: "/v1/profile", Status: 404},
+		{Seq: 3, TraceID: "t2", Client: "app-legacy", To: "gateway", Method: "GET", Path: "/v1/profile", Status: 404},
+	})
+
+	got := getHistory(t, e, "?client=app-next&errorsOnly=true")
+	if len(got.Hops) != 1 || got.Hops[0].Seq != 2 {
+		t.Fatalf("client+errorsOnly page = %+v, want just seq 2", got.Hops)
+	}
+}
+
+// A chain that dropped baggage is attributed by trace, which on a single
+// forward pass can only see the hops already scanned. The entry hop is
+// written FIRST here (a chain whose legs completed outermost-first), so the
+// index has it by the time the inner hop is tested.
+func TestTrafficHistoryResolvesAnInnerHopFromAnEarlierEntryHop(t *testing.T) {
+	e := newTestEnv(t)
+	writeHopsHistory(t, e, []trace.Hop{
+		{Seq: 1, TraceID: "t1", Client: "app-legacy", To: "gateway", Path: "/home", Status: 200},
+		{Seq: 2, TraceID: "t1", To: "wallet", Path: "/v1/wallet", Status: 200},
+	})
+
+	got := getHistory(t, e, "?client=app-legacy")
+	if len(got.Hops) != 2 {
+		t.Fatalf("page = %+v, want both hops — the inner hop inherits through its trace", got.Hops)
+	}
+}
