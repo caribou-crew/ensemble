@@ -339,6 +339,49 @@ func TestMutationBarriersDoNotServeFutureState(t *testing.T) {
 	}
 }
 
+func TestCompletedMutationMakesUnusedEarlierReadsIneligible(t *testing.T) {
+	b := bundleOf(
+		exch("GET", "/payees", "", nil, 200, `{"state":"baseline-1"}`, 12),
+		exch("GET", "/payees", "", nil, 200, `{"state":"baseline-2"}`, 13),
+		exch("POST", "/payees", "", obj(t, `{"name":"Ada"}`), 201, `{}`, 14),
+		exch("GET", "/payees", "", nil, 200, `{"state":"created"}`, 15),
+	)
+	o := Options{StatefulPaths: []string{"/payees"}}
+
+	if got := b.Match(Request{Method: "GET", Path: "/payees"}, o); got.Hit == nil || got.Hit.Seq != 12 {
+		t.Fatalf("baseline GET matched %+v, want seq 12", got)
+	}
+	if got := b.Match(Request{Method: "POST", Path: "/payees", Body: obj(t, `{"name":"Ada"}`)}, o); got.Hit == nil || got.Hit.Seq != 14 {
+		t.Fatalf("create matched %+v, want seq 14", got)
+	}
+	if got := b.Match(Request{Method: "GET", Path: "/payees"}, o); got.Hit == nil || got.Hit.Seq != 15 {
+		t.Fatalf("post-create GET matched %+v, want seq 15 rather than unused stale seq 13", got)
+	}
+	if b.Exchanges[1].used != 0 {
+		t.Fatalf("stale seq 13 used = %d, want 0 so require-consumed can report count drift", b.Exchanges[1].used)
+	}
+}
+
+func TestStalePreviousPhaseMissExplainsCompletedMutation(t *testing.T) {
+	b := bundleOf(
+		exch("GET", "/payees", "", nil, 200, `{"state":"baseline"}`, 12),
+		exch("POST", "/payees", "", obj(t, `{"name":"Ada"}`), 201, `{}`, 14),
+	)
+	o := Options{StatefulPaths: []string{"/payees"}}
+
+	if got := b.Match(Request{Method: "POST", Path: "/payees", Body: obj(t, `{"name":"Ada"}`)}, o); got.Hit == nil || got.Hit.Seq != 14 {
+		t.Fatalf("create matched %+v, want seq 14", got)
+	}
+	got := b.Match(Request{Method: "GET", Path: "/payees"}, o)
+	if !got.Miss || got.Hit != nil {
+		t.Fatalf("stale baseline response was served after create: %+v", got)
+	}
+	sequence := fieldNamed(t, got.Diff, "sequence")
+	if sequence.Expected != "exchange after POST /payees" || sequence.Actual != "recorded exchange precedes matched mutation" {
+		t.Fatalf("stale phase explanation = %+v, want completed-mutation reason", sequence)
+	}
+}
+
 func TestStatefulPathOptInPreservesConcurrentStartupPostReordering(t *testing.T) {
 	b := bundleOf(
 		exch("POST", "/login/risk", "", obj(t, `{"kind":"device"}`), 200, `{"device":true}`, 1),

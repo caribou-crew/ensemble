@@ -250,18 +250,28 @@ func (b *Bundle) Match(r Request, o Options) Result {
 	// candidates ineligible. Requests elsewhere remain freely reorderable,
 	// and an exhausted repeat below still repeats the current phase's last
 	// response rather than leaking a future one.
+	floor := -1
 	barrier := len(b.Exchanges) - 1
 	if scope := statefulScope(path, o); scope != "" {
+		floor = b.latestCompletedMutation(scope, o)
 		barrier = b.firstPendingMutation(scope, o)
 	}
 	eligible := candidates[:0]
 	for _, i := range candidates {
-		if i <= barrier {
+		if i >= floor && i <= barrier {
 			eligible = append(eligible, i)
 		}
 	}
 	if len(eligible) == 0 {
 		blocked := &b.Exchanges[candidates[0]]
+		if candidates[len(candidates)-1] < floor {
+			completed := &b.Exchanges[floor]
+			return Result{Miss: true, Nearest: blocked, Diff: []MissField{{
+				Field:    "sequence",
+				Expected: "exchange after " + completed.Key.Method + " " + completed.Key.Path,
+				Actual:   "recorded exchange precedes matched mutation",
+			}}}
+		}
 		pending := &b.Exchanges[barrier]
 		return Result{Miss: true, Nearest: blocked, Diff: []MissField{{
 			Field:    "sequence",
@@ -302,6 +312,24 @@ func (b *Bundle) firstPendingMutation(scope string, o Options) int {
 		}
 	}
 	return len(b.Exchanges) - 1
+}
+
+// latestCompletedMutation returns the newest unsafe request already matched
+// in this resource and listener. Exchanges before it describe an earlier
+// state even when they remain unused; keeping them unused preserves count
+// drift while the lower bound prevents serving that stale state.
+func (b *Bundle) latestCompletedMutation(scope string, o Options) int {
+	latest := -1
+	for i := range b.Exchanges {
+		e := &b.Exchanges[i]
+		if o.TargetFilter != "" && e.Target != o.TargetFilter {
+			continue
+		}
+		if e.used > 0 && inPathScope(normalizeWith(o, e.Key.Path), scope) && !safeMethod(e.Key.Method) {
+			latest = i
+		}
+	}
+	return latest
 }
 
 func statefulScope(path string, o Options) string {
