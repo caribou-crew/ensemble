@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -720,7 +721,7 @@ func assertRequestsWire(cfg *config.Config, bundleDir string, dataKey []byte, li
 	var out diff.Wire
 	for _, rl := range listeners {
 		reference := requestOnlyHops(filterHopsByTarget(refHops, rl.name), requestRedactor)
-		observed := requestOnlyHops(rl.srv.ObservedHops(), requestRedactor)
+		observed := requestOnlyHops(orderObservedByMatchedExchange(reference, rl.srv.ObservedHops()), requestRedactor)
 		if err := protectEncryptedRequests(reference, cfg.RedactKeyRules(), dataKey, true); err != nil {
 			return diff.Wire{}, err
 		}
@@ -736,6 +737,35 @@ func assertRequestsWire(cfg *config.Config, bundleDir string, dataKey []byte, li
 		// client MADE, not ones it didn't.
 	}
 	return out, nil
+}
+
+// orderObservedByMatchedExchange restores reference order using the Seq of
+// the exchange that replay.Match selected for each live request. That Seq is
+// stronger evidence than arrival order: concurrent requests to one endpoint
+// may arrive in either order, while each has already been matched to its exact
+// recorded request body by the replay server. Stable sorting retains duplicate
+// calls so DiffWire still reports count drift, and unknown identities sort last.
+func orderObservedByMatchedExchange(reference, observed []trace.Hop) []trace.Hop {
+	order := make(map[uint64]int, len(reference))
+	for i, h := range reference {
+		order[h.Seq] = i
+	}
+	out := append([]trace.Hop(nil), observed...)
+	sort.SliceStable(out, func(i, j int) bool {
+		pi, iok := order[out[i].Seq]
+		pj, jok := order[out[j].Seq]
+		switch {
+		case iok && jok:
+			return pi < pj
+		case iok:
+			return true
+		case jok:
+			return false
+		default:
+			return false
+		}
+	})
+	return out
 }
 
 func hasEncryptRule(rs []trace.KeyRule) bool {

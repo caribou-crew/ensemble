@@ -253,7 +253,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.served++
 	if s.opts.AssertRequests {
-		s.observed = append(s.observed, observedHop(r, raw, decrypted, uint64(len(s.observed)+1)))
+		// Preserve the matched recording's identity. Concurrent requests can
+		// arrive in a different order from the reference; --assert-requests
+		// uses this Seq to pair each live request with the exchange that
+		// actually served it before computing request differences.
+		s.observed = append(s.observed, observedHop(r, raw, decrypted, hit.Seq))
 	}
 	s.mu.Unlock()
 	writeHit(w, r, decrypted)

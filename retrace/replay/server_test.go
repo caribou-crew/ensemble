@@ -848,6 +848,23 @@ func TestAssertRequestsRecordsTheRealRequestNotTheRecordedOne(t *testing.T) {
 	}
 }
 
+func TestAssertRequestsRecordsMatchedExchangeSeqAcrossReorderedCalls(t *testing.T) {
+	b := bundleOf(
+		exch("POST", "/login", "", map[string]any{"password": "secret"}, 200, `{"kind":"password"}`, 41),
+		exch("POST", "/login", "", map[string]any{"passcode": "123456"}, 200, `{"kind":"passcode"}`, 42),
+	)
+	s, url := serve(t, b, Options{AssertRequests: true}, "")
+
+	// Send in the reverse of recording order, as concurrent callers may.
+	do(t, "POST", url+"/login", `{"passcode":"123456"}`, nil).Body.Close()
+	do(t, "POST", url+"/login", `{"password":"secret"}`, nil).Body.Close()
+
+	hops := s.ObservedHops()
+	if len(hops) != 2 || hops[0].Seq != 42 || hops[1].Seq != 41 {
+		t.Fatalf("observed seqs = %+v, want arrival-order hops carrying matched exchange seqs 42,41", hops)
+	}
+}
+
 func TestAssertRequestsRecordsNothingForAMiss(t *testing.T) {
 	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{"items":[]}`, 1))
 	s, url := serve(t, b, Options{AssertRequests: true}, "")
