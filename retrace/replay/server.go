@@ -213,6 +213,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: body, Raw: raw,
 	}, s.opts)
 	if res.Miss || res.Hit == nil {
+		res.Diff = protectMissFields(res.Diff, s.opts.ProtectedRequestKeys)
 		miss := Miss{
 			TS: s.now().UTC(), Kind: MissUnmatched,
 			Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
@@ -256,6 +257,29 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	writeHit(w, r, decrypted)
+}
+
+func protectMissFields(fields []MissField, keys []string) []MissField {
+	if len(keys) == 0 {
+		return fields
+	}
+	protected := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		protected[strings.ToLower(key)] = true
+	}
+	for i := range fields {
+		name := fields[i].Field
+		if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+			name = name[dot+1:]
+		}
+		if protected[strings.ToLower(name)] {
+			fields[i].Expected = "[protected]"
+			if fields[i].Actual != absent {
+				fields[i].Actual = "[protected]"
+			}
+		}
+	}
+	return fields
 }
 
 // observedHop turns one served hit into the trace.Hop shape

@@ -105,7 +105,7 @@ type Bundle struct {
 	// dataKey is this bundle's unwrapped per-recording key, resolved once
 	// at load time via reckey.ResolveDataKey — nil when the bundle has no
 	// encryption.json, or when no team key resolves. Unexported: it is
-	// serve-time state for decrypting a response before writing it, never
+	// runtime state for decrypting request match values and responses, never
 	// bundle content, and it must never end up in a report or a log.
 	dataKey []byte
 }
@@ -215,7 +215,7 @@ func LoadBundle(dir, cfgDir string, wireRules []rules.Rule) (*Bundle, error) {
 		if err := refuse(h); err != nil {
 			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w\n%s", dir, err, excludeRuleSuggestion(h))
 		}
-		ex, err := lower(h)
+		ex, err := lower(h, dataKey)
 		if err != nil {
 			return nil, fmt.Errorf("replay: the bundle at %s cannot be replayed: %w\n%s", dir, err, excludeRuleSuggestion(h))
 		}
@@ -414,8 +414,13 @@ func reasonOr(s, def string) string {
 // Exchange.BodyB64 and is decoded at serve time. Base64 that does not
 // decode is a corrupt bundle and refuses the load — serving or matching a
 // guess about what the bytes were is exactly what this package never does.
-func lower(h trace.Hop) (Exchange, error) {
+func lower(h trace.Hop, dataKey []byte) (Exchange, error) {
 	path, query := diff.SplitPath(h.Path)
+	requestBody, requestOK := trace.DecryptBody(h.Req.Body, dataKey)
+	if !requestOK {
+		return Exchange{}, fmt.Errorf("hop %d (%s %s) has an encrypted request field that cannot be unlocked", h.Seq, strings.ToUpper(h.Method), path)
+	}
+	h.Req.Body = requestBody
 	e := Exchange{
 		Key:        Key{Method: strings.ToUpper(h.Method), Path: path, Query: query},
 		Target:     h.To,

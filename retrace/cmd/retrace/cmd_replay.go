@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +24,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/capture"
 	"github.com/caribou-crew/ensemble/retrace/config"
 	"github.com/caribou-crew/ensemble/retrace/diff"
+	"github.com/caribou-crew/ensemble/retrace/reckey"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/replay"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -103,11 +108,12 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		ref            = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
-		app            = fs.String("app", "", "app name (default: config app, else the directory name)")
-		listen         = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
-		asJSON         = fs.Bool("json", false, "emit the replay report as JSON on stdout")
-		assertRequests = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`")
+		ref             = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
+		app             = fs.String("app", "", "app name (default: config app, else the directory name)")
+		listen          = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
+		asJSON          = fs.Bool("json", false, "emit the replay report as JSON on stdout")
+		assertRequests  = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`")
+		requireConsumed = fs.Bool("require-consumed", false, "fail with the hard-gate exit code when the test command leaves any recorded exchange unused")
 	)
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -171,12 +177,26 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
+	redactRules := cfg.RedactKeyRules()
+	var replayDataKey []byte
+	var replayEncryption *runs.Encryption
+	if hasEncryptRule(redactRules) {
+		replayDataKey, replayEncryption, err = strictReplayDataKey(r.Dir, cfg.Dir)
+		if err != nil {
+			return fail(stderr, "replay: encrypted request protection is unavailable: %v", err)
+		}
+	}
 
 	// The replay run directory: where misses.jsonl, the adapter's
 	// screenshots and any flow markers land.
 	p, err := createReplayRun(cwd, appName, flow)
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
+	}
+	if replayEncryption != nil {
+		if err := runs.WriteEncryption(p, *replayEncryption); err != nil {
+			return fail(stderr, "replay: cannot protect the replay artifact: %v", err)
+		}
 	}
 
 	// runs.Paths.MissesPath, at the one call site that knows the run
@@ -287,22 +307,10 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		// and must be left INTACT: masking it to [redacted] destroys the
 		// value the app decrypts and renders, breaking replay assertions
 		// (WLA: web ViewPan/ViewCVV "element not found"). So we redact
-		// h.Req only and copy h.Resp through untouched. dataKey nil is fine —
-		// the request side carries no encrypt-mode field.
-		red, rerr := trace.NewRedactor(cfg.RedactKeyRules(), 0, nil)
-		if rerr != nil {
-			// A config with an encrypt-mode field makes NewRedactor need a
-			// key; but we only redact the request side, which has no encrypt
-			// field, so drop encrypt rules from THIS redactor. (They still
-			// govern the recorded reference, untouched.)
-			maskRules := make([]trace.KeyRule, 0)
-			for _, r := range cfg.RedactKeyRules() {
-				if r.Mode != trace.ModeEncrypt {
-					maskRules = append(maskRules, r)
-				}
-			}
-			red, rerr = trace.NewRedactor(maskRules, 0, nil)
-		}
+		// h.Req only and copy h.Resp through untouched. Encrypt rules receive
+		// the reference run's unlocked data key, so live request values are
+		// sealed before this artifact can reach disk.
+		red, rerr := trace.NewRedactor(redactRules, 0, replayDataKey)
 		if rerr != nil {
 			fmt.Fprintf(stderr, "retrace: replay: could not build the redactor (%v) — not persisting wire to avoid leaking secrets\n", rerr)
 		} else if werr := writeObservedWire(p.WirePath, observed, red); werr != nil {
@@ -318,7 +326,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	var reqDiff *replayRequestDiff
 	requestDiffFailed := false
 	if *assertRequests {
-		w, err := assertRequestsWire(cfg, r.Dir, replayLns)
+		w, err := assertRequestsWire(cfg, r.Dir, replayDataKey, replayLns)
 		if err != nil {
 			return fail(stderr, "replay: --assert-requests: %v", err)
 		}
@@ -365,6 +373,9 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	// class of regression --assert-requests exists to catch, and a green
 	// test command must not get to override it either.
 	if requestDiffFailed {
+		return exitGate
+	}
+	if *requireConsumed && len(unused) > 0 {
 		return exitGate
 	}
 	// Nothing was compared. That is NOT the same verdict as "everything
@@ -649,7 +660,13 @@ func replayOptions(cfg *config.Config) (replay.Options, error) {
 	if err != nil {
 		return replay.Options{}, err
 	}
-	return replay.Options{Rules: rs, Normalize: cfg.NormalizePath, QueryIgnore: cfg.QueryIgnoreKeys()}, nil
+	var protected []string
+	for _, rule := range cfg.RedactKeyRules() {
+		if rule.Mode == trace.ModeEncrypt {
+			protected = append(protected, rule.Key)
+		}
+	}
+	return replay.Options{Rules: rs, Normalize: cfg.NormalizePath, QueryIgnore: cfg.QueryIgnoreKeys(), ProtectedRequestKeys: protected}, nil
 }
 
 // assertRequestsWire computes the --assert-requests comparison: for every
@@ -672,7 +689,7 @@ func replayOptions(cfg *config.Config) (replay.Options, error) {
 // diffing, so a multi-listener replay never counts one listener's traffic
 // as a deviation against another listener's recording, mirroring
 // replay.Server.UnusedExchanges' own filtering.
-func assertRequestsWire(cfg *config.Config, bundleDir string, listeners []replayListener) (diff.Wire, error) {
+func assertRequestsWire(cfg *config.Config, bundleDir string, dataKey []byte, listeners []replayListener) (diff.Wire, error) {
 	wirePath := filepath.Join(bundleDir, "wire.jsonl")
 	// skipped is ignored: replay.LoadBundle already read this same file
 	// moments earlier in this process and refuses on any unreadable line,
@@ -686,10 +703,31 @@ func assertRequestsWire(cfg *config.Config, bundleDir string, listeners []replay
 		return diff.Wire{}, err
 	}
 	opts := diff.Options{WireIgnore: cfg.WireIgnorePaths(), Rules: rs, Normalize: cfg.NormalizePath}
+	// Apply destroy-mode rules to both sides first. Encrypt-mode fields are
+	// handled separately below: the reference is decrypted only in memory and
+	// both values become keyed digests while retaining their JSON structure.
+	maskRules := make([]trace.KeyRule, 0, len(cfg.RedactKeyRules()))
+	for _, rule := range cfg.RedactKeyRules() {
+		if rule.Mode != trace.ModeEncrypt {
+			maskRules = append(maskRules, rule)
+		}
+	}
+	requestRedactor, err := trace.NewRedactor(maskRules, 0, nil)
+	if err != nil {
+		return diff.Wire{}, fmt.Errorf("building request redactor: %w", err)
+	}
 
 	var out diff.Wire
 	for _, rl := range listeners {
-		w := diff.DiffWire(filterHopsByTarget(refHops, rl.name), rl.srv.ObservedHops(), opts)
+		reference := requestOnlyHops(filterHopsByTarget(refHops, rl.name), requestRedactor)
+		observed := requestOnlyHops(rl.srv.ObservedHops(), requestRedactor)
+		if err := protectEncryptedRequests(reference, cfg.RedactKeyRules(), dataKey, true); err != nil {
+			return diff.Wire{}, err
+		}
+		if err := protectEncryptedRequests(observed, cfg.RedactKeyRules(), dataKey, false); err != nil {
+			return diff.Wire{}, err
+		}
+		w := diff.DiffWire(reference, observed, opts)
 		out.Paired = append(out.Paired, w.Paired...)
 		out.Extra = append(out.Extra, w.Extra...)
 		// Missing is deliberately never accumulated: a recorded exchange
@@ -698,6 +736,183 @@ func assertRequestsWire(cfg *config.Config, bundleDir string, listeners []replay
 		// client MADE, not ones it didn't.
 	}
 	return out, nil
+}
+
+func hasEncryptRule(rs []trace.KeyRule) bool {
+	for _, r := range rs {
+		if r.Mode == trace.ModeEncrypt {
+			return true
+		}
+	}
+	return false
+}
+
+func strictReplayDataKey(bundleDir, configDir string) ([]byte, *runs.Encryption, error) {
+	enc, err := runs.ReadEncryption(runs.Paths{RunDir: bundleDir})
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading encryption metadata: %w", err)
+	}
+	if enc == nil {
+		return nil, nil, fmt.Errorf("the reference has encrypt rules but no encryption metadata")
+	}
+	teamKey, _, err := reckey.LoadTeamKey(configDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("a recording key is required")
+	}
+	if reckey.KeyID(teamKey) != enc.KeyID {
+		return nil, nil, fmt.Errorf("the recording key does not unlock this reference")
+	}
+	dataKey, err := reckey.UnwrapDataKey(enc.WrappedDataKey, teamKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("the recording key does not unlock this reference")
+	}
+	return dataKey, enc, nil
+}
+
+const protectedDigestPrefix = "$protected:hmac-sha256:"
+
+func protectEncryptedRequests(hops []trace.Hop, rules []trace.KeyRule, dataKey []byte, reference bool) error {
+	keys := make(map[string]bool)
+	for _, rule := range rules {
+		if rule.Mode == trace.ModeEncrypt {
+			keys[strings.ToLower(rule.Key)] = true
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(dataKey) == 0 {
+		return fmt.Errorf("a recording key is required to compare encrypted request fields")
+	}
+	for i := range hops {
+		for name, value := range hops[i].Req.Headers {
+			if !keys[strings.ToLower(name)] {
+				continue
+			}
+			if reference {
+				plain, err := trace.DecryptField(dataKey, value)
+				if err != nil {
+					return fmt.Errorf("an encrypted reference request header could not be unlocked")
+				}
+				value = plain
+			}
+			hops[i].Req.Headers[name] = protectedDigest(dataKey, value)
+		}
+		body, err := protectEncryptedBody(hops[i].Req.Body, keys, dataKey, reference)
+		if err != nil {
+			return err
+		}
+		hops[i].Req.Body = body
+	}
+	return nil
+}
+
+func protectEncryptedBody(body string, keys map[string]bool, dataKey []byte, reference bool) (string, error) {
+	if body == "" {
+		return body, nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(body), &value); err != nil {
+		return body, nil
+	}
+	protected, err := protectEncryptedJSON(value, keys, dataKey, reference)
+	if err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(protected)
+	if err != nil {
+		return "", fmt.Errorf("canonicalizing protected request body: %w", err)
+	}
+	return string(out), nil
+}
+
+func protectEncryptedJSON(value any, keys map[string]bool, dataKey []byte, reference bool) (any, error) {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if keys[strings.ToLower(key)] {
+				if reference {
+					marker, ok := child.(string)
+					if !ok {
+						return nil, fmt.Errorf("an encrypted reference request field has an invalid protected value")
+					}
+					plain, err := trace.DecryptField(dataKey, marker)
+					if err != nil {
+						return nil, fmt.Errorf("an encrypted reference request field could not be unlocked")
+					}
+					if err := json.Unmarshal([]byte(plain), &child); err != nil {
+						return nil, fmt.Errorf("an encrypted reference request field has an invalid protected value")
+					}
+				}
+				node[key] = protectValueShape(dataKey, child)
+				continue
+			}
+			next, err := protectEncryptedJSON(child, keys, dataKey, reference)
+			if err != nil {
+				return nil, err
+			}
+			node[key] = next
+		}
+		return node, nil
+	case []any:
+		for i, child := range node {
+			next, err := protectEncryptedJSON(child, keys, dataKey, reference)
+			if err != nil {
+				return nil, err
+			}
+			node[i] = next
+		}
+	}
+	return value, nil
+}
+
+func protectValueShape(dataKey []byte, value any) any {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			node[key] = protectValueShape(dataKey, child)
+		}
+		return node
+	case []any:
+		for i, child := range node {
+			node[i] = protectValueShape(dataKey, child)
+		}
+		return node
+	default:
+		encoded, _ := json.Marshal(value)
+		return protectedDigest(dataKey, string(encoded))
+	}
+}
+
+func protectedDigest(dataKey []byte, value string) string {
+	mac := hmac.New(sha256.New, dataKey)
+	mac.Write([]byte(value))
+	return protectedDigestPrefix + hex.EncodeToString(mac.Sum(nil))
+}
+
+// requestOnlyHops projects a captured hop onto the request contract
+// --assert-requests owns. Responses are replay output, not client input;
+// including them both invents response drift and can serialize decrypted
+// recorded secrets in a request report. The request is canonicalized with
+// the same mask rules capture used, preserving header/field presence while
+// removing values that must not reach diagnostics.
+func requestOnlyHops(hops []trace.Hop, red *trace.Redactor) []trace.Hop {
+	out := make([]trace.Hop, 0, len(hops))
+	for _, h := range hops {
+		h.Resp = trace.Payload{}
+		h.Status = 0
+		h.T = trace.Timings{}
+		h.InjectedDelayMs = 0
+		h.Err = ""
+		h.Streaming = false
+		h.Unsupported = ""
+		projected, err := red.Hop(h)
+		if err != nil {
+			projected.Req.Body, projected.Req.BodyB64 = "", ""
+		}
+		out = append(out, projected)
+	}
+	return out
 }
 
 // filterHopsByTarget keeps only the hops recorded through one named

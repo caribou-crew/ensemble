@@ -58,6 +58,10 @@ type Options struct {
 	Rules       []rules.Rule
 	Normalize   func(string) string
 	QueryIgnore []string
+	// ProtectedRequestKeys names encrypt-mode request fields. Matching uses
+	// decrypted in-memory reference values, but miss diagnostics replace both
+	// sides for these keys so neither recorded nor live plaintext can escape.
+	ProtectedRequestKeys []string
 	// TargetFilter restricts matching to exchanges recorded through one
 	// named listener (Exchange.Target). Empty means no filter — every
 	// exchange is eligible regardless of Target, which is today's exact
