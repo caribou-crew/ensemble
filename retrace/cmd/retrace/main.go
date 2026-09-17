@@ -24,7 +24,7 @@ Usage:
   retrace run [--flow NAME | --flows A,B] [--app NAME] [--ensemble URL] [--no-ensemble] [--upstream URL] [--proxy-host HOST] [--proxy-port PORT] [--json] [--no-config] [--require-why] [-- <test command>]
   retrace diff --flow NAME [--app NAME] [--a SELECTOR] [--b SELECTOR] [--json] [--images=false] [--out DIR] [--allow-degraded] [--no-fail] [--require-why]
                [--a-root DIR] [--b-root DIR] [--a-app NAME] [--b-app NAME] [--a-commit FULL_SHA] [--b-commit FULL_SHA]
-  retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] [--require-consumed] -- <test command>
+  retrace replay --ref FLOW [--app NAME] [--listen 127.0.0.1:0] [--json] [--require-consumed] [--stateful-path PATH] -- <test command>
   retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
   retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
   retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]

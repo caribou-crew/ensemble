@@ -306,6 +306,75 @@ func TestWhenRepeatsAreExhaustedTheLastRecordedResponseRepeats(t *testing.T) {
 	}
 }
 
+func TestMutationBarriersDoNotServeFutureState(t *testing.T) {
+	b := bundleOf(
+		exch("GET", "/payees", "", nil, 200, `{"state":"baseline-1"}`, 12),
+		exch("GET", "/payees", "", nil, 200, `{"state":"baseline-2"}`, 13),
+		exch("PUT", "/payees/7", "", obj(t, `{"alias":"edited"}`), 200, `{}`, 14),
+		exch("GET", "/payees", "", nil, 200, `{"state":"edited-1"}`, 15),
+		exch("GET", "/payees", "", nil, 200, `{"state":"edited-2"}`, 16),
+		exch("PUT", "/payees/7", "", obj(t, `{"terminated":true}`), 200, `{}`, 17),
+		exch("GET", "/payees", "", nil, 200, `{"state":"removed"}`, 18),
+	)
+	o := Options{StatefulPaths: []string{"/payees"}}
+
+	for _, want := range []uint64{12, 13} {
+		if got := b.Match(Request{Method: "GET", Path: "/payees"}, o); got.Hit == nil || got.Hit.Seq != want {
+			t.Fatalf("baseline GET matched %+v, want seq %d", got, want)
+		}
+	}
+	if got := b.Match(Request{Method: "PUT", Path: "/payees/7", Body: obj(t, `{"alias":"edited"}`)}, o); got.Hit == nil || got.Hit.Seq != 14 {
+		t.Fatalf("edit matched %+v, want seq 14", got)
+	}
+	for _, want := range []uint64{15, 16, 16} {
+		if got := b.Match(Request{Method: "GET", Path: "/payees"}, o); got.Hit == nil || got.Hit.Seq != want {
+			t.Fatalf("edited-phase GET matched %+v, want seq %d", got, want)
+		}
+	}
+	if got := b.Match(Request{Method: "PUT", Path: "/payees/7", Body: obj(t, `{"terminated":true}`)}, o); got.Hit == nil || got.Hit.Seq != 17 {
+		t.Fatalf("terminate matched %+v, want seq 17", got)
+	}
+	if got := b.Match(Request{Method: "GET", Path: "/payees"}, o); got.Hit == nil || got.Hit.Seq != 18 {
+		t.Fatalf("post-termination GET matched %+v, want seq 18", got)
+	}
+}
+
+func TestStatefulPathOptInPreservesConcurrentStartupPostReordering(t *testing.T) {
+	b := bundleOf(
+		exch("POST", "/login/risk", "", obj(t, `{"kind":"device"}`), 200, `{"device":true}`, 1),
+		exch("POST", "/login/risk", "", obj(t, `{"kind":"session"}`), 200, `{"session":true}`, 2),
+	)
+
+	if got := b.Match(Request{Method: "POST", Path: "/login/risk", Body: obj(t, `{"kind":"session"}`)}, Options{StatefulPaths: []string{"/payees"}}); got.Hit == nil || got.Hit.Seq != 2 {
+		t.Fatalf("reordered startup POST matched %+v, want seq 2", got)
+	}
+}
+
+func TestMutationBarrierIsScopedToTheSelectedTarget(t *testing.T) {
+	authMutation := exch("POST", "/payees/7", "", obj(t, `{}`), 200, `{}`, 1)
+	authMutation.Target = "auth"
+	edgeRead := exch("GET", "/payees", "", nil, 200, `[]`, 2)
+	edgeRead.Target = "edge"
+	b := bundleOf(authMutation, edgeRead)
+
+	got := b.Match(Request{Method: "GET", Path: "/payees"}, Options{TargetFilter: "edge", StatefulPaths: []string{"/payees"}})
+	if got.Hit == nil || got.Hit.Seq != 2 {
+		t.Fatalf("another target's mutation blocked edge read: %+v", got)
+	}
+}
+
+func TestStatefulPathUsesExactSegments(t *testing.T) {
+	b := bundleOf(
+		exch("POST", "/payees/7", "", obj(t, `{}`), 200, `{}`, 1),
+		exch("GET", "/payees-v2", "", nil, 200, `{"version":2}`, 2),
+	)
+
+	got := b.Match(Request{Method: "GET", Path: "/payees-v2"}, Options{StatefulPaths: []string{"/payees"}})
+	if got.Hit == nil || got.Hit.Seq != 2 {
+		t.Fatalf("near-prefix scope blocked unrelated path: %+v", got)
+	}
+}
+
 func TestAnUnparseableRecordedRequestBodyMatchesOnlyItsOwnBytes(t *testing.T) {
 	// F3. `nil recorded body == no constraint` made a recorded POST with a
 	// form-encoded, XML, plain-text or otherwise non-JSON body match ANY

@@ -101,6 +101,22 @@ type replayTest struct {
 	ExitCode int    `json:"exitCode"`
 }
 
+type statefulPathList []string
+
+func (p *statefulPathList) String() string { return strings.Join(*p, ",") }
+
+func (p *statefulPathList) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "/") || strings.ContainsAny(value, "?#") {
+		return fmt.Errorf("stateful path %q must be an absolute URL path without a query or fragment", value)
+	}
+	if value != "/" {
+		value = strings.TrimRight(value, "/")
+	}
+	*p = append(*p, value)
+	return nil
+}
+
 // cmdReplay answers a test command's HTTP calls from a reference bundle
 // instead of a live stack. A call the bundle does not contain is a 501 and
 // a miss, and any miss at all fails the command with exit 2 — see
@@ -108,6 +124,7 @@ type replayTest struct {
 func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	var statefulPaths statefulPathList
 	var (
 		ref             = fs.String("ref", "", "flow whose reference bundle answers the calls (required)")
 		app             = fs.String("app", "", "app name (default: config app, else the directory name)")
@@ -116,6 +133,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		assertRequests  = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`")
 		requireConsumed = fs.Bool("require-consumed", false, "fail with the hard-gate exit code when the test command leaves any recorded exchange unused")
 	)
+	fs.Var(&statefulPaths, "stateful-path", "resource path whose unsafe recorded requests form causal replay barriers; repeatable, and matches the exact path plus child segments")
 	flagArgs, testCmd := splitDoubleDash(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return exitUsage
@@ -167,6 +185,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "replay: %v", err)
 	}
+	opts.StatefulPaths = append([]string(nil), statefulPaths...)
 	// Observe requests ALWAYS, not only under --assert-requests: the
 	// observed hops are what we persist as the run's wire.jsonl below, which
 	// is what lets a shots-less mobile flow (Android RN/native card screens

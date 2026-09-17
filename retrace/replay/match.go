@@ -80,6 +80,12 @@ type Options struct {
 	// nothing extra per request, which is what every replay that does not
 	// pass the flag gets.
 	AssertRequests bool
+	// StatefulPaths opt specific resource trees into causal replay. A path
+	// matches a scope only when it is the scope itself or a child segment
+	// ("/payees/7" is in "/payees"; "/payees-v2" is not). Within a scope,
+	// unsafe requests are strict phase barriers, preventing a read from
+	// receiving state recorded after a mutation that has not matched yet.
+	StatefulPaths []string
 	// No MissPath here. The misses file has ONE name and ONE owner:
 	// runs.Paths.MissesPath. A second field naming the same file is a
 	// second thing to keep in sync, and the loser of that race writes
@@ -238,6 +244,33 @@ func (b *Bundle) Match(r Request, o Options) Result {
 		return Result{Miss: true, Nearest: near, Diff: requestBodyDiff(near, r, res)}
 	}
 
+	// Inside an opted-in stateful path, an unused mutation divides the
+	// recording into causal phases. Reads after that mutation describe state
+	// which cannot exist until the mutation has matched, so keep those
+	// candidates ineligible. Requests elsewhere remain freely reorderable,
+	// and an exhausted repeat below still repeats the current phase's last
+	// response rather than leaking a future one.
+	barrier := len(b.Exchanges) - 1
+	if scope := statefulScope(path, o); scope != "" {
+		barrier = b.firstPendingMutation(scope, o)
+	}
+	eligible := candidates[:0]
+	for _, i := range candidates {
+		if i <= barrier {
+			eligible = append(eligible, i)
+		}
+	}
+	if len(eligible) == 0 {
+		blocked := &b.Exchanges[candidates[0]]
+		pending := &b.Exchanges[barrier]
+		return Result{Miss: true, Nearest: blocked, Diff: []MissField{{
+			Field:    "sequence",
+			Expected: pending.Key.Method + " " + pending.Key.Path + " before this exchange",
+			Actual:   "recorded mutation has not matched",
+		}}}
+	}
+	candidates = eligible
+
 	// Recorded order for repeats: the first candidate that has not been
 	// served yet, else the LAST one. Serving the first one again would
 	// hang a poll-until-ready flow forever; missing instead would report a
@@ -251,6 +284,54 @@ func (b *Bundle) Match(r Request, o Options) Result {
 	}
 	b.Exchanges[chosen].used++
 	return Result{Hit: &b.Exchanges[chosen]}
+}
+
+// firstPendingMutation returns the index of the earliest unused unsafe
+// request in this server's exchange stream. The index itself is eligible:
+// matching that mutation advances the barrier. When TargetFilter selects a
+// listener, traffic recorded through other listeners cannot hold its state
+// machine back.
+func (b *Bundle) firstPendingMutation(scope string, o Options) int {
+	for i := range b.Exchanges {
+		e := &b.Exchanges[i]
+		if o.TargetFilter != "" && e.Target != o.TargetFilter {
+			continue
+		}
+		if e.used == 0 && inPathScope(normalizeWith(o, e.Key.Path), scope) && !safeMethod(e.Key.Method) {
+			return i
+		}
+	}
+	return len(b.Exchanges) - 1
+}
+
+func statefulScope(path string, o Options) string {
+	best := ""
+	for _, configured := range o.StatefulPaths {
+		scope := normalizeWith(o, configured)
+		if inPathScope(path, scope) && len(scope) > len(best) {
+			best = scope
+		}
+	}
+	return best
+}
+
+func inPathScope(path, scope string) bool {
+	if path == scope {
+		return true
+	}
+	if scope == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	return strings.HasPrefix(path, strings.TrimSuffix(scope, "/")+"/")
+}
+
+func safeMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "GET", "HEAD", "OPTIONS", "TRACE":
+		return true
+	default:
+		return false
+	}
 }
 
 // requestBodyDiff decides whether one recorded request body admits this
