@@ -204,3 +204,15 @@ describe('ShotCompare', () => {
     expect(container.querySelector('.shot-compare__seek')).toBeNull();
   });
 });
+
+it('shows only originals in review mode, with diff and overlay available separately', () => {
+  render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} resolveShotUrl={resolveShotUrl} displayMode="originals" />);
+  expect(cellLabels()).toEqual(['original', 'current']);
+  expect(container.querySelectorAll('img')).toHaveLength(2);
+  render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} resolveShotUrl={resolveShotUrl} displayMode="diff" />);
+  expect(cellLabels()).toEqual(['diff']);
+  expect(container.querySelector('img')?.getAttribute('src')).toBe('/api/shots/web/search/diff/results');
+  render(<ShotCompare app="web" flow="search" checkpoint={checkpoint({ images: { a: 'a', b: 'b', diff: '', overlay: '' }, diffPct: 0 })} resolveShotUrl={resolveShotUrl} displayMode="overlay" />);
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.textContent).toContain('No diff image was written');
+});

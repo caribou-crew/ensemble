@@ -283,17 +283,29 @@ export default function App() {
   const [view, setView] = useUrlParam('view');
   const [suiteEvidence, setSuiteEvidence] = useUrlParam('suiteEvidence');
   const [suiteId, setSuiteId] = useUrlParam('suite');
+  const [reviewFilter, setReviewFilter] = useUrlParam('suiteFilter');
+  const [reviewSearch, setReviewSearch] = useUrlParam('suiteSearch');
+  const [reviewFlow, setReviewFlow] = useUrlParam('suiteFlow');
+  const [reviewPlatform, setReviewPlatform] = useUrlParam('suiteReviewPlatform');
   const [suiteBuild, setSuiteBuild] = useUrlParam('suiteBuild');
   const [suiteFeature, setSuiteFeature] = useUrlParam('suiteFeature');
   const [suitePlatform, setSuitePlatform] = useUrlParam('suitePlatform');
   const suiteSelection: SuiteSelection = {
     suiteId: suiteId ?? undefined,
+    flowId: reviewFlow ?? undefined,
+    reviewFilter: reviewFilter ?? undefined,
+    reviewSearch: reviewSearch ?? undefined,
+    reviewPlatform: reviewPlatform === 'web' || reviewPlatform === 'ios' || reviewPlatform === 'android' ? reviewPlatform : undefined,
     buildId: suiteBuild ?? undefined,
     featureId: suiteFeature ?? undefined,
     platform: suitePlatform === 'web' || suitePlatform === 'ios' || suitePlatform === 'android' ? suitePlatform : undefined,
   };
   const selectSuite = (next: SuiteSelection) => {
     setSuiteId(next.suiteId ?? null);
+    setReviewFlow(next.flowId ?? null);
+    setReviewFilter(next.reviewFilter ?? null);
+    setReviewSearch(next.reviewSearch ?? null);
+    setReviewPlatform(next.reviewPlatform ?? null);
     setSuiteBuild(next.buildId ?? null);
     setSuiteFeature(next.featureId ?? null);
     setSuitePlatform(next.platform ?? null);

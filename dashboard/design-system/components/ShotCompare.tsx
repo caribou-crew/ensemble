@@ -55,7 +55,9 @@ export default function ShotCompare({
   checkpoint,
   resolveShotUrl,
   onSeek,
+  displayMode = 'all',
 }: {
+  displayMode?: 'all' | 'originals' | 'diff' | 'overlay';
   app: string;
   flow: string;
   checkpoint: CheckpointVerdict;
@@ -97,7 +99,7 @@ export default function ShotCompare({
     <div className="shot-compare">
       <ShotCompareBar checkpoint={checkpoint} onSeek={onSeek} />
       <div className="shot-compare__grid">
-        <ShotCompareCell label="original">
+        {(displayMode === 'all' || displayMode === 'originals') && <><ShotCompareCell label="original">
           {images.a ? (
             <ShotLink href={resolveShotUrl(app, flow, 'a', checkpoint.name)} alt={`reference shot of ${checkpoint.name}`} />
           ) : (
@@ -111,19 +113,21 @@ export default function ShotCompare({
             <p className="shot-compare__explanation">{noShotCopy(checkpoint)}</p>
           )}
         </ShotCompareCell>
-        <ShotCompareCell label="diff">
+        </>}
+        {(displayMode === 'all' || displayMode === 'diff') && <ShotCompareCell label="diff">
           {images.diff ? (
             <ShotLink href={resolveShotUrl(app, flow, 'diff', checkpoint.name)} alt={`diff image for ${checkpoint.name}`} />
           ) : (
             <p className="shot-compare__explanation">{NO_IMAGE}</p>
           )}
         </ShotCompareCell>
-        {showOverlay ? (
+        }
+        {(displayMode === 'all' && showOverlay) || displayMode === 'overlay' ? (
           <ShotCompareCell label="overlay">
-            <ShotLink
+            {images.overlay ? <ShotLink
               href={resolveShotUrl(app, flow, 'overlay', checkpoint.name)}
               alt={`overlay of differences for ${checkpoint.name}`}
-            />
+            /> : <p className="shot-compare__explanation">{NO_IMAGE}</p>}
           </ShotCompareCell>
         ) : null}
       </div>

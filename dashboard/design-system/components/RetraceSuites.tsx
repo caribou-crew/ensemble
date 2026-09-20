@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Spinner } from '../primitives';
-import type { RetraceClient } from '../retraceClient';
+import SuiteReviewWorkspace, { type ReviewClient } from './SuiteReviewWorkspace';
 import { useAsync } from '../useAsync';
 import type { SuiteAttemptResult, SuiteCounts, SuiteEvidence, SuitePlaneStatus, SuiteSelection, SuiteFlowCell } from '../suiteTypes';
 import './RetraceSuites.css';
@@ -39,21 +39,14 @@ function Attempt({ attempt, onOpenEvidence }: { attempt: SuiteAttemptResult; onO
 }
 
 export interface RetraceSuitesProps {
-  client: Pick<RetraceClient, 'suites'>;
+  client: ReviewClient;
   selection: SuiteSelection;
   onSelect: (selection: SuiteSelection) => void;
   onOpenEvidence: (evidence: SuiteEvidence) => void;
 }
 export default function RetraceSuites({ client, selection, onSelect, onOpenEvidence }: RetraceSuitesProps) {
   const [revision, setRevision] = useState(0);
-  const detailsRef = useRef<HTMLElement>(null);
   const { data, error, loading } = useAsync(() => client.suites(), [client, revision]);
-  useEffect(() => {
-    if (selection.featureId || selection.platform) {
-      detailsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-      detailsRef.current?.focus({ preventScroll: true });
-    }
-  }, [selection.featureId, selection.platform, loading]);
   if (loading) return <p className="suites__state" role="status"><Spinner /> Loading comparison suites…</p>;
   if (error || !data || !Array.isArray(data.suites)) return <section className="suites__state" role="alert"><h2>Unable to load suites</h2><p>{error?.message ?? 'Invalid suite response'}</p><p>Coverage is unknown until the configured inventory and reports can be read.</p><button type="button" onClick={() => setRevision(v => v + 1)}>Try again</button></section>;
   if (!data.suites.length) return <section className="suites__state"><p className="suites__eyebrow">Commit comparisons</p><h2>No suites configured yet</h2><p>Define expected features, flows, and platforms in <code>retrace.suites.json</code>, then import a runner report.</p><code>retrace suite import --file report.json</code><p>Missing results remain not run. Reports join only when their source, baseline, and policy identities match.</p></section>;
@@ -64,7 +57,7 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
   return <section className="suites">
     <header className="suites__heading"><div><p className="suites__eyebrow">Commit comparisons</p><h1>Comparison suites</h1><p>Expected coverage across features and platforms.</p></div><button type="button" onClick={() => setRevision(v => v + 1)}>Refresh suites</button></header>
     <p className="suites__provenance">External runner reports · statuses are runner assertions. Open linked evidence to inspect recorded comparisons.</p>
-    <div className="suites__layout">
+    <details className="suites__sources"><summary>Choose suite or source revision</summary><div className="suites__layout">
       <aside className="suites__sidebar" aria-label="Suites and builds">
         <label className="suites__label" htmlFor="suite-picker">Suite</label>
         <select id="suite-picker" value={suite?.id ?? ''} onChange={e => onSelect({ suiteId: e.target.value })}>
@@ -79,6 +72,7 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
           <span className="suites__muted suites__truncate" title={`Baseline ${b.baselineId} · policy ${b.policyId}`}>Baseline {b.baselineId} · policy {b.policyId}</span>
         </button>)}</div></> : null}
       </aside>
+    </div></details>
       <div className="suites__content">
         {!suite ? <p role="alert">The selected suite is unavailable. Choose a suite from the list.</p> : !build ? <div className="suites__state"><h2>{selection.buildId ? 'Build unavailable' : 'No reports imported yet'}</h2><p>{selection.buildId ? 'Choose an available source revision.' : `${suite.title} is configured. Import a runner report to begin comparing expected coverage.`}</p><code>retrace suite import --file report.json</code></div> : <>
           <header className="suites__build-heading"><p className="suites__eyebrow">{suite.title}</p><h2><code>{build.git.sha.slice(0, 10)}</code> <span>{build.git.branch || 'Detached revision'}</span></h2>
@@ -92,8 +86,9 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
             const summary = build.platforms.find(p => p.platform === platform);
             return <button type="button" key={platform} aria-pressed={selection.platform === platform} onClick={() => select({ platform: selection.platform === platform ? undefined : platform })}><h3>{platformNames[platform]}</h3>{summary ? <Counts counts={summary.counts} compact /> : <span>Coverage unavailable</span>}</button>;
           })}</div>
-          <section aria-label="Feature coverage"><div className="suites__section-heading"><h2>Feature coverage</h2><span className="suites__muted">Select a cell to inspect its flows</span></div><div className="suites__table-scroll"><table className="suites__matrix"><thead><tr><th scope="col">Feature</th>{suite.platforms.map(p => <th scope="col" key={p}>{platformNames[p]}</th>)}</tr></thead><tbody>{build.features.map(f => <tr key={f.id}><th scope="row"><button type="button" aria-pressed={feature?.id === f.id} onClick={() => select({ featureId: f.id, platform: undefined })}>{f.title}</button></th>{suite.platforms.map(p => { const cell = f.platforms.find(c => c.platform === p); return <td key={p}>{cell && cell.counts.total > 0 ? <button type="button" aria-label={`${f.title}, ${platformNames[p]}: ${cell.counts.passed} of ${cell.counts.total} passed, ${cell.counts.failed} failed, ${cell.counts.incomplete} incomplete, ${cell.counts.notRun} not run`} aria-pressed={feature?.id === f.id && selection.platform === p} onClick={() => select({ featureId: f.id, platform: p })}><Counts counts={cell.counts} compact /></button> : <span className="suites__muted">Not applicable</span>}</td>; })}</tr>)}</tbody></table></div></section>
-          <section aria-label="Flow details" ref={detailsRef} tabIndex={-1}><div className="suites__section-heading"><h2>{feature?.title ?? 'Flow details'}{selection.platform ? ` · ${platformNames[selection.platform]}` : ''}</h2>{selection.featureId || selection.platform ? <button type="button" onClick={() => select({ featureId: undefined, platform: undefined })}>Clear selection</button> : null}</div>
+          <SuiteReviewWorkspace key={`${suite.id}/${build.id}`} build={build} client={client} selection={{ ...selection, suiteId: suite.id, buildId: build.id }} onSelect={onSelect} onOpenEvidence={onOpenEvidence} />
+          <details className="suites__overview"><summary>Coverage matrix & all report details</summary><section aria-label="Feature coverage"><div className="suites__section-heading"><h2>Feature coverage</h2><span className="suites__muted">Select a cell to inspect its flows</span></div><div className="suites__table-scroll"><table className="suites__matrix"><thead><tr><th scope="col">Feature</th>{suite.platforms.map(p => <th scope="col" key={p}>{platformNames[p]}</th>)}</tr></thead><tbody>{build.features.map(f => <tr key={f.id}><th scope="row"><button type="button" aria-pressed={feature?.id === f.id} onClick={() => select({ featureId: f.id, platform: undefined })}>{f.title}</button></th>{suite.platforms.map(p => { const cell = f.platforms.find(c => c.platform === p); return <td key={p}>{cell && cell.counts.total > 0 ? <button type="button" aria-label={`${f.title}, ${platformNames[p]}: ${cell.counts.passed} of ${cell.counts.total} passed, ${cell.counts.failed} failed, ${cell.counts.incomplete} incomplete, ${cell.counts.notRun} not run`} aria-pressed={feature?.id === f.id && selection.platform === p} onClick={() => select({ featureId: f.id, platform: p })}><Counts counts={cell.counts} compact /></button> : <span className="suites__muted">Not applicable</span>}</td>; })}</tr>)}</tbody></table></div></section>
+          <section aria-label="Flow details" tabIndex={-1}><div className="suites__section-heading"><h2>{feature?.title ?? 'Flow details'}{selection.platform ? ` · ${platformNames[selection.platform]}` : ''}</h2>{selection.featureId || selection.platform ? <button type="button" onClick={() => select({ featureId: undefined, platform: undefined })}>Clear selection</button> : null}</div>
             {!selection.featureId && !selection.platform ? <p className="suites__drilldown-prompt">Select a feature or platform above to inspect flow results, required planes, and attempt history.</p> : selection.featureId && !feature ? <p role="alert">The selected feature is unavailable.</p> : (feature ? [feature] : build.features).map(f => <div key={f.id}>{!feature ? <h3>{f.title}</h3> : null}{f.flows.map(flow => {
               const cells = flow.platforms.filter(c => !selection.platform || c.platform === selection.platform);
               if (!cells.length) return null;
@@ -104,10 +99,9 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
                 {cell.history.length ? <details className="suites__history"><summary>Attempt history ({cell.history.length})</summary><p className="suites__muted">All imported attempts, including earlier failures. Latest finished result determines coverage.</p>{cell.history.map(a => <Attempt key={a.attemptId} attempt={a} onOpenEvidence={onOpenEvidence} />)}</details> : null}
               </div>)}</article>;
             })}</div>)}
-          </section>
+          </section></details>
         </>}
       </div>
-    </div>
   </section>;
 }
 

@@ -12,6 +12,10 @@ const client = createRetraceClient('/api/retrace');
 
 export default function RetraceView() {
   const [suiteId, setSuiteId] = useUrlParam('suite');
+  const [reviewFilter, setReviewFilter] = useUrlParam('suiteFilter');
+  const [reviewSearch, setReviewSearch] = useUrlParam('suiteSearch');
+  const [reviewFlow, setReviewFlow] = useUrlParam('suiteFlow');
+  const [reviewPlatform, setReviewPlatform] = useUrlParam('suiteReviewPlatform');
   const [buildId, setBuildId] = useUrlParam('suiteBuild');
   const [featureId, setFeatureId] = useUrlParam('suiteFeature');
   const [platform, setPlatform] = useUrlParam('suitePlatform');
@@ -21,12 +25,20 @@ export default function RetraceView() {
   const [pairId, setPairId] = useUrlParam('retracePair');
   const selection: SuiteSelection = {
     suiteId: suiteId ?? undefined,
+    flowId: reviewFlow ?? undefined,
+    reviewFilter: reviewFilter ?? undefined,
+    reviewSearch: reviewSearch ?? undefined,
+    reviewPlatform: reviewPlatform === 'web' || reviewPlatform === 'ios' || reviewPlatform === 'android' ? reviewPlatform : undefined,
     buildId: buildId ?? undefined,
     featureId: featureId ?? undefined,
     platform: platform === 'web' || platform === 'ios' || platform === 'android' ? platform : undefined,
   };
   const select = (next: SuiteSelection) => {
     setSuiteId(next.suiteId ?? null);
+    setReviewFlow(next.flowId ?? null);
+    setReviewFilter(next.reviewFilter ?? null);
+    setReviewSearch(next.reviewSearch ?? null);
+    setReviewPlatform(next.reviewPlatform ?? null);
     setBuildId(next.buildId ?? null);
     setFeatureId(next.featureId ?? null);
     setPlatform(next.platform ?? null);

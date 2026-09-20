@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SuiteAttemptResult, SuiteCounts, SuiteFlowCell, SuiteSelection, SuitesResponse } from '../suiteTypes';
@@ -116,4 +116,48 @@ it('clears old build coverage while a different client is loading and ignores la
   await act(async () => resolve(fixture()));
   expect(container.textContent).toContain('No suites configured yet');
   expect(container.querySelector('.suites__matrix')).toBeNull();
+});
+
+
+it('opens an unresolved flow immediately and offers sequential review without leaving the suite', async () => {
+  const { onSelect } = await render();
+  const workspace = container.querySelector('[aria-label="Review workspace"]');
+  expect(workspace).not.toBeNull();
+  expect(workspace?.textContent).toContain('Sign in');
+  expect(workspace?.textContent).toContain('Response contract changed');
+  await act(async () => button('Next flow →').click());
+  expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ flowId: 'login', reviewPlatform: 'ios' }));
+});
+
+it('filters review flows by search without changing coverage counts', async () => {
+  await render();
+  const input = container.querySelector('input[aria-label="Search flows"]') as HTMLInputElement;
+  expect(input).not.toBeNull();
+  await act(async () => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!; setter.call(input, 'no matching flow'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  expect(container.querySelector('[aria-label="Review workspace"]')?.textContent).toContain('No flows match');
+  expect(container.querySelector('.suites__build-heading .suites__counts')?.textContent).toContain('0 / 3 passed');
+});
+
+
+it('restores an explicitly selected passed result after leaving the workspace', async () => {
+  const data = fixture();
+  data.suites[0].builds[0].features[0].flows.push({ id: 'passed-flow', title: 'Previously selected passing flow', platforms: [cell('web', 'pass', prior)] });
+  await render(data, { flowId: 'passed-flow', reviewPlatform: 'web' });
+  expect(container.querySelector('.suite-review__flow-heading h2')?.textContent).toBe('Previously selected passing flow');
+});
+
+
+it('moves keyboard focus with sequential selection and does not hijack typing', async () => {
+  const client = { suites: vi.fn().mockResolvedValue(fixture()) };
+  function Harness() { const [selection, select] = useState<SuiteSelection>({}); return <RetraceSuites client={client} selection={selection} onSelect={select} onOpenEvidence={vi.fn()} />; }
+  await act(async () => root.render(<Harness />));
+  const first = container.querySelector('.suite-review__row') as HTMLButtonElement;
+  first.focus();
+  await act(async () => first.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })));
+  const active = container.querySelector('.suite-review__row[aria-pressed=true]');
+  expect(active?.textContent).toContain('iOS');
+  expect(document.activeElement).toBe(active);
+  const input = container.querySelector('input')!;
+  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })));
+  expect(container.querySelector('.suite-review__row[aria-pressed=true]')?.textContent).toContain('iOS');
 });

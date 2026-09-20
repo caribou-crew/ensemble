@@ -40,4 +40,4 @@ export interface SuiteBuild {
 }
 export interface SuiteOverview { id: string; title: string; version: string; platforms: SuitePlatform[]; builds: SuiteBuild[] }
 export interface SuitesResponse { suites: SuiteOverview[] }
-export interface SuiteSelection { suiteId?: string; buildId?: string; featureId?: string; platform?: SuitePlatform }
+export interface SuiteSelection { reviewFilter?: string; reviewSearch?: string; flowId?: string; reviewPlatform?: SuitePlatform; suiteId?: string; buildId?: string; featureId?: string; platform?: SuitePlatform }
