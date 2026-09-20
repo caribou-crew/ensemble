@@ -12,6 +12,8 @@
     "./syncCandidates": "./syncCandidates.ts",
     "./videoSeek": "./videoSeek.ts",
     "./diffTypes": "./diffTypes.ts",
+    "./suiteTypes": "./suiteTypes.ts",
+    "./components/RetraceSuites": "./components/RetraceSuites.tsx",
     "./retraceTypes": "./retraceTypes.ts",
     "./retraceClient": "./retraceClient.ts",
     "./retraceTone": "./retraceTone.ts",

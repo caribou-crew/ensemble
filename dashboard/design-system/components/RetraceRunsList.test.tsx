@@ -34,6 +34,7 @@ function fakeClient(runs: RunRow[]): RetraceClient {
     throw new Error('not used by RetraceRunsList');
   };
   return {
+    suites: unused,
     queue: unused,
     item: unused,
     itemAtRun: unused,

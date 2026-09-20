@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import type { SuitesResponse } from '@ensemble/design-system/suiteTypes';
 import type { CaptureTrust, Counts, Item, Summary } from './api/types';
 import type { PairItem, SyncCandidate, SyncConfigResponse, SyncResult } from '@ensemble/design-system/retraceTypes';
 
@@ -157,6 +158,7 @@ function stubServer(opts: {
   syncResult?: SyncResult;
   pairs?: PairItem[];
   pairItemSummary?: Summary;
+  suites?: SuitesResponse;
 } = {}) {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -167,7 +169,9 @@ function stubServer(opts: {
       calls.push({ url, method });
 
       let body: unknown = { ok: true };
-      if (url === '/api/queue' || url.startsWith('/api/queue?')) {
+      if (url === '/api/suites') {
+        body = opts.suites ?? { suites: [] };
+      } else if (url === '/api/queue' || url.startsWith('/api/queue?')) {
         body = { items: opts.queue ?? QUEUE, empty: opts.empty ?? '' };
       } else if (url === '/api/sync/config') {
         if (!opts.syncConfig) return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', text: () => Promise.resolve('{}') });
@@ -1245,5 +1249,89 @@ describe('cross-app compare view', () => {
     await press('r');
     expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
     expect(notice()).toBeNull();
+  });
+});
+
+
+function suiteResponse(pair = false): SuitesResponse {
+  const counts = { total: 1, passed: 0, failed: 0, incomplete: 1, notRun: 0 };
+  return { suites: [{ id: 'migration', title: 'Taxi migration', version: 'v1', platforms: ['web'], builds: [{
+    id: 'candidate-1', git: { sha: 'a'.repeat(40), branch: 'taxi', dirty: false }, baselineId: 'legacy', policyId: 'strict', updatedAt: '2026-09-20T00:00:00Z', counts,
+    platforms: [{ platform: 'web', counts }], features: [{ id: 'auth', title: 'Account access', counts, platforms: [{ platform: 'web', counts }], flows: [{ id: 'login', title: 'Sign in', platforms: [{ platform: 'web', status: 'incomplete', requiredPlanes: ['functional', 'wire', 'visual'], history: [], latest: { attemptId: 'attempt-1', startedAt: '2026-09-20T00:00:00Z', finishedAt: '2026-09-20T00:00:00Z', planes: { functional: 'pass', wire: 'pass', visual: 'incomplete' }, evidence: { app: 'web', flow: 'search', runId: 'run-suite', ...(pair ? { pairId: 'pair-suite' } : {}) } } }] }] }],
+  }] }] };
+}
+
+describe('commit suite navigation', () => {
+  it('opens suites from queue, persists matrix selection and reloads the same flow', async () => {
+    const calls = stubServer({ suites: suiteResponse() });
+    await mount();
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'suites')!.click());
+    expect(calls.some(c => c.url === '/api/suites')).toBe(true);
+    expect(text()).toContain('Comparison suites');
+    await act(async () => (container.querySelector('.suites__matrix td button') as HTMLButtonElement).click());
+    const params = new URLSearchParams(window.location.search);
+    expect(Object.fromEntries(params)).toMatchObject({ view: 'suites', suite: 'migration', suiteBuild: 'candidate-1', suiteFeature: 'auth', suitePlatform: 'web' });
+    act(() => root.unmount()); root = createRoot(container);
+    await mount();
+    expect(container.querySelector('[aria-label="Flow details"] h2')?.textContent).toBe('Account access · Web');
+    await press('j'); await press('Enter');
+    expect(new URLSearchParams(window.location.search).get('view')).toBe('suites');
+    expect(renderedFlows()).toEqual([]);
+  });
+  it.each([false, true])('opens the exact linked evidence (pair=%s) and retains suite selection', async pair => {
+    window.history.replaceState({}, '', '/?view=suites&suite=migration&suiteBuild=candidate-1&suiteFeature=auth&suitePlatform=web');
+    const calls = stubServer({ suites: suiteResponse(pair), item: summary({ checkpoints: [checkpointFixture('login', 'changed')] }) });
+    await mount();
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === (pair ? 'Open pair comparison' : 'Open run evidence'))!.click());
+    expect(calls.some(c => c.url === (pair ? '/api/pairs/web/search/run-suite/pair-suite' : '/api/queue/web/search/runs/run-suite?exact=1'))).toBe(true);
+    const provenance = container.querySelector('[aria-label="Run comparison provenance"]');
+    if (pair) expect(provenance).toBeNull();
+    else expect(provenance?.textContent).toBe('This run is pinned. Its comparison uses the current reference and policy; it does not reproduce the imported suite verdict. For historical baseline evidence, link a saved pair made from retained, concrete run IDs.');
+    if (!pair) {
+      const shots = [...container.querySelectorAll('.shot-compare img')];
+      expect(shots.length).toBeGreaterThan(0);
+      for (const shot of shots) expect(shot.getAttribute('src')).toMatch(/\/runs\/run-suite\/.+\?exact=1$/);
+    }
+    expect(new URLSearchParams(window.location.search).get('suiteBuild')).toBe('candidate-1');
+    expect(new URLSearchParams(window.location.search).get('suiteEvidence')).toBe('1');
+    expect(calls.some(c => c.url.startsWith('/api/evidence/'))).toBe(false);
+    await press('a'); await press('r');
+    expect(calls.filter(c => c.method === 'POST')).toEqual([]);
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'suites')!.click());
+    expect(container.querySelector('[aria-label="Flow details"] h2')?.textContent).toBe('Account access · Web');
+  });
+});
+
+
+describe('leaving suite evidence', () => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])('restores queue keyboard navigation after evidence (pair=%s, keyboard=%s)', async (pair, keyboard) => {
+    window.history.replaceState({}, '', '/?view=suites&suite=migration&suiteBuild=candidate-1&suiteFeature=auth&suitePlatform=web');
+    stubServer({ suites: suiteResponse(pair) });
+    await mount();
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === (pair ? 'Open pair comparison' : 'Open run evidence'))!.click());
+    const back = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('back to comparison suites'));
+    expect(back).toBeDefined();
+    if (keyboard) await press('Escape');
+    else await act(async () => back!.click());
+    expect(text()).toContain('Comparison suites');
+    expect(new URLSearchParams(window.location.search).get('suiteEvidence')).toBeNull();
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === '← queue')!.click());
+    await press('j');
+    expect(selectedRow()).toBe('web/cart');
+    await press('j');
+    expect(selectedRow()).toBe('web/search');
+    await press('k');
+    expect(selectedRow()).toBe('web/cart');
+    await press('Enter');
+    expect(new URLSearchParams(window.location.search).get('flow')).toBe('cart');
+  });
+  it('clears evidence context when returning directly through the queue breadcrumb', async () => {
+    window.history.replaceState({}, '', '/?app=web&flow=search&run=run-suite&suiteEvidence=1');
+    stubServer();
+    await mount();
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'retrace review')!.click());
+    expect(new URLSearchParams(window.location.search).get('suiteEvidence')).toBeNull();
+    await press('j');
+    expect(selectedRow()).toBe('web/cart');
   });
 });

@@ -18,6 +18,8 @@ export default function RetracePairScreen({
   runB,
   pairId,
   onBack,
+  backLabel = 'cross-app diffs',
+  showLatestEvidence,
 }: {
   client: RetraceClient;
   appB: string;
@@ -25,6 +27,8 @@ export default function RetracePairScreen({
   runB: string;
   pairId: string;
   onBack?: () => void;
+  backLabel?: string;
+  showLatestEvidence?: boolean;
 }) {
   const { data, loading, error } = useAsync(
     () => client.pair(appB, flowB, runB, pairId).then((r) => r.summary),
@@ -46,10 +50,11 @@ export default function RetracePairScreen({
   return (
     <RetraceItemScreen
       client={client}
+      showLatestEvidence={showLatestEvidence}
       app={appB}
       flow={flowB}
       label={`${data.a.manifest.app || '?'} → ${data.b.manifest.app || '?'}`}
-      backLabel="cross-app diffs"
+      backLabel={backLabel}
       summary={data}
       selectedField={null}
       onSelectField={() => {}}

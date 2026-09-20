@@ -519,6 +519,15 @@ func SummaryForRun(d Deps, app, flow, runID string) (diff.Summary, error) {
 // named run, not necessarily the newest one); it now uses diffDirForRun via
 // its own call site, the same isolation SummaryForRun gets.
 func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error) {
+	return summaryForResolution(d, app, flow, selector, outDir, false)
+}
+
+// SummaryForExactRun reads an immutable evidence identity without selector fallback.
+func SummaryForExactRun(d Deps, app, flow, runID string) (diff.Summary, error) {
+	return summaryForResolution(d, app, flow, runID, diffDirForRun(d.Cwd, app, flow, runID), true)
+}
+
+func summaryForResolution(d Deps, app, flow, selector, outDir string, exact bool) (diff.Summary, error) {
 	if err := d.check(); err != nil {
 		return diff.Summary{}, err
 	}
@@ -541,7 +550,10 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 	}
 	a := diff.RunRef{RunID: ref.RunID, Kind: ref.Kind, Dir: ref.Dir, Manifest: ref.Manifest}
 
-	id := runs.FindRun(root, app, flow, selector)
+	id := selector
+	if !exact {
+		id = runs.FindRun(root, app, flow, selector)
+	}
 	if id == "" {
 		return diff.Summary{}, fmt.Errorf("no run matches %q for %s/%s", selector, app, flow)
 	}

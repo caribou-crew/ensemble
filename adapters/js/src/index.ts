@@ -259,3 +259,6 @@ export async function endGroup(): Promise<void> {
     await postMarker(h.markerUrl, '/group/end', {});
   }
 }
+
+export { createSuiteAttempt } from './suite.js';
+export type { SuitePlatform, SuitePlaneState, SuiteIdentity, SuiteResult, SuiteAttempt } from './suite.js';

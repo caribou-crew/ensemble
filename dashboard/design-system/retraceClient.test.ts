@@ -185,3 +185,29 @@ describe('pairs', () => {
     ).toThrow(/no diff-side image/);
   });
 });
+
+describe('suites', () => {
+  it('loads the shared suite contract from standalone and embedded prefixes', async () => {
+    const calls = captureFetch(fakeResponse({ suites: [] }));
+    expect(await client.suites()).toEqual({ suites: [] });
+    expect(await createRetraceClient('/api/retrace').suites()).toEqual({ suites: [] });
+    expect(calls.map(c => c.url)).toEqual(['/api/suites', '/api/retrace/suites']);
+  });
+  it('preserves an explicitly scoped instance and server validation errors', async () => {
+    const calls = captureFetch(fakeResponse({ error: 'Invalid suite report' }, 500));
+    await expect(createRetraceClient('/api/retrace', 'taxi ios').suites()).rejects.toThrow('Invalid suite report');
+    expect(calls[0].url).toBe('/api/retrace/suites?instance=taxi+ios');
+  });
+});
+
+
+describe('exact suite run evidence', () => {
+  it.each([undefined, 'worker'])('preserves exact mode and instance (%s) for summaries and shots', async instance => {
+    const scoped = createRetraceClient('/api/retrace', instance);
+    const calls = captureFetch(fakeResponse({ summary: {} }));
+    await scoped.itemAtRun('app', 'login', 'bbbbbbb', true);
+    const query = '?exact=1' + (instance ? '&instance=worker' : '');
+    expect(calls[0].url).toBe('/api/retrace/queue/app/login/runs/bbbbbbb' + query);
+    expect(scoped.shotUrlAtRun('app', 'login', 'bbbbbbb', 'b', 'login', true)).toBe('/api/retrace/shots/app/login/runs/bbbbbbb/b/login' + query);
+  });
+});

@@ -1,0 +1,27 @@
+# Commit-level comparison suites
+
+Approved intent: one project comparison (legacy to Taxi), grouped by candidate source revision, with web/iOS/Android lanes and feature/flow drilldown. Existing per-run comparisons remain available. Native and web execution remain external runner responsibilities in this first slice; importing their immutable reports joins independent jobs.
+
+## Storage and trust
+
+`retrace.suites.json` is a versioned expected inventory: `{schema:"retrace/suites/1",suites:[{id,title,version,platforms:["web","ios","android"],features:[{id,title,flows:[{id,title,platforms?:[...],requiredPlanes:["functional","wire","visual"]}]}]}]}`. Flow ids are unique within a suite; omitted platforms means all suite platforms. A missing expected result is not-run. Explicit per-flow platforms exclude inapplicable cells from denominators. Version is a required opaque inventory revision.
+
+Runner reports live in `.retrace/suites/<suiteId>/<attemptId>.json`. `retrace suite import --file FILE` validates and writes atomically; immutable attempt ids cannot be overwritten. Reads validate as well. A bad report fails closed visibly; it cannot disappear into a green aggregate. No arbitrary report filesystem paths are served.
+
+Report: `{schema:"retrace/suite-attempt/1",suiteId,suiteVersion,attemptId,platform,git:{sha,branch,dirty},workspaceId?,baselineId,policyId,startedAt,finishedAt,results:[{flowId,planes:{functional:"pass"|"failed"|"incomplete"|"not-run"|"not-applicable",wire:...,visual:...},reason?,evidence?:{app,flow,runId,pairId?}}]}`. All three plane keys required; zero/unknown states cannot mean pass. SHA is full40 or64 hex. Dirty attempts require a nonempty workspaceId identifying the source snapshot; never fold into a clean SHA. Baseline and policy IDs are required stable opaque identities. Report dates are valid RFC3339 with finish>=start. Results cannot repeat flow IDs, cannot name unconfigured flows/platforms, and cannot mark a required plane not-applicable.
+
+Grouping key contains suite ID/version, SHA, dirty/workspaceId, baselineId and policyId. Web/iOS/Android merge only if ALL keys agree. Latest finished attempt wins per flow/platform; tie breaks deterministically by attemptId. Preserve all attempts, including earlier failures. Latest failed/incomplete retry must displace an old pass. No status inferred from exit0, screenshots, or missing data. Per-cell pass requires all configured planes pass; required failed => failed, else missing/incomplete => incomplete; no report => not-run. Non-required plane states remain visible. Imported reports are runner assertions, identified as such; they do not manufacture native Retrace pixel/wire comparisons.
+
+## API contract
+
+GET `/api/suites` (embedded `/api/retrace/suites`) returns `{suites:SuiteOverview[]}`. SuiteOverview: `{id,title,version,platforms,builds:SuiteBuild[]}`. A SuiteBuild: `{id,git,workspaceId?,baselineId,policyId,updatedAt,counts,platforms:PlatformSummary[],features:FeatureSummary[]}`. Counts: `{total,passed,failed,incomplete,notRun}` counts expected flow/platform cells, never artifacts/runs. PlatformSummary: `{platform,counts}`. FeatureSummary: `{id,title,counts,platforms:PlatformSummary[],flows:FlowSummary[]}`. FlowSummary: `{id,title,platforms:FlowCell[]}`. FlowCell: `{platform,status:"pass"|"failed"|"incomplete"|"not-run",requiredPlanes,latest?:AttemptResult,history:AttemptResult[]}`. AttemptResult: `{attemptId,startedAt,finishedAt,planes,reason?,evidence?}`. Build id is a deterministic safe opaque hash of identity. An empty inventory is valid and has onboarding guidance; a malformed configured inventory/report is a visible error. Suites with no builds remain visible.
+
+Evidence references reuse existing run detail (app/flow/runId) or cross-app pair detail (pairId plus candidate identity). These links never imply evidence exists or supports more planes than runner reported. UI labels external report statuses separately from detailed comparisons. No data-plane matcher, acceptance rules, or reference bytes change.
+
+## UI
+
+Shared `RetraceSuites` component receives `client`, `selection` (suiteId/buildId/featureId/platform), `onSelect`, `onOpenEvidence`. Standalone and embedded hosts persist selection in URL. Suites navigation leads to selectable suite/commit list, high-level counts and platform summaries, feature matrix, then flow rows and per-plane statuses plus expandable attempt history. Accessible table/buttons; no percentage100 for empty/missing coverage. Dirty snapshot visible in header. Default view can be suites when configured, while existing links/queue/pairs remain functional. Flow details show available original/reference images through existing detail pages. Missing evidence is stated, no dead claims of comparison.
+
+## Verification and scope
+
+Go unit/API/CLI tests cover denominator, missing lanes, grouping, retries, dirty separation, invalid reports, import immutability/path validation. UI tests cover matrix, selection, evidence links, errors/empty state and history. Deliberate semantic mutations must fail assertions. Run all Go suites with race plus all JS workspace tests before commit. Build both UIs. Record the dashboard in browser with Retrace and inspect structured diff; synthetic UI fixtures are explicitly labeled, never accepted as Taxi evidence. Import real WLA reports only with known identity; historical dirty evidence cannot be relabeled as clean current commit. Full-suite process scheduling and hosted CI artifact transport are not changed in this slice.

@@ -1677,3 +1677,29 @@ func TestPostAcceptSurfacesTheSecretScanAndAllowsForcedAccept(t *testing.T) {
 		t.Fatal("the promoted bundle's manifest must record acceptedWithSecrets: true")
 	}
 }
+
+func TestExactRunEvidenceNeverResolvesSelectors(t *testing.T) {
+	cwd := threeFlowProject(t)
+	ts := newServer(t, cwd)
+	for _, selector := range []string{"latest", "bbbbbbb"} {
+		for _, path := range []string{"/api/queue/web/search/runs/" + selector, "/api/shots/web/search/runs/" + selector + "/b/results"} {
+			if r := get(t, ts, path); r.status != http.StatusOK {
+				t.Fatalf("legacy selector %s: %d %s", path, r.status, r.body)
+			}
+			if r := get(t, ts, path+"?exact=1"); r.status != http.StatusConflict {
+				t.Errorf("exact evidence resolved selector %s: %d %s", path, r.status, r.body)
+			}
+		}
+	}
+	const imported = "imported-capture"
+	recordRun(t, cwd, "web", "search", imported, map[string][]byte{"results": shotPNG(t, white)}, []trace.Hop{hop(1, "GET", "/search", 200, `{}`)})
+	for _, id := range []string{runB, imported} {
+		summary := mustOK(t, get(t, ts, "/api/queue/web/search/runs/"+id+"?exact=1"), "exact summary")["summary"].(map[string]any)
+		if b := summary["b"].(map[string]any); b["runId"] != id {
+			t.Fatalf("exact identity = %v, want %s", b["runId"], id)
+		}
+		if r := get(t, ts, "/api/shots/web/search/runs/"+id+"/b/results?exact=1"); r.status != http.StatusOK {
+			t.Fatalf("exact shot: %d %s", r.status, r.body)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import TrafficView from './views/TrafficView';
 import LatencyView from './views/LatencyView';
 import InspectorView from './views/InspectorView';
 import EntityView from './views/EntityView';
+import RetraceView from './views/RetraceView';
 import ServicesView from './views/ServicesView';
 import './App.css';
 
@@ -19,6 +20,7 @@ const BASE_VIEWS: TabItem[] = [
   { id: 'latency', label: 'Latency' },
   { id: 'inspector', label: 'Inspector' },
   { id: 'entities', label: 'Entities' },
+  { id: 'retrace', label: 'Retrace' },
 ];
 
 const DEFAULT_VIEW = BASE_VIEWS[0].id;
@@ -114,6 +116,8 @@ export default function App() {
           <TrafficView />
         ) : activeView === 'latency' ? (
           <LatencyView />
+        ) : activeView === 'retrace' ? (
+          <RetraceView />
         ) : activeView === 'inspector' ? (
           <InspectorView />
         ) : (

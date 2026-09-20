@@ -41,6 +41,7 @@ import (
 // not move it back into this mux.
 func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/suites", s.handleSuites)
 	mux.HandleFunc("GET /api/queue", s.handleQueue)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}", s.handleItem)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs", s.handleRuns)
@@ -149,7 +150,7 @@ func (s *server) handleItemAtRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	WriteItemAtRun(w, d, app, flow, r.PathValue("runId"))
+	writeItemAtRun(w, d, app, flow, r.PathValue("runId"), r.URL.Query().Get("exact") == "1")
 }
 
 // WriteItemAtRun is WriteItem pinned to one specific run rather than
@@ -160,7 +161,15 @@ func (s *server) handleItemAtRun(w http.ResponseWriter, r *http.Request) {
 // "latest" itself, so a caller that already knows the run id needs no
 // special-case here.
 func WriteItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string) {
-	sum, err := SummaryForRun(d, app, flow, runID)
+	writeItemAtRun(w, d, app, flow, runID, false)
+}
+
+func writeItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string, exact bool) {
+	resolve := SummaryForRun
+	if exact {
+		resolve = SummaryForExactRun
+	}
+	sum, err := resolve(d, app, flow, runID)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return
@@ -591,7 +600,7 @@ func (s *server) handleShotAtRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	WriteShotAtRun(w, d, app, flow, r.PathValue("runId"), r.PathValue("side"), r.PathValue("name"))
+	writeShotAtRun(w, d, app, flow, r.PathValue("runId"), r.PathValue("side"), r.PathValue("name"), r.URL.Query().Get("exact") == "1")
 }
 
 // WriteShotAtRun is WriteShot pinned to one specific run rather than
@@ -600,10 +609,18 @@ func (s *server) handleShotAtRun(w http.ResponseWriter, r *http.Request) {
 // diff/overlay images never collide with the "latest" queue's own cache
 // for the same flow (see diffDirForRun's doc comment).
 func WriteShotAtRun(w http.ResponseWriter, d Deps, app, flow, runID, side, name string) {
+	writeShotAtRun(w, d, app, flow, runID, side, name, false)
+}
+
+func writeShotAtRun(w http.ResponseWriter, d Deps, app, flow, runID, side, name string, exact bool) {
 	if !validShotRequest(w, side, name) {
 		return
 	}
-	sum, err := SummaryForRun(d, app, flow, runID)
+	resolve := SummaryForRun
+	if exact {
+		resolve = SummaryForExactRun
+	}
+	sum, err := resolve(d, app, flow, runID)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return

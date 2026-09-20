@@ -8,6 +8,8 @@ import RetraceRunsList from '@ensemble/design-system/components/RetraceRunsList'
 import RetraceBreadcrumb from '@ensemble/design-system/components/RetraceBreadcrumb';
 import RetraceItemScreen from '@ensemble/design-system/components/RetraceItemScreen';
 import RetraceSyncPanel from '@ensemble/design-system/components/RetraceSyncPanel';
+import RetraceSuites, { SuiteRunEvidenceNotice } from '@ensemble/design-system/components/RetraceSuites';
+import type { SuiteEvidence, SuiteSelection } from '@ensemble/design-system/suiteTypes';
 import RetracePairsList from '@ensemble/design-system/components/RetracePairsList';
 import RetracePairScreen from '@ensemble/design-system/components/RetracePairScreen';
 import { createRetraceClient, type QueueFilter } from '@ensemble/design-system/retraceClient';
@@ -279,6 +281,23 @@ export default function App() {
   // Same URL-as-state discipline as everything else here: a deep link
   // survives a refresh via the Go side's SPA fallback.
   const [view, setView] = useUrlParam('view');
+  const [suiteEvidence, setSuiteEvidence] = useUrlParam('suiteEvidence');
+  const [suiteId, setSuiteId] = useUrlParam('suite');
+  const [suiteBuild, setSuiteBuild] = useUrlParam('suiteBuild');
+  const [suiteFeature, setSuiteFeature] = useUrlParam('suiteFeature');
+  const [suitePlatform, setSuitePlatform] = useUrlParam('suitePlatform');
+  const suiteSelection: SuiteSelection = {
+    suiteId: suiteId ?? undefined,
+    buildId: suiteBuild ?? undefined,
+    featureId: suiteFeature ?? undefined,
+    platform: suitePlatform === 'web' || suitePlatform === 'ios' || suitePlatform === 'android' ? suitePlatform : undefined,
+  };
+  const selectSuite = (next: SuiteSelection) => {
+    setSuiteId(next.suiteId ?? null);
+    setSuiteBuild(next.buildId ?? null);
+    setSuiteFeature(next.featureId ?? null);
+    setSuitePlatform(next.platform ?? null);
+  };
   const [pairAppB, setPairAppB] = useUrlParam('pairAppB');
   const [pairFlowB, setPairFlowB] = useUrlParam('pairFlowB');
   const [pairRunB, setPairRunB] = useUrlParam('pairRunB');
@@ -348,8 +367,8 @@ export default function App() {
   // "latest". Only fires at the run level.
   const item = useAsync(async () => {
     if (level !== 'run' || !app || !flow || !run) return null;
-    return (await client.itemAtRun(app, flow, run)).summary;
-  }, [level, app, flow, run, version]);
+    return (await client.itemAtRun(app, flow, run, suiteEvidence === '1')).summary;
+  }, [level, app, flow, run, version, suiteEvidence]);
 
   // Fetches the pairs listing, only while that view is open.
   const pairsList = useAsync(() => (view === 'pairs' ? client.pairs() : Promise.resolve(null)), [view, version]);
@@ -364,6 +383,7 @@ export default function App() {
     setSecretGate(null);
   };
   const openSurface = (next: { app: string; flow: string }) => {
+    setSuiteEvidence(null);
     setApp(next.app);
     setFlow(next.flow);
     setRun(null);
@@ -374,16 +394,20 @@ export default function App() {
     clearTransient();
   };
   const backToQueue = () => {
+    setSuiteEvidence(null);
+    setView(null);
     setApp(null);
     setFlow(null);
     setRun(null);
     clearTransient();
   };
   const backToSurface = () => {
+    setSuiteEvidence(null);
     setRun(null);
     clearTransient();
   };
   const openPairs = () => {
+    setSuiteEvidence(null);
     setView('pairs');
     setApp(null);
     setFlow(null);
@@ -391,6 +415,7 @@ export default function App() {
     clearTransient();
   };
   const openPair = (p: PairItem) => {
+    setSuiteEvidence(null);
     setPairAppB(p.appB);
     setPairFlowB(p.flowB);
     setPairRunB(p.runB);
@@ -408,8 +433,38 @@ export default function App() {
     clearTransient();
   };
   const closePairs = () => {
+    setSuiteEvidence(null);
     setView(null);
     closePair();
+  };
+
+  const backToSuites = () => {
+    setSuiteEvidence(null);
+    setView('suites');
+    setApp(null);
+    setFlow(null);
+    setRun(null);
+    closePair();
+  };
+
+  const openSuiteEvidence = (evidence: SuiteEvidence) => {
+    setSuiteEvidence('1');
+    clearTransient();
+    if (evidence.pairId) {
+      setView('pairs');
+      setPairAppB(evidence.app);
+      setPairFlowB(evidence.flow);
+      setPairRunB(evidence.runId);
+      setPairId(evidence.pairId);
+      setApp(null);
+      setFlow(null);
+      setRun(null);
+    } else {
+      setView(null);
+      setApp(evidence.app);
+      setFlow(evidence.flow);
+      setRun(evidence.runId);
+    }
   };
 
   const mutate = async (label: string, fn: () => Promise<string>) => {
@@ -494,7 +549,11 @@ export default function App() {
       setShowHelp((v) => !v);
       return;
     }
-    if (view === 'pairs' || picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
+    if (suiteEvidence === '1') {
+      if (action === 'back') backToSuites();
+      return;
+    }
+    if (view === 'suites' || view === 'pairs' || picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
       if (action === 'back') {
         setPicker(null);
         setRedactPicker(null);
@@ -608,6 +667,10 @@ export default function App() {
           onSurface={backToSurface}
         />
         {busy ? <Spinner /> : null}
+        <button type="button" className="app-header__pairs" aria-pressed={view === 'suites'} onClick={() => {
+          if (view === 'suites') backToQueue();
+          else backToSuites();
+        }}>{view === 'suites' ? '← queue' : 'suites'}</button>
         <button
           type="button"
           className="app-header__check-all"
@@ -636,15 +699,20 @@ export default function App() {
       {notice ? <p className="notice">{notice}</p> : null}
 
       <main className="app-main">
-        {view === 'pairs' ? (
+        {suiteEvidence === '1' && level === 'run' && view !== 'suites' && view !== 'pairs' ? <SuiteRunEvidenceNotice /> : null}
+        {view === 'suites' ? (
+          <RetraceSuites client={client} selection={suiteSelection} onSelect={selectSuite} onOpenEvidence={openSuiteEvidence} />
+        ) : view === 'pairs' ? (
           pairAppB && pairFlowB && pairRunB && pairId ? (
             <RetracePairScreen
+              showLatestEvidence={suiteEvidence !== '1'}
               client={client}
               appB={pairAppB}
               flowB={pairFlowB}
               runB={pairRunB}
               pairId={pairId}
-              onBack={closePair}
+              backLabel={suiteEvidence === '1' ? 'comparison suites' : undefined}
+              onBack={suiteEvidence === '1' ? backToSuites : closePair}
             />
           ) : pairsList.loading ? (
             <p className="loading">
@@ -664,6 +732,7 @@ export default function App() {
             <Problem message={item.error.message} />
           ) : item.data && app && flow && run ? (
             <RetraceItemScreen
+              showLatestEvidence={suiteEvidence !== '1'}
               key={`${app}/${flow}/${run}`}
               client={client}
               app={app}
@@ -674,10 +743,11 @@ export default function App() {
                 setSelectedField(`${entryKey(entry)}|${field.scope}:${field.path}`)
               }
               resolveShotUrl={(a, f, side, name) =>
-                client.shotUrlAtRun(a, f, run, side as 'a' | 'b' | 'diff' | 'overlay', name)
+                client.shotUrlAtRun(a, f, run, side as 'a' | 'b' | 'diff' | 'overlay', name, suiteEvidence === '1')
               }
-              onReveal={() => client.itemAtRun(app, flow, run).then((r) => r.summary.sections)}
-              onBack={backToSurface}
+              onReveal={() => client.itemAtRun(app, flow, run, suiteEvidence === '1').then((r) => r.summary.sections)}
+              backLabel={suiteEvidence === '1' ? 'comparison suites' : undefined}
+              onBack={suiteEvidence === '1' ? backToSuites : backToSurface}
             />
           ) : (
             <p className="loading">Nothing selected.</p>

@@ -11,6 +11,8 @@
 // mutation UI), so they stay in retrace-ui's own api/client.ts rather than
 // living here unused by one of the two callers.
 
+import type { SuitesResponse } from './suiteTypes';
+
 import type {
   Evidence,
   ItemResponse,
@@ -117,13 +119,14 @@ function compact(o: Record<string, string | undefined>): Record<string, string> 
 }
 
 export interface RetraceClient {
+  suites(): Promise<SuitesResponse>;
   queue(filter?: QueueFilter): Promise<QueueResponse>;
   item(app: string, flow: string): Promise<ItemResponse>;
-  itemAtRun(app: string, flow: string, runId: string): Promise<ItemResponse>;
+  itemAtRun(app: string, flow: string, runId: string, exact?: boolean): Promise<ItemResponse>;
   /** Every run of a surface, newest first — the runs-list drill-down. */
   runs(app: string, flow: string): Promise<RunsResponse>;
   shotUrl(app: string, flow: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string): string;
-  shotUrlAtRun(app: string, flow: string, runId: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string): string;
+  shotUrlAtRun(app: string, flow: string, runId: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string, exact?: boolean): string;
   videoUrl(app: string, flow: string, name: string): string;
   reportUrl(app: string, flow: string): string;
   evidence(app: string, flow: string): Promise<Evidence>;
@@ -203,14 +206,17 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
     return `?${params.toString()}`;
   };
   return {
+    suites() {
+      return request<SuitesResponse>(`${basePath}/suites${withInstance('')}`);
+    },
     queue(filter) {
       return request<QueueResponse>(`${basePath}/queue${withInstance(queueQuery(filter))}`);
     },
     item(app, flow) {
       return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}${withInstance('')}`);
     },
-    itemAtRun(app, flow, runId) {
-      return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}${withInstance('')}`);
+    itemAtRun(app, flow, runId, exact = false) {
+      return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}${withInstance(exact ? '?exact=1' : '')}`);
     },
     runs(app, flow) {
       return request<RunsResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs${withInstance('')}`);
@@ -221,11 +227,11 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
       }
       return `${basePath}/shots/${seg(app)}/${seg(flow)}/${seg(side)}/${seg(name)}${withInstance('')}`;
     },
-    shotUrlAtRun(app, flow, runId, side, name) {
+    shotUrlAtRun(app, flow, runId, side, name, exact = false) {
       if (name === '') {
         throw new Error(`no ${side}-side image for this checkpoint in ${app}/${flow}/${runId}`);
       }
-      return `${basePath}/shots/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(side)}/${seg(name)}${withInstance('')}`;
+      return `${basePath}/shots/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(side)}/${seg(name)}${withInstance(exact ? '?exact=1' : '')}`;
     },
     videoUrl(app, flow, name) {
       return `${basePath}/videos/${seg(app)}/${seg(flow)}/${seg(name)}${withInstance('')}`;

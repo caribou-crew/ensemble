@@ -25,6 +25,15 @@ import (
 // in the Recorder — the "mutations logged as annotation events" contract.
 func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/retrace/suites", s.handleRetraceSuites)
+	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/pairs/{app}/{flow}/{runId}/{pairId}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/pairs/{app}/{flow}/{runId}/{pairId}/shots/{side}/{name}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/evidence/{app}/{flow}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/videos/{app}/{flow}/{name}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/report/{app}/{flow}/{path...}", s.handleRetraceEvidence)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/topology", s.handleTopology)
 

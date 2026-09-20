@@ -147,6 +147,7 @@ export default function RetraceItemScreen({
   onBack,
   label,
   backLabel,
+  showLatestEvidence = true,
 }: {
   client: RetraceClient;
   app: string;
@@ -167,6 +168,8 @@ export default function RetraceItemScreen({
   // default to today's exact behavior when omitted.
   label?: string;
   backLabel?: string;
+  /** Generic videos/reports resolve latest, so immutable suite evidence disables them. */
+  showLatestEvidence?: boolean;
 }) {
   // Collapsed by default: a flow with a dozen+ checkpoints, most of which
   // passed, otherwise means a long scroll past every unchanged screen to
@@ -267,7 +270,7 @@ export default function RetraceItemScreen({
           don't otherwise announce. */}
       {summary.verdict !== 'quarantined' ? <CaptureBanner capture={summary.capture} detail /> : null}
 
-      <EvidenceSection client={client} app={app} flow={flow} registerVideo={registerVideo} onVideoCountChange={setVideoCount} />
+      {showLatestEvidence ? <EvidenceSection client={client} app={app} flow={flow} registerVideo={registerVideo} onVideoCountChange={setVideoCount} /> : null}
 
       {/*
         Above the gates and the planes, because "whose problem is this" is the

@@ -65,3 +65,38 @@ being set up for this package on npmjs.com — see
 `.github/workflows/publish.yml`'s comments for what that setup involves.
 Publishing this package is the maintainer's call to make; when they do,
 clearing `private` here is part of enabling it.
+
+## Commit-level suite reports
+
+`createSuiteAttempt` bridges an existing test runner to the suite dashboard. It
+records explicit results; it does not execute tests or decide whether a visual
+or wire comparison passes. Configure the expected flows in `retrace.suites.json`
+(see [suite reporting](../../docs/retrace-suites.md)). Independent web, iOS and
+Android jobs join one build only when source, suite version, baseline and policy
+identities agree.
+
+```js
+import { createSuiteAttempt } from '@caribou-crew/retrace-js';
+import { writeFile } from 'node:fs/promises';
+
+const report = createSuiteAttempt({
+  suiteId: 'legacy-to-taxi', suiteVersion: 'v1', attemptId: process.env.CI_JOB_ID,
+  platform: 'web',
+  git: { sha: process.env.GIT_COMMIT, branch: process.env.GIT_BRANCH, dirty: false },
+  baselineId: 'legacy-2026-09-20', policyId: 'reviewed-parity-v1',
+});
+// After running the flow and reading its actual assertion/comparison results:
+report.record({
+  flowId: 'login',
+  planes: { functional: 'pass', wire: 'pass', visual: 'incomplete' },
+  reason: 'Visual reference not reviewed yet',
+});
+await writeFile('suite-report.json', JSON.stringify(report.finish()));
+```
+
+Then run `retrace suite import --file suite-report.json` in the project root.
+Use a unique attempt ID for every job/retry; existing reports cannot be
+replaced. A dirty build requires `workspaceId` identifying the actual source
+snapshot (for example, a digest of the source bundle); a Git SHA alone cannot
+identify uncommitted changes. Omitted flows remain not-run. Keep error reasons
+redacted, and keep private reports/artifacts out of source control.

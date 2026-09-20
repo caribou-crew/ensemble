@@ -46,6 +46,10 @@ state are in `openspec/changes/init-ensemble-retrace/tasks.md`.
 
 ## Dashboard
 
+**Comparison suites** group independently run web, iOS, and Android jobs by
+source revision, with expected coverage, feature drilldown, and retry history.
+See [the suite inventory and runner-report guide](docs/retrace-suites.md).
+
 `ensemble up` serves a live dashboard — topology, traffic, latency injection,
 a DB inspector, and CRUD over your seeded entities, all reading the same
 captured trace data. Screenshots below are from the [sample "brew"
@@ -1114,6 +1118,7 @@ retrace revalidate --ref FLOW [--app NAME] --upstream URL [--json]
 retrace ref list|accept|reject [--flow NAME] [--app NAME] [--run SELECTOR] [--json]
 retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]
 retrace rekey --old KEY --new KEY | --init [--json]
+retrace suite import --file FILE [--json]
 retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
 retrace export --out DIR [--flow NAME] [--app NAME] [--json]
 retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
