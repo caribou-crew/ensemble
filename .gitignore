@@ -123,3 +123,7 @@ retrace/serve/ui/dist/apple-touch-icon.png
 
 # make build output
 /bin/
+
+# Portable browser regression artifacts (uploaded separately by CI).
+dashboard/retrace-ui/playwright-report/
+dashboard/retrace-ui/test-results/

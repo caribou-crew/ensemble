@@ -216,3 +216,13 @@ it('shows only originals in review mode, with diff and overlay available separat
   expect(container.querySelector('img')).toBeNull();
   expect(container.textContent).toContain('No diff image was written');
 });
+
+it('explains a failed image request and clears that state for a different checkpoint', () => {
+  render(<ShotCompare app="web" flow="search" checkpoint={checkpoint()} resolveShotUrl={resolveShotUrl} displayMode="originals" />);
+  act(() => container.querySelector('img')!.dispatchEvent(new Event('error')));
+  expect(container.querySelector('[role=alert]')?.textContent).toContain('Unable to load reference shot');
+  expect(container.querySelectorAll('img')).toHaveLength(1);
+  render(<ShotCompare app="web" flow="search" checkpoint={checkpoint({ name: 'next' })} resolveShotUrl={resolveShotUrl} displayMode="originals" />);
+  expect(container.querySelector('[role=alert]')).toBeNull();
+  expect(container.querySelectorAll('img')).toHaveLength(2);
+});

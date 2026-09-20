@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { CheckpointVerdict } from '../diffTypes';
 import './ShotCompare.css';
 
@@ -171,9 +172,14 @@ function ShotCompareBar({
  * component needing any zoom state of its own.
  */
 function ShotLink({ href, alt }: { href: string; alt: string }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (failedUrl === href) return <p className="shot-compare__explanation" role="alert">
+    Unable to load {alt}. This image is unavailable, not an identical comparison.{' '}
+    <a href={href} target="_blank" rel="noreferrer">Open image directly</a>
+  </p>;
   return (
     <a href={href} target="_blank" rel="noreferrer">
-      <img className="shot-compare__img" src={href} alt={alt} />
+      <img className="shot-compare__img" src={href} alt={alt} onError={() => setFailedUrl(href)} />
     </a>
   );
 }

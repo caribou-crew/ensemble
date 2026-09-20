@@ -1,11 +1,13 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { configDefaults } from 'vitest/config';
 
 export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'happy-dom',
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
   build: {
     // retrace/serve/ui embeds this directory verbatim via go:embed — see
