@@ -125,7 +125,7 @@ func Aggregate(inv Inventory, attempts []Attempt) ([]SuiteOverview, error) {
 						copied := *r.Evidence
 						evidence = &copied
 					}
-					histories[key] = append(histories[key], AttemptResult{a.AttemptID, a.StartedAt, a.FinishedAt, r.Planes, r.Reason, evidence})
+					histories[key] = append(histories[key], AttemptResult{AttemptID: a.AttemptID, StartedAt: a.StartedAt, FinishedAt: a.FinishedAt, Planes: r.Planes, Reason: r.Reason, Evidence: evidence, Screens: append([]Screen(nil), r.Screens...), WireNote: r.WireNote})
 				}
 			}
 			for _, feature := range suite.Features {

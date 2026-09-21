@@ -57,11 +57,28 @@ type Evidence struct {
 	RunID  string `json:"runId"`
 	PairID string `json:"pairId,omitempty"`
 }
+
+// Screen is an image a runner attaches to one result, typically the final
+// screen of a native flow that has no Retrace run. A report is written with File
+// (a path relative to the report) and published with SHA256/Media/Bytes: import
+// copies the bytes into content-addressed storage, so a stored report never
+// names a filesystem path and stays immutable.
+type Screen struct {
+	Label  string `json:"label"`
+	File   string `json:"file,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+	Media  string `json:"media,omitempty"`
+	Bytes  int    `json:"bytes,omitempty"`
+}
 type Result struct {
 	FlowID   string    `json:"flowId"`
 	Planes   Planes    `json:"planes"`
 	Reason   string    `json:"reason,omitempty"`
 	Evidence *Evidence `json:"evidence,omitempty"`
+	Screens  []Screen  `json:"screens,omitempty"`
+	// WireNote is the runner's own statement about wire evidence that is absent
+	// or not compared for this result. It never turns a plane into a pass.
+	WireNote string `json:"wireNote,omitempty"`
 }
 type Attempt struct {
 	Schema       string   `json:"schema"`
@@ -135,4 +152,6 @@ type AttemptResult struct {
 	Planes     Planes    `json:"planes"`
 	Reason     string    `json:"reason,omitempty"`
 	Evidence   *Evidence `json:"evidence,omitempty"`
+	Screens    []Screen  `json:"screens,omitempty"`
+	WireNote   string    `json:"wireNote,omitempty"`
 }

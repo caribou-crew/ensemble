@@ -180,6 +180,12 @@ func validateAttempt(inv Inventory, a Attempt) error {
 				return fmt.Errorf("suites: result %q required plane %s cannot be not-applicable", r.FlowID, p)
 			}
 		}
+		if err := validateScreens(r.FlowID, r.Screens); err != nil {
+			return err
+		}
+		if n := strings.TrimSpace(r.WireNote); r.WireNote != "" && (n != r.WireNote || len(n) > maxWireNote) {
+			return fmt.Errorf("suites: result %q wireNote must be 1-%d characters without surrounding space", r.FlowID, maxWireNote)
+		}
 		if r.Evidence != nil {
 			e := r.Evidence
 			if e.RunID == "latest" || e.RunID == "reference" {

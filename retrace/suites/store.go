@@ -123,6 +123,13 @@ func readAttempts(root *os.Root, inv Inventory) ([]Attempt, error) {
 			if err != nil {
 				return nil, fmt.Errorf("suites: %s: %w", reportPath, err)
 			}
+			for _, r := range a.Results {
+				for _, s := range r.Screens {
+					if s.File != "" {
+						return nil, fmt.Errorf("suites: %s: screen %q is still in unpublished source form", reportPath, s.Label)
+					}
+				}
+			}
 			if a.SuiteID != entry.Name() || a.AttemptID+".json" != name {
 				return nil, fmt.Errorf("suites: report identity does not match storage path %s", reportPath)
 			}
@@ -190,7 +197,19 @@ func Import(cwd, file string) (Attempt, error) {
 		return a, err
 	}
 	path := filepath.Join(".retrace", "suites", a.SuiteID)
+	if _, err := root.Lstat(filepath.Join(path, a.AttemptID+".json")); err == nil {
+		return a, fmt.Errorf("suites: publish immutable attempt %q: already exists", a.AttemptID)
+	}
+	assets, err := materializeScreens(filepath.Dir(file), &a)
+	if err != nil {
+		return a, err
+	}
 	if err := directory(root, path, true); err != nil {
+		return a, err
+	}
+	created, err := writeAssets(root, a.SuiteID, a.AttemptID, assets)
+	if err != nil {
+		removeAll(root, created)
 		return a, err
 	}
 	nonce := make([]byte, 16)
@@ -221,6 +240,7 @@ func Import(cwd, file string) (Attempt, error) {
 	}
 	target := filepath.Join(path, a.AttemptID+".json")
 	if err := root.Link(temp, target); err != nil {
+		removeAll(root, created)
 		return a, fmt.Errorf("suites: publish immutable attempt %q: %w", a.AttemptID, err)
 	}
 	return a, nil
