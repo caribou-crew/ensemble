@@ -44,7 +44,7 @@ an inventory, results from your runners, and the server.
 - A `retrace` binary built from this repository (Go, Node and pnpm; `make build` writes
   `bin/retrace` with the UI embedded). Suites and the gallery are not in a published package yet.
 - The project directory with `retrace.suites.json`. If the web recordings live in other
-  repositories, a `retrace.repo.yaml` naming each app's root (see `retrace suite` docs below).
+  repositories, a `retrace.repo.yaml` naming each app's root (see [repo config](retrace-repo-config.md)).
 - Web pairs: two Retrace recordings of the same flow with the same named screenshot checkpoints,
   compared with `retrace diff`. Without a saved pair, a web result shows no reference/diff images
   and no network chip.
