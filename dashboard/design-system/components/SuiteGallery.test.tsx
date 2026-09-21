@@ -138,6 +138,11 @@ describe('SuiteGallery', () => {
     expect(flows()).toEqual(['Send money']);
     expect(container.textContent).toContain('1 of 3 flows');
     expect(button('Network (')?.textContent).toBe('Network (1)');
+    const g = fixture();
+    g.rows[0].tiles[0].wire.counts = { paired: 9, changed: 9, moved: 0, missing: 0, extra: 0, violations: 0 };
+    act(() => root.unmount()); root = createRoot(container);
+    await render(g);
+    expect(button('Network')?.textContent).toBe('Network');
   });
   it('offers a single-revision scope only when a build is selected, and requests exactly that build', async () => {
     const { client } = await render(fixture(), 'build-9');

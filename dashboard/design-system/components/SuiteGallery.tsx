@@ -132,12 +132,13 @@ export default function SuiteGallery({ client, suiteId, buildId, onOpenEvidence 
   if (error || !data || !Array.isArray(data.rows)) return <section className="suites__state" role="alert"><h2>Unable to load the gallery</h2><p>{error?.message ?? 'Invalid gallery response'}</p></section>;
   const q = search.trim().toLowerCase();
   const rows = data.rows.filter(r => match[filter](r) && (!q || `${r.feature.title} ${r.flow.title}`.toLowerCase().includes(q)));
-  const netCount = data.rows.filter(match.network).length;
+  // The badge counts flows with missing/extra requests or violations; the filter includes every difference.
+  const netCount = data.rows.filter(r => r.tiles.some(t => { const c = wireOf(t); return !!c && wireStructural(c) > 0; })).length;
   return <section className="gallery" aria-label="Build gallery">
     <div className="gallery__bar">
       <div className="gallery__tabs" role="group" aria-label="Gallery section">
         <button type="button" aria-pressed={tab === 'screens'} onClick={() => setTab('screens')}>Screens</button>
-        <button type="button" aria-pressed={tab === 'network'} onClick={() => setTab('network')}>Network{netCount ? ` (${netCount})` : ''}</button>
+        <button type="button" aria-pressed={tab === 'network'} title="Flows with missing or extra requests or rule violations" onClick={() => setTab('network')}>Network{netCount ? ` (${netCount})` : ''}</button>
       </div>
       <select aria-label="Gallery filter" value={filter} onChange={e => setFilter(e.target.value as Filter)}>{(Object.keys(filters) as Filter[]).map(k => <option key={k} value={k}>{filters[k]}</option>)}</select>
       <input aria-label="Search gallery flows" placeholder="Search flows…" value={search} onChange={e => setSearch(e.target.value)} />
