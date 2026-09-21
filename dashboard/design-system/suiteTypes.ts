@@ -55,13 +55,15 @@ export interface SuiteGalleryPair {
   app: string; flow: string; runId: string; pairId: string; available: boolean; error?: string;
   checkpoint?: string; verdict?: string; checkpoints?: SuiteGalleryCheckpoint[];
 }
+export interface SuiteGallerySource { buildId: string; sha: string; branch: string; dirty: boolean; baselineId: string; policyId: string; finishedAt: string }
+export interface SuiteGalleryLane { platform: SuitePlatform; sources: SuiteGallerySource[] }
 export interface SuiteGalleryTile {
   platform: SuitePlatform; status: SuiteStatus; planes: Record<SuitePlane, SuitePlaneStatus>; reason?: string;
   attemptId?: string; evidence?: SuiteEvidence; screens: Array<Pick<SuiteScreen, 'label' | 'sha256' | 'media'>>;
-  pair?: SuiteGalleryPair; wire: SuiteGalleryWire;
+  pair?: SuiteGalleryPair; wire: SuiteGalleryWire; source?: SuiteGallerySource;
 }
 export interface SuiteGalleryRow { feature: { id: string; title: string }; flow: { id: string; title: string }; tiles: SuiteGalleryTile[] }
 export interface SuiteGallery {
-  suiteId: string; title: string; buildId: string; git: { sha: string; branch: string; dirty: boolean };
+  suiteId: string; title: string; scope: 'build' | 'latest'; buildId: string; lanes: SuiteGalleryLane[]; git: { sha: string; branch: string; dirty: boolean };
   baselineId: string; policyId: string; updatedAt: string; platforms: SuitePlatform[]; rows: SuiteGalleryRow[];
 }

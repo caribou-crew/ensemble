@@ -132,33 +132,41 @@ pair:
   a plane: `wire` stays exactly what the runner asserted.
 - The JS adapter accepts both fields in `record()` with the same limits.
 
-## Review a whole build in one page
+## Review the suite in one page
 
-Selecting a build opens its **Gallery** (the flow-by-flow queue is one click away
-under **Flow review**; the choice is kept in the `suiteView` URL parameter). One
-row per flow, one tile per platform lane:
+Selecting a suite opens its **Gallery**, a scrolling table with one row per flow
+(the flow-by-flow queue is one click away under **Flow review**; the choice is kept
+in the `suiteView` URL parameter):
 
+| Flow | Web reference | Web candidate | Web diff | iOS | Android | Network |
+| --- | --- | --- | --- | --- | --- | --- |
+
+- **Newest result per platform.** Each platform column shows its latest finished
+  result across all source revisions, so a web comparison and a native run made on
+  different commits sit on one page. The revision behind every column is named
+  above the table (with any older revisions that contribute), and nothing is merged
+  into a single build. Switch to **This source revision only** for one build's
+  lanes. A lane with no result anywhere is an empty cell, never a pass.
 - A result linked to a saved pair shows **reference, candidate and diff** for the
-  pair's final checkpoint. A native result shows its attached screens.
-- Every tile carries an explicit **wire callout**. When a readable saved pair
-  exists it shows Retrace's own counts (paired, changed, missing, extra, moved,
-  violations). Otherwise it says **"Wire diff not represented"** with the runner's
-  `wireNote` (or a default reason) and the runner's asserted wire state, labelled
-  as an assertion. An unreadable linked pair is reported as such, never as
-  "unchanged".
-- A lane with no imported result is a quiet "Not run" tile: no image, no wire
-  evidence, never a pass.
-- Filters: needs attention, wire not represented, wire changed, plus flow search.
-- Counts are Retrace's, so approved-difference policies can still show entries as
-  changed; compare with the runner's asserted wire state shown beside them.
+  pair's final checkpoint; a native result shows its attached screens. Click a
+  thumbnail for the full image.
+- The **Network** column is a small chip from Retrace's own comparison counts. Red
+  means missing or extra requests or rule violations; amber means only changed or
+  moved exchanges; green means no difference. No saved comparison means a dash.
+- The **Network** tab lists every saved comparison with differences, most serious
+  first (missing/extra/violations, then changed/moved), next to what the runner
+  asserted for the wire plane. It also names lanes that have no network comparison
+  and lists results without one (with their `wireNote`) in a collapsed section, and
+  reports an unreadable linked pair instead of treating it as unchanged.
+- Filters: needs attention, visual differences, network differences, plus flow search.
+- Counts are Retrace's, so approved-difference policies (for example header changes)
+  can still show entries as changed; read them beside the runner's assertion.
 
-Lanes appear together in one build only when the runners report the same suite
-version, git sha, dirty/workspace identity, baseline and policy. A native run
-tested on a newer commit than the web comparison is a separate build.
-
-`GET /api/suites/{suite}/builds/{build}/gallery` returns the same board as JSON
-(references and identifiers, never pixels); Ensemble exposes it under
-`/api/retrace/suites/...`.
+`GET /api/suites/{suite}/gallery` returns the newest-per-lane board and
+`GET /api/suites/{suite}/builds/{build}/gallery` one build's, as JSON (identifiers
+and references, never pixels; each tile carries its `source` revision). Ensemble
+exposes both under `/api/retrace/suites/...`. A suite with no imported reports is a
+404, not an empty board.
 
 ## Understand the rollup
 

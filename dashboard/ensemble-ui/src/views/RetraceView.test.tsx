@@ -27,7 +27,7 @@ describe('embedded commit suites', () => {
   it('uses the configured embedded root directly and persists selection across remount', async () => {
     const calls = stub(); await mount();
     // Selecting a build lands on its gallery: one suites read plus one gallery read, nothing else.
-    expect(calls).toEqual(['/api/retrace/suites', '/api/retrace/suites/migration/builds/candidate/gallery']);
+    expect(calls).toEqual(['/api/retrace/suites', '/api/retrace/suites/migration/gallery']);
     await act(async () => (container.querySelector('.suites__matrix td button') as HTMLButtonElement).click());
     expect(Object.fromEntries(new URLSearchParams(window.location.search))).toEqual({ view: 'retrace', suite: 'migration', suiteBuild: 'candidate', suiteFeature: 'login', suitePlatform: 'ios' });
     act(() => root.unmount()); root = createRoot(container); await mount();

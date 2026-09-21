@@ -220,3 +220,86 @@ func TestSuiteScreenRouteServesImagesSafely(t *testing.T) {
 		}
 	}
 }
+
+// importLane imports one platform attempt at its own revision and time.
+func importLane(t *testing.T, cwd, id, platform, sha, finished string, results []suites.Result) {
+	t.Helper()
+	a := galleryAttempt(id, platform, results)
+	a.Git.SHA, a.StartedAt, a.FinishedAt = sha, "2026-09-01T00:00:00Z", finished
+	if _, err := suites.Import(cwd, writeReport(t, t.TempDir(), id+".json", a)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLatestGalleryShowsNewestResultPerLaneAcrossRevisionsAndLabelsEach(t *testing.T) {
+	d, cwd := galleryProject(t) // web + ios at sha 0123..., finished 00:01
+	newer := "89abcdef0123456789abcdef0123456789abcdef"
+	// Android was tested on a different, newer revision; a second, newer iOS attempt exists there too.
+	importLane(t, cwd, "android-2", "android", newer, "2026-09-21T00:01:00Z", []suites.Result{
+		{FlowID: "atm", Planes: suites.Planes{Functional: "pass", Wire: "not-applicable", Visual: "not-applicable"}}})
+	// An older attempt (by time) on a newer revision must not displace web-1: newest finish wins, not newest sha.
+	importLane(t, cwd, "web-old", "web", newer, "2026-09-19T00:01:00Z", []suites.Result{
+		{FlowID: "wallet-home", Planes: suites.Planes{Functional: "failed", Wire: "failed", Visual: "failed"}}})
+	importLane(t, cwd, "ios-2", "ios", newer, "2026-09-21T00:02:00Z", []suites.Result{
+		{FlowID: "wallet-home", Planes: suites.Planes{Functional: "failed", Wire: "incomplete", Visual: "incomplete"}}})
+	w := httptest.NewRecorder()
+	New(d).ServeHTTP(w, httptest.NewRequest("GET", "http://localhost/api/suites/taxi/gallery", nil))
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	var g Gallery
+	if err := json.Unmarshal(w.Body.Bytes(), &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.Scope != "latest" || g.BuildID != "" || len(g.Rows) != 2 {
+		t.Fatalf("scope/rows: %+v", g)
+	}
+	tile := func(row int, p string) GalleryTile {
+		for _, ti := range g.Rows[row].Tiles {
+			if ti.Platform == p {
+				return ti
+			}
+		}
+		t.Fatalf("no %s tile", p)
+		return GalleryTile{}
+	}
+	// Web keeps its own (older) revision; nothing newer exists for web.
+	if web := tile(0, "web"); web.AttemptID != "web-1" || web.Pair == nil || web.Source == nil || web.Source.SHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("web source: %+v", web.Source)
+	}
+	// iOS wallet-home comes from the newer attempt; iOS atm has no newer result so it stays on the old build.
+	if ios := tile(0, "ios"); ios.AttemptID != "ios-2" || ios.Source == nil || ios.Source.SHA != newer || ios.Status != "failed" {
+		t.Fatalf("ios newest: %+v", ios)
+	}
+	if ios := tile(1, "ios"); ios.AttemptID != "ios-1" || len(ios.Screens) != 1 || ios.Source.SHA == newer {
+		t.Fatalf("ios older lane result must stay labelled with its own revision: %+v", ios)
+	}
+	// A lane with no result anywhere has no source and is not-run.
+	if none := tile(0, "android"); none.Status != "not-run" || none.Source != nil || none.AttemptID != "" {
+		t.Fatalf("missing lane: %+v", none)
+	}
+	// Lanes list every distinct revision that contributed, so the header can name them.
+	shas := map[string][]string{}
+	for _, l := range g.Lanes {
+		for _, s := range l.Sources {
+			shas[l.Platform] = append(shas[l.Platform], s.SHA[:7])
+		}
+	}
+	if len(shas["ios"]) != 2 || len(shas["web"]) < 1 || len(shas["android"]) != 1 {
+		t.Fatalf("lanes: %+v", g.Lanes)
+	}
+}
+
+func TestLatestGalleryWithoutReportsIsNotFoundNotEmptySuccess(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "retrace.suites.json"), []byte(galleryInventory), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int{"/api/suites/taxi/gallery": 404, "/api/suites/nope/gallery": 404} {
+		w := httptest.NewRecorder()
+		New(deps(t, cwd)).ServeHTTP(w, httptest.NewRequest("GET", "http://localhost"+path, nil))
+		if w.Code != want {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+}

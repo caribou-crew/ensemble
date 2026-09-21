@@ -120,8 +120,8 @@ function compact(o: Record<string, string | undefined>): Record<string, string> 
 
 export interface RetraceClient {
   suites(): Promise<SuitesResponse>;
-  /** One row per flow, one tile per platform, for a whole suite build. */
-  suiteGallery(suiteId: string, buildId: string): Promise<SuiteGallery>;
+  /** One row per flow, one tile per platform. Without a build id: each lane's newest result across revisions. */
+  suiteGallery(suiteId: string, buildId?: string): Promise<SuiteGallery>;
   /** Content-addressed image attached to an imported suite attempt. */
   suiteScreenUrl(suiteId: string, attemptId: string, sha256: string): string;
   queue(filter?: QueueFilter): Promise<QueueResponse>;
@@ -214,7 +214,8 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
       return request<SuitesResponse>(`${basePath}/suites${withInstance('')}`);
     },
     suiteGallery(suiteId, buildId) {
-      return request<SuiteGallery>(`${basePath}/suites/${seg(suiteId)}/builds/${seg(buildId)}/gallery${withInstance('')}`);
+      const scope = buildId === undefined ? '' : `/builds/${seg(buildId)}`;
+      return request<SuiteGallery>(`${basePath}/suites/${seg(suiteId)}${scope}/gallery${withInstance('')}`);
     },
     suiteScreenUrl(suiteId, attemptId, sha256) {
       return `${basePath}/suites/${seg(suiteId)}/attempts/${seg(attemptId)}/screens/${seg(sha256)}${withInstance('')}`;

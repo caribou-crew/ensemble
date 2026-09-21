@@ -191,7 +191,8 @@ describe('suite gallery', () => {
     const calls = captureFetch(fakeResponse({ suiteId: 'a', rows: [] }));
     const client = createRetraceClient('/api/retrace');
     await client.suiteGallery('legacy/taxi', 'b 1');
-    expect(calls.map(c => c.url)).toEqual(['/api/retrace/suites/legacy%2Ftaxi/builds/b%201/gallery']);
+    await client.suiteGallery('legacy/taxi');
+    expect(calls.map(c => c.url)).toEqual(['/api/retrace/suites/legacy%2Ftaxi/builds/b%201/gallery', '/api/retrace/suites/legacy%2Ftaxi/gallery']);
     const sha = 'a'.repeat(64);
     expect(createRetraceClient('/api').suiteScreenUrl('taxi', 'ios-1', sha)).toBe(`/api/suites/taxi/attempts/ios-1/screens/${sha}`);
     expect(createRetraceClient('/api', 'main').suiteScreenUrl('taxi', 'ios-1', sha)).toBe(`/api/suites/taxi/attempts/ios-1/screens/${sha}?instance=main`);

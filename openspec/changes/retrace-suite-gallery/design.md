@@ -13,6 +13,10 @@ with wire evidence called out explicitly, even when the lanes come from separate
 - Serving is allow-listed by the stored report and re-verifies the hash; raster types only.
 - `wireNote` is a runner statement, never a verdict. The gallery's `wire.represented` is true only
   when a readable saved pair supplied counts; it is authoritative over any other field.
+- Default scope is the newest finished result per lane across revisions, each tile labelled with its own
+  revision (a per-build view is one select away). This is display only: build grouping and rollup are unchanged.
+- Network evidence is a compact chip per row plus a separate tab ranked by missing/extra/violations; there are
+  no per-tile warning panels, and an absent comparison is a dash, not a claim.
 - API-first: gallery board and screens are REST routes (standalone `/api/suites/...`, embedded
   `/api/retrace/suites/...`); the UI composes image URLs from identifiers with existing pair routes.
 

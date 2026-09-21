@@ -51,6 +51,8 @@ func TestEmbeddedSuiteGalleryAndScreensMatchStandalone(t *testing.T) {
 	for _, path := range []string{
 		"/suites/taxi/builds/" + items[0].Builds[0].ID + "/gallery",
 		"/suites/taxi/builds/nope/gallery",
+		"/suites/taxi/gallery",
+		"/suites/nope/gallery",
 		"/suites/taxi/attempts/ios-1/screens/" + imported.Results[0].Screens[0].SHA256,
 		"/suites/taxi/attempts/ios-1/screens/" + strings.Repeat("0", 64),
 	} {

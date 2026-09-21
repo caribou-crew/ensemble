@@ -163,7 +163,7 @@ it('moves keyboard focus with sequential selection and does not hijack typing', 
 });
 
 describe('RetraceSuites build views', () => {
-  const emptyGallery = { suiteId: 'migration', title: 'Legacy to Taxi', buildId: 'build-1', git: { sha: 'a'.repeat(40), branch: 'x', dirty: false }, baselineId: 'b', policyId: 'p', updatedAt: '', platforms: ['web', 'ios', 'android'], rows: [] };
+  const emptyGallery = { suiteId: 'migration', title: 'Legacy to Taxi', scope: 'latest', lanes: [], buildId: 'build-1', git: { sha: 'a'.repeat(40), branch: 'x', dirty: false }, baselineId: 'b', policyId: 'p', updatedAt: '', platforms: ['web', 'ios', 'android'], rows: [] };
   async function renderWithGallery(selection: SuiteSelection = {}) {
     const onSelect = vi.fn();
     const client = { suites: vi.fn().mockResolvedValue(fixture()), suiteGallery: vi.fn().mockResolvedValue(emptyGallery), suiteScreenUrl: vi.fn() };
@@ -172,7 +172,7 @@ describe('RetraceSuites build views', () => {
   }
   it('lands on the gallery for the selected build with no extra click, and can switch to flow review', async () => {
     const { client, onSelect } = await renderWithGallery();
-    expect(client.suiteGallery).toHaveBeenCalledWith('migration', 'build-1');
+    expect(client.suiteGallery).toHaveBeenCalledWith('migration', undefined);
     expect(container.querySelector('.gallery')).not.toBeNull();
     expect(container.querySelector('.suite-review__rows')).toBeNull();
     expect(button('Gallery').getAttribute('aria-pressed')).toBe('true');

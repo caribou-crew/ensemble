@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
+	"time"
 
 	"github.com/caribou-crew/ensemble/retrace/diff"
 	"github.com/caribou-crew/ensemble/retrace/pairs"
@@ -16,15 +18,38 @@ import (
 // references, never pixels; clients compose image URLs from the same identifiers
 // the pair and screen routes already use.
 type Gallery struct {
-	SuiteID    string       `json:"suiteId"`
-	Title      string       `json:"title"`
-	BuildID    string       `json:"buildId"`
-	Git        suites.Git   `json:"git"`
-	BaselineID string       `json:"baselineId"`
-	PolicyID   string       `json:"policyId"`
-	UpdatedAt  string       `json:"updatedAt"`
-	Platforms  []string     `json:"platforms"`
-	Rows       []GalleryRow `json:"rows"`
+	SuiteID string `json:"suiteId"`
+	Title   string `json:"title"`
+	// Scope is "build" (one source revision) or "latest" (each lane's newest
+	// result across revisions, every tile labelled with its own revision).
+	Scope      string        `json:"scope"`
+	BuildID    string        `json:"buildId"`
+	Git        suites.Git    `json:"git"`
+	BaselineID string        `json:"baselineId"`
+	PolicyID   string        `json:"policyId"`
+	UpdatedAt  string        `json:"updatedAt"`
+	Platforms  []string      `json:"platforms"`
+	Lanes      []GalleryLane `json:"lanes"`
+	Rows       []GalleryRow  `json:"rows"`
+}
+
+// GallerySource names the revision a tile's result was produced on. In the
+// "latest" scope tiles in one row can come from different revisions, so the
+// label is part of the evidence, not decoration.
+type GallerySource struct {
+	BuildID    string `json:"buildId"`
+	SHA        string `json:"sha"`
+	Branch     string `json:"branch"`
+	Dirty      bool   `json:"dirty"`
+	BaselineID string `json:"baselineId"`
+	PolicyID   string `json:"policyId"`
+	FinishedAt string `json:"finishedAt"`
+}
+
+// GalleryLane lists the distinct revisions that contribute to a platform column.
+type GalleryLane struct {
+	Platform string          `json:"platform"`
+	Sources  []GallerySource `json:"sources"`
 }
 type GalleryLabel struct {
 	ID    string `json:"id"`
@@ -45,6 +70,7 @@ type GalleryTile struct {
 	Screens   []GalleryScreen  `json:"screens"`
 	Pair      *GalleryPair     `json:"pair,omitempty"`
 	Wire      GalleryWire      `json:"wire"`
+	Source    *GallerySource   `json:"source,omitempty"`
 }
 type GalleryScreen struct {
 	Label  string `json:"label"`
@@ -104,13 +130,7 @@ func (s *server) handleGallery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	g, err := BuildGallery(items, suiteID, buildID, func(app, flow, run, pair string) (diff.Summary, error) {
-		dir, err := pairDirFor(s.depsForApp(app), app, flow, run, pair)
-		if err != nil {
-			return diff.Summary{}, err
-		}
-		return pairs.ReadSummary(dir)
-	})
+	g, err := BuildGallery(items, suiteID, buildID, s.pairReader())
 	if errors.Is(err, errNoBuild) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
@@ -122,7 +142,114 @@ func (s *server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, g)
 }
 
+func (s *server) handleLatestGallery(w http.ResponseWriter, r *http.Request) {
+	items, err := suites.Load(s.deps().Cwd)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	g, err := BuildLatestGallery(items, r.PathValue("suite"), s.pairReader())
+	if errors.Is(err, errNoBuild) {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+func (s *server) pairReader() func(app, flow, run, pair string) (diff.Summary, error) {
+	return func(app, flow, run, pair string) (diff.Summary, error) {
+		dir, err := pairDirFor(s.depsForApp(app), app, flow, run, pair)
+		if err != nil {
+			return diff.Summary{}, err
+		}
+		return pairs.ReadSummary(dir)
+	}
+}
+
 var errNoBuild = errors.New("suite build not found")
+
+func gallerySourceOf(b suites.SuiteBuild, finished string) *GallerySource {
+	return &GallerySource{BuildID: b.ID, SHA: b.Git.SHA, Branch: b.Git.Branch, Dirty: b.Git.Dirty, BaselineID: b.BaselineID, PolicyID: b.PolicyID, FinishedAt: finished}
+}
+
+// newer reports whether a finished later than b; equal times break by attempt id
+// so the choice is deterministic (the same rule the aggregate uses per build).
+func newer(a, b *suites.AttemptResult) bool {
+	if b == nil {
+		return a != nil
+	}
+	if a == nil {
+		return false
+	}
+	ta, ea := time.Parse(time.RFC3339, a.FinishedAt)
+	tb, eb := time.Parse(time.RFC3339, b.FinishedAt)
+	if ea != nil || eb != nil || ta.Equal(tb) {
+		return a.AttemptID > b.AttemptID
+	}
+	return ta.After(tb)
+}
+
+// BuildLatestGallery shows, for every flow and platform, the newest finished
+// result across all source revisions. Rows follow the inventory, so a lane with
+// no result anywhere is an explicit not-run tile. It is the honest way to put a
+// web comparison and a native run of different revisions on one page: each tile
+// keeps its own revision label, and nothing is merged into a single build.
+func BuildLatestGallery(items []suites.SuiteOverview, suiteID string, readPair func(app, flow, run, pair string) (diff.Summary, error)) (Gallery, error) {
+	for _, suite := range items {
+		if suite.ID != suiteID {
+			continue
+		}
+		if len(suite.Builds) == 0 {
+			return Gallery{}, fmt.Errorf("%w: %s has no imported reports", errNoBuild, suiteID)
+		}
+		g := Gallery{SuiteID: suite.ID, Title: suite.Title, Scope: "latest", Platforms: suite.Platforms, Rows: []GalleryRow{}, Lanes: []GalleryLane{}}
+		type best struct {
+			cell  suites.FlowCell
+			build suites.SuiteBuild
+		}
+		sources := map[string]map[string]GallerySource{}
+		first := suite.Builds[0]
+		for fi, feature := range first.Features {
+			for wi, flow := range feature.Flows {
+				row := GalleryRow{Feature: GalleryLabel{feature.ID, feature.Title}, Flow: GalleryLabel{flow.ID, flow.Title}, Tiles: []GalleryTile{}}
+				for pi, cell := range flow.Platforms {
+					pick := best{cell: cell, build: first}
+					var chosen *suites.AttemptResult
+					for _, b := range suite.Builds {
+						c := b.Features[fi].Flows[wi].Platforms[pi]
+						if c.Latest != nil && newer(c.Latest, chosen) {
+							chosen, pick = c.Latest, best{cell: c, build: b}
+						}
+					}
+					tile := buildTile(pick.cell, readPair)
+					if chosen != nil {
+						tile.Source = gallerySourceOf(pick.build, chosen.FinishedAt)
+						if sources[cell.Platform] == nil {
+							sources[cell.Platform] = map[string]GallerySource{}
+						}
+						sources[cell.Platform][pick.build.ID] = *tile.Source
+					}
+					row.Tiles = append(row.Tiles, tile)
+				}
+				g.Rows = append(g.Rows, row)
+			}
+		}
+		for _, p := range suite.Platforms {
+			lane := GalleryLane{Platform: p, Sources: []GallerySource{}}
+			for _, s := range sources[p] {
+				lane.Sources = append(lane.Sources, s)
+			}
+			sort.Slice(lane.Sources, func(i, j int) bool { return lane.Sources[i].FinishedAt > lane.Sources[j].FinishedAt })
+			g.Lanes = append(g.Lanes, lane)
+		}
+		return g, nil
+	}
+	return Gallery{}, fmt.Errorf("%w: %s", errNoBuild, suiteID)
+}
 
 // BuildGallery assembles the board from the aggregate and a pair reader.
 func BuildGallery(items []suites.SuiteOverview, suiteID, buildID string, readPair func(app, flow, run, pair string) (diff.Summary, error)) (Gallery, error) {
@@ -134,13 +261,17 @@ func BuildGallery(items []suites.SuiteOverview, suiteID, buildID string, readPai
 			if build.ID != buildID {
 				continue
 			}
-			g := Gallery{SuiteID: suite.ID, Title: suite.Title, BuildID: build.ID, Git: build.Git, BaselineID: build.BaselineID,
+			g := Gallery{SuiteID: suite.ID, Title: suite.Title, Scope: "build", BuildID: build.ID, Lanes: []GalleryLane{}, Git: build.Git, BaselineID: build.BaselineID,
 				PolicyID: build.PolicyID, UpdatedAt: build.UpdatedAt, Platforms: suite.Platforms, Rows: []GalleryRow{}}
 			for _, feature := range build.Features {
 				for _, flow := range feature.Flows {
 					row := GalleryRow{Feature: GalleryLabel{feature.ID, feature.Title}, Flow: GalleryLabel{flow.ID, flow.Title}, Tiles: []GalleryTile{}}
 					for _, cell := range flow.Platforms {
-						row.Tiles = append(row.Tiles, buildTile(cell, readPair))
+						tile := buildTile(cell, readPair)
+						if cell.Latest != nil {
+							tile.Source = gallerySourceOf(build, cell.Latest.FinishedAt)
+						}
+						row.Tiles = append(row.Tiles, tile)
 					}
 					g.Rows = append(g.Rows, row)
 				}
