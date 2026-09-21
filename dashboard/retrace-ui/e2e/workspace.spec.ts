@@ -10,7 +10,8 @@ test.beforeEach(async ({ page }) => {
   requests.set(page, unexpected);
   errors.set(page, []);
   page.on('pageerror', error => { errors.get(page)!.push(error.message); });
-  await page.goto('/?view=suites');
+  // The gallery is the default view of a build; these tests exercise the flow-review workspace.
+  await page.goto('/?view=suites&suiteView=review');
   await expect(page.getByRole('region', { name: 'Review workspace' })).toBeVisible();
   expect(unexpected).toEqual([]);
 });

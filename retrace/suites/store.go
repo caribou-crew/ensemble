@@ -221,7 +221,7 @@ func Import(cwd, file string) (Attempt, error) {
 	if err != nil {
 		return a, err
 	}
-	defer root.Remove(temp)
+	defer func() { _ = root.Remove(temp) }()
 	canonical, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
 		out.Close()

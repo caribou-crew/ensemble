@@ -191,7 +191,7 @@ func writeAssets(root *os.Root, suiteID, attemptID string, assets []pendingAsset
 
 func removeAll(root *os.Root, paths []string) {
 	for _, p := range paths {
-		root.Remove(p)
+		_ = root.Remove(p) // best-effort cleanup of files this failed import created
 	}
 }
 
