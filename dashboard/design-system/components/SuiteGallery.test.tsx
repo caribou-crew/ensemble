@@ -76,8 +76,11 @@ describe('SuiteGallery', () => {
   });
   it('never presents a missing lane or an unreadable pair as compared or passing', async () => {
     await render();
-    expect(container.textContent).toContain('No result imported for this lane.');
-    expect(container.querySelector('[data-platform="android"] .suites__status')?.textContent).toBe('Not run');
+    const lane = container.querySelector('[data-platform="android"]')!;
+    expect(lane.textContent).toContain('No result imported for this lane: no screenshots and no wire evidence.');
+    expect(lane.querySelector('.suites__status')?.textContent).toBe('Not run');
+    expect(lane.querySelector('.gallery__wire')).toBeNull();
+    expect(lane.querySelector('img')).toBeNull();
     expect(container.querySelector('[role=alert]')?.textContent).toContain('Linked comparison unavailable: linked comparison is not readable');
     const atmWeb = container.querySelectorAll('.gallery__row')[1].querySelector('[data-platform="web"] .gallery__wire')!;
     expect(atmWeb.textContent).toContain('Wire diff not represented');

@@ -38,7 +38,13 @@ function Figure({ src, label, caption }: { src: string; label: string; caption?:
 function Tile({ tile, suiteId, flowTitle, client, onOpenEvidence }: { tile: SuiteGalleryTile; suiteId: string; flowTitle: string; client: GalleryClient; onOpenEvidence: (e: SuiteEvidence) => void }) {
   const pair = tile.pair;
   const canShowPair = pair?.available && pair.checkpoint && client.pairShotUrl;
-  return <div className={`gallery__tile gallery__tile--${tile.status}`} data-platform={tile.platform}>
+  if (tile.status === 'not-run' && !tile.attemptId) {
+    return <div className="gallery__tile gallery__tile--not-run gallery__tile--compact" data-platform={tile.platform}>
+      <header><h4>{platformNames[tile.platform]}</h4><span className="suites__status suites__status--not-run">Not run</span></header>
+      <p className="gallery__muted">No result imported for this lane: no screenshots and no wire evidence.</p>
+    </div>;
+  }
+  return <div className={`gallery__tile gallery__tile--${tile.status}${canShowPair ? ' gallery__tile--pair' : ''}`} data-platform={tile.platform}>
     <header><h4>{platformNames[tile.platform]}</h4><span className={`suites__status suites__status--${tile.status}`}>{statusNames[tile.status] ?? 'Unknown'}</span></header>
     {tile.reason ? <p className="gallery__reason">{tile.reason}</p> : null}
     <div className="gallery__images">
@@ -50,7 +56,7 @@ function Tile({ tile, suiteId, flowTitle, client, onOpenEvidence }: { tile: Suit
       }) : null}
       {pair && !pair.available ? <p className="gallery__missing" role="alert">Linked comparison unavailable{pair.error ? `: ${pair.error}` : ''}.</p> : null}
       {tile.screens.map(s => <Figure key={s.sha256} src={client.suiteScreenUrl(suiteId, tile.attemptId!, s.sha256)} label={`${platformNames[tile.platform]} ${s.label} — ${flowTitle}`} caption={s.label} />)}
-      {!canShowPair && !tile.screens.length && !(pair && !pair.available) ? <p className="gallery__missing">{tile.attemptId ? 'No screenshots attached to this result.' : 'No result imported for this lane.'}</p> : null}
+      {!canShowPair && !tile.screens.length && !(pair && !pair.available) ? <p className="gallery__missing">No screenshots attached to this result.</p> : null}
     </div>
     <WireCallout wire={tile.wire} />
     {tile.evidence ? <button type="button" onClick={() => onOpenEvidence(tile.evidence!)}>Open {tile.evidence.pairId ? 'comparison' : 'run'}</button> : null}
