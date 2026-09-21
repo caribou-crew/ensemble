@@ -19,6 +19,11 @@ export interface SuiteResult {
   planes: { functional: SuitePlaneState; wire: SuitePlaneState; visual: SuitePlaneState };
   reason?: string;
   evidence?: { app: string; flow: string; runId: string; pairId?: string };
+  /** Images to attach (typically a native flow's final screen). `file` is relative to the
+   * report file; `retrace suite import` copies the bytes into content-addressed storage. */
+  screens?: Array<{ label: string; file: string }>;
+  /** Runner's own statement about wire evidence that is absent or not compared. Never a pass. */
+  wireNote?: string;
 }
 export interface SuiteAttempt extends SuiteIdentity {
   schema: 'retrace/suite-attempt/1';
@@ -72,6 +77,23 @@ export function createSuiteAttempt(identity: SuiteIdentity, now: () => Date = ()
       if (result.evidence) {
         for (const key of ['app', 'flow', 'runId'] as const) component(result.evidence[key], key);
         if (result.evidence.pairId !== undefined) component(result.evidence.pairId, 'pairId');
+      }
+      if (result.screens !== undefined) {
+        if (!Array.isArray(result.screens) || result.screens.length > 12) throw new Error('retrace suite: at most 12 screens per result');
+        const labels = new Set<string>();
+        for (const screen of result.screens) {
+          const label = screen?.label;
+          if (typeof label !== 'string' || !label || label !== label.trim() || label.length > 80) throw new Error('retrace suite: invalid screen label');
+          if (labels.has(label)) throw new Error(`retrace suite: duplicate screen label ${label}`);
+          labels.add(label);
+          const file = screen.file;
+          if (typeof file !== 'string' || !file || file.startsWith('/') || /^[A-Za-z]:/.test(file) || file.split(/[\\/]/).includes('..')) {
+            throw new Error('retrace suite: screen file must be a relative path inside the report directory');
+          }
+        }
+      }
+      if (result.wireNote !== undefined && (typeof result.wireNote !== 'string' || !result.wireNote || result.wireNote !== result.wireNote.trim() || result.wireNote.length > 400)) {
+        throw new Error('retrace suite: wireNote must be 1-400 characters without surrounding space');
       }
       seen.add(result.flowId);
       results.push(structuredClone(result));

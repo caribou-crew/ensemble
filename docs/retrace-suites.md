@@ -101,6 +101,65 @@ version while retaining reports for its old version produces a visible
 validation error; archive the old review root or use a separate suite ID for a
 new inventory. It does not reinterpret old results against a new denominator.
 
+## Attach screenshots and wire notes
+
+A result can carry the images a reviewer should see and a statement about wire
+evidence you do not have. This is how a native lane with no Retrace run (for
+example Maestro output for iOS or Android) shows its final screen next to the web
+pair:
+
+```json
+{
+  "flowId": "login",
+  "planes": {"functional": "pass", "wire": "incomplete", "visual": "incomplete"},
+  "screens": [{"label": "Final screen", "file": "shots/login.png"}],
+  "wireNote": "No reference wire exists for this lane; only the recorded replay was checked."
+}
+```
+
+- `file` is relative to the report file and must stay inside its directory. It
+  must be a regular file (no symlink), a PNG, JPEG or WebP judged by its bytes
+  (not its name), at most 8 MiB. At most 12 screens per result, with unique labels.
+- `retrace suite import` copies each image into content-addressed storage under
+  `.retrace/suite-assets/<suite>/<attempt>/<sha256>.<ext>` and publishes the report
+  with the hash, media type and size. **A stored report never contains a path.** A
+  rejected import writes no report and no assets.
+- Images are served only at
+  `GET /api/suites/{suite}/attempts/{attempt}/screens/{sha256}`, and only for a hash
+  that the stored report references; the bytes are re-verified against the hash on
+  every read, with `nosniff`. SVG and HTML are never accepted.
+- `wireNote` (1-400 characters) is shown verbatim in the gallery. It never changes
+  a plane: `wire` stays exactly what the runner asserted.
+- The JS adapter accepts both fields in `record()` with the same limits.
+
+## Review a whole build in one page
+
+Selecting a build opens its **Gallery** (the flow-by-flow queue is one click away
+under **Flow review**; the choice is kept in the `suiteView` URL parameter). One
+row per flow, one tile per platform lane:
+
+- A result linked to a saved pair shows **reference, candidate and diff** for the
+  pair's final checkpoint. A native result shows its attached screens.
+- Every tile carries an explicit **wire callout**. When a readable saved pair
+  exists it shows Retrace's own counts (paired, changed, missing, extra, moved,
+  violations). Otherwise it says **"Wire diff not represented"** with the runner's
+  `wireNote` (or a default reason) and the runner's asserted wire state, labelled
+  as an assertion. An unreadable linked pair is reported as such, never as
+  "unchanged".
+- A lane with no imported result is a quiet "Not run" tile: no image, no wire
+  evidence, never a pass.
+- Filters: needs attention, wire not represented, wire changed, plus flow search.
+- Counts are Retrace's, so approved-difference policies can still show entries as
+  changed; compare with the runner's asserted wire state shown beside them.
+
+Lanes appear together in one build only when the runners report the same suite
+version, git sha, dirty/workspace identity, baseline and policy. A native run
+tested on a newer commit than the web comparison is a separate build.
+
+`GET /api/suites/{suite}/builds/{build}/gallery` returns the same board as JSON
+(references and identifiers, never pixels); Ensemble exposes it under
+`/api/retrace/suites/...`.
+
 ## Understand the rollup
 
 - Build identity includes suite/version, full Git SHA, dirty snapshot, baseline,

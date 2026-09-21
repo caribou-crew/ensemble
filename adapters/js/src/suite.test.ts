@@ -55,4 +55,19 @@ describe('suite attempt reporter', () => {
   it('does not turn an empty run into a passing flow', () => {
     expect(createSuiteAttempt(identity, clock).finish().results).toEqual([]);
   });
+  it('records screenshots by relative file and a wire note, and rejects unsafe or unbounded input', () => {
+    const report = createSuiteAttempt(identity, clock);
+    report.record({ flowId: 'login', planes: { ...passed, wire: 'incomplete' }, screens: [{ label: 'Final screen', file: 'shots/login.png' }], wireNote: 'No reference wire for this lane.' });
+    const out = report.finish().results[0];
+    expect(out.screens).toEqual([{ label: 'Final screen', file: 'shots/login.png' }]);
+    expect(out.wireNote).toBe('No reference wire for this lane.');
+    const bad = (extra: object) => () => createSuiteAttempt(identity, clock).record({ flowId: 'login', planes: { ...passed }, ...extra } as never);
+    expect(bad({ screens: [{ label: 'x', file: '/etc/hosts' }] })).toThrow(/screen/);
+    expect(bad({ screens: [{ label: 'x', file: '../out.png' }] })).toThrow(/screen/);
+    expect(bad({ screens: [{ label: ' ', file: 'a.png' }] })).toThrow(/screen/);
+    expect(bad({ screens: [{ label: 'x', file: 'a.png' }, { label: 'x', file: 'b.png' }] })).toThrow(/duplicate screen/);
+    expect(bad({ screens: Array.from({ length: 13 }, (_, i) => ({ label: `s${i}`, file: 'a.png' })) })).toThrow(/screens/);
+    expect(bad({ wireNote: ' padded ' })).toThrow(/wireNote/);
+    expect(bad({ wireNote: 'x'.repeat(401) })).toThrow(/wireNote/);
+  });
 });
