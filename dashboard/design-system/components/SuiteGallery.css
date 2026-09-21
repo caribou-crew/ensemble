@@ -1,0 +1,25 @@
+.gallery { display: flex; flex-direction: column; gap: 14px; }
+.gallery h3, .gallery h4, .gallery p { margin: 0; }
+.gallery__notice { background: var(--bg-panel); border: 1px solid var(--border-hairline); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--text-secondary); }
+.gallery__filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 13px; }
+.gallery__filters input { font: inherit; color: var(--text-primary); background: var(--bg-raised); border: 1px solid var(--border-hairline-strong); border-radius: 7px; padding: 6px 10px; min-width: 200px; }
+.gallery__muted { color: var(--text-secondary); font-size: 12px; }
+.gallery__feature { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--accent-strong); margin: 14px 0 6px; }
+.gallery__row { display: grid; gap: 10px; border: 1px solid var(--border-hairline); border-radius: 10px; padding: 14px; background: var(--bg-panel); }
+.gallery__flow { font-size: 15px; }
+.gallery__tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; align-items: start; }
+.gallery__tile { display: grid; gap: 8px; border: 1px solid var(--border-hairline); border-radius: 8px; padding: 10px; min-width: 0; background: var(--bg-raised); }
+.gallery__tile > header { display: flex; justify-content: space-between; align-items: center; }
+.gallery__tile--failed { border-color: var(--status-red); }
+.gallery__tile--not-run { opacity: .8; }
+.gallery__reason { font-size: 12px; color: var(--text-secondary); }
+.gallery__images { display: flex; flex-wrap: wrap; gap: 8px; }
+.gallery__figure { margin: 0; display: grid; gap: 4px; max-width: 150px; }
+.gallery__figure img { width: 100%; height: auto; display: block; border: 1px solid var(--border-hairline-strong); border-radius: 4px; background: #fff; }
+.gallery__figure figcaption { font-size: 11px; overflow-wrap: anywhere; }
+.gallery__missing { font-size: 12px; color: var(--status-amber); }
+.gallery__wire { display: grid; gap: 3px; font-size: 12px; border-radius: 6px; padding: 8px; border: 1px solid var(--border-hairline); }
+.gallery__wire--clean { border-color: var(--status-green); }
+.gallery__wire--changed { border-color: var(--status-red); background: var(--status-red-bg); }
+.gallery__wire--absent { border-style: dashed; border-color: var(--status-amber); background: var(--status-amber-bg); }
+.gallery__tile button { justify-self: start; font: inherit; font-size: 12px; color: var(--text-primary); background: var(--bg-raised); border: 1px solid var(--border-hairline-strong); border-radius: 7px; padding: 5px 10px; cursor: pointer; }

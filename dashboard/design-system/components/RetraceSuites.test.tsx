@@ -161,3 +161,32 @@ it('moves keyboard focus with sequential selection and does not hijack typing', 
   await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })));
   expect(container.querySelector('.suite-review__row[aria-pressed=true]')?.textContent).toContain('iOS');
 });
+
+describe('RetraceSuites build views', () => {
+  const emptyGallery = { suiteId: 'migration', title: 'Legacy to Taxi', buildId: 'build-1', git: { sha: 'a'.repeat(40), branch: 'x', dirty: false }, baselineId: 'b', policyId: 'p', updatedAt: '', platforms: ['web', 'ios', 'android'], rows: [] };
+  async function renderWithGallery(selection: SuiteSelection = {}) {
+    const onSelect = vi.fn();
+    const client = { suites: vi.fn().mockResolvedValue(fixture()), suiteGallery: vi.fn().mockResolvedValue(emptyGallery), suiteScreenUrl: vi.fn() };
+    await act(async () => root.render(<RetraceSuites client={client} selection={selection} onSelect={onSelect} onOpenEvidence={vi.fn()} />));
+    return { client, onSelect };
+  }
+  it('lands on the gallery for the selected build with no extra click, and can switch to flow review', async () => {
+    const { client, onSelect } = await renderWithGallery();
+    expect(client.suiteGallery).toHaveBeenCalledWith('migration', 'build-1');
+    expect(container.querySelector('.gallery')).not.toBeNull();
+    expect(container.querySelector('.suite-review__rows')).toBeNull();
+    expect(button('Gallery').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => button('Flow review').click());
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ suiteId: 'migration', buildId: 'build-1', suiteView: 'review' }));
+  });
+  it('shows the flow review when it is selected, and for clients that cannot serve a gallery', async () => {
+    await renderWithGallery({ suiteView: 'review' });
+    expect(container.querySelector('.gallery')).toBeNull();
+    expect(container.querySelector('.suite-review__rows')).not.toBeNull();
+    act(() => root.unmount()); root = createRoot(container);
+    await render();
+    expect(container.querySelector('.gallery')).toBeNull();
+    expect(container.querySelector('.suites__views')).toBeNull();
+    expect(container.querySelector('.suite-review__rows')).not.toBeNull();
+  });
+});

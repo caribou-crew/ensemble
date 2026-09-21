@@ -287,6 +287,7 @@ export default function App() {
   const [reviewSearch, setReviewSearch] = useUrlParam('suiteSearch');
   const [reviewFlow, setReviewFlow] = useUrlParam('suiteFlow');
   const [reviewPlatform, setReviewPlatform] = useUrlParam('suiteReviewPlatform');
+  const [suiteView, setSuiteView] = useUrlParam('suiteView');
   const [suiteBuild, setSuiteBuild] = useUrlParam('suiteBuild');
   const [suiteFeature, setSuiteFeature] = useUrlParam('suiteFeature');
   const [suitePlatform, setSuitePlatform] = useUrlParam('suitePlatform');
@@ -296,6 +297,7 @@ export default function App() {
     reviewFilter: reviewFilter ?? undefined,
     reviewSearch: reviewSearch ?? undefined,
     reviewPlatform: reviewPlatform === 'web' || reviewPlatform === 'ios' || reviewPlatform === 'android' ? reviewPlatform : undefined,
+    suiteView: suiteView === 'review' ? 'review' : suiteView === 'gallery' ? 'gallery' : undefined,
     buildId: suiteBuild ?? undefined,
     featureId: suiteFeature ?? undefined,
     platform: suitePlatform === 'web' || suitePlatform === 'ios' || suitePlatform === 'android' ? suitePlatform : undefined,
@@ -306,6 +308,7 @@ export default function App() {
     setReviewFilter(next.reviewFilter ?? null);
     setReviewSearch(next.reviewSearch ?? null);
     setReviewPlatform(next.reviewPlatform ?? null);
+    setSuiteView(next.suiteView ?? null);
     setSuiteBuild(next.buildId ?? null);
     setSuiteFeature(next.featureId ?? null);
     setSuitePlatform(next.platform ?? null);

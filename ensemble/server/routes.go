@@ -26,6 +26,8 @@ import (
 func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/retrace/suites", s.handleRetraceSuites)
+	mux.HandleFunc("GET /api/retrace/suites/{suite}/builds/{build}/gallery", s.handleRetraceEvidence)
+	mux.HandleFunc("GET /api/retrace/suites/{suite}/attempts/{attempt}/screens/{sha}", s.handleRetraceEvidence)
 	mux.HandleFunc("GET /api/retrace/queue/{app}/{flow}/runs/{runId}", s.handleRetraceEvidence)
 	mux.HandleFunc("GET /api/retrace/pairs/{app}/{flow}/{runId}/{pairId}", s.handleRetraceEvidence)
 	mux.HandleFunc("GET /api/retrace/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleRetraceEvidence)

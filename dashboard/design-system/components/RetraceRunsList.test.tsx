@@ -35,6 +35,8 @@ function fakeClient(runs: RunRow[]): RetraceClient {
   };
   return {
     suites: unused,
+    suiteGallery: unused,
+    suiteScreenUrl: unused,
     queue: unused,
     item: unused,
     itemAtRun: unused,

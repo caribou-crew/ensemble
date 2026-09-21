@@ -3,7 +3,7 @@ import type { RetraceClient } from '../retraceClient';
 import type { SuiteBuild, SuiteEvidence, SuiteSelection } from '../suiteTypes';
 import SuitePairEvidence from './SuitePairEvidence';
 
-export type ReviewClient = Pick<RetraceClient, 'suites'> & Partial<Pick<RetraceClient, 'pair' | 'pairShotUrl'>>;
+export type ReviewClient = Pick<RetraceClient, 'suites'> & Partial<Pick<RetraceClient, 'pair' | 'pairShotUrl' | 'suiteGallery' | 'suiteScreenUrl'>>;
 const names = { web: 'Web', ios: 'iOS', android: 'Android' };
 const labels = { pass: 'Passed', failed: 'Failed', incomplete: 'Incomplete', 'not-run': 'Not run', 'not-applicable': 'Not applicable' };
 export default function SuiteReviewWorkspace({ build, client, selection, onSelect, onOpenEvidence }: {

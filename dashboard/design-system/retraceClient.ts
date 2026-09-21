@@ -11,7 +11,7 @@
 // mutation UI), so they stay in retrace-ui's own api/client.ts rather than
 // living here unused by one of the two callers.
 
-import type { SuitesResponse } from './suiteTypes';
+import type { SuiteGallery, SuitesResponse } from './suiteTypes';
 
 import type {
   Evidence,
@@ -120,6 +120,10 @@ function compact(o: Record<string, string | undefined>): Record<string, string> 
 
 export interface RetraceClient {
   suites(): Promise<SuitesResponse>;
+  /** One row per flow, one tile per platform, for a whole suite build. */
+  suiteGallery(suiteId: string, buildId: string): Promise<SuiteGallery>;
+  /** Content-addressed image attached to an imported suite attempt. */
+  suiteScreenUrl(suiteId: string, attemptId: string, sha256: string): string;
   queue(filter?: QueueFilter): Promise<QueueResponse>;
   item(app: string, flow: string): Promise<ItemResponse>;
   itemAtRun(app: string, flow: string, runId: string, exact?: boolean): Promise<ItemResponse>;
@@ -208,6 +212,12 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
   return {
     suites() {
       return request<SuitesResponse>(`${basePath}/suites${withInstance('')}`);
+    },
+    suiteGallery(suiteId, buildId) {
+      return request<SuiteGallery>(`${basePath}/suites/${seg(suiteId)}/builds/${seg(buildId)}/gallery${withInstance('')}`);
+    },
+    suiteScreenUrl(suiteId, attemptId, sha256) {
+      return `${basePath}/suites/${seg(suiteId)}/attempts/${seg(attemptId)}/screens/${seg(sha256)}${withInstance('')}`;
     },
     queue(filter) {
       return request<QueueResponse>(`${basePath}/queue${withInstance(queueQuery(filter))}`);

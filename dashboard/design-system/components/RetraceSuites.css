@@ -158,3 +158,5 @@
 .suites__heading p:last-child { display: none; }
 .suites__build-heading { padding: 12px 16px; }
 .suites__plane-coverage span:last-child { font-size: 10px; }
+
+.suites__views { display: flex; gap: 8px; }

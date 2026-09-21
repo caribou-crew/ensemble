@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Spinner } from '../primitives';
 import SuiteReviewWorkspace, { type ReviewClient } from './SuiteReviewWorkspace';
+import SuiteGallery from './SuiteGallery';
 import { useAsync } from '../useAsync';
 import type { SuiteAttemptResult, SuiteCounts, SuiteEvidence, SuitePlaneStatus, SuiteSelection, SuiteFlowCell } from '../suiteTypes';
 import './RetraceSuites.css';
@@ -53,6 +54,8 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
   const suite = selection.suiteId ? data.suites.find(s => s.id === selection.suiteId) : data.suites[0];
   const build = selection.buildId ? suite?.builds.find(b => b.id === selection.buildId) : suite?.builds[0];
   const feature = selection.featureId ? build?.features.find(f => f.id === selection.featureId) : undefined;
+  const galleryClient = client.suiteGallery && client.suiteScreenUrl ? { suiteGallery: client.suiteGallery.bind(client), suiteScreenUrl: client.suiteScreenUrl.bind(client), pairShotUrl: client.pairShotUrl?.bind(client) } : undefined;
+  const view = selection.suiteView ?? 'gallery';
   const select = (patch: Partial<SuiteSelection>) => onSelect({ ...selection, suiteId: suite?.id, buildId: build?.id, ...patch });
   return <section className="suites">
     <header className="suites__heading"><div><p className="suites__eyebrow">Commit comparisons</p><h1>Comparison suites</h1><p>Expected coverage across features and platforms.</p></div><button type="button" onClick={() => setRevision(v => v + 1)}>Refresh suites</button></header>
@@ -86,7 +89,13 @@ export default function RetraceSuites({ client, selection, onSelect, onOpenEvide
             const summary = build.platforms.find(p => p.platform === platform);
             return <button type="button" key={platform} aria-pressed={selection.platform === platform} onClick={() => select({ platform: selection.platform === platform ? undefined : platform })}><h3>{platformNames[platform]}</h3>{summary ? <Counts counts={summary.counts} compact /> : <span>Coverage unavailable</span>}</button>;
           })}</div>
-          <SuiteReviewWorkspace key={`${suite.id}/${build.id}`} build={build} client={client} selection={{ ...selection, suiteId: suite.id, buildId: build.id }} onSelect={onSelect} onOpenEvidence={onOpenEvidence} />
+          {galleryClient ? <div className="suites__views" role="group" aria-label="Build view">
+            <button type="button" aria-pressed={view === 'gallery'} onClick={() => select({ suiteView: 'gallery' })}>Gallery</button>
+            <button type="button" aria-pressed={view === 'review'} onClick={() => select({ suiteView: 'review' })}>Flow review</button>
+          </div> : null}
+          {galleryClient && view === 'gallery'
+            ? <SuiteGallery key={`${suite.id}/${build.id}`} client={galleryClient} suiteId={suite.id} buildId={build.id} onOpenEvidence={onOpenEvidence} />
+            : <SuiteReviewWorkspace key={`${suite.id}/${build.id}`} build={build} client={client} selection={{ ...selection, suiteId: suite.id, buildId: build.id }} onSelect={onSelect} onOpenEvidence={onOpenEvidence} />}
           <details className="suites__overview"><summary>Coverage matrix & all report details</summary><section aria-label="Feature coverage"><div className="suites__section-heading"><h2>Feature coverage</h2><span className="suites__muted">Select a cell to inspect its flows</span></div><div className="suites__table-scroll"><table className="suites__matrix"><thead><tr><th scope="col">Feature</th>{suite.platforms.map(p => <th scope="col" key={p}>{platformNames[p]}</th>)}</tr></thead><tbody>{build.features.map(f => <tr key={f.id}><th scope="row"><button type="button" aria-pressed={feature?.id === f.id} onClick={() => select({ featureId: f.id, platform: undefined })}>{f.title}</button></th>{suite.platforms.map(p => { const cell = f.platforms.find(c => c.platform === p); return <td key={p}>{cell && cell.counts.total > 0 ? <button type="button" aria-label={`${f.title}, ${platformNames[p]}: ${cell.counts.passed} of ${cell.counts.total} passed, ${cell.counts.failed} failed, ${cell.counts.incomplete} incomplete, ${cell.counts.notRun} not run`} aria-pressed={feature?.id === f.id && selection.platform === p} onClick={() => select({ featureId: f.id, platform: p })}><Counts counts={cell.counts} compact /></button> : <span className="suites__muted">Not applicable</span>}</td>; })}</tr>)}</tbody></table></div></section>
           <section aria-label="Flow details" tabIndex={-1}><div className="suites__section-heading"><h2>{feature?.title ?? 'Flow details'}{selection.platform ? ` · ${platformNames[selection.platform]}` : ''}</h2>{selection.featureId || selection.platform ? <button type="button" onClick={() => select({ featureId: undefined, platform: undefined })}>Clear selection</button> : null}</div>
             {!selection.featureId && !selection.platform ? <p className="suites__drilldown-prompt">Select a feature or platform above to inspect flow results, required planes, and attempt history.</p> : selection.featureId && !feature ? <p role="alert">The selected feature is unavailable.</p> : (feature ? [feature] : build.features).map(f => <div key={f.id}>{!feature ? <h3>{f.title}</h3> : null}{f.flows.map(flow => {
