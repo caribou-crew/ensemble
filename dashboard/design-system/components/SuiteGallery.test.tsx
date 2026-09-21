@@ -80,6 +80,10 @@ describe('SuiteGallery', () => {
     expect(lanes).toContain('2026-09-21');
     expect(container.querySelector('[role=note]')?.textContent).toContain('nothing here is visually accepted');
   });
+  it('summarizes what is on the page from the tiles themselves', async () => {
+    await render();
+    expect(container.querySelector('.gallery__summary')?.textContent).toBe('3 flows. Flows with a result: Web 3 · iOS 1 · Android 0. 1 with visual differences, 1 with missing or extra network requests.');
+  });
   it('keeps the screens view quiet: missing lanes are a dash, and there are no per-tile wire warning boxes', async () => {
     await render();
     expect(container.textContent).not.toContain('Wire diff not represented');

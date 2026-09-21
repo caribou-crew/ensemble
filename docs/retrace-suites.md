@@ -5,6 +5,57 @@ revision. A feature matrix shows web, iOS and Android side by side; selecting a
 cell shows its flows, functional/wire/visual evidence, and retry history. Existing
 run and cross-app comparison pages remain the detailed evidence viewers.
 
+## Quick start
+
+You need three things in one project directory (the one you run `retrace serve` from):
+an inventory, results from your runners, and the server.
+
+1. **Describe what you expect** in `retrace.suites.json` (next section): features, flows
+   and the platforms you care about (`web`, `ios`, `android`).
+2. **After each runner job, import one report per platform:**
+   - *Web (reference vs candidate):* record both sides with `retrace run`, then
+     `retrace diff --flow NAME` (see [comparing checkouts](comparing-migrations.md)). The
+     comparison is saved under the candidate run as `.retrace/runs/<app>/<flow>/<run>/diffs/<pairId>`.
+     Put `{app, flow, runId, pairId}` in the flow's `evidence` in the report.
+   - *iOS / Android (no reference):* write the screenshot to a file and list it in the report as
+     `screens: [{label, file}]`. No Retrace run is needed.
+   - Build the JSON with `createSuiteAttempt` from `adapters/js` (or write it by hand) and run
+     `retrace suite import --file report.json`. Reports are immutable; use a new `attemptId` per job.
+3. **Look:** `retrace serve --addr 127.0.0.1:4800`, open it, choose **Comparison suites**. The
+   Gallery is the default view of a suite.
+
+### Reading the page
+
+- **Table:** one row per flow. Web shows reference, candidate and diff; iOS and Android show their
+  final screen. Click any thumbnail for the full image. Scroll and compare.
+- **Revision line above the table:** each platform column shows its newest result and names the
+  source revision it was produced on. Columns can come from different revisions.
+- **Network chip / tab:** red = missing or extra requests or rule violations (look at these first),
+  amber = only changed or moved exchanges (often approved header differences), green = no
+  difference, dash = no saved comparison. The tab ranks flows and shows what the runner asserted.
+- **"Coverage counts" (collapsed, above the table):** counts of *cells* (flow × platform) for one
+  revision. A cell passes only when every required plane passes (functional, wire and visual), so
+  `0 / 159 passed` is normal until a runner reports wire and visual as passed. It is a coverage
+  ledger, not the visual verdict; the gallery is where you judge differences.
+- Nothing is accepted by looking at it. Statuses are what the runners asserted.
+
+### What others need
+
+- A `retrace` binary built from this repository (Go, Node and pnpm; `make build` writes
+  `bin/retrace` with the UI embedded). Suites and the gallery are not in a published package yet.
+- The project directory with `retrace.suites.json`. If the web recordings live in other
+  repositories, a `retrace.repo.yaml` naming each app's root (see `retrace suite` docs below).
+- Web pairs: two Retrace recordings of the same flow with the same named screenshot checkpoints,
+  compared with `retrace diff`. Without a saved pair, a web result shows no reference/diff images
+  and no network chip.
+- Native lanes: only screenshots (PNG, JPEG or WebP, up to 8 MiB) and a report; no adapter.
+- A place to keep `.retrace/` (it holds screenshots and recordings; keep it private and ignored).
+  There is no hosted mode: each person runs `retrace serve` against their own copy of that directory,
+  so to share results, share or sync the `.retrace/suites` and `.retrace/suite-assets` directories
+  together with the recordings the pairs point to.
+- In CI: build the report from the job's results and run `retrace suite import`, then keep the
+  `.retrace` directory as an artifact.
+
 ## Define the expected inventory
 
 Place `retrace.suites.json` at the project root where you run `retrace serve`:

@@ -33,3 +33,4 @@
 .gallery__table--net td { white-space: nowrap; }
 .gallery__nowire summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
 .gallery__nowire ul { font-size: 12px; color: var(--text-secondary); margin: 6px 0 0; padding-left: 18px; }
+.gallery__summary { font-size: 12px; }

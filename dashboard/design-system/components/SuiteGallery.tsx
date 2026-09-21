@@ -68,6 +68,14 @@ const match: Record<Filter, (r: SuiteGalleryRow) => boolean> = {
   network: r => r.tiles.some(t => { const c = wireOf(t); return !!c && wireDiffCount(c) > 0; }),
 };
 
+/** A plain summary of what is on this page, computed from the tiles shown. */
+function summaryOf(g: Gallery): string {
+  const results = g.platforms.map(p => `${names[p]} ${g.rows.filter(r => r.tiles.some(t => t.platform === p && t.attemptId)).length}`).join(' · ');
+  const visual = g.rows.filter(match.visual).length;
+  const serious = g.rows.filter(r => r.tiles.some(t => { const c = wireOf(t); return !!c && wireStructural(c) > 0; })).length;
+  return `${g.rows.length} flows. Flows with a result: ${results}. ${visual} with visual differences, ${serious} with missing or extra network requests.`;
+}
+
 function Screens({ gallery, rows, client, onOpenEvidence }: { gallery: Gallery; rows: SuiteGalleryRow[]; client: GalleryClient; onOpenEvidence: (e: SuiteEvidence) => void }) {
   const platforms = gallery.platforms;
   let last = '';
@@ -146,6 +154,7 @@ export default function SuiteGallery({ client, suiteId, buildId, onOpenEvidence 
       <span className="gallery__muted">{rows.length} of {data.rows.length} flows</span>
     </div>
     <LaneHeader gallery={data} />
+    <p className="gallery__summary">{summaryOf(data)}</p>
     <p className="gallery__note" role="note">Web compares a reference with a candidate; other platforms show the final screen only. Each platform can come from a different revision, shown above. Runner statuses are assertions; nothing here is visually accepted.</p>
     {!rows.length ? <p className="suites__state">No flows match this filter.</p>
       : tab === 'screens' ? <Screens gallery={data} rows={rows} client={client} onOpenEvidence={onOpenEvidence} /> : <Network gallery={data} rows={rows} onOpenEvidence={onOpenEvidence} />}

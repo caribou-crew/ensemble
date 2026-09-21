@@ -179,6 +179,18 @@ describe('RetraceSuites build views', () => {
     await act(async () => button('Flow review').click());
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ suiteId: 'migration', buildId: 'build-1', suiteView: 'review' }));
   });
+  it('collapses per-build coverage counts and explains them in plain language in the gallery view', async () => {
+    await renderWithGallery();
+    const cov = container.querySelector('details.suites__coverage')!;
+    expect(cov.hasAttribute('open')).toBe(false);
+    expect(cov.textContent).toContain('A cell passes only when every plane the suite requires passes');
+    expect(cov.textContent).toContain('0 passed is normal before review');
+    expect(container.querySelector('.suites__build-heading')?.closest('details.suites__coverage')).not.toBeNull();
+    act(() => root.unmount()); root = createRoot(container);
+    await renderWithGallery({ suiteView: 'review' });
+    expect(container.querySelector('details.suites__coverage')).toBeNull();
+    expect(container.querySelector('.suites__build-heading')).not.toBeNull();
+  });
   it('shows the flow review when it is selected, and for clients that cannot serve a gallery', async () => {
     await renderWithGallery({ suiteView: 'review' });
     expect(container.querySelector('.gallery')).toBeNull();
