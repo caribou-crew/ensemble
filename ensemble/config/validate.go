@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"sort"
@@ -126,6 +127,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("gateway %q: port must be set", name))
 		} else {
 			usedPorts[gw.Port] = append(usedPorts[gw.Port], "gateway "+name)
+		}
+		if gw.Host != "" && net.ParseIP(gw.Host) == nil {
+			errs = append(errs, fmt.Errorf("gateway %q: bind_host %q is not a valid IP", name, gw.Host))
 		}
 		if len(gw.Routes) == 0 {
 			errs = append(errs, fmt.Errorf("gateway %q: routes is empty", name))

@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1410,6 +1412,20 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target str
 		target = "local"
 	}
 
+	host := gw.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if len(gw.Upstreams) > 0 {
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			o.logf("orchestrator: WARNING: gateway %s is bound to %s, which is reachable from outside this machine.\n"+
+				"orchestrator: every route through it is unauthenticated — anyone who can reach that address\n"+
+				"orchestrator: can read/replay whatever it proxies to, including a flipped-to-cloud upstream.\n"+
+				"orchestrator: bind_host: 127.0.0.1 (the default) unless you mean it.", name, host)
+		}
+	}
+	listen := net.JoinHostPort(host, strconv.Itoa(gw.Port))
+
 	var pt proxy.Target
 	if target == "local" {
 		routes := make([]proxy.Route, 0, len(gw.Routes))
@@ -1450,7 +1466,7 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target str
 		}
 		pt = proxy.Target{
 			Name:   name,
-			Listen: fmt.Sprintf("127.0.0.1:%d", gw.Port),
+			Listen: listen,
 			Routes: routes,
 			CORS:   cors,
 		}
@@ -1465,7 +1481,7 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target str
 		}
 		pt = proxy.Target{
 			Name:        name,
-			Listen:      fmt.Sprintf("127.0.0.1:%d", gw.Port),
+			Listen:      listen,
 			Upstream:    gu.URL,
 			Passthrough: true,
 			AllowWrites: gu.AllowWrites,
@@ -1492,7 +1508,7 @@ func (o *Orchestrator) wireOneGateway(name string, gw config.Gateway, target str
 	o.gatewayActive[name] = target
 	o.gatewayBound[name] = time.Now()
 	o.mu.Unlock()
-	o.logf("orchestrator: gateway %s listening on 127.0.0.1:%d (target=%s)", name, gw.Port, target)
+	o.logf("orchestrator: gateway %s listening on %s (target=%s)", name, listen, target)
 	return nil
 }
 

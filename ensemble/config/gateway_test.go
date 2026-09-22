@@ -68,6 +68,59 @@ routes:
 	}
 }
 
+func TestGatewayBindHostDefaultsEmpty(t *testing.T) {
+	var gw Gateway
+	if err := yaml.Unmarshal([]byte(`port: 9000
+routes:
+  - prefix: /bff
+    service: storefront
+`), &gw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if gw.Host != "" {
+		t.Fatalf("bind_host should default to empty (resolved to 127.0.0.1 at wire time) when absent from yaml, got %q", gw.Host)
+	}
+}
+
+func TestGatewayBindHostParses(t *testing.T) {
+	var gw Gateway
+	if err := yaml.Unmarshal([]byte(`port: 9000
+bind_host: 127.0.0.2
+routes:
+  - prefix: /bff
+    service: storefront
+`), &gw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if gw.Host != "127.0.0.2" {
+		t.Fatalf("bind_host: 127.0.0.2 did not parse onto Gateway.Host, got %q", gw.Host)
+	}
+}
+
+func TestValidateGatewayBindHostClean(t *testing.T) {
+	c := gatewayBase()
+	c.Gateways = map[string]Gateway{
+		"public": {Port: 9000, Host: "127.0.0.2", Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateGatewayBindHostInvalid(t *testing.T) {
+	c := gatewayBase()
+	c.Gateways = map[string]Gateway{
+		"public": {Port: 9000, Host: "not-an-ip", Routes: []GatewayRoute{{Prefix: "/", Service: "catalog"}}},
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid bind_host, got nil")
+	}
+	if !strings.Contains(err.Error(), "bind_host") {
+		t.Fatalf("expected error to mention bind_host, got: %v", err)
+	}
+}
+
 func TestValidateGatewayRegexClean(t *testing.T) {
 	c := gatewayBase()
 	c.Gateways = map[string]Gateway{

@@ -620,6 +620,24 @@ matching no route gets a `404` and is still recorded as a hop so the
 mis-route is visible in `ensemble traffic`. `strip_prefix: true` drops the
 matched prefix before forwarding (`/cart/items?limit=5` → `/items?limit=5`).
 
+`bind_host:` sets the listener's bind address; left unset it defaults to
+`127.0.0.1`, same loopback-only posture as the control-plane API's own
+default. Set it only to expose the gateway beyond this machine (fronting a
+gateway [flipped](#gateway-passthrough-flipping-a-gateway-to-a-real-remote-edge)
+to a cloud upstream from another host, say) — every route through a gateway
+is unauthenticated, so a non-loopback `bind_host` on a gateway with
+`upstreams:` declared prints the same unauthenticated-exposure warning
+`ensemble up` prints for a non-loopback `--api` bind.
+
+```yaml
+gateways:
+  public:
+    port: 9000
+    bind_host: 0.0.0.0   # reachable from other machines — see the warning above
+    routes:
+      - { prefix: /products, service: catalog }
+```
+
 Sometimes the edge's own path doesn't line up with the backend's — a
 client-facing `/v1/orders` the backend actually serves at
 `/internal/v1/orders` — or a route needs to carve one specific suffix out of

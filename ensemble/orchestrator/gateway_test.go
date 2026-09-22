@@ -362,3 +362,54 @@ func TestUpGatewayBindFailureNamesGateway(t *testing.T) {
 		t.Error("service must not have been started when the gateway failed to bind")
 	}
 }
+
+// TestGatewayBindHostBindsToConfiguredHost: a gateway with bind_host set
+// listens there, not on the loopback default — reachable at bind_host,
+// refused at 127.0.0.1. 127.0.0.2 is loopback-routable everywhere but
+// needs no interface alias on Linux; macOS refuses to bind it unless one
+// was added to lo0, so this is skipped there instead of failing on a
+// host-specific gap unrelated to the code under test.
+func TestGatewayBindHostBindsToConfiguredHost(t *testing.T) {
+	if probe, err := net.Listen("tcp", "127.0.0.2:0"); err != nil {
+		t.Skipf("127.0.0.2 not bindable on this host (no lo0 alias?): %v", err)
+	} else {
+		probe.Close()
+	}
+
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "svc:"+r.URL.Path)
+	}))
+	defer svc.Close()
+
+	gwPort := freePort(t)
+	cfg := &config.Config{
+		Dir:      t.TempDir(),
+		Services: map[string]config.Service{"svc": {Run: "sleep 30", Port: portOf(t, svc)}},
+		Gateways: map[string]config.Gateway{
+			"public": {Port: gwPort, Host: "127.0.0.2", Routes: []config.GatewayRoute{
+				{Prefix: "/", Service: "svc"},
+			}},
+		},
+	}
+	rec := proxy.NewRecorder(proxy.RecorderOpts{Ring: 64})
+	px := proxy.New(rec)
+	defer px.Close()
+	o := New(cfg, px, Opts{LogDir: t.TempDir()})
+	if err := o.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	defer o.Down()
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.2:%d/x", gwPort))
+	if err != nil {
+		t.Fatalf("GET on configured bind_host: %v", err)
+	}
+	defer resp.Body.Close()
+	if b, _ := io.ReadAll(resp.Body); string(b) != "svc:/x" {
+		t.Errorf("body = %q, want svc:/x", b)
+	}
+
+	if _, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/x", gwPort)); err == nil {
+		t.Error("expected connection refused on 127.0.0.1, gateway should only be bound to 127.0.0.2")
+	}
+}

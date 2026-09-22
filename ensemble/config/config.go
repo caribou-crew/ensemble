@@ -458,6 +458,13 @@ type StubRespond struct {
 type Gateway struct {
 	Port   int            `yaml:"port"`
 	Routes []GatewayRoute `yaml:"routes"`
+	// Host is the bind address for this gateway's listener. Empty (the
+	// default) resolves to 127.0.0.1 — loopback-only, same posture as the
+	// control-plane API's own default. Set it to something non-loopback
+	// only to expose the gateway beyond this machine (e.g. fronting a
+	// flipped-to-cloud upstream from another host); see the same
+	// unauthenticated-exposure warning apiHostPolicy prints for --api.
+	Host string `yaml:"bind_host"`
 	// CORS, when set, makes this gateway add cross-origin response
 	// headers and answer preflight OPTIONS requests directly. Absent
 	// (nil) by default — fully backward compatible.
