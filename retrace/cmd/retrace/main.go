@@ -30,7 +30,7 @@ Usage:
   retrace ref rule --field GLOB --matcher NAME [--method M] [--path GLOB] [--why TEXT] [--json]
   retrace rekey --old KEY --new KEY [--json]
   retrace rekey --init [--json]
-  retrace serve [--addr 127.0.0.1:4800] [--allow-host HOST] [--open]
+  retrace serve [--addr 127.0.0.1:4890] [--allow-host HOST] [--open]
   retrace export --out DIR [--flow NAME] [--app NAME] [--json]
   retrace runs [--app NAME] [--flow NAME] [--state STATE] [--json] [--abandoned-after DUR]
   retrace check [--url URL] [--app NAME] [--flow NAME] [--json] [--abandoned-after DUR]

@@ -17,12 +17,13 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    // Dev-mode single-origin illusion: `retrace serve` binds 127.0.0.1:4800
+    // Dev-mode single-origin illusion: `retrace serve` binds 127.0.0.1:4890
     // by default (cmd_serve.go's defaultServeAddr), so proxying /api here
     // means the dev UI talks to the review server exactly the way the built,
-    // embedded bundle does.
+    // embedded bundle does. Deliberately NOT 4800 — that's the edge-listener
+    // port `retrace run`/`replay` bind while recording.
     proxy: {
-      '/api': 'http://127.0.0.1:4800',
+      '/api': 'http://127.0.0.1:4890',
     },
   },
 });

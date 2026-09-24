@@ -324,8 +324,8 @@ func TestServeBindsLoopbackByDefaultAndServesTheQueue(t *testing.T) {
 		t.Fatalf("GET /api/queue: status = %d\n%s", resp.StatusCode, b)
 	}
 	// The default written into the help text is the one the code uses.
-	if defaultServeAddr != "127.0.0.1:4800" {
-		t.Fatalf("defaultServeAddr = %q, but the usage text promises 127.0.0.1:4800", defaultServeAddr)
+	if defaultServeAddr != "127.0.0.1:4890" {
+		t.Fatalf("defaultServeAddr = %q, but the usage text promises 127.0.0.1:4890", defaultServeAddr)
 	}
 }
 

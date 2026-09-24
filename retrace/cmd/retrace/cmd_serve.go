@@ -26,7 +26,13 @@ import (
 // defaultServeAddr is loopback, and that is the product's default posture:
 // a review server is reachable from the machine it runs on unless somebody
 // says otherwise, in words, on the command line.
-const defaultServeAddr = "127.0.0.1:4800"
+//
+// 4890, not 4800: retrace.yaml's edge-listener default (retrace/config)
+// binds 4800 too, so a "retrace serve" left running while "retrace run" or
+// "retrace replay" records collides on the port — Bad Gateway on the
+// dashboard, and worse, the browser's own dashboard requests get proxied
+// into the recording's wire. Different default port, same loopback posture.
+const defaultServeAddr = "127.0.0.1:4890"
 
 // serveShutdownGrace bounds how long the graceful close waits for in-flight
 // requests once Ctrl-C arrives. A diff of a large flow can be mid-flight,

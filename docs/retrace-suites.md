@@ -21,7 +21,7 @@ an inventory, results from your runners, and the server.
      `screens: [{label, file}]`. No Retrace run is needed.
    - Build the JSON with `createSuiteAttempt` from `adapters/js` (or write it by hand) and run
      `retrace suite import --file report.json`. Reports are immutable; use a new `attemptId` per job.
-3. **Look:** `retrace serve --addr 127.0.0.1:4800`, open it, choose **Comparison suites**. The
+3. **Look:** `retrace serve --addr 127.0.0.1:4890`, open it, choose **Comparison suites**. The
    Gallery is the default view of a suite.
 
 ### Reading the page
@@ -138,7 +138,7 @@ this distinction above suite run evidence.
 
 ```sh
 retrace suite import --file suite-report.json
-retrace serve --addr 127.0.0.1:4800
+retrace serve --addr 127.0.0.1:4890
 ```
 
 The importer validates the inventory, source identity, timestamps, platform,
