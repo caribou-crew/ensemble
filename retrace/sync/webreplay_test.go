@@ -291,3 +291,26 @@ func TestAssessReplay(t *testing.T) {
 		t.Errorf("shots+wire: Status = %q, want %q", got.Status, trace.VerdictOK)
 	}
 }
+
+func TestSynthesizedReplayManifestCarriesTheRunsFlowParts(t *testing.T) {
+	runDir := t.TempDir()
+	stagePNG(t, filepath.Join(runDir, "shots", "pan-loaded.png"), 20, 30)
+	markers := `{"phase":"start","name":"setup","ts":"2026-09-23T20:05:48Z"}
+{"phase":"end","ts":"2026-09-23T20:05:52Z"}
+{"phase":"start","name":"view-pan","ts":"2026-09-23T20:05:52Z"}
+{"phase":"end","ts":"2026-09-23T20:05:55Z"}
+`
+	if err := os.WriteFile(filepath.Join(runDir, "groups.jsonl"), []byte(markers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := synthesizeReplayManifest(webReplayBundle{runDir: runDir, app: "uxt-web", flow: "card-views", runID: "r1", hasShots: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runs.GroupNames(m.Groups); len(got) != 2 || got[0] != "setup" || got[1] != "view-pan" {
+		t.Fatalf("groups = %+v, want setup then view-pan", m.Groups)
+	}
+	if want := time.Date(2026, 9, 23, 20, 5, 55, 0, time.UTC); !m.Groups[1].EndedAt.Equal(want) {
+		t.Fatalf("view-pan ended %v, want %v", m.Groups[1].EndedAt, want)
+	}
+}

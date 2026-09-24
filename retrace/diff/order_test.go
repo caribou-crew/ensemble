@@ -2,6 +2,7 @@ package diff
 
 import (
 	"testing"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -320,5 +321,84 @@ func TestGroupedSectionsDoNotAliasWirePaired(t *testing.T) {
 	if s.Wire.Paired[0].Method != original {
 		t.Fatalf("Wire.Paired[0].Method = %q after writing through Sections[%d].Entries[0], want unchanged %q — a grouped Build must not let Sections and Wire.Paired share backing memory",
 			s.Wire.Paired[0].Method, last, original)
+	}
+}
+
+func timed(h trace.Hop, start time.Time, doneMs float64) trace.Hop {
+	h.T = trace.Timings{Start: start, DoneMs: doneMs}
+	return h
+}
+
+func movedByPath(w Wire) map[string][2]bool {
+	out := map[string][2]bool{}
+	for _, e := range w.Paired {
+		out[e.NormalizedPath] = [2]bool{e.Moved, e.Concurrent}
+	}
+	return out
+}
+
+func TestAReorderBetweenCallsInFlightTogetherIsNotAMove(t *testing.T) {
+	t0 := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	// A: card and details fire together and overlap for ~200ms, as the PCI
+	// frame's two fetches do. B (a replay with no timing) lands them swapped.
+	a := []trace.Hop{
+		timed(hop(1, "GET", "/card", 200, "", `{}`), t0, 198),
+		timed(hop(2, "GET", "/details", 200, "", `{}`), t0.Add(100*time.Microsecond), 198),
+	}
+	b := []trace.Hop{hop(1, "GET", "/details", 200, "", `{}`), hop(2, "GET", "/card", 200, "", `{}`)}
+	w := DiffWire(a, b, Options{})
+	for path, mc := range movedByPath(w) {
+		if mc[0] {
+			t.Errorf("%s moved = true, want false: the two calls were in flight together", path)
+		}
+	}
+	concurrent := 0
+	for _, e := range w.Paired {
+		if e.Concurrent {
+			concurrent++
+		}
+	}
+	if concurrent != 1 {
+		t.Fatalf("concurrent entries = %d, want exactly the one the LIS would have flagged", concurrent)
+	}
+}
+
+func TestAReorderBetweenSequencedCallsIsStillAMove(t *testing.T) {
+	t0 := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	// A: details starts only after card has finished — a dependency. B swaps them.
+	a := []trace.Hop{
+		timed(hop(1, "GET", "/card", 200, "", `{}`), t0, 50),
+		timed(hop(2, "GET", "/details", 200, "", `{}`), t0.Add(60*time.Millisecond), 50),
+	}
+	b := []trace.Hop{
+		timed(hop(1, "GET", "/details", 200, "", `{}`), t0, 50),
+		timed(hop(2, "GET", "/card", 200, "", `{}`), t0.Add(60*time.Millisecond), 50),
+	}
+	w := DiffWire(a, b, Options{})
+	moved := 0
+	for _, e := range w.Paired {
+		if e.Moved {
+			moved++
+		}
+		if e.Concurrent {
+			t.Errorf("%s concurrent = true, want false: the calls never overlapped", e.NormalizedPath)
+		}
+	}
+	if moved != 1 {
+		t.Fatalf("moved = %d, want 1", moved)
+	}
+}
+
+func TestAReorderWithNoTimingOnEitherSideIsStillAMove(t *testing.T) {
+	a := []trace.Hop{hop(1, "GET", "/card", 200, "", `{}`), hop(2, "GET", "/details", 200, "", `{}`)}
+	b := []trace.Hop{hop(1, "GET", "/details", 200, "", `{}`), hop(2, "GET", "/card", 200, "", `{}`)}
+	moved := 0
+	for _, e := range DiffWire(a, b, Options{}).Paired {
+		if e.Moved {
+			moved++
+		}
+	}
+	if moved != 1 {
+		t.Fatalf("moved = %d, want 1: without timing nothing proves the calls were concurrent", moved)
 	}
 }

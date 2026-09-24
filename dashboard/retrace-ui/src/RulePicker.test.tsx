@@ -14,6 +14,7 @@ const entry: Entry = {
   posA: 0,
   posB: 0,
   moved: false,
+  concurrent: false,
   truncated: false,
   classes: ['changed'],
   bodyDiff: [],

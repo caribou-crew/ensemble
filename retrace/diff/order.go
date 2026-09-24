@@ -1,5 +1,11 @@
 package diff
 
+import (
+	"time"
+
+	"github.com/caribou-crew/ensemble/core/trace"
+)
+
 // Section groups paired entries by flow part (runs.Group name), so a
 // review UI can render "browse", "checkout", … as separate blocks instead
 // of one flat list. Counts tallies, for each class in Classes, how many
@@ -102,10 +108,50 @@ func annotate(entries []Entry) []Entry {
 		e.PosA = posA[i]
 		e.PosB = posB[i]
 		e.Moved = !inLIS[i]
+		if e.Moved && onlyConcurrentInversions(entries, posA, posB, i) {
+			e.Moved, e.Concurrent = false, true
+		}
 		e.Classes = classify(e)
 		out[i] = e
 	}
 	return out
+}
+
+// inflight is one call's [start, end) on its own run's clock; zero start means
+// the run carried no timing, and such a call is never treated as concurrent.
+type inflight struct {
+	start, end time.Time
+}
+
+func inflightOf(t trace.Timings) inflight {
+	if t.Start.IsZero() {
+		return inflight{}
+	}
+	return inflight{start: t.Start, end: t.Start.Add(time.Duration(t.DoneMs * float64(time.Millisecond)))}
+}
+
+func (x inflight) overlaps(y inflight) bool {
+	if x.start.IsZero() || y.start.IsZero() {
+		return false
+	}
+	return !x.start.After(y.end) && !y.start.After(x.end)
+}
+
+// onlyConcurrentInversions reports whether every entry i swapped relative
+// order with was in flight alongside it in run A or run B. A pair that ran
+// strictly one after the other in both runs is a real sequencing change.
+func onlyConcurrentInversions(entries []Entry, posA, posB []int, i int) bool {
+	inverted := false
+	for j := range entries {
+		if j == i || (posA[i] < posA[j]) == (posB[i] < posB[j]) {
+			continue
+		}
+		inverted = true
+		if !entries[i].flightA.overlaps(entries[j].flightA) && !entries[i].flightB.overlaps(entries[j].flightB) {
+			return false
+		}
+	}
+	return inverted
 }
 
 func argsortUint(entries []Entry, key func(Entry) uint64) []int {

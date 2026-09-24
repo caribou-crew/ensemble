@@ -99,8 +99,11 @@ type Counts struct {
 	WirePaired   int `json:"wirePaired"`
 	WireChanged  int `json:"wireChanged"`
 	WireMoved    int `json:"wireMoved"`
-	WireMissing  int `json:"wireMissing"`
-	WireExtra    int `json:"wireExtra"`
+	// WireMovedConcurrent counts reorders between calls that were in flight
+	// together; reported, never part of the verdict.
+	WireMovedConcurrent int `json:"wireMovedConcurrent"`
+	WireMissing         int `json:"wireMissing"`
+	WireExtra           int `json:"wireExtra"`
 	// Violations counts rule violations from BOTH planes: every
 	// Entry.BodyViolations element AND every Entry.HeaderDiff element whose
 	// Type == "violation". Task 8's review found headers flattening
@@ -910,6 +913,9 @@ func countOf(s Summary) Counts {
 			case "moved":
 				c.WireMoved++
 			}
+		}
+		if e.Concurrent {
+			c.WireMovedConcurrent++
 		}
 		c.Violations += len(e.BodyViolations)
 		for _, hd := range e.HeaderDiff {

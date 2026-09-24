@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // serve stands the replay server up on a real loopback listener, so every
@@ -862,6 +863,26 @@ func TestAssertRequestsRecordsMatchedExchangeSeqAcrossReorderedCalls(t *testing.
 	hops := s.ObservedHops()
 	if len(hops) != 2 || hops[0].Seq != 42 || hops[1].Seq != 41 {
 		t.Fatalf("observed seqs = %+v, want arrival-order hops carrying matched exchange seqs 42,41", hops)
+	}
+}
+
+func TestAssertRequestsStampsWhenEachRequestArrived(t *testing.T) {
+	b := bundleOf(exch("GET", "/cart", "", nil, 200, `{}`, 1))
+	s, url := serve(t, b, Options{AssertRequests: true}, "")
+
+	before := time.Now()
+	do(t, "GET", url+"/cart", "", nil).Body.Close()
+	after := time.Now()
+
+	hops := s.ObservedHops()
+	if len(hops) != 1 {
+		t.Fatalf("ObservedHops() = %+v, want one", hops)
+	}
+	if start := hops[0].T.Start; start.Before(before) || start.After(after) {
+		t.Fatalf("T.Start = %v, want the arrival time between %v and %v", start, before, after)
+	}
+	if hops[0].T.DoneMs < 0 {
+		t.Fatalf("T.DoneMs = %v, want a non-negative duration", hops[0].T.DoneMs)
 	}
 }
 

@@ -17,6 +17,7 @@ const entry = (over: Partial<Entry> = {}): Entry => ({
   posA: 0,
   posB: 0,
   moved: false,
+  concurrent: false,
   truncated: false,
   classes: ['changed'],
   bodyDiff: [],

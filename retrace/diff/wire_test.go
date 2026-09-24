@@ -1119,7 +1119,7 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	}
 	assertJSONKeys(t, full, []string{
 		"method", "normalizedPath", "seqA", "seqB", "posA", "posB", "groupA", "groupB",
-		"moved", "truncated", "classes", "statusChange", "bodyDiff", "bodyTolerated",
+		"moved", "concurrent", "truncated", "classes", "statusChange", "bodyDiff", "bodyTolerated",
 		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff", "headerIgnored",
 	})
 
@@ -1143,7 +1143,7 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	ensureEntryArrays(&bare)
 	assertJSONKeys(t, bare, []string{
 		"method", "normalizedPath", "seqA", "seqB", "posA", "posB",
-		"moved", "truncated", "classes", "bodyDiff", "bodyTolerated",
+		"moved", "concurrent", "truncated", "classes", "bodyDiff", "bodyTolerated",
 		"bodyViolations", "bodyIgnored", "orderingChanges", "headerDiff", "headerIgnored",
 	})
 

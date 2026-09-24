@@ -118,6 +118,8 @@ export interface Entry {
   groupA?: string;
   groupB?: string;
   moved: boolean;
+  /** A reorder not counted as moved: every call it swapped with was in flight alongside it. */
+  concurrent: boolean;
   truncated: boolean;
   classes: string[];
   statusChange?: { a: number; b: number };

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/caribou-crew/ensemble/core/trace"
 	"github.com/caribou-crew/ensemble/retrace/runs"
@@ -171,12 +172,25 @@ func synthesizeReplayManifest(b webReplayBundle) (runs.Manifest, error) {
 		// hops from wire.jsonl directly; Counts is the recorded-vs-not flag.
 		wire = runs.Counts{Recorded: true}
 	}
+	// Replay writes groups.jsonl like a recording does; without folding it the
+	// synced run has no flow parts and every call lands in one section.
+	records, _, err := runs.ReadGroupRecords(runs.Paths{RunDir: b.runDir})
+	if err != nil {
+		return runs.Manifest{}, err
+	}
+	var lastMarker time.Time
+	for _, r := range records {
+		if r.TS.After(lastMarker) {
+			lastMarker = r.TS
+		}
+	}
 	return runs.Manifest{
 		App:         b.app,
 		Flow:        b.flow,
 		RunID:       b.runID,
 		Mode:        runs.ModePixel,
 		Checkpoints: checkpoints,
+		Groups:      runs.DeriveGroups(records, lastMarker),
 		Capture:     assessReplay(len(checkpoints), b.hasWire),
 		Wire:        wire,
 	}, nil

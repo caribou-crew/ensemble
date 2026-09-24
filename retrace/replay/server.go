@@ -186,6 +186,7 @@ func (s *Server) MissLogErr() error {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
+	start := s.now().UTC()
 	// CORS first, and on EVERY path out of here. A browser blocked by CORS
 	// never sees the loud 501 body, only a network error, which reads to a
 	// developer as an app bug rather than as a replay miss.
@@ -257,7 +258,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		// arrive in a different order from the reference; --assert-requests
 		// uses this Seq to pair each live request with the exchange that
 		// actually served it before computing request differences.
-		s.observed = append(s.observed, observedHop(r, raw, decrypted, hit.Seq))
+		t := trace.Timings{Start: start, DoneMs: float64(s.now().Sub(start)) / float64(time.Millisecond)}
+		s.observed = append(s.observed, observedHop(r, raw, decrypted, hit.Seq, t))
 	}
 	s.mu.Unlock()
 	writeHit(w, r, decrypted)
@@ -297,9 +299,12 @@ func protectMissFields(fields []MissField, keys []string) []MissField {
 // deliberate rewrites against the recording would fail every replay that
 // uses cookies or redirects for a difference this feature did not
 // introduce and no project has a tolerance knob for.
-func observedHop(r *http.Request, raw string, hit Exchange, seq uint64) trace.Hop {
+// t is when the request arrived and how long it took to answer, so a diff can
+// tell concurrent calls (whose relative order is incidental) from sequenced ones.
+func observedHop(r *http.Request, raw string, hit Exchange, seq uint64, t trace.Timings) trace.Hop {
 	return trace.Hop{
 		Seq:    seq,
+		T:      t,
 		To:     hit.Target,
 		Method: r.Method,
 		Path:   r.URL.RequestURI(),

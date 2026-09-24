@@ -141,6 +141,7 @@
     "wirePaired": 0,
     "wireChanged": 0,
     "wireMoved": 0,
+    "wireMovedConcurrent": 0,
     "wireMissing": 0,
     "wireExtra": 0,
     "violations": 0,

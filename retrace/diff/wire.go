@@ -374,7 +374,10 @@ type Entry struct {
 	// about exactly this shape, which is how someone comes to write the
 	// unsafe line on purpose. Every other bool on this REST surface that
 	// means "did this happen" now encodes the same way.
-	Moved           bool          `json:"moved"`
+	Moved bool `json:"moved"`
+	// Concurrent marks a reorder that was NOT counted as moved: every call it
+	// swapped places with was in flight at the same time in one of the runs.
+	Concurrent      bool          `json:"concurrent"`
 	Truncated       bool          `json:"truncated"`
 	Classes         []string      `json:"classes"`
 	StatusChange    *StatusChange `json:"statusChange,omitempty"`
@@ -389,6 +392,8 @@ type Entry struct {
 	// list is a finding — classify() and triage both read it that way — and
 	// an ignored header is the opposite of one.
 	HeaderIgnored []HeaderDiff `json:"headerIgnored"`
+
+	flightA, flightB inflight
 }
 
 type Wire struct {
@@ -913,6 +918,7 @@ func DiffWire(a, b []trace.Hop, o Options) Wire {
 		e := buildEntry(p, res, o)
 		e.GroupA = runs.GroupAt(o.GroupsA, p.A.T.Start)
 		e.GroupB = runs.GroupAt(o.GroupsB, p.B.T.Start)
+		e.flightA, e.flightB = inflightOf(p.A.T), inflightOf(p.B.T)
 		entries[i] = e
 	}
 	entries = annotate(entries)
