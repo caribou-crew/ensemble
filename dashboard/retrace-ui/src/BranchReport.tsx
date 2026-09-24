@@ -36,6 +36,14 @@ function Cell({ p, st, onOpen }: { p: Pairing; st?: SummaryState; onOpen: () => 
       </div>
     );
   }
+  if (p.noBaseline) {
+    return (
+      <div className="report-cell report-cell--muted">
+        <span className="report-cell__app">{appLabel(p.app)}</span>
+        <span className="report-cell__note">no accepted baseline yet</span>
+      </div>
+    );
+  }
   const sum = st?.sum;
   const tone = sum ? verdictTone(sum.verdict) : 'neutral';
   const shown = sum?.checkpoints.find((c) => c.verdict !== 'ok' && c.images.b) ?? sum?.checkpoints.find((c) => c.images.b);
@@ -58,6 +66,11 @@ function Cell({ p, st, onOpen }: { p: Pairing; st?: SummaryState; onOpen: () => 
         </div>
       ) : null}
       <span className="report-cell__when">{relTime(p.run ? runMs(p.run) : 0)}</span>
+      {p.newerUnusable ? (
+        <span className="report-cell__note" title={p.newerUnusable.capture.summary}>
+          newer run failed capture ({p.newerUnusable.capture.status || 'unassessed'})
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -113,7 +126,7 @@ export default function BranchReport({
 
   const verdicts = [...summaries.values()].map((s) => s.sum?.verdict);
   const count = (v: string) => verdicts.filter((x) => x === v).length;
-  const pending = ps.filter((p) => p.run && !p.missingBase).length - summaries.size;
+  const pending = ps.filter((p) => p.run && !p.missingBase && !p.noBaseline).length - summaries.size;
 
   const copySummary = async () => {
     const md = summaryMarkdown(selectedBranch ?? '', baseBranch, ps.map((p) => ({ p, ...summaries.get(pairKey(p)) })));

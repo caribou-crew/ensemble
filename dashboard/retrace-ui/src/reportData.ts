@@ -1,6 +1,6 @@
 import { createRetraceClient } from '@ensemble/design-system/retraceClient';
 import { parseRunIdStamp } from '@ensemble/design-system/retraceWhen';
-import type { Counts, Summary, SurfaceRun } from '@ensemble/design-system/retraceTypes';
+import type { Baseline, Counts, Summary, SurfaceRun } from '@ensemble/design-system/retraceTypes';
 
 export const client = createRetraceClient('/api');
 
@@ -49,6 +49,17 @@ export interface Surface {
   app: string;
   flow: string;
   runs: SurfaceRun[];
+  baseline: Baseline;
+}
+
+/** Would a diff against the accepted reference (REFERENCE base) resolve to
+ * anything, for `run` on this surface? "none" never resolves. "run" only
+ * resolves when the fallback run ISN'T `run` itself — the server refuses a
+ * run diffed against itself the same way it refuses "none" (both 409). */
+export function hasBaseline(s: Surface, run: SurfaceRun): boolean {
+  if (s.baseline.kind === 'none') return false;
+  if (s.baseline.kind === 'run' && s.baseline.runId === run.runId) return false;
+  return true;
 }
 
 export async function loadSurfaces(): Promise<Surface[]> {
@@ -85,10 +96,32 @@ export function branchesOf(surfaces: Surface[]): BranchInfo[] {
   return [...m.values()].sort((a, b) => b.lastRunAt - a.lastRunAt);
 }
 
-export function newestOn(s: Surface, branch: string): SurfaceRun | undefined {
+/** A run whose capture verdict makes it worth reporting on at all — a run
+ * that failed capture, or captured zero checkpoints, is not "clean", it is
+ * unmeasured, and showing it as the surface's state would be a false pass
+ * or a misleading fail. */
+export function isUsable(r: SurfaceRun): boolean {
+  return r.checkpoints > 0 && r.capture.status !== 'broken' && r.capture.status !== 'failed';
+}
+
+export interface NewestPick {
+  /** Newest run with a usable capture, if any. */
+  run?: SurfaceRun;
+  /** The newest run overall, when it is NOT `run` — i.e. a newer attempt
+   * exists but its capture was unusable, so the older usable run is shown
+   * instead. Absent when the newest run IS the usable one. */
+  newerUnusable?: SurfaceRun;
+}
+
+export function newestOn(s: Surface, branch: string): NewestPick {
+  let newest: SurfaceRun | undefined;
   let best: SurfaceRun | undefined;
-  for (const r of s.runs) if (branchOf(r) === branch && (!best || runMs(r) > runMs(best))) best = r;
-  return best;
+  for (const r of s.runs) {
+    if (branchOf(r) !== branch) continue;
+    if (!newest || runMs(r) > runMs(newest)) newest = r;
+    if (isUsable(r) && (!best || runMs(r) > runMs(best))) best = r;
+  }
+  return { run: best ?? newest, newerUnusable: best && newest && newest.runId !== best.runId ? newest : undefined };
 }
 
 export interface Pairing {
@@ -98,15 +131,30 @@ export interface Pairing {
   base?: SurfaceRun;
   /** True when a base branch was chosen but has no run for this surface. */
   missingBase: boolean;
+  /** True when comparing against the accepted reference (REFERENCE), and
+   * this surface has none yet — no bundle, no eligible fallback run, or
+   * the only fallback is `run` itself. The item endpoint would 409; the
+   * report skips asking rather than surfacing that as a console error. */
+  noBaseline: boolean;
+  /** A newer run exists for this surface, but its capture verdict was unusable. */
+  newerUnusable?: SurfaceRun;
 }
 
 export function pairings(surfaces: Surface[], branch: string, baseBranch: string): Pairing[] {
   const out: Pairing[] = [];
   for (const s of surfaces) {
-    const run = newestOn(s, branch);
+    const { run, newerUnusable } = newestOn(s, branch);
     if (!run) continue;
-    const base = baseBranch === REFERENCE ? undefined : newestOn(s, baseBranch);
-    out.push({ app: s.app, flow: s.flow, run, base, missingBase: baseBranch !== REFERENCE && !base });
+    const base = baseBranch === REFERENCE ? undefined : newestOn(s, baseBranch).run;
+    out.push({
+      app: s.app,
+      flow: s.flow,
+      run,
+      base,
+      missingBase: baseBranch !== REFERENCE && !base,
+      noBaseline: baseBranch === REFERENCE && !hasBaseline(s, run),
+      newerUnusable,
+    });
   }
   return out;
 }
@@ -153,6 +201,10 @@ export function summaryMarkdown(branch: string, baseBranch: string, rows: { p: P
       const run = r.p.run?.runId ?? '';
       if (r.p.missingBase) {
         lines.push(`| ${appLabel(app)} | no base run | — | ${run} |`);
+        continue;
+      }
+      if (r.p.noBaseline) {
+        lines.push(`| ${appLabel(app)} | no baseline | — | ${run} |`);
         continue;
       }
       if (!r.sum) {

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -14,13 +15,34 @@ type SurfaceRun struct {
 	RunID  string       `json:"runId"`
 	When   time.Time    `json:"when"`
 	Source *runs.Source `json:"source,omitempty"`
+	// Capture is the manifest's own trust verdict — the report picker needs
+	// it to skip a newer run that failed capture in favor of an older usable
+	// one, without diffing every candidate first.
+	Capture runs.CaptureTrust `json:"capture"`
+	// Checkpoints is len(manifest.Checkpoints). Zero here fails closed the
+	// same way an empty Wire/Hops count does: a run with no checkpoints was
+	// not usefully captured, whatever Capture.Status says.
+	Checkpoints int `json:"checkpoints"`
+}
+
+// Baseline is what a diff against the accepted reference would resolve to
+// for this app/flow, without actually diffing — the dashboard uses it to
+// decide whether asking for that comparison is even meaningful, rather than
+// firing the request and reading a 409 back.
+type Baseline struct {
+	// Kind mirrors refs.Reference.Kind: "bundle" | "run" | "none". "none"
+	// means no comparison is possible yet — nothing has been accepted, and
+	// no eligible run exists to fall back to.
+	Kind  string `json:"kind"`
+	RunID string `json:"runId,omitempty"`
 }
 
 // Surface is one app/flow and its runs, newest first.
 type Surface struct {
-	App  string       `json:"app"`
-	Flow string       `json:"flow"`
-	Runs []SurfaceRun `json:"runs"`
+	App      string       `json:"app"`
+	Flow     string       `json:"flow"`
+	Runs     []SurfaceRun `json:"runs"`
+	Baseline Baseline     `json:"baseline"`
 }
 
 // ListSurfaces enumerates the same app/flows BuildQueue does, without diffing.
@@ -44,7 +66,8 @@ func ListSurfaces(d Deps) ([]Surface, error) {
 			if lerr != nil {
 				continue
 			}
-			s := Surface{App: app, Flow: flow, Runs: make([]SurfaceRun, 0, len(ids))}
+			ref := refs.Resolve(d.Cwd, root, app, flow)
+			s := Surface{App: app, Flow: flow, Runs: make([]SurfaceRun, 0, len(ids)), Baseline: Baseline{Kind: ref.Kind, RunID: ref.RunID}}
 			for _, id := range ids {
 				p, perr := runs.PathsFor(root, app, flow, id)
 				if perr != nil {
@@ -53,6 +76,8 @@ func ListSurfaces(d Deps) ([]Surface, error) {
 				row := SurfaceRun{RunID: id, Source: sourceOf(p.RunDir)}
 				if m, merr := runs.ReadManifest(p.ManifestPath); merr == nil {
 					row.When = whenOf(m)
+					row.Capture = m.Capture
+					row.Checkpoints = len(m.Checkpoints)
 				}
 				s.Runs = append(s.Runs, row)
 			}

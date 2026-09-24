@@ -264,10 +264,20 @@ export interface SurfaceRun {
   runId: string;
   when: string;
   source?: Source;
+  capture: CaptureTrust;
+  checkpoints: number;
+}
+
+/** What a diff against the accepted reference would resolve to, without
+ * diffing — "none" means no comparison is possible yet (nothing accepted,
+ * no eligible fallback run), so a client should not even ask. */
+export interface Baseline {
+  kind: 'bundle' | 'run' | 'none';
+  runId?: string;
 }
 
 export interface SurfacesResponse {
-  surfaces: { app: string; flow: string; runs: SurfaceRun[] }[];
+  surfaces: { app: string; flow: string; runs: SurfaceRun[]; baseline: Baseline }[];
 }
 
 // --- sync (discover -> filter -> select -> pull) ---

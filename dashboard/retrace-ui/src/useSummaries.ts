@@ -29,13 +29,16 @@ function fetchSummary(p: Pairing): Promise<Summary> {
 /** Loads every pairing's summary in parallel, publishing each as it lands. */
 export function useSummaries(ps: Pairing[]): Map<string, SummaryState> {
   const [state, setState] = useState<Map<string, SummaryState>>(new Map());
-  const keys = ps.filter((p) => p.run && !p.missingBase).map(pairKey).join('|');
+  const keys = ps.filter((p) => p.run && !p.missingBase && !p.noBaseline).map(pairKey).join('|');
 
   useEffect(() => {
     let live = true;
     setState(new Map());
     for (const p of ps) {
-      if (!p.run || p.missingBase) continue;
+      // noBaseline: the server would 409 (see reportData.hasBaseline) —
+      // skip the request rather than turn "no baseline yet" into a
+      // network-tab error on every load.
+      if (!p.run || p.missingBase || p.noBaseline) continue;
       const k = pairKey(p);
       fetchSummary(p).then(
         (sum) => live && setState((m) => new Map(m).set(k, { sum })),
