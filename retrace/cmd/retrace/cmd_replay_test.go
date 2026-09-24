@@ -347,9 +347,10 @@ type assertRequestsReport struct {
 	MissCount   int         `json:"missCount"`
 	Extra       []diff.Call `json:"extra"`
 	RequestDiff *struct {
-		Paired    int     `json:"paired"`
-		Changed   int     `json:"changed"`
-		BudgetPct float64 `json:"budgetPct"`
+		Paired           int     `json:"paired"`
+		Changed          int     `json:"changed"`
+		BudgetPct        float64 `json:"budgetPct"`
+		ToleratedRepeats int     `json:"toleratedRepeats"`
 	} `json:"requestDiff"`
 }
 
@@ -480,6 +481,113 @@ func TestReplayWithoutAssertRequestsIsUnaffectedByCallCountDrift(t *testing.T) {
 	}
 	if strings.Contains(res.stdout, `"extra"`) || strings.Contains(res.stdout, `"requestDiff"`) {
 		t.Fatalf("--json carries extra/requestDiff without --assert-requests having been passed:\n%s", res.stdout)
+	}
+}
+
+// TestReplayAssertRequestsToleratesAnAllowlistedRepeat is the feature this
+// file's other call-count-drift test motivates: a client that legitimately
+// repeats a recorded endpoint (here 4 extra GET /cart calls beyond the one
+// recorded) passes when a wire_repeats entry's max_extra covers the count.
+func TestReplayAssertRequestsToleratesAnAllowlistedRepeat(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig+"wire_repeats:\n  - method: GET\n    path: /cart\n    max_extra: 4\n    why: polls until ready\n")
+	recordAndAccept(t, bin, cwd, upstream.URL) // records ONE call to /cart
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplayCallsCartFiveTimes")...)
+	res := runRetrace(t, bin, cwd, "replay-callcount", args...)
+	if res.code != 0 {
+		t.Fatalf("exit = %d, want 0 — 4 extra calls are within the wire_repeats budget\nstdout: %s\nstderr: %s",
+			res.code, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	// Tolerated, never absent: the calls still appear in `extra`.
+	if len(doc.Extra) != 4 {
+		t.Fatalf("extra = %+v, want 4 — a tolerated repeat is still reported", doc.Extra)
+	}
+	for _, c := range doc.Extra {
+		if c.Kind != "repeat" || c.Tolerated == nil {
+			t.Fatalf("extra call = %+v, want Kind=repeat and a Tolerated note", c)
+		}
+	}
+	if doc.RequestDiff == nil || doc.RequestDiff.ToleratedRepeats != 4 {
+		t.Fatalf("requestDiff = %+v, want toleratedRepeats == 4", doc.RequestDiff)
+	}
+}
+
+// TestReplayAssertRequestsStillFailsAnOverBudgetRepeat pins the budget as a
+// real ceiling: the same 4 extra calls against a max_extra of 2 must still
+// fail — wire_repeats excuses a bounded pattern, not an unbounded one.
+func TestReplayAssertRequestsStillFailsAnOverBudgetRepeat(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig+"wire_repeats:\n  - method: GET\n    path: /cart\n    max_extra: 2\n    why: polls until ready\n")
+	recordAndAccept(t, bin, cwd, upstream.URL)
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplayCallsCartFiveTimes")...)
+	res := runRetrace(t, bin, cwd, "replay-callcount", args...)
+	if res.code != exitGate {
+		t.Fatalf("exit = %d, want %d — 4 extra calls exceed max_extra: 2\nstdout: %s\nstderr: %s",
+			res.code, exitGate, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if doc.RequestDiff == nil || doc.RequestDiff.ToleratedRepeats != 0 {
+		t.Fatalf("requestDiff = %+v, want toleratedRepeats == 0 — the budget check is all-or-nothing per endpoint", doc.RequestDiff)
+	}
+}
+
+// TestReplayAssertRequestsWireRepeatsNeverMasksAGenuinelyNewCall pins that
+// wire_repeats cannot be used to wave through a call to an endpoint the
+// reference never recorded at all: /admin/purge (TestHelperReplayDeviates)
+// has no recorded exchange, so it can never be served — it is a MISS
+// (replay.Server.ObservedHops' own doc comment: "a miss contributes
+// nothing here"), gated by the pre-existing missCount check, never by
+// diff.DiffWire's Extra/Kind="new" (which classifies genuinely new calls
+// only where a bundle actually served one — the `retrace diff` path
+// comparing two independently captured runs, not this one). Configuring a
+// wire_repeats entry for that exact method+path must not suppress it.
+func TestReplayAssertRequestsWireRepeatsNeverMasksAGenuinelyNewCall(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	bin := buildRetrace(t)
+	cwd := t.TempDir()
+	writeConfig(t, cwd, dateRuleConfig+"wire_repeats:\n  - method: GET\n    path: /admin/purge\n    max_extra: any\n    why: never mind\n")
+	recordAndAccept(t, bin, cwd, upstream.URL) // records ONE call to /cart, never /admin/purge
+
+	args := append([]string{"replay", "--ref", "checkout", "--app", "web", "--assert-requests", "--json"},
+		selfCmd(t, "TestHelperReplayDeviates")...)
+	res := runRetrace(t, bin, cwd, "replay-deviate", args...)
+	if res.code != exitGate {
+		t.Fatalf("exit = %d, want %d — a call to an endpoint the reference never recorded must still fail\nstdout: %s\nstderr: %s",
+			res.code, exitGate, res.stdout, res.stderr)
+	}
+	var doc assertRequestsReport
+	if err := json.Unmarshal([]byte(res.stdout), &doc); err != nil {
+		t.Fatalf("--json stdout is not one JSON document: %v\n%s", err, res.stdout)
+	}
+	if doc.MissCount == 0 {
+		t.Fatalf("missCount = 0, want the unrecorded /admin/purge call reported as a miss")
 	}
 }
 

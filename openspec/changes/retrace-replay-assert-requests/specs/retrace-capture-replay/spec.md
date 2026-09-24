@@ -40,3 +40,28 @@ be unchanged.
 - **WHEN** `retrace replay` runs without `--assert-requests`
 - **THEN** the report carries no `extra` or `requestDiff` field, and every
   exit code matches today's behavior exactly
+
+#### Scenario: An allowlisted repeat is tolerated but still reported
+- **WHEN** a flow calls an endpoint more times than the reference recorded,
+  every surplus call still matches that endpoint's method + normalized path
+  (a `"repeat"`, not a `"new"` call), and a `wire_repeats:` entry in
+  `retrace.yaml` names that method/path with a `max_extra` at or above the
+  surplus count
+- **THEN** `retrace replay --assert-requests` exits 0, `extra` still lists
+  every surplus call (each carrying `kind: "repeat"` and a `tolerated`
+  note), and `requestDiff.toleratedRepeats` counts them
+
+#### Scenario: An over-budget repeat still fails
+- **WHEN** the same surplus count exceeds the matching `wire_repeats`
+  entry's `max_extra`
+- **THEN** none of that endpoint's surplus calls are tolerated (the budget
+  is evaluated for the whole group, not call by call) and the run fails
+  exactly as it would with no `wire_repeats` entry at all
+
+#### Scenario: `wire_repeats` never excuses a new endpoint
+- **WHEN** a call's method + normalized path was never recorded by the
+  reference at all (a `"new"` call), regardless of any `wire_repeats`
+  entry naming that exact method and path
+- **THEN** the call is never tolerated by `wire_repeats` — a genuinely new
+  endpoint fails today through the pre-existing miss mechanism before
+  `wire_repeats` is ever consulted

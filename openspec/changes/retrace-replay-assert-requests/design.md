@@ -225,12 +225,85 @@ leaner `replay.Key` shape `unused` uses — an agent reading both `retrace
 replay --assert-requests --json` and `retrace diff --json` gets one
 vocabulary for "a call with no counterpart on the other side" instead of two.
 
+### Decision 7 (addendum, replay-repeat-tolerance): `wire_repeats` allowlists a bounded REPEAT, never a NEW call
+
+Decision 5's own Risk section predicted this: a legitimate poll-until-ready
+or retry-once pattern makes `--assert-requests` fail on every surplus call,
+with no config-only escape hatch beyond turning the flag off entirely.
+`wire_repeats` is that escape hatch, scoped as narrowly as the risk note
+promised:
+
+- `diff.DiffWire` now classifies every `Wire.Extra` call `"repeat"` (its
+  method + NormalizedPath appears at least once on the reference side —
+  same key a paired `Entry` groups by, deliberately ignoring query, since
+  PairCalls' own bucket key already reports a query-only mismatch as a
+  separate missing/extra pair) or `"new"` (the reference never recorded
+  that endpoint at all). This is a `diff.Call.Kind` field, additive to the
+  JSON contract, and `retrace diff` (via `diff.Build` → `DiffWire`) gets it
+  for free.
+- `wire_repeats:` entries (method, path glob, `max_extra` — an integer or
+  `"any"` — and a required `why`) excuse a `"repeat"` group, evaluated
+  PER ENDPOINT across the whole run: the group's total repeat count either
+  fits the budget (every call in it is tolerated) or it doesn't (none
+  are) — there is no way to tell which repeat within a group was "the
+  extra one," so there is no partial tolerance to compute.
+- A `"new"` call is **never** eligible, regardless of how a `wire_repeats`
+  entry is written. In practice a genuinely new endpoint under
+  `--assert-requests` today fails through the pre-existing miss gate
+  (`replay.Server.ObservedHops` never includes an unmatched request — see
+  Decision 3) before `Extra`/`Kind` ever enters the picture; the
+  new-vs-repeat split matters for `retrace diff`'s two-independent-runs
+  case, and is enforced here for the day replay's matching gets looser.
+- Tolerated calls are **not removed** from `extra` — they carry the same
+  `Tolerated *ToleratedNote` shape the existing app-pair `Deviation`
+  ledger already puts on a Call (diff/deviations.go), just sourced from a
+  different, replay-local config list instead of that JSON ledger.
+  `replayRequestDiff.toleratedRepeats` counts them for a consumer that
+  wants the budget without re-deriving it from `extra`.
+- Applying `wire_repeats` to `retrace diff` itself was considered and
+  deferred: `diff.Build`'s verdict/exit-code is computed from `Wire.Extra`
+  entirely inside the `diff` package, which by design (see wire.go's own
+  package doc) does not import `retrace/config` — the tolerance would need
+  either a config-shaped hole punched into `diff.Options` well past what
+  `QueryIgnore`/`WireIgnore` need (a bounded, count-based ledger, not a
+  flat list) or a second post-hoc pass re-deriving `Build`'s verdict
+  outside the package, both riskier than this feature justifies today.
+  `retrace diff`'s `Wire.Extra[].kind` is still populated (free, via
+  `DiffWire`), so a human or a future change has the signal to build on.
+
+#### Bugfix folded in: `query_ignore` never reached `diff.DiffWire`'s pairing
+
+While reproducing a real consumer's false positive (a token-mint endpoint
+whose query carries a per-call value, configured `query_ignore` exactly to
+keep that value from mattering), the pairing bug turned out to be upstream
+of `wire_repeats` entirely: `diff.Options` had no `QueryIgnore` field, so
+`PairCalls`' bucket key (method + normalized path + normalized **raw**
+query) always included every query parameter, `query_ignore` or not. A
+recorded call and its "same" repeat with a different ignorable query value
+never landed in the same bucket — the recorded call reported `Missing`,
+the repeat reported `Extra`, **as a `"new"` call**, because nothing on the
+reference side shared its query-including bucket key either. This affected
+both `--assert-requests` (`assertRequestsWire`) and `retrace diff`
+(`OptionsFor`) — anywhere `query_ignore` was configured at all, it was a
+no-op for wire-plane pairing even though `replay`'s own request MATCHING
+(`replay.Options.QueryIgnore`, unrelated field, same name) already
+honored it. Fixed by threading `Options.QueryIgnore` through pairing
+(`dropQueryKeys`, applied before `NormalizeQuery`'s existing opaque-token
+sort — no change to matching behavior when `QueryIgnore` is empty).
+
 ## Migration Plan
 
 Additive and opt-in; no migration. Ships behind a new flag with no default
 change to `retrace replay`'s existing behavior, report shape, or exit codes.
+`wire_repeats:` is a new, empty-by-default config key — absent, it changes
+nothing. The `query_ignore` pairing fix changes behavior only for a project
+that already configures `query_ignore` in a way that used to matter for
+`--assert-requests` or `retrace diff`'s wire plane; for that project, a
+previously-reported spurious missing/extra pair on an ignorable-query
+repeat now correctly pairs instead.
 
 ## Open Questions
 
-None outstanding — see Decision 6 for the two questions raised during design
-and their resolution.
+None outstanding — see Decision 6 for the two questions raised during
+design and their resolution, and Decision 7 for the `wire_repeats`
+follow-up and the `query_ignore` pairing bug found while building it.

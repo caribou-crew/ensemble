@@ -25,6 +25,7 @@ func TestValidateWhyPassesWhenEveryToleranceExplainsItself(t *testing.T) {
 		ExpectedStatuses: []StatusRule{{Path: "/cart/999/checkout", Status: 404, Why: "user 999 does not exist; the 404 is the assertion"}},
 		Masks:            map[string][]Rect{"catalog": {{X: 0, Y: 0, Width: 320, Height: 48, Why: "the clock"}}},
 		Flows:            map[string]Flow{"checkout": {Masks: map[string][]Rect{"cart": {{Width: 10, Height: 10, Why: "avatar"}}}}},
+		WireRepeats:      []WireRepeatEntry{{Method: "POST", Path: "/oauth/cardholder-token", MaxExtra: MaxExtra{N: 1}, Why: "retries the token fetch once on cold start"}},
 	}
 	if err := c.ValidateWhy(); err != nil {
 		t.Errorf("ValidateWhy = %v, want nil", err)
@@ -41,20 +42,21 @@ func TestValidateWhyCatchesEveryKindOfTolerance(t *testing.T) {
 		ExpectedStatuses: []StatusRule{{Path: "/cart/999/checkout", Status: 404}},
 		Masks:            map[string][]Rect{"catalog": {{Width: 320, Height: 48}}},
 		Flows:            map[string]Flow{"checkout": {Masks: map[string][]Rect{"cart": {{Width: 10, Height: 10}}}}},
+		WireRepeats:      []WireRepeatEntry{{Method: "POST", Path: "/oauth/cardholder-token", MaxExtra: MaxExtra{N: 1}}},
 	}
 	err := c.ValidateWhy()
 	if err == nil {
-		t.Fatal("ValidateWhy = nil, want an error naming all five")
+		t.Fatal("ValidateWhy = nil, want an error naming all six")
 	}
 	for _, want := range []string{
 		"wire_rules[0]", "wire_ignore[0]", "expected_statuses[0]",
-		"masks.catalog[0]", "flows.checkout.masks.cart[0]",
+		"masks.catalog[0]", "flows.checkout.masks.cart[0]", "wire_repeats[0]",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not name %s:\n%v", want, err)
 		}
 	}
-	if !strings.Contains(err.Error(), "5 tolerance(s)") {
+	if !strings.Contains(err.Error(), "6 tolerance(s)") {
 		t.Errorf("error must total them, got:\n%v", err)
 	}
 }

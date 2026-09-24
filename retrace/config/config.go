@@ -124,7 +124,13 @@ type Config struct {
 	// and a second scoping rule for the neighbouring key is how a config
 	// grows two mental models (R-J). A per-flow need, if one appears, gets
 	// a precedence rule stated in one place at that time.
-	QueryIgnore      []string          `yaml:"query_ignore"`
+	QueryIgnore []string `yaml:"query_ignore"`
+	// WireRepeats allowlists a client legitimately calling a recorded
+	// endpoint more times than the reference did, under `retrace replay
+	// --assert-requests` — see WireRepeatEntry (wire_repeats.go). Absent
+	// (every config today) means the pre-existing behavior: any extra
+	// call fails, repeat or not.
+	WireRepeats      []WireRepeatEntry `yaml:"wire_repeats"`
 	PathNormalize    []Normalize       `yaml:"path_normalize"`
 	ExpectedStatuses []StatusRule      `yaml:"expected_statuses"`
 	HopRequire       []RequiredRoute   `yaml:"hop_require"`
@@ -833,6 +839,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := validateWireIgnore(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := validateWireRepeats(&c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := validateMasks(&c); err != nil {

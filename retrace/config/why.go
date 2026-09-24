@@ -59,6 +59,11 @@ func (c *Config) ValidateWhy() error {
 			missing = append(missing, fmt.Sprintf("expected_statuses[%d] (%d on %s)", i, s.Status, s.Path))
 		}
 	}
+	for i, r := range c.WireRepeats {
+		if blank(r.Why) {
+			missing = append(missing, fmt.Sprintf("wire_repeats[%d] (%s %s)", i, r.Method, r.Path))
+		}
+	}
 	missing = append(missing, missingMaskWhys("masks", c.Masks)...)
 	for _, name := range sortedFlowNames(c.Flows) {
 		missing = append(missing, missingMaskWhys(fmt.Sprintf("flows.%s.masks", name), c.Flows[name].Masks)...)

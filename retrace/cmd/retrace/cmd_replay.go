@@ -28,6 +28,7 @@ import (
 	"github.com/caribou-crew/ensemble/retrace/reckey"
 	"github.com/caribou-crew/ensemble/retrace/refs"
 	"github.com/caribou-crew/ensemble/retrace/replay"
+	"github.com/caribou-crew/ensemble/retrace/rules"
 	"github.com/caribou-crew/ensemble/retrace/runs"
 )
 
@@ -88,6 +89,12 @@ type replayRequestDiff struct {
 	BudgetPct float64      `json:"budgetPct"`
 	Threshold *float64     `json:"threshold,omitempty"`
 	Entries   []diff.Entry `json:"entries,omitempty"`
+	// ToleratedRepeats counts Extra calls a wire_repeats entry excused —
+	// a subset of len(extra) in the report, never removed from it (a
+	// tolerated repeat is still reported, just doesn't count against the
+	// verdict). Omitted when zero so a run with no config carries no new
+	// key.
+	ToleratedRepeats int `json:"toleratedRepeats,omitempty"`
 }
 
 type replayRef struct {
@@ -130,7 +137,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		app             = fs.String("app", "", "app name (default: config app, else the directory name)")
 		listen          = fs.String("listen", "127.0.0.1:0", "address the FIRST replay listener binds (loopback only) — a retrace.yaml listeners: entry binds one port per configured listener, each answering only its own recorded exchanges; every literal loopback bind (this flag's default and every listener's default host) also best-effort answers on the other loopback family (127.0.0.1 <-> ::1) on the same port")
 		asJSON          = fs.Bool("json", false, "emit the replay report as JSON on stdout")
-		assertRequests  = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`")
+		assertRequests  = fs.Bool("assert-requests", false, "additionally diff the client's actual requests against the reference bundle's recorded requests (call-count drift, new/changed headers or body fields) and fail — same exit code as a miss — when the deviation exceeds the configured gates.wire.budget_pct (any deviation, if unconfigured); config-only threshold, no dedicated flag, matching `retrace diff`; a bounded, legitimate repeat of a recorded endpoint can be allowlisted via retrace.yaml's wire_repeats — a genuinely new endpoint is never excused by it")
 		requireConsumed = fs.Bool("require-consumed", false, "fail with the hard-gate exit code when the test command leaves any recorded exchange unused")
 	)
 	fs.Var(&statefulPaths, "stateful-path", "resource path whose unsafe recorded requests form causal replay barriers; repeatable, and matches the exact path plus child segments")
@@ -350,6 +357,7 @@ func cmdReplay(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, "replay: --assert-requests: %v", err)
 		}
+		applyWireRepeats(cfg.WireRepeats, w.Extra)
 		extra = w.Extra
 		if extra == nil {
 			extra = []diff.Call{}
@@ -722,7 +730,7 @@ func assertRequestsWire(cfg *config.Config, bundleDir string, dataKey []byte, li
 	if err != nil {
 		return diff.Wire{}, err
 	}
-	opts := diff.Options{WireIgnore: cfg.WireIgnorePaths(), Rules: rs, Normalize: cfg.NormalizePath}
+	opts := diff.Options{WireIgnore: cfg.WireIgnorePaths(), Rules: rs, Normalize: cfg.NormalizePath, QueryIgnore: cfg.QueryIgnoreKeys()}
 	// Apply destroy-mode rules to both sides first. Encrypt-mode fields are
 	// handled separately below: the reference is decrypted only in memory and
 	// both values become keyed digests while retaining their JSON structure.
@@ -981,6 +989,70 @@ func filterHopsByTarget(hops []trace.Hop, target string) []trace.Hop {
 	return out
 }
 
+// applyWireRepeats marks every extra call a `wire_repeats` entry excuses as
+// Tolerated, mutating in place (extra is w.Extra's own slice — its Call
+// elements are values, so the mutation must go through the index, not a
+// range copy). Only Kind == "repeat" calls are ever eligible: a "new"
+// endpoint the reference never recorded is not what wire_repeats allowlists,
+// no matter how it's configured — see design.md's replay-repeat-tolerance
+// addendum.
+//
+// The budget is evaluated PER ENDPOINT, across the whole run: all-or-nothing
+// per group, not per call. A group of repeat calls either fits under
+// MaxExtra as a whole (every call in it is tolerated) or it doesn't (none
+// are) — there is no ordering of observed calls that makes "the first N are
+// fine, the rest aren't" a meaningful distinction, since retrace has no
+// notion of which repeat was "extra" versus "expected" within the group.
+func applyWireRepeats(entries []config.WireRepeatEntry, extra []diff.Call) {
+	if len(entries) == 0 {
+		return
+	}
+	groups := map[string][]int{}
+	for i, c := range extra {
+		if c.Kind != "repeat" {
+			continue
+		}
+		key := c.Method + " " + c.NormalizedPath
+		groups[key] = append(groups[key], i)
+	}
+	for _, idxs := range groups {
+		c := extra[idxs[0]]
+		entry := findWireRepeat(entries, c.Method, c.NormalizedPath)
+		if entry == nil || !entry.MaxExtra.Allows(len(idxs)) {
+			continue
+		}
+		for _, i := range idxs {
+			extra[i].Tolerated = &diff.ToleratedNote{ID: "wire_repeats", Reason: entry.Why}
+		}
+	}
+}
+
+// findWireRepeat returns the first wire_repeats entry matching method+path,
+// or nil — mirroring diff.FindDeviation's own first-match, case-insensitive
+// method, glob path semantics.
+func findWireRepeat(entries []config.WireRepeatEntry, method, path string) *config.WireRepeatEntry {
+	for i := range entries {
+		if !strings.EqualFold(entries[i].Method, method) {
+			continue
+		}
+		if rules.MatchPathGlob(entries[i].Path, path) {
+			return &entries[i]
+		}
+	}
+	return nil
+}
+
+// untoleratedExtra reports whether any Extra call still counts against the
+// verdict — i.e. was not excused by a wire_repeats entry.
+func untoleratedExtra(extra []diff.Call) bool {
+	for _, c := range extra {
+		if c.Tolerated == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // requestDiffVerdict turns a computed diff.Wire into the report's
 // replayRequestDiff and the pass/fail gate: an Extra entry (call-count
 // drift, or a brand-new endpoint) fails unconditionally — it has no
@@ -1009,12 +1081,23 @@ func requestDiffVerdict(cfg *config.Config, flow string, w diff.Wire) (*replayRe
 		threshold = g.BudgetPct
 	}
 
-	failed := len(w.Extra) > 0
+	// An Extra entry fails unconditionally — UNLESS applyWireRepeats already
+	// excused it as a tolerated repeat, in which case it stops counting
+	// against the verdict (it is still reported: see renderRequestDiff and
+	// the Extra field itself).
+	failed := untoleratedExtra(w.Extra)
 	if !failed && paired > 0 {
 		if threshold != nil {
 			failed = budgetPct > *threshold
 		} else {
 			failed = changed > 0
+		}
+	}
+
+	tolerated := 0
+	for _, c := range w.Extra {
+		if c.Tolerated != nil {
+			tolerated++
 		}
 	}
 
@@ -1026,6 +1109,7 @@ func requestDiffVerdict(cfg *config.Config, flow string, w diff.Wire) (*replayRe
 	}
 	return &replayRequestDiff{
 		Paired: paired, Changed: changed, BudgetPct: budgetPct, Threshold: threshold, Entries: entries,
+		ToleratedRepeats: tolerated,
 	}, failed
 }
 
@@ -1038,13 +1122,24 @@ func renderRequestDiff(w io.Writer, extra []diff.Call, rd *replayRequestDiff) {
 	if rd == nil {
 		return
 	}
-	if len(extra) == 0 && rd.Changed == 0 {
+	failing := len(extra) - rd.ToleratedRepeats
+	if failing == 0 && rd.Changed == 0 {
 		fmt.Fprintf(w, "  --assert-requests: every request matched exactly (%d paired)\n", rd.Paired)
+		if rd.ToleratedRepeats > 0 {
+			fmt.Fprintf(w, "  (%d repeat call(s) tolerated by wire_repeats)\n", rd.ToleratedRepeats)
+		}
 		return
 	}
-	fmt.Fprintf(w, "\n  --assert-requests found %d request-side deviation(s) the response match did not catch:\n", len(extra)+rd.Changed)
+	fmt.Fprintf(w, "\n  --assert-requests found %d request-side deviation(s) the response match did not catch:\n", failing+rd.Changed)
 	for _, c := range extra {
-		fmt.Fprintf(w, "    extra call: %s %s — the client called this more times than the reference recorded, or it is a new call the reference never made\n", c.Method, c.Path)
+		switch {
+		case c.Tolerated != nil:
+			fmt.Fprintf(w, "    repeat call: %s %s — tolerated by wire_repeats: %s\n", c.Method, c.Path, c.Tolerated.Reason)
+		case c.Kind == "repeat":
+			fmt.Fprintf(w, "    repeat call: %s %s — the client called this more times than the reference recorded\n", c.Method, c.Path)
+		default:
+			fmt.Fprintf(w, "    extra call (new endpoint): %s %s — the reference never made this call\n", c.Method, c.Path)
+		}
 	}
 	for _, e := range rd.Entries {
 		fmt.Fprintf(w, "    %s %s:\n", e.Method, e.NormalizedPath)
