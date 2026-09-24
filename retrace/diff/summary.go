@@ -374,11 +374,12 @@ func OptionsFor(cfg *config.Config, a, b runs.Manifest) (Options, error) {
 		return Options{}, err
 	}
 	o := Options{
-		WireIgnore: cfg.WireIgnorePaths(),
-		Rules:      rs,
-		Normalize:  cfg.NormalizePath,
-		GroupsA:    a.Groups,
-		GroupsB:    b.Groups,
+		WireIgnore:  cfg.WireIgnorePaths(),
+		Rules:       rs,
+		Normalize:   cfg.NormalizePath,
+		GroupsA:     a.Groups,
+		GroupsB:     b.Groups,
+		QueryIgnore: cfg.QueryIgnoreKeys(),
 	}
 	// The deviations ledger. This is the ONE assembly point, so there is no
 	// second place for a caller to forget it. A load failure is returned,

@@ -911,6 +911,104 @@ func TestDiffWireMissingAndExtraCallsCarryNormalizedPath(t *testing.T) {
 	}
 }
 
+// TestDiffWireAppliesQueryIgnoreToPairing reproduces a real --assert-requests
+// false positive: a token-mint endpoint carries a per-call identifier (here
+// user_token) in its query string, configured as query_ignore because it
+// does not identify the call. Without Options.QueryIgnore reaching
+// PairCalls, the two calls' query strings differ and bucketKey never
+// matches them — the ONE recorded call is reported Missing AND the real
+// call is reported Extra, even though replay's own request matching
+// (replay.Options.QueryIgnore, retrace/replay/match.go) already treats
+// them as the same call.
+func TestDiffWireAppliesQueryIgnoreToPairing(t *testing.T) {
+	const path = "/oauth/cardholder-token"
+	a := []trace.Hop{hop(1, "POST", path+"?program_short_code=cui01&user_token=aaaa-1111", 200, "", "")}
+	b := []trace.Hop{hop(1, "POST", path+"?program_short_code=cui01&user_token=bbbb-2222", 200, "", "")}
+
+	ignore := []string{"user_token", "program_short_code", "_t"}
+	w := DiffWire(a, b, Options{QueryIgnore: ignore})
+	if len(w.Missing) != 0 || len(w.Extra) != 0 {
+		t.Fatalf("Missing=%+v Extra=%+v, want the two calls paired once query_ignore keys are dropped from the bucket key", w.Missing, w.Extra)
+	}
+	if len(w.Paired) != 1 {
+		t.Fatalf("Paired = %+v, want 1", w.Paired)
+	}
+
+	// Without QueryIgnore, the same two hops must still fail to pair — this
+	// is the pre-fix behavior, pinned so a future change can't silently
+	// make QueryIgnore a no-op again.
+	w2 := DiffWire(a, b, Options{})
+	if len(w2.Missing) != 1 || len(w2.Extra) != 1 {
+		t.Fatalf("Missing=%+v Extra=%+v, want 1/1 — without query_ignore the differing user_token must still break pairing", w2.Missing, w2.Extra)
+	}
+}
+
+// TestDiffWireQueryIgnoreLeavesARealExtraCallReported pins that
+// QueryIgnore only neutralizes the IGNORED keys — a genuine third call to
+// the same endpoint (one recorded, two observed, both with ignorable
+// query params) still reports as one real Extra, not zero.
+func TestDiffWireQueryIgnoreLeavesARealExtraCallReported(t *testing.T) {
+	const path = "/oauth/cardholder-token"
+	a := []trace.Hop{hop(1, "POST", path+"?user_token=aaaa", 200, "", "")}
+	b := []trace.Hop{
+		hop(1, "POST", path+"?user_token=bbbb", 200, "", ""),
+		hop(2, "POST", path+"?user_token=cccc", 200, "", ""),
+	}
+	w := DiffWire(a, b, Options{QueryIgnore: []string{"user_token"}})
+	if len(w.Missing) != 0 {
+		t.Fatalf("Missing = %+v, want 0", w.Missing)
+	}
+	if len(w.Extra) != 1 {
+		t.Fatalf("Extra = %+v, want exactly 1 — one call paired, one genuinely extra", w.Extra)
+	}
+	if w.Extra[0].Kind != "repeat" {
+		t.Fatalf("Extra[0].Kind = %q, want %q", w.Extra[0].Kind, "repeat")
+	}
+}
+
+// TestDiffWireClassifiesExtraCallsRepeatVsNew pins classifyExtra: an extra
+// call to an endpoint the reference recorded at least once (even under a
+// different query) is "repeat"; an extra call to an endpoint the reference
+// never recorded at all is "new".
+func TestDiffWireClassifiesExtraCallsRepeatVsNew(t *testing.T) {
+	a := []trace.Hop{hop(1, "POST", "/oauth/cardholder-token", 200, "", "")}
+	b := []trace.Hop{
+		hop(1, "POST", "/oauth/cardholder-token", 200, "", ""), // pairs
+		hop(2, "POST", "/oauth/cardholder-token", 200, "", ""), // repeat
+		hop(3, "GET", "/admin/purge", 200, "", ""),             // new
+	}
+	w := DiffWire(a, b, Options{})
+	if len(w.Extra) != 2 {
+		t.Fatalf("Extra = %+v, want 2 calls", w.Extra)
+	}
+	kinds := map[string]string{}
+	for _, c := range w.Extra {
+		kinds[c.Method+" "+c.Path] = c.Kind
+	}
+	if kinds["POST /oauth/cardholder-token"] != "repeat" {
+		t.Fatalf("kinds = %+v, want the repeated call classified \"repeat\"", kinds)
+	}
+	if kinds["GET /admin/purge"] != "new" {
+		t.Fatalf("kinds = %+v, want the never-recorded call classified \"new\"", kinds)
+	}
+}
+
+// TestDiffWireClassifiesExtraCallsAgainstNormalizedPath pins that
+// classification runs the reference through the SAME Options.Normalize as
+// everything else: a recorded /cart/1 must still classify an extra /cart/2
+// as "repeat", not "new", once both normalize to /cart/:id.
+func TestDiffWireClassifiesExtraCallsAgainstNormalizedPath(t *testing.T) {
+	a := []trace.Hop{hop(1, "GET", "/cart/1", 200, "", "")}
+	b := []trace.Hop{
+		hop(1, "GET", "/cart/1", 200, "", ""),
+		hop(2, "GET", "/cart/2", 200, "", ""),
+	}
+	w := DiffWire(a, b, Options{Normalize: normalizeCartID})
+	if len(w.Extra) != 1 || w.Extra[0].Kind != "repeat" {
+		t.Fatalf("Extra = %+v, want the /cart/2 extra classified \"repeat\" via normalization", w.Extra)
+	}
+}
+
 func TestDiffWireDiffsBothRequestAndResponseBodies(t *testing.T) {
 	// W9: delete the resp body diff. W10: delete the req body diff.
 	a := []trace.Hop{hop(1, "POST", "/x", 200, `{"r":1}`, `{"s":1}`)}

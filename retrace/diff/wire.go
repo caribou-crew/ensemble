@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -32,6 +33,17 @@ type Options struct {
 	GroupsA    []runs.Group
 	GroupsB    []runs.Group
 	Deviations []Deviation
+	// QueryIgnore names query parameters that do not identify a call (a
+	// cache-buster, a per-call token) — config.Config.QueryIgnoreKeys.
+	// PairCalls buckets on method + normalized path + query, so a caller
+	// that fails to pass this here gets a pairing PairCalls' own bucket key
+	// cannot make: the same logical call, recorded once and observed again
+	// with a different token value, reports as a Missing AND an unrelated
+	// Extra instead of one Paired entry — exactly the false positive
+	// replay.Options.QueryIgnore (retrace/replay/match.go) already avoids
+	// on the RESPONSE-matching side. Nil/empty is the pre-existing
+	// behavior: every query key is significant.
+	QueryIgnore []string
 }
 
 // Pair is one call matched between run A and run B by PairCalls.
@@ -274,8 +286,37 @@ func NormalizeQuery(rawQuery string) string {
 	return strings.Join(parts, "&")
 }
 
-func bucketKey(h trace.Hop, normalize func(string) string) string {
+// dropQueryKeys removes every "k=v" pair whose key matches an ignore entry
+// (a raw, percent-decoded comparison — same dialect config.QueryIgnore
+// documents, e.g. "user_token", not "user%5Ftoken"), leaving the rest of
+// the raw query untouched: pairing's bucket key stays the opaque-token form
+// NormalizeQuery already builds, not a fully re-encoded url.Values.
+func dropQueryKeys(rawQuery string, ignore []string) string {
+	if rawQuery == "" || len(ignore) == 0 {
+		return rawQuery
+	}
+	ignoreSet := make(map[string]bool, len(ignore))
+	for _, k := range ignore {
+		ignoreSet[k] = true
+	}
+	parts := strings.Split(rawQuery, "&")
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		key, _, _ := strings.Cut(p, "=")
+		if dk, err := url.QueryUnescape(key); err == nil {
+			key = dk
+		}
+		if ignoreSet[key] {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, "&")
+}
+
+func bucketKey(h trace.Hop, normalize func(string) string, queryIgnore []string) string {
 	path, rawQuery := SplitPath(h.Path)
+	rawQuery = dropQueryKeys(rawQuery, queryIgnore)
 	return h.Method + " " + normalize(path) + "?" + NormalizeQuery(rawQuery)
 }
 
@@ -284,7 +325,16 @@ func bucketKey(h trace.Hop, normalize func(string) string) string {
 // first-seen order (all of a's calls, in a's order, then any key that only
 // appears in b, in b's order) — never map order — so the output is
 // deterministic across runs of the same two inputs.
+//
+// PairCalls itself never drops a query key — it has no Options.QueryIgnore
+// to consult, and no external caller exists to need the signature change.
+// DiffWire calls the internal pairCalls below instead, with its own
+// Options.QueryIgnore threaded through.
 func PairCalls(a, b []trace.Hop, normalize func(string) string) (pairs []Pair, missing, extra []trace.Hop) {
+	return pairCalls(a, b, normalize, nil)
+}
+
+func pairCalls(a, b []trace.Hop, normalize func(string) string, queryIgnore []string) (pairs []Pair, missing, extra []trace.Hop) {
 	if normalize == nil {
 		normalize = func(p string) string { return p }
 	}
@@ -301,11 +351,11 @@ func PairCalls(a, b []trace.Hop, normalize func(string) string) (pairs []Pair, m
 		return bk
 	}
 	for _, h := range a {
-		bk := get(bucketKey(h, normalize))
+		bk := get(bucketKey(h, normalize, queryIgnore))
 		bk.as = append(bk.as, h)
 	}
 	for _, h := range b {
-		bk := get(bucketKey(h, normalize))
+		bk := get(bucketKey(h, normalize, queryIgnore))
 		bk.bs = append(bk.bs, h)
 	}
 	for _, k := range order {
@@ -414,6 +464,12 @@ type Call struct {
 	Status         int            `json:"status"`
 	Group          string         `json:"group,omitempty"`
 	Tolerated      *ToleratedNote `json:"tolerated,omitempty"`
+	// Kind classifies an Extra call as "repeat" (this method+NormalizedPath
+	// was recorded at least once on the reference side, just fewer times)
+	// or "new" (the reference never recorded this endpoint at all) — see
+	// classifyExtra. Only ever set on Wire.Extra; a Missing call has no use
+	// for the distinction, so Kind stays "" there.
+	Kind string `json:"kind,omitempty"`
 }
 
 // GroupNames lists the distinct flow-part names declared on each side, in
@@ -915,7 +971,7 @@ func DiffWire(a, b []trace.Hop, o Options) Wire {
 	if normalize == nil {
 		normalize = func(p string) string { return p }
 	}
-	pairs, missingHops, extraHops := PairCalls(a, b, normalize)
+	pairs, missingHops, extraHops := pairCalls(a, b, normalize, o.QueryIgnore)
 
 	entries := make([]Entry, len(pairs))
 	for i, p := range pairs {
@@ -934,12 +990,38 @@ func DiffWire(a, b []trace.Hop, o Options) Wire {
 		groupsPtr = &GroupNames{A: namesA, B: namesB}
 	}
 
+	extra := classifyExtra(callsFrom(extraHops, o.GroupsB, normalize), a, normalize)
+
 	return Wire{
 		Paired: entries,
 		// A matched deviation ANNOTATES the call; it never removes it. See
 		// applyDeviations in deviations.go.
 		Missing: applyDeviations(callsFrom(missingHops, o.GroupsA, normalize), o.Deviations),
-		Extra:   applyDeviations(callsFrom(extraHops, o.GroupsB, normalize), o.Deviations),
+		Extra:   applyDeviations(extra, o.Deviations),
 		Groups:  groupsPtr,
 	}
+}
+
+// classifyExtra tags every extra (b-only) call "repeat" or "new" against
+// a's own recorded calls — method + NormalizedPath only, deliberately
+// ignoring query: PairCalls buckets on method+path+query, which is the
+// right granularity for pairing but the wrong one for this question. A
+// client repeating `/cart?id=1` when the reference only recorded
+// `/cart?id=2` is still hitting an endpoint the reference exercised, not a
+// brand-new one — the id difference is what PairCalls' own bucketing
+// already reports as a missing/extra pair on that stricter key.
+func classifyExtra(extra []Call, reference []trace.Hop, normalize func(string) string) []Call {
+	seen := make(map[string]bool, len(reference))
+	for _, h := range reference {
+		path, _ := SplitPath(h.Path)
+		seen[h.Method+" "+normalize(path)] = true
+	}
+	for i := range extra {
+		if seen[extra[i].Method+" "+extra[i].NormalizedPath] {
+			extra[i].Kind = "repeat"
+		} else {
+			extra[i].Kind = "new"
+		}
+	}
+	return extra
 }
