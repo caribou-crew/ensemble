@@ -46,6 +46,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/suites/{suite}/gallery", s.handleLatestGallery)
 	mux.HandleFunc("GET /api/suites/{suite}/attempts/{attempt}/screens/{sha}", s.handleSuiteScreen)
 	mux.HandleFunc("GET /api/queue", s.handleQueue)
+	mux.HandleFunc("GET /api/surfaces", s.handleSurfaces)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}", s.handleItem)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/queue/{app}/{flow}/runs/{runId}", s.handleItemAtRun)
@@ -57,6 +58,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/shots/{app}/{flow}/runs/{runId}/{side}/{name}", s.handleShotAtRun)
 	mux.HandleFunc("GET /api/evidence/{app}/{flow}", s.handleEvidence)
 	mux.HandleFunc("GET /api/videos/{app}/{flow}/{name}", s.handleVideo)
+	mux.HandleFunc("GET /api/evidence/{app}/{flow}/runs/{runId}", s.handleEvidenceAtRun)
+	mux.HandleFunc("GET /api/videos/{app}/{flow}/runs/{runId}/{name}", s.handleVideoAtRun)
 	mux.HandleFunc("GET /api/report/{app}/{flow}", s.handleReport)
 	mux.HandleFunc("GET /api/report/{app}/{flow}/{path...}", s.handleReport)
 	mux.HandleFunc("GET /api/sync/config", s.handleSyncConfig)
@@ -153,7 +156,13 @@ func (s *server) handleItemAtRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeItemAtRun(w, d, app, flow, r.PathValue("runId"), r.URL.Query().Get("exact") == "1")
+	q := r.URL.Query()
+	sum, err := SummaryForRunVs(d, app, flow, r.PathValue("runId"), q.Get("base"), q.Get("exact") == "1")
+	if err != nil {
+		writeErr(w, statusForSummaryErr(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": sum})
 }
 
 // WriteItemAtRun is WriteItem pinned to one specific run rather than
@@ -168,11 +177,7 @@ func WriteItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string) {
 }
 
 func writeItemAtRun(w http.ResponseWriter, d Deps, app, flow, runID string, exact bool) {
-	resolve := SummaryForRun
-	if exact {
-		resolve = SummaryForExactRun
-	}
-	sum, err := resolve(d, app, flow, runID)
+	sum, err := SummaryForRunVs(d, app, flow, runID, "", exact)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return
@@ -262,6 +267,7 @@ type acceptRequest struct {
 }
 
 func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
+	defer summaries.flush()
 	d, app, flow, ok := s.flowFrom(w, r)
 	if !ok {
 		return
@@ -363,6 +369,7 @@ type rejectRequest struct {
 }
 
 func (s *server) handleReject(w http.ResponseWriter, r *http.Request) {
+	defer summaries.flush()
 	d, app, flow, ok := s.flowFrom(w, r)
 	if !ok {
 		return
@@ -463,6 +470,7 @@ type ruleRequest struct {
 }
 
 func (s *server) handleRule(w http.ResponseWriter, r *http.Request) {
+	defer summaries.flush()
 	d, app, flow, ok := s.flowFrom(w, r)
 	if !ok {
 		return
@@ -528,6 +536,7 @@ type redactRequest struct {
 }
 
 func (s *server) handleRedact(w http.ResponseWriter, r *http.Request) {
+	defer summaries.flush()
 	d, app, flow, ok := s.flowFrom(w, r)
 	if !ok {
 		return
@@ -603,7 +612,8 @@ func (s *server) handleShotAtRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeShotAtRun(w, d, app, flow, r.PathValue("runId"), r.PathValue("side"), r.PathValue("name"), r.URL.Query().Get("exact") == "1")
+	q := r.URL.Query()
+	writeShotAtRunVs(w, d, app, flow, r.PathValue("runId"), q.Get("base"), r.PathValue("side"), r.PathValue("name"), q.Get("exact") == "1")
 }
 
 // WriteShotAtRun is WriteShot pinned to one specific run rather than
@@ -616,19 +626,23 @@ func WriteShotAtRun(w http.ResponseWriter, d Deps, app, flow, runID, side, name 
 }
 
 func writeShotAtRun(w http.ResponseWriter, d Deps, app, flow, runID, side, name string, exact bool) {
+	writeShotAtRunVs(w, d, app, flow, runID, "", side, name, exact)
+}
+
+func writeShotAtRunVs(w http.ResponseWriter, d Deps, app, flow, runID, base, side, name string, exact bool) {
 	if !validShotRequest(w, side, name) {
 		return
 	}
-	resolve := SummaryForRun
-	if exact {
-		resolve = SummaryForExactRun
-	}
-	sum, err := resolve(d, app, flow, runID)
+	sum, err := SummaryForRunVs(d, app, flow, runID, base, exact)
 	if err != nil {
 		writeErr(w, statusForSummaryErr(err), err.Error())
 		return
 	}
-	writeShotImage(w, sum, diffDirForRun(d.Cwd, app, flow, runID), app, flow, side, name)
+	outDir := diffDirForRun(d.Cwd, app, flow, runID)
+	if base != "" {
+		outDir = filepath.Join(outDir, "vs", sum.A.RunID)
+	}
+	writeShotImage(w, sum, outDir, app, flow, side, name)
 }
 
 // validShotRequest is the pair of checks that must happen BEFORE anything
@@ -724,6 +738,22 @@ func (s *server) handleVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteVideo(w, r, d, app, flow, r.PathValue("name"))
+}
+
+func (s *server) handleEvidenceAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	writeEvidence(w, d, app, flow, r.PathValue("runId"))
+}
+
+func (s *server) handleVideoAtRun(w http.ResponseWriter, r *http.Request) {
+	d, app, flow, ok := s.flowFrom(w, r)
+	if !ok {
+		return
+	}
+	writeVideo(w, r, d, app, flow, r.PathValue("runId"), r.PathValue("name"))
 }
 
 func (s *server) handleReport(w http.ResponseWriter, r *http.Request) {

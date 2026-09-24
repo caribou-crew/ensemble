@@ -28,6 +28,8 @@ export interface Counts {
   wirePaired: number;
   wireChanged: number;
   wireMoved: number;
+  /** Reorders between calls in flight together; reported, never part of the verdict. */
+  wireMovedConcurrent?: number;
   wireMissing: number;
   wireExtra: number;
   violations: number;
@@ -255,6 +257,17 @@ export interface RunRow {
 
 export interface RunsResponse {
   runs: RunRow[];
+}
+
+/** A run as its manifest records it — GET /surfaces computes no diff. */
+export interface SurfaceRun {
+  runId: string;
+  when: string;
+  source?: Source;
+}
+
+export interface SurfacesResponse {
+  surfaces: { app: string; flow: string; runs: SurfaceRun[] }[];
 }
 
 // --- sync (discover -> filter -> select -> pull) ---

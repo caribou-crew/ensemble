@@ -29,13 +29,17 @@ var evidenceVideoExts = []string{".webm", ".mp4"}
 // resolved the same way summaryFor resolves its own B side — FindRun
 // "latest" + PathsFor — just without requiring an A side to exist.
 func evidenceRunDir(d Deps, app, flow string) (string, error) {
+	return evidenceRunDirAt(d, app, flow, "latest")
+}
+
+func evidenceRunDirAt(d Deps, app, flow, selector string) (string, error) {
 	if err := runs.ValidateComponents(app, flow); err != nil {
 		return "", err
 	}
 	root := runs.RunsRoot(d.Cwd)
-	id := runs.FindRun(root, app, flow, "latest")
+	id := runs.FindRun(root, app, flow, selector)
 	if id == "" {
-		return "", fmt.Errorf("no run recorded for %s/%s", app, flow)
+		return "", fmt.Errorf("no run matches %q for %s/%s", selector, app, flow)
 	}
 	p, err := runs.PathsFor(root, app, flow, id)
 	if err != nil {
@@ -58,7 +62,11 @@ type Evidence struct {
 // field — see the design doc's D1: evidence is attached after `retrace
 // run` exits, so it cannot live in the one-writer manifest.json.
 func WriteEvidence(w http.ResponseWriter, d Deps, app, flow string) {
-	dir, err := evidenceRunDir(d, app, flow)
+	writeEvidence(w, d, app, flow, "latest")
+}
+
+func writeEvidence(w http.ResponseWriter, d Deps, app, flow, selector string) {
+	dir, err := evidenceRunDirAt(d, app, flow, selector)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
@@ -102,12 +110,16 @@ func listVideos(dir string) ([]string, error) {
 // seeks by issuing Range requests, and ServeContent is what answers them
 // with 206 Partial Content instead of re-sending the whole file every seek.
 func WriteVideo(w http.ResponseWriter, r *http.Request, d Deps, app, flow, name string) {
+	writeVideo(w, r, d, app, flow, "latest", name)
+}
+
+func writeVideo(w http.ResponseWriter, r *http.Request, d Deps, app, flow, selector, name string) {
 	base, err := safeBase(name)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	dir, err := evidenceRunDir(d, app, flow)
+	dir, err := evidenceRunDirAt(d, app, flow, selector)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return

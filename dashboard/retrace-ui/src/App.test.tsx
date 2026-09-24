@@ -224,7 +224,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
-  window.history.replaceState({}, '', '/');
+  window.history.replaceState({}, '', '/?view=queue');
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -353,7 +353,7 @@ describe('the keyboard dispatch', () => {
     stubServer();
     await mount();
     const header = container.querySelector('.app-header') as HTMLElement;
-    expect(header.textContent).toContain('retrace review');
+    expect(header.textContent).toContain('all runs');
     // At the queue root there's nowhere to go back to, so no back control.
     expect(header.querySelector('.breadcrumb__back')).toBeNull();
 
@@ -369,9 +369,9 @@ describe('the keyboard dispatch', () => {
     // The header still shows the full trail, and its root segment is a
     // single click back to the queue — no need to step up one level at a
     // time via the now-removed standalone breadcrumb bar in <main>.
-    expect(header.textContent).toContain('retrace review');
+    expect(header.textContent).toContain('all runs');
     const root = header.querySelector('.breadcrumb__link') as HTMLButtonElement;
-    expect(root.textContent).toBe('retrace review');
+    expect(root.textContent).toBe('all runs');
     await act(async () => {
       root.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -380,10 +380,16 @@ describe('the keyboard dispatch', () => {
   });
 });
 
+async function menu(label: string) {
+  await act(async () => (document.querySelector('.more-menu__trigger') as HTMLButtonElement).click());
+  const item = [...document.querySelectorAll('.more-menu__item')].find((b) => b.querySelector('.more-menu__label')?.textContent === label) as HTMLButtonElement;
+  await act(async () => item.click());
+}
+
 // --- the check-all header button -----------------------------------------
 
 async function clickCheckAll() {
-  const btn = document.querySelector('.app-header__check-all') as HTMLButtonElement;
+  const btn = document.querySelector('.app-header__primary') as HTMLButtonElement;
   await act(async () => {
     btn.click();
     // The handler awaits three fetches in sequence (config, candidates,
@@ -550,6 +556,7 @@ describe('the three verbs', () => {
               posA: 0,
               posB: 0,
               moved: false,
+              concurrent: false,
               truncated: false,
               classes: ['changed'],
               bodyDiff: [{ scope: 'resp', path: 'placedAt', type: 'changed', a: 'T1', b: 'T2' }],
@@ -606,6 +613,7 @@ describe('the three verbs', () => {
               posA: 0,
               posB: 0,
               moved: false,
+              concurrent: false,
               truncated: false,
               classes: ['changed'],
               bodyDiff: [{ scope: 'resp', path: 'account.number', type: 'changed', a: '1234', b: '5678' }],
@@ -666,6 +674,7 @@ describe('the three verbs', () => {
               posA: 0,
               posB: 0,
               moved: false,
+              concurrent: false,
               truncated: false,
               classes: ['changed'],
               bodyDiff: [{ scope: 'resp', path: 'accountNumber', type: 'changed', a: '1234', b: '5678' }],
@@ -769,7 +778,7 @@ describe('what the verbs report', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.history.replaceState({}, '', '/');
+    window.history.replaceState({}, '', '/?view=queue');
     const degraded = await acceptWith({ ...CLEAN, captureStatus: 'degraded' });
 
     expect(degraded).not.toBe(clean);
@@ -805,7 +814,7 @@ describe('what the verbs report', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.history.replaceState({}, '', '/');
+    window.history.replaceState({}, '', '/?view=queue');
 
     const calls2 = stubServer({
       posts: {
@@ -1204,11 +1213,7 @@ describe('cross-app compare view', () => {
     });
     await mount();
 
-    const pairsBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'cross-app')!;
-    expect(pairsBtn).toBeTruthy();
-    await act(async () => {
-      pairsBtn.click();
-    });
+    await menu('cross-app');
 
     expect(text()).toContain('mobile');
 
@@ -1236,13 +1241,8 @@ describe('cross-app compare view', () => {
     await mount();
     await openAFlow(calls); // drills to run level: app/flow/run are all set
 
-    const pairsBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'cross-app')!;
-    await act(async () => {
-      pairsBtn.click();
-    });
-    // The header control now honestly reads "back to queue" — it no longer
-    // lands wherever app/flow/run happened to be.
-    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === '← queue')).toBe(true);
+    await menu('cross-app');
+    expect(new URLSearchParams(window.location.search).get('app')).toBeNull();
 
     calls.length = 0;
     await press('a');
@@ -1265,7 +1265,7 @@ describe('commit suite navigation', () => {
   it('opens suites from queue, persists matrix selection and reloads the same flow', async () => {
     const calls = stubServer({ suites: suiteResponse() });
     await mount();
-    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'suites')!.click());
+    await menu('suites');
     expect(calls.some(c => c.url === '/api/suites')).toBe(true);
     expect(text()).toContain('Comparison suites');
     await act(async () => (container.querySelector('.suites__matrix td button') as HTMLButtonElement).click());
@@ -1297,7 +1297,7 @@ describe('commit suite navigation', () => {
     expect(calls.some(c => c.url.startsWith('/api/evidence/'))).toBe(false);
     await press('a'); await press('r');
     expect(calls.filter(c => c.method === 'POST')).toEqual([]);
-    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'suites')!.click());
+    await menu('suites');
     expect(container.querySelector('[aria-label="Flow details"] h2')?.textContent).toBe('Account access · Web');
   });
 });
@@ -1315,7 +1315,7 @@ describe('leaving suite evidence', () => {
     else await act(async () => back!.click());
     expect(text()).toContain('Comparison suites');
     expect(new URLSearchParams(window.location.search).get('suiteEvidence')).toBeNull();
-    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === '← queue')!.click());
+    await menu('all runs');
     await press('j');
     expect(selectedRow()).toBe('web/cart');
     await press('j');
@@ -1329,7 +1329,7 @@ describe('leaving suite evidence', () => {
     window.history.replaceState({}, '', '/?app=web&flow=search&run=run-suite&suiteEvidence=1');
     stubServer();
     await mount();
-    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'retrace review')!.click());
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'all runs')!.click());
     expect(new URLSearchParams(window.location.search).get('suiteEvidence')).toBeNull();
     await press('j');
     expect(selectedRow()).toBe('web/cart');

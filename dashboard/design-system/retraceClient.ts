@@ -19,6 +19,7 @@ import type {
   PairsResponse,
   QueueResponse,
   RunsResponse,
+  SurfacesResponse,
   SyncBranchesResponse,
   SyncCandidatesResponse,
   SyncConfigResponse,
@@ -108,6 +109,14 @@ export function queueQuery(filter?: QueueFilter): string {
   return qs ? `?${qs}` : '';
 }
 
+function runQuery(exact: boolean, base?: string): string {
+  const params = new URLSearchParams();
+  if (exact) params.set('exact', '1');
+  if (base) params.set('base', base);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
 /** Drops empty-string values so URLSearchParams never carries a filter the
  * caller left blank. */
 function compact(o: Record<string, string | undefined>): Record<string, string> {
@@ -126,14 +135,19 @@ export interface RetraceClient {
   suiteScreenUrl(suiteId: string, attemptId: string, sha256: string): string;
   queue(filter?: QueueFilter): Promise<QueueResponse>;
   item(app: string, flow: string): Promise<ItemResponse>;
-  itemAtRun(app: string, flow: string, runId: string, exact?: boolean): Promise<ItemResponse>;
+  /** `base` diffs against another run of the same surface instead of the accepted reference. */
+  itemAtRun(app: string, flow: string, runId: string, exact?: boolean, base?: string): Promise<ItemResponse>;
+  /** Every surface and its runs from manifests alone — cheap, no diffs. */
+  surfaces(): Promise<SurfacesResponse>;
   /** Every run of a surface, newest first — the runs-list drill-down. */
   runs(app: string, flow: string): Promise<RunsResponse>;
   shotUrl(app: string, flow: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string): string;
-  shotUrlAtRun(app: string, flow: string, runId: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string, exact?: boolean): string;
+  shotUrlAtRun(app: string, flow: string, runId: string, side: 'a' | 'b' | 'diff' | 'overlay', name: string, exact?: boolean, base?: string): string;
   videoUrl(app: string, flow: string, name: string): string;
+  videoUrlAtRun(app: string, flow: string, runId: string, name: string): string;
   reportUrl(app: string, flow: string): string;
   evidence(app: string, flow: string): Promise<Evidence>;
+  evidenceAtRun(app: string, flow: string, runId: string): Promise<Evidence>;
   /** Every persisted cross-app diff (retrace/pairs) — the listing for the
    * cross-app compare view. Never triggers a computation; reads only what
    * `retrace diff -a/-b` already persisted. */
@@ -226,8 +240,11 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
     item(app, flow) {
       return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}${withInstance('')}`);
     },
-    itemAtRun(app, flow, runId, exact = false) {
-      return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}${withInstance(exact ? '?exact=1' : '')}`);
+    itemAtRun(app, flow, runId, exact = false, base) {
+      return request<ItemResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs/${seg(runId)}${withInstance(runQuery(exact, base))}`);
+    },
+    surfaces() {
+      return request<SurfacesResponse>(`${basePath}/surfaces${withInstance('')}`);
     },
     runs(app, flow) {
       return request<RunsResponse>(`${basePath}/queue/${seg(app)}/${seg(flow)}/runs${withInstance('')}`);
@@ -238,11 +255,17 @@ export function createRetraceClient(basePath: string, instance?: string): Retrac
       }
       return `${basePath}/shots/${seg(app)}/${seg(flow)}/${seg(side)}/${seg(name)}${withInstance('')}`;
     },
-    shotUrlAtRun(app, flow, runId, side, name, exact = false) {
+    shotUrlAtRun(app, flow, runId, side, name, exact = false, base) {
       if (name === '') {
         throw new Error(`no ${side}-side image for this checkpoint in ${app}/${flow}/${runId}`);
       }
-      return `${basePath}/shots/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(side)}/${seg(name)}${withInstance(exact ? '?exact=1' : '')}`;
+      return `${basePath}/shots/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(side)}/${seg(name)}${withInstance(runQuery(exact, base))}`;
+    },
+    videoUrlAtRun(app, flow, runId, name) {
+      return `${basePath}/videos/${seg(app)}/${seg(flow)}/runs/${seg(runId)}/${seg(name)}${withInstance('')}`;
+    },
+    evidenceAtRun(app, flow, runId) {
+      return request<Evidence>(`${basePath}/evidence/${seg(app)}/${seg(flow)}/runs/${seg(runId)}${withInstance('')}`);
     },
     videoUrl(app, flow, name) {
       return `${basePath}/videos/${seg(app)}/${seg(flow)}/${seg(name)}${withInstance('')}`;

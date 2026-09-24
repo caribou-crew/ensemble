@@ -9,6 +9,8 @@ import RetraceBreadcrumb from '@ensemble/design-system/components/RetraceBreadcr
 import RetraceItemScreen from '@ensemble/design-system/components/RetraceItemScreen';
 import RetraceSyncPanel from '@ensemble/design-system/components/RetraceSyncPanel';
 import RetraceSuites, { SuiteRunEvidenceNotice } from '@ensemble/design-system/components/RetraceSuites';
+import BranchReport from './BranchReport';
+import MoreMenu from './MoreMenu';
 import type { SuiteEvidence, SuiteSelection } from '@ensemble/design-system/suiteTypes';
 import RetracePairsList from '@ensemble/design-system/components/RetracePairsList';
 import RetracePairScreen from '@ensemble/design-system/components/RetracePairScreen';
@@ -313,6 +315,7 @@ export default function App() {
     setSuiteFeature(next.featureId ?? null);
     setSuitePlatform(next.platform ?? null);
   };
+  const [reportBranch, setReportBranch] = useUrlParam('reportBranch');
   const [pairAppB, setPairAppB] = useUrlParam('pairAppB');
   const [pairFlowB, setPairFlowB] = useUrlParam('pairFlowB');
   const [pairRunB, setPairRunB] = useUrlParam('pairRunB');
@@ -347,6 +350,8 @@ export default function App() {
   // The navigation level, derived — never stored, so it can never disagree
   // with the URL.
   const level: 'queue' | 'surface' | 'run' = app && flow && run ? 'run' : app && flow ? 'surface' : 'queue';
+  // The branch report is home; the per-surface queue is `view=queue`.
+  const isReport = level === 'queue' && (view === null || view === 'report');
 
   // The queue filter lives in the URL like every other bit of view state in
   // this app (see urlState) — so a filtered queue is a shareable link and
@@ -365,7 +370,8 @@ export default function App() {
   // Every fetch in this app goes through useAsync — the queue load, the item
   // load, and the post-mutation refetch, which is this same hook with
   // `version` in its deps. There is no hand-rolled cancellation anywhere.
-  const queue = useAsync(() => client.queue(filter), [version, filter.source, filter.app]);
+  // The queue diffs every surface, so the report (which lists runs cheaply itself) skips it.
+  const queue = useAsync(() => (isReport ? Promise.resolve(null) : client.queue(filter)), [isReport, version, filter.source, filter.app]);
   const items = queue.data?.items ?? [];
   // The app chips need the FULL set of apps for the current source, not the
   // already app-filtered `items` — once a reviewer picks one app, `items`
@@ -373,8 +379,8 @@ export default function App() {
   // make every other app's chip disappear. Only fetched when an app filter
   // is actually set; otherwise `items` already is that full set.
   const appsForChips = useAsync(
-    () => (filter.app ? client.queue({ source: filter.source }) : Promise.resolve(null)),
-    [version, filter.source, filter.app],
+    () => (filter.app && !isReport ? client.queue({ source: filter.source }) : Promise.resolve(null)),
+    [isReport, version, filter.source, filter.app],
   );
   const apps = Array.from(new Set((filter.app ? appsForChips.data?.items : items)?.map((i) => i.app) ?? [])).sort();
 
@@ -410,7 +416,7 @@ export default function App() {
   };
   const backToQueue = () => {
     setSuiteEvidence(null);
-    setView(null);
+    setView('queue');
     setApp(null);
     setFlow(null);
     setRun(null);
@@ -447,15 +453,19 @@ export default function App() {
     setPairId(null);
     clearTransient();
   };
-  const closePairs = () => {
-    setSuiteEvidence(null);
-    setView(null);
-    closePair();
-  };
 
   const backToSuites = () => {
     setSuiteEvidence(null);
     setView('suites');
+    setApp(null);
+    setFlow(null);
+    setRun(null);
+    closePair();
+  };
+
+  const openReport = () => {
+    setSuiteEvidence(null);
+    setView(null);
     setApp(null);
     setFlow(null);
     setRun(null);
@@ -568,6 +578,7 @@ export default function App() {
       if (action === 'back') backToSuites();
       return;
     }
+    if (isReport) return;
     if (view === 'suites' || view === 'pairs' || picker !== null || redactPicker !== null || secretGate !== null || showSyncPanel) {
       if (action === 'back') {
         setPicker(null);
@@ -586,7 +597,7 @@ export default function App() {
       case 'prev': {
         // Queue level only: j/k move the HIGHLIGHT over the surfaces on
         // screen (the passing group may be collapsed).
-        if (level !== 'queue') return;
+        if (level !== 'queue' || view !== 'queue') return;
         const rows = visibleRows(items, showPassing);
         if (rows.length === 0) return;
         const at = rows.findIndex((i) => keyOf(i) === highlightKey);
@@ -597,7 +608,7 @@ export default function App() {
       }
       case 'open': {
         // Enter opens the highlighted surface's runs list.
-        if (level !== 'queue') return;
+        if (level !== 'queue' || view !== 'queue') return;
         const rows = visibleRows(items, showPassing);
         const row = rows.find((r) => keyOf(r) === highlightKey) ?? rows[0];
         if (row) openSurface(row);
@@ -607,6 +618,7 @@ export default function App() {
         // Step up exactly one level: run -> surface -> queue.
         if (level === 'run') backToSurface();
         else if (level === 'surface') backToQueue();
+        else if (view === 'queue') openReport();
         return;
       case 'accept':
         // Gated on the RUN level, and that gate is the point. Note this
@@ -673,41 +685,44 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <RetraceBreadcrumb
-          rootLabel="retrace review"
-          app={app}
-          flow={flow}
-          runLabel={level === 'run' && item.data ? formatWhen(item.data.b.manifest?.finishedAt, item.data.b.runId) : null}
-          onQueue={backToQueue}
-          onSurface={backToSurface}
-        />
+        <button type="button" className="app-header__home" onClick={openReport} title="branch report">
+          retrace
+        </button>
+        {view === 'queue' || level !== 'queue' ? (
+          <RetraceBreadcrumb
+            rootLabel="all runs"
+            app={app}
+            flow={flow}
+            runLabel={level === 'run' && item.data ? formatWhen(item.data.b.manifest?.finishedAt, item.data.b.runId) : null}
+            onQueue={backToQueue}
+            onSurface={backToSurface}
+          />
+        ) : view === 'suites' ? (
+          <span className="app-header__where">suites</span>
+        ) : view === 'pairs' ? (
+          <span className="app-header__where">cross-app</span>
+        ) : null}
         {busy ? <Spinner /> : null}
-        <button type="button" className="app-header__pairs" aria-pressed={view === 'suites'} onClick={() => {
-          if (view === 'suites') backToQueue();
-          else backToSuites();
-        }}>{view === 'suites' ? '← queue' : 'suites'}</button>
+        <span className="app-header__spacer" />
         <button
           type="button"
-          className="app-header__check-all"
+          className="app-header__primary"
           onClick={() => void checkAll()}
           disabled={checkingAll}
-          title="Pull the latest run of every configured CI workflow and refresh the queue"
+          title="Pull the latest run of every configured CI workflow"
         >
-          {checkingAll ? <Spinner /> : '⇩ check all'}
+          {checkingAll ? <Spinner /> : '⇩ pull CI results'}
         </button>
-        <button
-          type="button"
-          className="app-header__pairs"
-          onClick={view === 'pairs' ? closePairs : openPairs}
-        >
-          {view === 'pairs' ? '← queue' : 'cross-app'}
-        </button>
-        <button type="button" className="app-header__sync" onClick={() => setShowSyncPanel(true)}>
-          sync
-        </button>
-        <button type="button" className="app-header__help" onClick={() => setShowHelp((v) => !v)}>
-          ? help
-        </button>
+        <MoreMenu
+          items={[
+            { label: 'home', hint: 'branch report', onSelect: openReport },
+            { label: 'pick CI runs…', hint: 'choose specific CI runs to pull', onSelect: () => setShowSyncPanel(true) },
+            { label: 'all runs', hint: 'every app/flow, filter by source and app', onSelect: backToQueue },
+            { label: 'suites', hint: 'imported test-suite galleries', onSelect: backToSuites },
+            { label: 'cross-app', hint: 'saved web ↔ mobile comparisons', onSelect: openPairs },
+            { label: 'keyboard shortcuts', hint: '?', onSelect: () => setShowHelp((v) => !v) },
+          ]}
+        />
       </header>
 
       {actionError ? <Problem message={actionError} /> : null}
@@ -715,7 +730,13 @@ export default function App() {
 
       <main className="app-main">
         {suiteEvidence === '1' && level === 'run' && view !== 'suites' && view !== 'pairs' ? <SuiteRunEvidenceNotice /> : null}
-        {view === 'suites' ? (
+        {isReport ? (
+          <BranchReport
+            version={version}
+            selectedBranch={reportBranch}
+            onSelectBranch={setReportBranch}
+          />
+        ) : view === 'suites' ? (
           <RetraceSuites client={client} selection={suiteSelection} onSelect={selectSuite} onOpenEvidence={openSuiteEvidence} />
         ) : view === 'pairs' ? (
           pairAppB && pairFlowB && pairRunB && pairId ? (

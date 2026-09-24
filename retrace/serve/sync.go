@@ -163,6 +163,7 @@ type syncRequest struct {
 }
 
 func (s *server) handleSync(w http.ResponseWriter, r *http.Request) {
+	defer summaries.flush()
 	var body syncRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, "sync: invalid JSON body: "+err.Error())

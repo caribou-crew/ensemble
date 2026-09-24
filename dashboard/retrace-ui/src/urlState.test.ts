@@ -15,7 +15,17 @@ describe('readParam / writeParams', () => {
     expect(readParam('nope')).toBeNull();
   });
 
-  it('patches the querystring without pushing a new history entry', () => {
+  it('pushes one history entry per navigation, however many nav params change in a tick', async () => {
+    const before = window.history.length;
+    writeParams({ view: 'queue' });
+    writeParams({ app: 'web', flow: 'cart' });
+    expect(window.history.length).toBe(before + 1);
+    await Promise.resolve();
+    writeParams({ run: 'r1' });
+    expect(window.history.length).toBe(before + 2);
+  });
+
+  it('patches non-navigation params without pushing a new history entry', () => {
     const before = window.history.length;
     writeParams({ a: '1' });
     writeParams({ b: '2' });

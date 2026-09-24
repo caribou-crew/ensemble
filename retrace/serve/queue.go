@@ -511,7 +511,31 @@ func SummaryFor(d Deps, app, flow string) (diff.Summary, error) {
 // diffDir, so viewing a non-latest run never clobbers (or is clobbered by)
 // the "latest" queue's own cached images for the same flow.
 func SummaryForRun(d Deps, app, flow, runID string) (diff.Summary, error) {
-	return summaryFor(d, app, flow, runID, diffDirForRun(d.Cwd, app, flow, runID))
+	return SummaryForRunVs(d, app, flow, runID, "", false)
+}
+
+// refStamp identifies the reference side A resolves to, so a CLI `retrace ref
+// accept` made outside this server misses the cache instead of serving stale.
+func refStamp(d Deps, app, flow, base string) string {
+	if base != "" {
+		return "base:" + base
+	}
+	ref := refs.Resolve(d.Cwd, runs.RunsRoot(d.Cwd), app, flow)
+	stamp := ref.Kind + ":" + ref.RunID
+	if info, err := os.Stat(filepath.Join(ref.Dir, "manifest.json")); err == nil && ref.Dir != "" {
+		stamp += ":" + info.ModTime().String()
+	}
+	return stamp
+}
+
+// SummaryForRunVs is SummaryForRun with an optional base run standing in for
+// the accepted reference as side A — branch-vs-branch review. An empty base
+// keeps the reference; exact disables selector fallback for runID.
+func SummaryForRunVs(d Deps, app, flow, runID, base string, exact bool) (diff.Summary, error) {
+	key := strings.Join([]string{d.Cwd, app, flow, runID, base, fmt.Sprint(exact), fmt.Sprintf("%p", d.Cfg), refStamp(d, app, flow, base)}, "\x00")
+	return summaries.get(key, func() (diff.Summary, error) {
+		return summaryForResolutionVs(d, app, flow, runID, base, diffDirForRun(d.Cwd, app, flow, runID), exact)
+	})
 }
 
 // summaryFor is SummaryFor with the B-side selector and image-cache
@@ -524,10 +548,14 @@ func summaryFor(d Deps, app, flow, selector, outDir string) (diff.Summary, error
 
 // SummaryForExactRun reads an immutable evidence identity without selector fallback.
 func SummaryForExactRun(d Deps, app, flow, runID string) (diff.Summary, error) {
-	return summaryForResolution(d, app, flow, runID, diffDirForRun(d.Cwd, app, flow, runID), true)
+	return SummaryForRunVs(d, app, flow, runID, "", true)
 }
 
 func summaryForResolution(d Deps, app, flow, selector, outDir string, exact bool) (diff.Summary, error) {
+	return summaryForResolutionVs(d, app, flow, selector, "", outDir, exact)
+}
+
+func summaryForResolutionVs(d Deps, app, flow, selector, base, outDir string, exact bool) (diff.Summary, error) {
 	if err := d.check(); err != nil {
 		return diff.Summary{}, err
 	}
@@ -544,18 +572,39 @@ func summaryForResolution(d Deps, app, flow, selector, outDir string, exact bool
 	}
 	root := runs.RunsRoot(d.Cwd)
 
-	ref := refs.Resolve(d.Cwd, root, app, flow)
-	if ref.Kind == "none" {
-		return diff.Summary{}, fmt.Errorf("no reference for %s/%s: %s — run `retrace ref accept --flow %s` once this flow has a good run", app, flow, ref.Reason, flow)
-	}
-	a := diff.RunRef{RunID: ref.RunID, Kind: ref.Kind, Dir: ref.Dir, Manifest: ref.Manifest}
-
 	id := selector
 	if !exact {
 		id = runs.FindRun(root, app, flow, selector)
 	}
 	if id == "" {
 		return diff.Summary{}, fmt.Errorf("no run matches %q for %s/%s", selector, app, flow)
+	}
+
+	var a diff.RunRef
+	if base != "" {
+		baseID := runs.FindRun(root, app, flow, base)
+		if baseID == "" {
+			return diff.Summary{}, fmt.Errorf("no base run matches %q for %s/%s", base, app, flow)
+		}
+		if baseID == id {
+			return diff.Summary{}, fmt.Errorf("base run %s is the run under review for %s/%s — pick a different base", id, app, flow)
+		}
+		bp, err := runs.PathsFor(root, app, flow, baseID)
+		if err != nil {
+			return diff.Summary{}, err
+		}
+		bm, err := runs.ReadManifest(bp.ManifestPath)
+		if err != nil {
+			return diff.Summary{}, fmt.Errorf("reading the manifest for %s/%s/%s: %w", app, flow, baseID, err)
+		}
+		a = diff.RunRef{RunID: baseID, Kind: "run", Dir: bp.RunDir, Manifest: bm}
+		outDir = filepath.Join(outDir, "vs", baseID)
+	} else {
+		ref := refs.Resolve(d.Cwd, root, app, flow)
+		if ref.Kind == "none" {
+			return diff.Summary{}, fmt.Errorf("no reference for %s/%s: %s — run `retrace ref accept --flow %s` once this flow has a good run", app, flow, ref.Reason, flow)
+		}
+		a = diff.RunRef{RunID: ref.RunID, Kind: ref.Kind, Dir: ref.Dir, Manifest: ref.Manifest}
 	}
 	// With no committed bundle, "reference" falls back to the newest
 	// ELIGIBLE RUN — which, for a flow that has been recorded once, is the

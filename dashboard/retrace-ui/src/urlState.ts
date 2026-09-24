@@ -1,7 +1,7 @@
 // URL-as-state: deep links (?view=&trace=&db=&table=&entity=) are a
-// feature, not an accident. No router library — just the querystring, kept
-// in sync via history.replaceState so navigating a view never grows the
-// browser history stack.
+// feature, not an accident. No router library — just the querystring.
+// Changing a NAV_KEYS param pushes a history entry so the browser's back
+// button steps back a screen; everything else (filters, pickers) replaces.
 import { useCallback, useEffect, useState } from 'react';
 
 /** Reads a single query-string parameter from the current URL. */
@@ -10,12 +10,17 @@ export function readParam(key: string): string | null {
 }
 
 /**
- * Patches one or more query-string parameters on the current URL in place
- * via history.replaceState — no navigation, no new history entry. A patch
+ * Patches one or more query-string parameters on the current URL. A patch
  * value of `null` deletes that key.
  */
+const NAV_KEYS = new Set(['view', 'app', 'flow', 'run', 'reportFlow', 'reportApp', 'reportTab', 'pairId', 'suite', 'suiteEvidence']);
+
+// Several setters fire per click; only the first navigation write in a tick pushes.
+let pushedThisTick = false;
+
 export function writeParams(patch: Record<string, string | null>): void {
   const params = new URLSearchParams(window.location.search);
+  const navigates = Object.entries(patch).some(([k, v]) => NAV_KEYS.has(k) && params.get(k) !== v);
   for (const [key, value] of Object.entries(patch)) {
     if (value === null) {
       params.delete(key);
@@ -25,7 +30,15 @@ export function writeParams(patch: Record<string, string | null>): void {
   }
   const qs = params.toString();
   const url = `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`;
-  window.history.replaceState(window.history.state, '', url);
+  if (navigates && !pushedThisTick) {
+    window.history.pushState(window.history.state, '', url);
+    pushedThisTick = true;
+    queueMicrotask(() => {
+      pushedThisTick = false;
+    });
+  } else {
+    window.history.replaceState(window.history.state, '', url);
+  }
 }
 
 /**
