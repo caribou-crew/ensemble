@@ -891,6 +891,26 @@ func TestDiffWireMissingCallPathExcludesQuery(t *testing.T) {
 	}
 }
 
+// A Missing/Extra Call is unpaired, not unbucketed: it must carry the same
+// NormalizedPath a paired Entry does, run through the SAME Options.Normalize
+// — a consumer that groups or links wire rows by path template must not
+// find that key present-and-populated on `paired` but absent on
+// `missing`/`extra`.
+func TestDiffWireMissingAndExtraCallsCarryNormalizedPath(t *testing.T) {
+	// /checkout exists only in a (Missing) and /cart/99 only in b (Extra) —
+	// neither bucket has a counterpart to pair against, but both still run
+	// through Options.Normalize.
+	a := []trace.Hop{hop(1, "POST", "/checkout", 200, "", "")}
+	b := []trace.Hop{hop(1, "GET", "/cart/99", 200, "", "")}
+	w := DiffWire(a, b, Options{Normalize: normalizeCartID})
+	if len(w.Missing) != 1 || w.Missing[0].NormalizedPath != "/checkout" {
+		t.Fatalf("Missing = %+v, want one unpaired /checkout call", w.Missing)
+	}
+	if len(w.Extra) != 1 || w.Extra[0].NormalizedPath != "/cart/:id" {
+		t.Fatalf("Extra[0].NormalizedPath = %q, want /cart/:id", w.Extra[0].NormalizedPath)
+	}
+}
+
 func TestDiffWireDiffsBothRequestAndResponseBodies(t *testing.T) {
 	// W9: delete the resp body diff. W10: delete the req body diff.
 	a := []trace.Hop{hop(1, "POST", "/x", 200, `{"r":1}`, `{"s":1}`)}
@@ -1150,8 +1170,8 @@ func TestWireJSONKeysMatchContract(t *testing.T) {
 	note := ToleratedNote{ID: "d1", Reason: "expected"}
 	assertJSONKeys(t, note, []string{"id", "reason"})
 
-	call := Call{Method: "GET", Path: "/x", Seq: 1, Status: 200, Group: "browse", Tolerated: &note}
-	assertJSONKeys(t, call, []string{"method", "path", "seq", "status", "group", "tolerated"})
+	call := Call{Method: "GET", Path: "/x", NormalizedPath: "/x", Seq: 1, Status: 200, Group: "browse", Tolerated: &note}
+	assertJSONKeys(t, call, []string{"method", "path", "normalizedPath", "seq", "status", "group", "tolerated"})
 
 	gn := GroupNames{A: []string{"browse"}, B: []string{"browse"}}
 	assertJSONKeys(t, gn, []string{"a", "b"})

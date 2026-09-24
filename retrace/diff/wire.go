@@ -404,12 +404,16 @@ type Wire struct {
 }
 
 type Call struct {
-	Method    string         `json:"method"`
-	Path      string         `json:"path"`
-	Seq       uint64         `json:"seq"`
-	Status    int            `json:"status"`
-	Group     string         `json:"group,omitempty"`
-	Tolerated *ToleratedNote `json:"tolerated,omitempty"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	// NormalizedPath is the same bucketing key a paired Entry carries — a
+	// missing/extra Call is unpaired, not unbucketed, so it must not be the
+	// one wire-diff shape a consumer can't group or link by path template.
+	NormalizedPath string         `json:"normalizedPath"`
+	Seq            uint64         `json:"seq"`
+	Status         int            `json:"status"`
+	Group          string         `json:"group,omitempty"`
+	Tolerated      *ToleratedNote `json:"tolerated,omitempty"`
 }
 
 // GroupNames lists the distinct flow-part names declared on each side, in
@@ -884,16 +888,17 @@ func buildEntry(p Pair, res rules.Resolved, o Options) Entry {
 	return e
 }
 
-func callsFrom(hops []trace.Hop, groups []runs.Group) []Call {
+func callsFrom(hops []trace.Hop, groups []runs.Group, normalize func(string) string) []Call {
 	out := make([]Call, len(hops))
 	for i, h := range hops {
 		path, _ := SplitPath(h.Path)
 		out[i] = Call{
-			Method: h.Method,
-			Path:   path,
-			Seq:    h.Seq,
-			Status: h.Status,
-			Group:  runs.GroupAt(groups, h.T.Start),
+			Method:         h.Method,
+			Path:           path,
+			NormalizedPath: normalize(path),
+			Seq:            h.Seq,
+			Status:         h.Status,
+			Group:          runs.GroupAt(groups, h.T.Start),
 		}
 	}
 	return out
@@ -933,8 +938,8 @@ func DiffWire(a, b []trace.Hop, o Options) Wire {
 		Paired: entries,
 		// A matched deviation ANNOTATES the call; it never removes it. See
 		// applyDeviations in deviations.go.
-		Missing: applyDeviations(callsFrom(missingHops, o.GroupsA), o.Deviations),
-		Extra:   applyDeviations(callsFrom(extraHops, o.GroupsB), o.Deviations),
+		Missing: applyDeviations(callsFrom(missingHops, o.GroupsA, normalize), o.Deviations),
+		Extra:   applyDeviations(callsFrom(extraHops, o.GroupsB, normalize), o.Deviations),
 		Groups:  groupsPtr,
 	}
 }

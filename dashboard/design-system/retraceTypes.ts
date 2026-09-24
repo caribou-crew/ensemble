@@ -91,6 +91,7 @@ export interface Item {
 export interface Call {
   method: string;
   path: string;
+  normalizedPath: string;
   seq: number;
   status: number;
   group?: string;
